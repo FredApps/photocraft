@@ -87,16 +87,63 @@ impl LutFile {
     }
 }
 
+/// A LUT file format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    Cube,
+    ThreeDl,
+    Look,
+}
+
+impl Format {
+    /// The format [`parse`] reads `bytes` as: from `file_name`'s extension, else sniffed
+    /// (XML is `.look`, anything else `.cube`).
+    pub fn detect(file_name: &str, bytes: &[u8]) -> Self {
+        let lower = file_name.to_ascii_lowercase();
+        if lower.ends_with(".3dl") {
+            Format::ThreeDl
+        } else if lower.ends_with(".look") || decode_text(bytes).trim_start().starts_with('<') {
+            Format::Look
+        } else {
+            Format::Cube
+        }
+    }
+
+    /// The file extension, without the dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Format::Cube => "cube",
+            Format::ThreeDl => "3dl",
+            Format::Look => "look",
+        }
+    }
+}
+
 /// Parses a LUT, picking the format from `file_name`'s extension (falls back to sniffing).
 pub fn parse(file_name: &str, bytes: &[u8]) -> Result<LutFile, LutError> {
-    let lower = file_name.to_ascii_lowercase();
-    let text = String::from_utf8_lossy(bytes);
-    if lower.ends_with(".3dl") {
-        parse_3dl(&text)
-    } else if lower.ends_with(".look") || text.trim_start().starts_with('<') {
-        parse_look(&text)
-    } else {
-        parse_cube(&text)
+    parse_as(Format::detect(file_name, bytes), bytes)
+}
+
+/// Parses a LUT in a known format.
+pub fn parse_as(format: Format, bytes: &[u8]) -> Result<LutFile, LutError> {
+    let text = decode_text(bytes);
+    match format {
+        Format::Cube => parse_cube(&text),
+        Format::ThreeDl => parse_3dl(&text),
+        Format::Look => parse_look(&text),
+    }
+}
+
+/// UTF-16 with a byte-order mark (Photoshop loads such `.look` files, #9118), else UTF-8.
+fn decode_text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    let utf16 = |rest: &[u8], from: fn([u8; 2]) -> u16| {
+        let units: Vec<u16> = rest.as_chunks::<2>().0.iter().map(|&c| from(c)).collect();
+        String::from_utf16_lossy(&units).into()
+    };
+    match bytes {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
+        _ => String::from_utf8_lossy(bytes),
     }
 }
 
@@ -497,6 +544,20 @@ DOMAIN_MAX 0.5 1 1
     }
 
     #[test]
+    fn look_reads_utf16_with_either_byte_order() {
+        let id = LutFile::identity(2);
+        let hex: String = id.data.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("{b:02X}")).collect();
+        let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-16\"?><look><LUT><size>\"2\"</size><data>\"{hex}\"</data></LUT></look>");
+        let le: Vec<u8> = [0xFF, 0xFE].into_iter().chain(xml.encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        let be: Vec<u8> = [0xFE, 0xFF].into_iter().chain(xml.encode_utf16().flat_map(u16::to_be_bytes)).collect();
+        assert_eq!(parse("a.look", &le).unwrap().data, id.data);
+        assert_eq!(parse("a.look", &be).unwrap().data, id.data);
+        // Sniffed as XML through the byte-order mark too, so the recorded format is the one parsed.
+        assert_eq!(Format::detect("a.lut", &le), Format::Look);
+        assert_eq!(parse_as(Format::Look, &be).unwrap().data, id.data);
+    }
+
+    #[test]
     fn look_ignores_tags_inside_xml_comments() {
         let hex = |l: &LutFile| -> String { l.data.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("{b:02X}")).collect() };
         let inverse = LutFile::from_fn("", 2, |[r, g, b]| [1.0 - r, 1.0 - g, 1.0 - b]);
@@ -544,6 +605,17 @@ DOMAIN_MAX 0.5 1 1
     fn look_3d_size_exponent_overflow_is_rejected() {
         let text = format!("<look><size>{}</size><data>00</data></look>", usize::MAX);
         assert!(parse_look(&text).is_err());
+    }
+
+    #[test]
+    fn format_detection_matches_parse() {
+        assert_eq!(Format::detect("a.3DL", b"<look>"), Format::ThreeDl);
+        assert_eq!(Format::detect("a.Look", b""), Format::Look);
+        assert_eq!(Format::detect("a.cube", b"  <look>"), Format::Look, "XML is sniffed as .look");
+        assert_eq!(Format::detect("a.txt", b"LUT_3D_SIZE 2"), Format::Cube);
+        assert_eq!(Format::ThreeDl.extension(), "3dl");
+        let text = write_cube(&LutFile::identity(2));
+        assert_eq!(parse_as(Format::Cube, text.as_bytes()), parse("a.cube", text.as_bytes()));
     }
 
     #[test]
