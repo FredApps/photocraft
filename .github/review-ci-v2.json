@@ -1,0 +1,17 @@
+{
+  "base": "28be431b4ad3ddc7080d46f3eacc399f3e44fa5b",
+  "head": "7679a85e060d21d602651a7f12d780829867fdf5",
+  "platforms": [],
+  "policy": "review-ci-v2.2-no-sonar",
+  "pr": 7879,
+  "repository": "storytold/photocraft",
+  "source_tree": "2ad14fb934a05810480e0db86d92b3f2cd38cc8e",
+  "workflows": {
+    ".github/workflows/ci.yml": "be9b072e27db83f740be2734a6ad58429f3ccd8e24f23445de5742381dc0813a",
+    ".github/workflows/docs.yml": "98d01b271e7fee22c90f990a9b3a88ee92ce08691cafd341d733513f95322b8c",
+    ".github/workflows/freebsd.yml": "4767dad574951b03b9ef6b908996eaf56a77284417a1dec3b842d53de712c990",
+    ".github/workflows/nix.yml": "08e6691d7ba1c905fdae7a65cf5a423c9e42e021d4fdf78c34c381bf0b00aba6",
+    ".github/workflows/packaging-lint.yml": "7ad3c02f1dd09e92ca85743df2d92be1053c56d13b216d465ba2c530c4003a76",
+    ".github/workflows/windows-arm64.yml": "9b2ceaece3916c919f63827537e1c504d161b372a3bd3bfd00aaa770146aee5d"
+  }
+}
