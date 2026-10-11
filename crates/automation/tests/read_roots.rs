@@ -287,10 +287,7 @@ fn multiple_roots_do_not_grant_ambient_commands_or_nested_action_file_access() {
     assert!(error.contains("ambient filesystem paths"), "{error}");
     // A writable destination still cannot be reached through an ambient engine command.
     headless.session.actions.list.push(Action { name: "Write work".into(), steps: vec![("file.saveACopy".into(), json!({"path": target}))] });
-    headless.session.actions.list.push(Action {
-        name: "Nested write".into(),
-        steps: vec![("actions.play".into(), json!({"action": "Write work"}))],
-    });
+    headless.session.actions.list.push(Action { name: "Nested write".into(), steps: vec![("actions.play".into(), json!({"action": "Write work"}))] });
     let played = headless.command_run("actions.play", json!({"action": "Nested write"})).unwrap();
     assert!(played["failed"].to_string().contains("ambient filesystem paths"), "{played}");
     assert_eq!(snapshot(&headless), before);

@@ -1857,9 +1857,7 @@ mod tests {
         let written: Rc<RefCell<Vec<String>>> = Rc::default();
         let writes = written.clone();
         let services = crate::Services {
-            import: Some(Box::new(|name: &str, _: &[u8], _: usize| {
-                Ok((Document::new(name, Size::new(4, 4), ColorMode::Rgb, SampleType::U8), Vec::new()))
-            })),
+            import: Some(Box::new(|name: &str, _: &[u8], _: usize| Ok((Document::new(name, Size::new(4, 4), ColorMode::Rgb, SampleType::U8), Vec::new())))),
             export: Some(Box::new(|_: &Document, _: &str, _: &crate::ExportSettings| Ok((b"saved".to_vec(), Vec::new())))),
             automation_read: Some(Box::new(|path: &str| {
                 Ok(crate::AutomationReadResult {

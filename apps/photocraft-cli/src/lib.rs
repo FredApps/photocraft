@@ -328,8 +328,7 @@ fn missing_font_warnings(fonts: Vec<String>) -> Vec<String> {
 }
 
 fn automation_workspace(args: &Args) -> Result<AuthorizedWorkspace, String> {
-    AuthorizedWorkspace::with_read_roots(args.read_roots(), args.get("--automation-write-root").map(Path::new))
-        .map_err(|error| error.to_string())
+    AuthorizedWorkspace::with_read_roots(args.read_roots(), args.get("--automation-write-root").map(Path::new)).map_err(|error| error.to_string())
 }
 
 fn convert(a: &Args, _out: &mut dyn Write, err: &mut dyn Write) -> R {

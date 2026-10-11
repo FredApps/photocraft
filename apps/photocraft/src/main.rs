@@ -128,11 +128,7 @@ impl AutomationRootArgs {
 
     /// Consume one root flag, including `--flag=value`. Leave a following flag in the iterator
     /// when this flag has no value, so it cannot accidentally become a directory grant.
-    fn consume(
-        &mut self,
-        arg: &std::ffi::OsStr,
-        args: &mut std::iter::Peekable<impl Iterator<Item = std::ffi::OsString>>,
-    ) -> Result<bool, String> {
+    fn consume(&mut self, arg: &std::ffi::OsStr, args: &mut std::iter::Peekable<impl Iterator<Item = std::ffi::OsString>>) -> Result<bool, String> {
         let text = arg.to_string_lossy();
         let (flag, inline) = match text.split_once('=') {
             Some((flag, value)) => (flag, Some(value)),
@@ -196,12 +192,8 @@ mod automation_root_arg_tests {
 
     #[test]
     fn reads_accumulate_in_cli_order_including_duplicates_and_equals() {
-        let roots = parse(
-            &["--automation-read-root=library", "--automation-read-root", "work with spaces", "--automation-read-root=library"],
-            None,
-            None,
-        )
-        .unwrap();
+        let roots =
+            parse(&["--automation-read-root=library", "--automation-read-root", "work with spaces", "--automation-read-root=library"], None, None).unwrap();
         assert_eq!(roots.read, vec![PathBuf::from("library"), PathBuf::from("work with spaces"), PathBuf::from("library")]);
     }
 
@@ -323,7 +315,8 @@ fn main() -> eframe::Result {
     }
     let mut control_token = None;
     let mut control_token_file = None;
-    let mut automation_roots = AutomationRootArgs::new(std::env::var_os("PHOTOCRAFT_AUTOMATION_READ_ROOT"), std::env::var_os("PHOTOCRAFT_AUTOMATION_WRITE_ROOT"));
+    let mut automation_roots =
+        AutomationRootArgs::new(std::env::var_os("PHOTOCRAFT_AUTOMATION_READ_ROOT"), std::env::var_os("PHOTOCRAFT_AUTOMATION_WRITE_ROOT"));
     let mut files = Vec::new();
     // Arguments that are not valid Unicode (issue #1108): a file manager can hand over a Latin-1
     // file name on Linux, and `std::env::args()` would panic before any window opened. Paths are
