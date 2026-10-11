@@ -65,7 +65,7 @@ fn assert_source(headless: &Headless, width: u32, rgba: [u8; 4]) {
     assert_eq!(state.doc.size.height, 5);
     let preview = photocraft_compose::thumbnail(&state.doc, 32);
     assert!(!preview.pixels.is_empty());
-    assert!(preview.pixels.chunks_exact(4).all(|pixel| pixel == rgba.as_slice()), "opened the wrong source pixels");
+    assert!(preview.pixels.as_chunks::<4>().0.iter().all(|pixel| pixel == &rgba), "opened the wrong source pixels");
 }
 
 fn edit(headless: &mut Headless, name: &str) {
