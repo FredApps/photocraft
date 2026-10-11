@@ -680,6 +680,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
     };
     let o = &mut app.ui.tool_options;
     if tool == Tool::PathSelection {
+        crate::widgets::checkbox(ui, &mut o.path_show_bounding_box, tl!("Show Bounding Box"));
+        crate::widgets::vline(ui, 22.0);
         lbl(ui, if app.ui.vector_mask_target { "Drag to move the targeted vector mask" } else { tl!("Drag to move the active shape's path or the Work Path") });
         return true;
     }
