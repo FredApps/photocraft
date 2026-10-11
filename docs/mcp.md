@@ -10,6 +10,9 @@ Paths are relative to the corresponding root, or absolute paths beneath it; with
 filesystem authority is absent. Bridge mode uses `--bridge` and `--control-token-file` as
 described in [development.md](development.md). UI tools require a running desktop app.
 
+`mcp` and `serve` accept one `--automation-read-root` directory. Repeating the flag is a usage
+error (exit 2), including when using `--automation-read-root=...`; roots do not accumulate.
+
 ## Tools and resources
 
 - `command_list`: discover engine ids, parameter docs and current enabled state; accepts

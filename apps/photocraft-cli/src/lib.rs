@@ -43,7 +43,7 @@ USAGE:
       (docs/control-protocol.md#headless-server).
 
   photocraft-cli <subcommand> --help (or -h) prints this text. A flag the subcommand doesn't take is
-  an error.
+  an error. --automation-read-root accepts one directory; repeating it is an error.
 ";
 
 struct Args {
@@ -111,6 +111,10 @@ fn parse(sub: &Subcommand, args: &[String]) -> Result<Option<Args>, String> {
         }
         i += 1;
     }
+    // A second root would silently replace the first capability boundary (#2319).
+    if a.flags.iter().filter(|(flag, _)| flag == "--automation-read-root").count() > 1 {
+        return Err("--automation-read-root accepts one directory and cannot be repeated".into());
+    }
     Ok(Some(a))
 }
 
@@ -124,6 +128,51 @@ impl Args {
 }
 
 type R = Result<(), String>;
+
+#[cfg(test)]
+mod read_root_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_read_roots_are_usage_errors_before_starting_servers() {
+        for sub in ["mcp", "serve"] {
+            for roots in [
+                vec!["--automation-read-root", "missing-library", "--automation-read-root", "missing-work"],
+                vec!["--automation-read-root=missing-library", "--automation-read-root=missing-work"],
+                vec!["--automation-read-root", "missing-library", "--automation-read-root=missing-work"],
+                vec!["--automation-read-root=", "--automation-read-root=missing-work"],
+                vec!["--automation-read-root=missing-work", "--automation-read-root=missing-work"],
+            ] {
+                let args: Vec<String> = std::iter::once(sub).chain(roots).map(str::to_owned).collect();
+                let mut out = Vec::new();
+                let mut err = Vec::new();
+                assert_eq!(run(&args, &mut out, &mut err), 2, "{sub}: {}", String::from_utf8_lossy(&err));
+                assert!(out.is_empty());
+                assert!(String::from_utf8_lossy(&err).contains("--automation-read-root accepts one directory and cannot be repeated"));
+            }
+        }
+    }
+
+    #[test]
+    fn single_roots_and_repeated_commands_keep_their_values() {
+        for name in ["mcp", "serve"] {
+            let sub = SUBCOMMANDS.iter().find(|s| s.name == name).unwrap();
+            let absent = parse(sub, &[]).unwrap().unwrap();
+            assert_eq!(absent.get("--automation-read-root"), None);
+            for flags in [vec!["--automation-read-root", "library with spaces"], vec!["--automation-read-root=library with spaces"]] {
+                let args: Vec<String> = flags.into_iter().map(str::to_owned).collect();
+                let parsed = parse(sub, &args).unwrap().unwrap();
+                assert_eq!(parsed.get("--automation-read-root"), Some("library with spaces"));
+            }
+        }
+        let sub = SUBCOMMANDS.iter().find(|s| s.name == "run").unwrap();
+        let args: Vec<String> = ["--cmd", "layer.new.layer", "--cmd", "layer.delete"].into_iter().map(str::to_owned).collect();
+        assert_eq!(
+            parse(sub, &args).unwrap().unwrap().flags,
+            vec![("--cmd".into(), Some("layer.new.layer".into())), ("--cmd".into(), Some("layer.delete".into()))]
+        );
+    }
+}
 
 /// [`run`] on the raw process arguments. An argument that is not valid Unicode is a usage error
 /// naming its position and a lossy rendering (exit 2), never a panic: `std::env::args()` aborts
