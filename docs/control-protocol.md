@@ -281,9 +281,14 @@ it to an untrusted host.
 Filesystem access fails closed unless launch-time read and/or write roots are granted with
 `--automation-read-root` and `--automation-write-root`. Repeat the read flag to grant an ordered
 list of directories; both `--flag <dir>` and `--flag=<dir>` syntax are supported by desktop,
-headless MCP and `serve`, and duplicate read roots are allowed. Relative reads try those roots
+headless MCP and `serve`, and duplicate read roots are allowed. Headless reads try those roots
 in launch order and select the first existing regular file. Only a missing file (`NotFound`)
 falls through; directory, permission, path-escape and decoding errors are terminal.
+Desktop `app.open` also accepts native directory `.pcraft` documents through the selected read
+capability. It searches in the same order: a ZIP file in an earlier root wins over a directory
+in a later root. Once a directory is selected, loading errors are terminal. Directory opens
+never establish an implicit save target, even when the read and write capabilities match;
+use an explicit layered Save As beneath the write root.
 Every configured root must be an existing directory. An empty, missing or invalid root fails
 startup rather than being dropped. There is exactly one optional write root; repeated
 `--automation-write-root` flags are usage errors (exit 2), even when the values match.
@@ -315,7 +320,8 @@ identity for Cmd+S and Open Recent is a separate concern.
 
 Engine commands that still use ambient filesystem paths are disabled for automation until they
 are migrated to the same capability interface. Extra read roots do not enable ambient asset reads
-or directory-bundle access. Interactive desktop file pickers retain normal user-selected access.
+or headless directory-bundle access. Desktop `app.open` supports directory `.pcraft` only through
+its granted read capabilities. Interactive desktop file pickers retain normal user-selected access.
 
 ## Headless server
 

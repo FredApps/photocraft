@@ -12,8 +12,13 @@ photocraft-cli mcp \
 Repeat `--automation-read-root` to grant ordered read directories in headless `mcp`, `serve`,
 or desktop `photocraft --control`. Both `--flag <dir>` and `--flag=<dir>` work and can be mixed;
 duplicate read roots are allowed. Relative file requests search the roots in launch order.
-The first existing regular file wins; only a missing file tries the next root. Directory,
-permission, path-escape and decoding errors stop the request instead of falling back.
+Headless reads select the first existing regular file; only a missing file tries the next root.
+Directory, permission, path-escape and decoding errors stop headless requests instead of falling back.
+Desktop `app.open`, including bridged `doc_open`, also supports native directory `.pcraft`
+documents through the selected read capability. An earlier root's ZIP file wins over a later
+root's directory; loading errors in a selected directory are terminal. Directory opens have
+no implicit save target, even through the write root's capability, and need explicit layered
+Save As beneath the write root.
 All configured roots must be valid existing directories; an empty, missing or invalid root
 fails startup rather than being dropped.
 
@@ -29,7 +34,8 @@ capability has no implicit save target. The same configured root shares that cap
 canonical filesystem identity is not inferred. Use an explicit `doc_save {path:"copy.pcraft"}`
 (or another supported layered format) beneath the write root to establish one. Aliases and nested roots conservatively also
 require explicit Save As; a flat export does not establish a save target. Existing restrictions
-on pathless saves still apply. These grants do not enable ambient asset reads or directory bundles.
+on pathless saves still apply. These grants do not enable ambient asset reads or headless
+directory-bundle access; desktop directory `.pcraft` reads remain scoped to the granted capabilities.
 
 Bridge mode uses `--bridge` and `--control-token-file` as described in
 [development.md](development.md). Configure all roots on the desktop process; passing root flags

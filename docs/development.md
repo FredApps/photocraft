@@ -185,14 +185,19 @@ At startup the desktop lists recovery metadata, then decodes one document at a t
 For headless MCP clients, pass absolute paths to deliberately chosen trusted workspace directories in the launch arguments. Desktop `PHOTOCRAFT_AUTOMATION_READ_ROOT` and `PHOTOCRAFT_AUTOMATION_WRITE_ROOT` environment variables do **not** grant headless CLI access. Omitting a root flag deliberately denies that direction of access.
 
 Read flags accumulate in order, including mixed `--automation-read-root <dir>` and
-`--automation-read-root=<dir>` syntax; duplicate read roots are allowed. A relative read uses the
-first existing regular file. Only a missing file falls through to the next root; directory,
-permission, path-escape and decoding errors stop the request. Every root must be an existing
-directory, and empty or missing values fail startup. There is still only one write root;
+`--automation-read-root=<dir>` syntax; duplicate read roots are allowed. A headless relative read
+uses the first existing regular file. Only a missing file falls through to the next root;
+directory, permission, path-escape and decoding errors stop the request. Desktop `app.open`
+(and bridged `doc_open`) also accepts native directory `.pcraft` through the selected read
+capability. An earlier root's ZIP file wins over a later root's directory, and loading errors
+in a selected directory are terminal. Directory opens never establish an implicit save target;
+use explicit layered Save As beneath the write root, even when both capabilities match.
+Every root must be an existing directory, and empty or missing values fail startup. There is still only one write root;
 repeating its flag is a usage error even for identical values. Write authority does not imply
 read authority. A read-only library document needs an explicit Save As into the write root before
 it has an implicit save target; aliases and nested roots also require explicit Save As.
-These roots do not enable additional ambient asset reads or directory-bundle access.
+These roots do not enable additional ambient asset reads or headless directory-bundle access;
+desktop directory `.pcraft` reads use only the granted read capabilities.
 
 Tools:
 
