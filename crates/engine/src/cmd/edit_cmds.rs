@@ -39,13 +39,14 @@ pub struct Clip {
 /// Photoshop's layer-based copy (CC 2018 on): with no selection, Copy takes the active layer
 /// whole when it is a smart object (#2428), a type or shape layer, or a group (its whole subtree)
 /// (#2670), so Paste recreates it instead of its pixels. Fill and adjustment layers have no
-/// pixels of their own, so they are taken whole too rather than refused (#2344). Pixel layers
-/// still copy their pixels; several selected layers are [`multi_copy_ids`].
+/// pixels of their own, so they are taken whole too rather than refused (#2344). A pixel layer
+/// with a raster or vector mask is also taken whole to keep that mask editable (#2184); an
+/// unmasked pixel layer still copies its pixels. Several selected layers are [`multi_copy_ids`].
 fn takes_whole(d: &crate::DocState, id: LayerId) -> bool {
     d.doc.selection.is_none()
         && d.selected_layers().len() <= 1
         && crate::layer_copy_cmds::layered(d.doc.mode)
-        && d.doc.layer(id).is_some_and(|l| !matches!(l.content, LayerContent::Raster(_)))
+        && d.doc.layer(id).is_some_and(|l| !matches!(l.content, LayerContent::Raster(_)) || l.mask.is_some() || l.vector_mask.is_some())
 }
 
 /// A scratch document in the source's colour, to hold copied layers.
@@ -143,6 +144,15 @@ fn has_doc(s: &Session) -> std::result::Result<(), String> {
 /// Paste and New from Clipboard need only a clipboard: with no document open, they make one.
 fn has_clip_only(s: &Session) -> std::result::Result<(), String> {
     s.clipboard.as_ref().map(|_| ()).ok_or_else(|| "the clipboard is empty".into())
+}
+
+/// Validate the copied layer tree before its recursive Clone implementation runs.
+fn clipboard_snapshot(s: &Session) -> Result<Clip> {
+    let clip = s.clipboard.as_ref().ok_or(EngineError::Other("the clipboard is empty".into()))?;
+    if let Some(layers) = clip.layers.as_deref() {
+        crate::cmd::layer_multi_cmds::check_group_depth(layers, "Paste")?;
+    }
+    Ok(clip.clone())
 }
 
 fn active_layer(s: &Session) -> std::result::Result<&Layer, String> {
@@ -268,19 +278,45 @@ fn merged_surface(doc: &Document) -> Surface {
     photocraft_compose::flatten_to_surface(doc, PixelFormat::new(fmt.mode, fmt.sample, true), None)
 }
 
-fn copy(s: &mut Session, merged: bool) -> Result<Value> {
+fn copy(s: &mut Session, merged: bool, take_whole: bool) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let canvas = d.doc.bounds();
     let clip = if merged {
         lift(&merged_surface(&d.doc), d.doc.selection.as_ref(), canvas)?
     } else {
         let id = d.active_layer.ok_or(EngineError::Other("no active layer".into()))?;
-        let several = multi_copy_ids(d);
-        let mut layers = if several.is_empty() { whole_layer(d, id) } else { whole_layers(d, &several) };
+        let several = if take_whole { multi_copy_ids(d) } else { Vec::new() };
+        let mut layers = if !take_whole {
+            None
+        } else if several.is_empty() {
+            whole_layer(d, id)
+        } else {
+            whole_layers(d, &several)
+        };
         if let Some(copies) = &mut layers {
             copy_linked_sources(&d.doc, copies)?;
         }
+        let masked_raster = d.doc.layer(id).is_some_and(|l| matches!(l.content, LayerContent::Raster(_)) && (l.mask.is_some() || l.vector_mask.is_some()));
         match (d.doc.layer(id).and_then(Layer::surface).filter(|_| several.is_empty()), &layers) {
+            // Preserve the editable layer separately while the OS clipboard and bitmap-only
+            // targets receive what the masked layer actually shows. Its underlying colour
+            // bounds still determine placement even when the mask hides every pixel.
+            (Some(_), Some(copies)) if masked_raster => {
+                let bounds = copies.layers.iter().filter_map(crate::layer_multi_cmds::layer_bounds).fold(Rect::EMPTY, |a, b| a.union(&b)).intersect(&canvas);
+                let mut shown = (**copies).clone();
+                for l in &mut shown.layers {
+                    l.visible = true;
+                }
+                // Composite only where this isolated layer can draw. This includes its effects;
+                // the compositor returns None for content that can draw anywhere, so such
+                // cases safely fall back to the whole canvas.
+                let area = shown.layers.first().and_then(|layer| photocraft_compose::composite_bounds(layer, canvas)).unwrap_or(canvas).intersect(&canvas);
+                let fmt = shown.pixel_format();
+                crate::allocation::checkpoint("rendering the copied layer")?;
+                let surface = photocraft_compose::composite_to_surface(&shown, area, PixelFormat::new(fmt.mode, fmt.sample, true), None);
+                let bitmap = lift(&surface, None, canvas)?;
+                Clip { layers, bounds: bounds.union(&bitmap.bounds), ..bitmap }
+            }
             (Some(surf), _) => Clip { layers, ..lift(surf, d.doc.selection.as_ref(), canvas)? },
             // A group or fill layer has no pixels of its own: the clipboard pixels are what it
             // shows. Adjustment layers show nothing by themselves, so their clip spans the canvas
@@ -379,7 +415,7 @@ pub(crate) fn clear_area(doc: &mut Document, id: LayerId, area: Rect, sel: Optio
 /// on `center` (the view centre from the UI) or the canvas, unless they already overlap the canvas.
 fn paste(s: &mut Session, p: &Value, in_place: bool) -> Result<Value> {
     crate::allocation::checkpoint("pasting pixels")?;
-    let clip = s.clipboard.clone().ok_or(EngineError::Other("the clipboard is empty".into()))?;
+    let clip = clipboard_snapshot(s)?;
     let Some(d) = s.active() else {
         // Nothing open to paste into: the clipboard becomes a document of its own (#368).
         return new_from_clipboard(s);
@@ -394,7 +430,9 @@ fn paste(s: &mut Session, p: &Value, in_place: bool) -> Result<Value> {
     let canvas = d.doc.bounds();
     let fmt = d.doc.pixel_format();
     let (dx, dy) = paste_offset(&clip, d.doc.id, canvas, p, in_place);
-    if let Some(layers) = clip.layers.as_deref().filter(|_| crate::layer_copy_cmds::layered(d.doc.mode)) {
+    if let Some(layers) =
+        clip.layers.as_deref().filter(|_| crate::layer_copy_cmds::layered(d.doc.mode) && p.get("pixels").and_then(Value::as_bool) != Some(true))
+    {
         return paste_layers(s, layers, dx, dy);
     }
     let moved = shifted(&clip.surface, dx, dy);
@@ -417,12 +455,18 @@ fn paste(s: &mut Session, p: &Value, in_place: bool) -> Result<Value> {
 /// own contents, independent of the copied one (as across documents).
 fn paste_layers(s: &mut Session, layers: &Document, dx: i32, dy: i32) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
+    // Reject malformed clipboard trees before cloning or translating their recursively
+    // nested layers; insertion is checked separately against the destination depth.
+    crate::cmd::layer_multi_cmds::check_group_depth(layers, "Paste")?;
     let mut copies = layers.clone();
     for l in &mut copies.layers {
         *l = l.duplicate();
     }
     crate::layer_copy_cmds::adapt_copies(s, &mut copies, &d.doc)?;
     crate::layer_copy_cmds::translate_copies(&mut copies, &d.doc, dx, dy);
+    if dx != 0 || dy != 0 {
+        translate_unlinked_paste_masks(&mut copies.layers, dx, dy, 0)?;
+    }
     let patterns: Vec<_> = copies.patterns.iter().filter(|pat| !d.doc.patterns.iter().any(|q| q.id == pat.id)).cloned().collect();
     // A copied smart object may name a PSD-embedded linked file; land its `lnk` block too (#3584).
     let mut linked = Vec::new();
@@ -456,6 +500,30 @@ fn paste_layers(s: &mut Session, layers: &Document, dx: i32, dy: i32) -> Result<
         active.ok_or(EngineError::Other("nothing to paste".into()))
     })?;
     Ok(json!({"layer": id.0, "offset": [dx, dy]}))
+}
+
+/// Paste moves an entire copied layer, including unlinked masks. Ordinary layer movement
+/// still respects the link flag. Walk the copies directly so groups need no ID lookup table.
+fn translate_unlinked_paste_masks(layers: &mut [Layer], dx: i32, dy: i32, depth: usize) -> Result<()> {
+    if depth > photocraft_doc::MAX_GROUP_DEPTH {
+        return Err(EngineError::Other("can't paste masks from layers nested too deeply".into()));
+    }
+    for layer in layers {
+        if let Some(mask) = &mut layer.mask
+            && !mask.linked
+        {
+            mask.surface = shifted(&mask.surface, dx, dy);
+        }
+        if let Some(mask) = &mut layer.vector_mask
+            && !mask.linked
+        {
+            mask.path = mask.path.transform(&photocraft_geom::Affine::translate(f64::from(dx), f64::from(dy)));
+        }
+        if let Some(children) = layer.children_mut().filter(|children| !children.is_empty()) {
+            translate_unlinked_paste_masks(children, dx, dy, depth + 1)?;
+        }
+    }
+    Ok(())
 }
 
 /// How far a paste moves the clipboard pixels: not at all in place (or when they lie on the
@@ -502,7 +570,7 @@ pub(crate) fn shifted(surface: &Surface, dx: i32, dy: i32) -> Surface {
 /// through. One history step.
 pub(crate) fn paste_to_target(s: &mut Session, p: &Value, in_place: bool, limit: Option<&Surface>, label: &str) -> Result<Value> {
     crate::allocation::checkpoint("pasting pixels")?;
-    let clip = s.clipboard.clone().ok_or(EngineError::Other("the clipboard is empty".into()))?;
+    let clip = clipboard_snapshot(s)?;
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let canvas = d.doc.bounds();
     let layer = d.active_layer;
@@ -530,7 +598,7 @@ pub(crate) fn paste_to_target(s: &mut Session, p: &Value, in_place: bool, limit:
 /// A new document the size of the clipboard image, holding it as its one layer, in the pixel
 /// format it was copied in (#368).
 fn new_from_clipboard(s: &mut Session) -> Result<Value> {
-    let clip = s.clipboard.clone().ok_or(EngineError::Other("the clipboard is empty".into()))?;
+    let clip = clipboard_snapshot(s)?;
     let b = clip.bounds;
     let (w, h) = (b.width(), b.height());
     if w == 0 || h == 0 {
@@ -1024,7 +1092,7 @@ pub fn specs() -> Vec<CommandSpec> {
             if let Some(k) = crate::channel_clip::paste_color_target(s, p) {
                 return crate::channel_clip::cut(s, id, k);
             }
-            let r = copy(s, false)?;
+            let r = copy(s, false, false)?;
             let bg = s.tools.background;
             s.edit("Cut Pixels", |doc, _| clear_selected(doc, id, bg))?;
             Ok(r)
@@ -1042,18 +1110,18 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 match crate::channel_clip::copy(s)? {
                     Some(r) => Ok(r),
-                    None => copy(s, false),
+                    None => copy(s, false, true),
                 }
             }
         ),
-        spec!("edit.copyMerged", "Copy Merged", &["Edit"], Some("Cmd+Shift+C"), "{}", has_doc, |s, _| copy(s, true)),
+        spec!("edit.copyMerged", "Copy Merged", &["Edit"], Some("Cmd+Shift+C"), "{}", has_doc, |s, _| copy(s, true, false)),
         spec!(
             "edit.paste",
             "Paste",
             &["Edit"],
             Some("Cmd+V"),
             concat!(
-                r#"{"center":[x,y]? (view centre; default keeps the position when it overlaps the canvas),"clampToCanvas":bool=true (keep the paste on the canvas, or at its top-left when larger),"#,
+                r#"{"center":[x,y]? (view centre; default keeps the position when it overlaps the canvas),"clampToCanvas":bool=true (keep the paste on the canvas, or at its top-left when larger),"pixels":bool=false (paste the clipboard bitmap only),"#,
                 paste_target!(),
                 "} (with no document open: a new document from the clipboard)"
             ),
@@ -1141,3 +1209,6 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod clipboard_tests;

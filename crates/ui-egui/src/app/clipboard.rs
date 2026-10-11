@@ -1,11 +1,10 @@
 use super::PhotocraftApp;
+use std::hash::{Hash, Hasher};
 
 fn clip_signature(w: u32, h: u32, px: &[u8]) -> u64 {
-    let mut sig = (w as u64) << 32 | h as u64;
-    for b in px.iter().step_by(997) {
-        sig = sig.rotate_left(5) ^ *b as u64;
-    }
-    sig
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (w, h, px).hash(&mut hasher);
+    hasher.finish()
 }
 
 impl PhotocraftApp {
