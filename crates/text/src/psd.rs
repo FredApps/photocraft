@@ -12,7 +12,7 @@
 use photocraft_color::{Color, ColorMode};
 use photocraft_doc::TextLayer;
 use photocraft_doc::text::{AntiAlias, Caps, CharStyle, Kerning, Orientation, ParagraphRun, ParagraphStyle, TextAlign, TextRun, TextShape, TextWarp};
-use photocraft_geom::Affine;
+use photocraft_geom::{Affine, Point};
 use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D, VersionedDescriptor};
 
 use crate::engine_data::{self as ed, Value as E};
@@ -189,6 +189,83 @@ pub fn apply_txt2(layer: &mut TextLayer, tysh: &[u8], txt2: &E) {
     }
     layer.runs = out;
     layer.sync_summary();
+}
+
+/// The frame (`Txt2 /0 /8 /0` entry) of text object `index`: its rendered frame's `/10` names it.
+fn txt2_frame(txt2: &E, index: usize) -> Option<&E> {
+    let object = txt2.path(&["1", "1"]).and_then(E::as_array)?.get(index)?;
+    let frame =
+        object.path(&["1", "2"]).and_then(E::as_array)?.first()?.get("6").and_then(E::as_array)?.iter().find_map(|f| f.get("10").and_then(E::as_i64))?;
+    txt2.path(&["0", "8", "0"]).and_then(E::as_array)?.get(usize::try_from(frame).ok()?)?.get("0")
+}
+
+/// Places `layer` where Photoshop draws it when the text object's frame in `Txt2` is moved
+/// (#1317). Recent Photoshop keeps a type layer's position partly in its `Txt2` frame: a matrix
+/// (`/2 /2`) from the frame's space to the `TySh` text space and, for point text, the anchor
+/// (`/0`), while EngineData's `PointBase` stays at the origin and `BoxBounds` stays in the
+/// frame's space. Ignoring them put the text far from Photoshop's pixels (off the canvas, so
+/// it "disappeared" as soon as an edit started), and point text a line too high and off its
+/// alignment anchor. Only when the layer's `TextIndex` entry still holds the layer's text, as
+/// for [`apply_txt2`], and the frame agrees with the `TySh` `bounds`.
+pub fn apply_txt2_frame(layer: &mut TextLayer, tysh: &[u8], txt2: &E) {
+    let Some(t) = parse_tysh(tysh) else { return };
+    let Some(index) = (match t.text.get("TextIndex") {
+        Some(D::Integer(i)) => usize::try_from(*i).ok(),
+        _ => None,
+    }) else {
+        return;
+    };
+    let text = txt2.path(&["1", "1"]).and_then(E::as_array).and_then(|a| a.get(index)).and_then(|o| o.path(&["0", "0"])).and_then(E::as_str);
+    if text.is_none_or(|t| t.strip_suffix('\r').unwrap_or(t).replace('\r', "\n") != layer.text) {
+        return;
+    }
+    let Some(frame) = txt2_frame(txt2, index) else { return };
+    let m = arr_f(frame.path(&["2", "2"]));
+    let matrix = if m.len() == 6 && m.iter().all(|v| v.is_finite()) { Affine { m: [m[0], m[1], m[2], m[3], m[4], m[5]] } } else { Affine::IDENTITY };
+    let at = match layer.shape {
+        TextShape::Point => {
+            let p = arr_f(frame.get("0"));
+            if p.len() == 2 && p.iter().all(|v| v.is_finite()) { Affine::translate(p[0], p[1]) } else { Affine::IDENTITY }
+        }
+        TextShape::Box { .. } => Affine::IDENTITY,
+    };
+    let to_text = matrix.mul(&at);
+    if to_text == Affine::IDENTITY || to_text.determinant().abs() <= 1e-9 {
+        return;
+    }
+    // The frame's origin (point text: the anchor; box text: the box's top left) must land in
+    // the text-space `bounds` Photoshop wrote beside it, and not already be there without it. A `TySh` PhotoCraft rewrote (an edited
+    // or moved layer whose text is unchanged keeps its old `Txt2` object and frame) already has
+    // the frame folded into its transform and its `bounds` near the origin: applying the frame
+    // again would move it twice.
+    let origin = match layer.shape {
+        TextShape::Point => Point::new(0.0, 0.0),
+        TextShape::Box { .. } => {
+            let b = engine_data(&t.text)
+                .map(|e| {
+                    arr_f(
+                        e.path(&["EngineDict", "Rendered", "Shapes", "Children"])
+                            .and_then(E::as_array)
+                            .and_then(|c| c.first())
+                            .and_then(|s| s.path(&["Cookie", "Photoshop", "BoxBounds"])),
+                    )
+                })
+                .unwrap_or_default();
+            let [x, y, ..] = b[..] else { return };
+            Point::new(x, y)
+        }
+    };
+    let Some([l, top, r, bottom]) = descriptor_rect(&t.text, "bounds") else { return };
+    let inside = |p: Point| p.x >= l - 1.0 && p.x <= r + 1.0 && p.y >= top - 1.0 && p.y <= bottom + 1.0;
+    if inside(origin) || !inside(to_text.apply(origin)) {
+        return;
+    }
+    {
+        // From the file's own transform: the frame's anchor is exact, so it replaces the
+        // ink-box estimate `legacy_point_origin` made for such point text (#1469), which put
+        // the baseline at the ink's top and the anchor at the ink's left whatever the alignment.
+        layer.transform = t.transform.mul(&to_text);
+    }
 }
 
 /// Builds a [`TextLayer`] (model, text and transform; no cache, no `psd_raw`) from `TySh` data.
