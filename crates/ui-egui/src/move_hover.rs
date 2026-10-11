@@ -6,7 +6,8 @@
 //! pointer resting on the canvas costs nothing per frame.
 //!
 //! The same rollover serves the Artboard tool (the board, or the layer with Auto-Select's Layer
-//! target) and the Type tools (the type layer a click edits rather than starting new text), #3631.
+//! target), the Type tools (the type layer a click edits rather than starting new text) and Path
+//! Selection with Select: All Layers (the shape layer a click picks), #3631.
 
 use egui::{Pos2, Stroke};
 use photocraft_doc::{DocId, Document, Layer, LayerContent, LayerId};
@@ -34,6 +35,8 @@ enum Pick {
     Artboard(bool),
     /// Type tool (#3631): the type layer a click edits.
     Type,
+    /// Path Selection › Select: All Layers (#3631): the shape layer a click picks.
+    Path,
 }
 
 /// The document-space bounds to outline with the pointer at `at` (document px), or `None` when
@@ -54,6 +57,7 @@ pub(crate) fn target(app: &mut PhotocraftApp, at: Option<[f64; 2]>, command: boo
         Tool::Move if o.move_auto_select != command && !crate::move_ui::moves_selected_pixels_with(app, Tool::Move) => Pick::Move(o.move_target == "group"),
         Tool::Artboard if o.artboard_auto_select != command && app.ui.artboard_tool.drag.is_none() => Pick::Artboard(o.artboard_target == "layer"),
         Tool::Type | Tool::VerticalType if app.ui.text_edit.is_none() => Pick::Type,
+        Tool::PathSelection if crate::vector_ui::path_picks(app) => Pick::Path,
         _ => return None,
     };
     let at = at.filter(|p| p[0].is_finite() && p[1].is_finite())?;
@@ -68,6 +72,10 @@ pub(crate) fn target(app: &mut PhotocraftApp, at: Option<[f64; 2]>, command: boo
         Pick::Move(group) => photocraft_engine::pick_cmds::auto_select_target(&st.doc, at[0], at[1], group).and_then(|id| outline(&st.doc, id)),
         Pick::Artboard(false) => crate::artboard_tool::board_at(&st.doc, p).map(|(_, r)| crate::artboard_tool::board_rect(r)),
         Pick::Artboard(true) => crate::artboard_tool::layer_at(&st.doc, p).and_then(|id| outline(&st.doc, id)),
+        Pick::Path => {
+            let tol = f64::from(crate::vector_ui::PICK_PX) / f64::from(app.point_zoom().max(1e-3));
+            crate::vector_ui::shape_at(&st.doc, p, tol).and_then(|id| outline(&st.doc, id))
+        }
         Pick::Type => {
             let doc = st.doc.clone();
             crate::type_tool::hit_layer(app, p[0], p[1]).and_then(|id| outline(&doc, id))

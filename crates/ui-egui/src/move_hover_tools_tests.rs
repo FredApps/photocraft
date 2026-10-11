@@ -46,7 +46,7 @@ fn new_options_default_like_photoshop() {
     assert!(o.artboard_auto_select);
     assert_eq!(o.artboard_target, "artboard");
     let mut v = serde_json::to_value(&o).unwrap();
-    for k in ["path_show_bounding_box", "artboard_auto_select", "artboard_target"] {
+    for k in ["path_show_bounding_box", "path_select_all", "artboard_auto_select", "artboard_target"] {
         v.as_object_mut().unwrap().remove(k).unwrap_or_else(|| panic!("{k} serialised"));
     }
     assert_eq!(serde_json::from_value::<ToolOptions>(v).unwrap(), o, "older saved options get the defaults");
@@ -163,4 +163,54 @@ fn type_tool_outlines_the_text_a_click_would_edit() {
         app.ui.tool = mask;
         assert_eq!(target(&mut app, Some(inside), false, false), None, "{mask:?}: existing type is only pixels");
     }
+}
+
+/// #3631: Path Selection › Select: All Layers. Off (Active Layers, the default) a drag moves the
+/// active shape wherever it starts, as before. On, a click picks the topmost shape layer under the
+/// pointer (inside its fill or on its outline) and the drag moves that one; the rollover outlines
+/// the shape a click would pick, and nothing over empty canvas or a targeted vector mask.
+#[test]
+fn path_selection_select_all_layers_picks_and_outlines_the_shape_under_the_pointer() {
+    let mut app = new_app(200, 200);
+    app.run("shape.create", json!({"kind": "rect", "rect": [20, 20, 40, 30], "fill": "#ff0000"})).unwrap();
+    let a = active(&app).unwrap();
+    app.run("shape.create", json!({"kind": "ellipse", "rect": [120, 110, 50, 40], "fill": "#0000ff"})).unwrap();
+    let b = active(&app).unwrap();
+    app.ui.tool = Tool::PathSelection;
+    assert!(!ToolOptions::default().path_select_all, "Active Layers by default");
+    let bounds = |app: &PhotocraftApp, id: LayerId| crate::move_hover::outline(&app.session.active().unwrap().doc, id).unwrap();
+    let (a0, b0) = (bounds(&app, a), bounds(&app, b));
+    // Active Layers: no rollover, and a drag on `a` still moves the active `b`.
+    assert_eq!(target(&mut app, Some([30.0, 30.0]), false, false), None);
+    press(&mut app, [30.0, 30.0], [35.0, 30.0], egui::Modifiers::NONE);
+    assert_eq!(active(&app), Some(b));
+    assert_eq!(bounds(&app, b), b0.translate(5, 0));
+    assert_eq!(bounds(&app, a), a0);
+    // All Layers: hovering `a` outlines it; empty canvas outlines nothing.
+    app.ui.tool_options.path_select_all = true;
+    assert_eq!(target(&mut app, Some([30.0, 30.0]), false, false), Some(a0));
+    assert_eq!(target(&mut app, Some([100.0, 80.0]), false, false), None);
+    // A click on `a` picks it and the drag moves it.
+    press(&mut app, [30.0, 30.0], [30.0, 40.0], egui::Modifiers::NONE);
+    assert_eq!(active(&app), Some(a), "picked on click");
+    assert_eq!(bounds(&app, a), a0.translate(0, 10));
+    // A press on empty canvas keeps the active shape (and moves it, as before).
+    press(&mut app, [100.0, 80.0], [100.0, 80.0], egui::Modifiers::NONE);
+    assert_eq!(active(&app), Some(a));
+    // The outline is hit just outside the fill, within a few screen pixels; not farther.
+    assert!(crate::vector_ui::shape_at(&app.session.active().unwrap().doc, [122.0, 130.0], 4.0) == Some(b), "3 px left of b (moved to x 125)");
+    assert_eq!(crate::vector_ui::shape_at(&app.session.active().unwrap().doc, [115.0, 130.0], 4.0), None);
+    // A targeted vector mask is edited where it is: no picking.
+    app.ui.vector_mask_target = true;
+    assert_eq!(target(&mut app, Some([140.0, 130.0]), false, false), None);
+    app.ui.vector_mask_target = false;
+    // Remembered between launches and reset with the tool.
+    crate::tool_memory::persist(&mut app, &egui::Context::default());
+    let saved = app.session.prefs().clone();
+    let mut next = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    next.session.edit_prefs(|p| *p = saved);
+    crate::tool_memory::restore(&mut next);
+    assert!(next.ui.tool_options.path_select_all);
+    crate::tool_reset::reset_options(&mut next.ui.tool_options, Tool::PathSelection);
+    assert!(!next.ui.tool_options.path_select_all);
 }

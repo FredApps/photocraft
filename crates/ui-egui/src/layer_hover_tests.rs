@@ -120,3 +120,33 @@ fn show_transform_controls_is_remembered_between_launches() {
     crate::tool_memory::restore(&mut next);
     assert!(next.ui.tool_options.move_show_transform);
 }
+
+/// #3631: Path Selection › Select: All Layers picks a shape layer inside a closed group on click,
+/// opens the group and lists its row, like the Move tool's Auto-Select.
+#[test]
+fn path_selection_pick_into_a_closed_group_opens_it_and_shows_the_row() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    app.run("shape.create", json!({"kind": "rect", "rect": [8, 8, 16, 16], "fill": "#ff0000"})).unwrap();
+    let inner = app.session.active().unwrap().active_layer.unwrap();
+    app.run("layer.setName", json!({"layer": inner.0, "name": "Inner"})).ok();
+    app.run("layer.groupLayers", json!({})).unwrap();
+    let group = app.session.active().unwrap().doc.walk().into_iter().find(|(_, _, l)| l.is_group()).map(|(_, _, l)| l.id).unwrap();
+    app.run("layer.setExpanded", json!({"layer": group.0, "expanded": false})).unwrap();
+    app.run("shape.create", json!({"kind": "ellipse", "rect": [40, 40, 16, 16], "fill": "#0000ff"})).unwrap();
+    app.sync_views();
+    app.ui.tool = Tool::PathSelection;
+    app.ui.tool_options.path_select_all = true;
+    app.ui.extras.snap = false;
+    app.ui.view.show.smart_guides = false;
+    let name = app.session.active().unwrap().doc.layer(inner).unwrap().name.clone();
+    let mut h = harness(app);
+    assert!(row(&h, &name).is_none(), "hidden in its closed group");
+    let app = h.state_mut();
+    crate::canvas::tool_event(app, ToolEvent::Down { x: 12.0, y: 12.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    crate::canvas::tool_event(app, ToolEvent::Up { x: 12.0, y: 12.0 }, egui::Modifiers::NONE);
+    h.run_steps(4);
+    assert_eq!(h.state().session.active().unwrap().active_layer, Some(inner), "the click picked the shape");
+    assert!(matches!(&h.state().session.active().unwrap().doc.layer(group).unwrap().content, LayerContent::Group(g) if g.expanded));
+    assert!(row(&h, &name).is_some(), "its row is listed");
+}
