@@ -11,6 +11,37 @@ const DISPLAYS: [(f32, f32, f32); 4] = [(1280.0, 720.0, 1.0), (1024.0, 600.0, 1.
 /// The tallest menus.
 const LONGEST: [&str; 4] = ["Filter", "Layer", "Image", "Edit"];
 
+// Initial coverage for the menus reported in #3737. Native work-area reproduction is pending.
+#[test]
+fn reported_menus_stay_in_short_viewports_and_scroll_to_the_last_row() {
+    for display in DISPLAYS {
+        for top in ["Layer", "View", "Window"] {
+            let mut h = harness(display);
+            open(&mut h, top);
+            let all = rows(&h, 0);
+            let last = all.len().checked_sub(1).expect("the reported menu has rows");
+            let nav = Nav::current(&h.ctx);
+            let view = *nav.views.first().expect("the open menu has a viewport");
+            assert!(h.ctx.content_rect().expand(0.5).contains_rect(view), "{display:?} {top}: menu viewport extends outside the window");
+            h.hover_at(view.center());
+            h.run_steps(2);
+            for _ in 0..60 {
+                if visible(&h, 0, last) {
+                    break;
+                }
+                h.event(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -60.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                });
+                h.run_steps(2);
+            }
+            assert!(visible(&h, 0, last), "{display:?} {top}: the last menu row must be reachable");
+        }
+    }
+}
+
 fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
