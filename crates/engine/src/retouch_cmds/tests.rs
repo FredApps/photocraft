@@ -361,6 +361,42 @@ fn smudge_uses_the_brush_settings_spacing() {
 }
 
 #[test]
+fn fast_smudge_smears_smoothly_without_echoes() {
+    // #3573: a fast stroke (two pointer events 70 px apart) across a dark line. Dabs a quarter of
+    // the 40 px brush apart stamped the picked-up line again every 10 px: a row of light and dark
+    // bands. Now the smear darkens smoothly along the stroke, without bouncing back to light.
+    for depth in DEPTHS {
+        let mut s = session(120, 60, depth, "rgb");
+        paint_layer(&mut s, |x, _| if (24..34).contains(&x) { [0.0, 0.0, 0.0, 1.0] } else { [1.0, 1.0, 1.0, 1.0] });
+        s.execute("paint.smudge", json!({"points": [[20, 30], [90, 30]], "size": 40, "hardness": 100, "spacing": 25, "strength": 80})).unwrap();
+        let row: Vec<f32> = (36..95).map(|x| rgba(&s, x, 30)[1]).collect();
+        assert!(row.iter().any(|g| *g < 0.7), "depth {depth}: the line is dragged along: {row:?}");
+        let bounce = row.windows(2).map(|w| w[1] - w[0]).fold(0.0f32, f32::max);
+        assert!(bounce < 0.01, "depth {depth}: banded echoes of the line along the smear (+{bounce}): {row:?}");
+    }
+}
+
+#[test]
+fn smudge_dabs_leave_no_gaps_on_a_fast_stroke() {
+    // #3573: one long segment is walked dab by dab about a pixel apart, whatever the brush Spacing
+    // below 100 %, so no gap between dabs can stamp a visible copy of the carried pixels.
+    let mut brush = photocraft_paint::BrushSettings { size: 40.0, spacing: 0.25, pressure_size: false, ..Default::default() };
+    let respaced = super::smudge_spacing(&mut brush);
+    let stroke = Stroke { brush, points: vec![StrokePoint::new(10.0, 10.0, 1.0), StrokePoint::new(410.0, 10.0, 1.0)] };
+    let ds = photocraft_paint::dabs(&stroke);
+    let gap = ds.windows(2).map(|w| (w[1].center.x - w[0].center.x).abs()).fold(0.0f64, f64::max);
+    assert!(gap <= 1.0 + 1e-6, "largest gap between dab centres {gap}");
+    assert!(ds.len() >= 400);
+    // Ten 1 px dabs now do what one 10 px dab did before.
+    assert!((respaced - 0.1).abs() < 1e-6, "{respaced}");
+    // 100 % spacing or more is left alone (#2140).
+    let mut sparse = photocraft_paint::BrushSettings { spacing: 10.0, ..Default::default() };
+
+    assert_eq!(super::smudge_spacing(&mut sparse), 1.0);
+    assert_eq!(sparse.spacing, 10.0);
+}
+
+#[test]
 fn history_brush_restores_earlier_pixels() {
     for depth in [8u64, 32] {
         let mut s = session(40, 20, depth, "rgb");

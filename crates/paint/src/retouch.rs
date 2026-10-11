@@ -302,6 +302,9 @@ pub fn mix_premultiplied(dst: &mut [f32], src: &[f32], a: usize, k: f32) {
 pub struct Smudge {
     /// 0..1: how much carried colour each dab lays down (and keeps).
     pub strength: f32,
+    /// 0..1: how much carried colour each dab lays down, when it differs from `strength` (see
+    /// [`Smudge::with_laydown`]).
+    laydown: Option<f32>,
     /// Finger painting: start the stroke with this native-channel colour instead of the pixels under
     /// the first dab.
     pub finger: Option<Vec<f32>>,
@@ -315,7 +318,14 @@ pub struct Smudge {
 
 impl Smudge {
     pub fn new(strength: f32, finger: Option<Vec<f32>>, max_brush_size: f32) -> Self {
-        Self { strength: strength.clamp(0.0, 1.0), finger, radius: (max_brush_size / 2.0).ceil() as i32 + 2, alpha: None, carry: None }
+        Self { strength: strength.clamp(0.0, 1.0), finger, radius: (max_brush_size / 2.0).ceil() as i32 + 2, alpha: None, carry: None, laydown: None }
+    }
+
+    /// Lay down `k` of the carried colour per dab while keeping `strength` of it: for dabs placed
+    /// closer together than the brush spacing the strengths were tuned for, both shrink per dab.
+    pub fn with_laydown(mut self, k: f32) -> Self {
+        self.laydown = Some(k.clamp(0.0, 1.0));
+        self
     }
 
     /// Mix in premultiplied space using alpha channel `a` (the format's [`alpha_index`]).
@@ -355,9 +365,10 @@ impl Smudge {
             c
         });
         // Lay down the carried colour.
+        let lay = self.laydown.unwrap_or(self.strength);
         for y in fp.rect.y0.max(wr.y0)..fp.rect.y1.min(wr.y1) {
             for x in fp.rect.x0.max(wr.x0)..fp.rect.x1.min(wr.x1) {
-                let k = fp.at(x, y) * self.strength;
+                let k = fp.at(x, y) * lay;
                 let (qx, qy) = (x - cx + r, y - cy + r);
                 if k <= 0.0 || qx < 0 || qy < 0 || qx >= side as i32 || qy >= side as i32 {
                     continue;

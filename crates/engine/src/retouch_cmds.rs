@@ -778,13 +778,35 @@ fn tone_range(p: &Value, cmd: &str) -> Result<ToneRange> {
 }
 
 /// A sequential-dab tool's settings (Dodge, Burn, Sponge, Blur, Sharpen, Smudge), parsed once and
-/// turned into its per-dab effect, for the commit and the live preview alike.
+/// turned into its per-dab effect, for the commit and the live preview alike. Smudge's `respaced`
+/// is its dab spacing over the brush's (see [`smudge_spacing`]).
 #[derive(Clone, Debug)]
 enum DabTool {
     Tone { burn: bool, range: ToneRange, exposure: f32, protect: bool },
     Sponge { saturate: bool, vibrance: bool },
     Focus { sharpen: bool, strength: f32, protect: bool, sigma: f32 },
-    Smudge { strength: f32, finger: Option<[f32; 4]>, max_size: f32 },
+    Smudge { strength: f32, respaced: f32, finger: Option<[f32; 4]>, max_size: f32 },
+}
+
+/// Target distance between Smudge dabs, in pixels.
+const SMUDGE_STEP_PX: f32 = 1.0;
+
+/// Smudge drags a picked-up copy of the pixels from dab to dab, so dabs spaced by the brush's
+/// Spacing (a tenth of the diameter or more) stamp that copy again and again: every edge the
+/// stroke crosses leaves a trail of echoes instead of a smooth smear (#3573). Respace the stroke to
+/// about [`SMUDGE_STEP_PX`] (the walker's floor is 1 % of the diameter) and return the new spacing
+/// over the old: each dab then keeps and lays down that fraction of what a dab did before, so the
+/// smear reaches as far as before. Spacing of 100 % or more (dabs that don't touch) is a
+/// deliberate choice and is kept (#2140).
+fn smudge_spacing(brush: &mut photocraft_paint::BrushSettings) -> f32 {
+    let old = brush.spacing.max(0.01);
+    if old >= 1.0 {
+        return 1.0;
+    }
+    let fine = (SMUDGE_STEP_PX / brush.size.max(1.0)).clamp(0.01, old);
+    brush.spacing = fine;
+    brush.spacing_enabled = true;
+    fine / old
 }
 
 /// One dab's edit of the working copy.
@@ -792,7 +814,8 @@ pub(crate) type DabEffect = Box<dyn FnMut(&mut Region, &Footprint)>;
 
 impl DabTool {
     /// The tool for `cmd` and its history label.
-    fn parse(s: &Session, cmd: &str, p: &Value, stroke: &Stroke) -> Result<(Self, &'static str)> {
+    /// Smudge also respaces `stroke` (see [`smudge_spacing`]).
+    fn parse(s: &Session, cmd: &str, p: &Value, stroke: &mut Stroke) -> Result<(Self, &'static str)> {
         Ok(match cmd {
             "paint.dodge" | "paint.burn" => {
                 let burn = cmd == "paint.burn";
@@ -824,7 +847,9 @@ impl DabTool {
             }
             "paint.smudge" => {
                 let finger = flag(p, "fingerPainting", false).then_some(s.tools.foreground);
-                (Self::Smudge { strength: num(p, "strength", 50.0).clamp(1.0, 100.0) / 100.0, finger, max_size: stroke.brush.size }, "Smudge Tool")
+                let strength = num(p, "strength", 50.0).clamp(1.0, 100.0) / 100.0;
+                let respaced = smudge_spacing(&mut stroke.brush);
+                (Self::Smudge { strength, respaced, finger, max_size: stroke.brush.size }, "Smudge Tool")
             }
             o => return Err(bad(o, "not a sequential-dab tool")),
         })
@@ -871,10 +896,10 @@ impl DabTool {
                     }
                 })
             }
-            Self::Smudge { strength, finger, max_size } => {
+            Self::Smudge { strength, respaced, finger, max_size } => {
                 let finger_px = finger.map(|fg| photocraft_raster::from_rgba(&fmt, fg));
                 // Premultiplied mixing: transparent pixels carry no colour, so no dark fringes.
-                let mut sm = Smudge::new(strength, finger_px, max_size).with_alpha(alpha_index(&fmt));
+                let mut sm = Smudge::new(strength.powf(respaced), finger_px, max_size).with_laydown(per_dab(strength, respaced)).with_alpha(alpha_index(&fmt));
                 Box::new(move |work, fp| sm.dab(work, fp))
             }
         }
@@ -884,8 +909,8 @@ impl DabTool {
 /// Dodge, Burn, Sponge, Blur, Sharpen and Smudge: each dab edits a working copy in order
 /// (`apply_dab_stroke`). Blur, Sharpen and Smudge can sample all layers.
 fn dab_cmd(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
-    let (stroke, id) = parse_brush(s, p, cmd)?;
-    let (tool, label) = DabTool::parse(s, cmd, p, &stroke)?;
+    let (mut stroke, id) = parse_brush(s, p, cmd)?;
+    let (tool, label) = DabTool::parse(s, cmd, p, &mut stroke)?;
     let all = matches!(tool, DabTool::Focus { .. } | DabTool::Smudge { .. }) && sample_all_layers(p);
     let dmg = run_stroke(s, label, id, p, |pre, surf, sel, lock| {
         let fmt = surf.format();
@@ -935,8 +960,8 @@ impl LiveDab {
         if sample_all_layers(p) {
             return Err(bad(cmd, "Sample All Layers strokes aren't previewed live"));
         }
-        let (stroke, id) = parse_brush(s, p, cmd)?;
-        let (tool, _) = DabTool::parse(s, cmd, p, &stroke)?;
+        let (mut stroke, id) = parse_brush(s, p, cmd)?;
+        let (tool, _) = DabTool::parse(s, cmd, p, &mut stroke)?;
         let (halo, spacing) = (tool.halo(), stroke.brush.spacing);
         Self::with_effect(s, cmd, p, stroke, id, halo, |pre| tool.effect(pre.format(), spacing))
     }
