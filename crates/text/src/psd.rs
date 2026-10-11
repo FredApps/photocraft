@@ -318,45 +318,96 @@ fn apply_engine_data(layer: &mut TextLayer, e: &E, txt: Option<&str>, k: f32) {
         .and_then(E::as_array)
         .map(|a| a.iter().map(|f| f.get("Name").and_then(E::as_str).unwrap_or("").to_string()).collect())
         .unwrap_or_default();
-    let default_sheet = res.and_then(|r| r.get("TheNormalStyleSheet")).and_then(E::as_i64).unwrap_or(0) as usize;
-    let base_style =
-        res.and_then(|r| r.get("StyleSheetSet")).and_then(E::as_array).and_then(|a| a.get(default_sheet).or(a.first())).and_then(|s| s.get("StyleSheetData"));
-    let default_para_sheet = res.and_then(|r| r.get("TheNormalParagraphSheet")).and_then(E::as_i64).unwrap_or(0) as usize;
-    let base_para = res
-        .and_then(|r| r.get("ParagraphSheetSet"))
-        .and_then(E::as_array)
-        .and_then(|a| a.get(default_para_sheet).or(a.first()))
-        .and_then(|s| s.get("Properties"));
+    // Style resolution (#3795). A run's own `StyleSheetData` / `Properties` hold only what it
+    // overrides; the rest comes from its sheets, as in Photoshop:
+    // - a paragraph run: its `Properties` → the `ParagraphSheetSet` entry its `Name` names (a
+    //   paragraph style; or its `Parent` index) → `TheNormalParagraphSheet`;
+    // - a character run: its `StyleSheetData` → the `StyleSheetSet` entry its `Parent` or `Name`
+    //   names (a character style) → the default character style of its paragraph (the paragraph run's
+    //   `DefaultStyleSheet`, else its paragraph style's) → `TheNormalStyleSheet`.
+    // Missing or out-of-range indices fall through to the next level, then to the defaults.
+    let style_set: &[E] = res.and_then(|r| r.get("StyleSheetSet")).and_then(E::as_array).unwrap_or(&[]);
+    let para_set: &[E] = res.and_then(|r| r.get("ParagraphSheetSet")).and_then(E::as_array).unwrap_or(&[]);
+    let index = |key: &str| res.and_then(|r| r.get(key)).and_then(E::as_i64).and_then(|i| usize::try_from(i).ok());
+    let normal_style = index("TheNormalStyleSheet").and_then(|i| style_set.get(i)).or(style_set.first());
+    let normal_para = index("TheNormalParagraphSheet").and_then(|i| para_set.get(i)).or(para_set.first());
+    // A run names its sheet by a `Parent` index or by `Name` (see `psd_styles::reference`).
+    let named = |set: &'_ [E], sheet: &E| -> Option<usize> {
+        if let Some(i) = sheet.get("Parent").and_then(E::as_i64).and_then(|i| usize::try_from(i).ok()).filter(|i| *i < set.len()) {
+            return Some(i);
+        }
+        let name = sheet.get("Name").and_then(E::as_str)?;
+        set.iter().position(|s| s.get("Name").and_then(E::as_str) == Some(name))
+    };
+
+    // Paragraph runs first: a character run's defaults depend on its paragraph.
+    let prun = e.path(&["EngineDict", "ParagraphRun"]);
+    let psheets: Vec<&E> =
+        prun.and_then(|r| r.get("RunArray")).and_then(E::as_array).map(|a| a.iter().filter_map(|x| x.get("ParagraphSheet")).collect()).unwrap_or_default();
+    let plens16 = arr_f(prun.and_then(|r| r.get("RunLengthArray")));
+    let plens = utf16_to_byte_lengths(&ed_text, &plens16);
+    let empty = E::Dict(Vec::new());
+    // Per paragraph run: its merged base properties and its default character style.
+    let para_bases: Vec<(E, Option<&E>)> = psheets
+        .iter()
+        .map(|sheet| {
+            let style = named(para_set, sheet).and_then(|i| para_set.get(i));
+            let base = merged(&[style.and_then(|s| s.get("Properties")), normal_para.and_then(|s| s.get("Properties"))]);
+            let char_default = [Some(*sheet), style]
+                .into_iter()
+                .flatten()
+                .find_map(|s| s.get("DefaultStyleSheet").and_then(E::as_i64).and_then(|i| usize::try_from(i).ok()).and_then(|i| style_set.get(i)));
+            (base, char_default)
+        })
+        .collect();
+    layer.paragraphs = psheets
+        .iter()
+        .zip(&para_bases)
+        .zip(plens)
+        .map(|((sheet, (base, _)), len)| ParagraphRun { len, style: para_style(Some(base), sheet.get("Properties").unwrap_or(&empty), k) })
+        .collect();
 
     // Character runs.
     let srun = e.path(&["EngineDict", "StyleRun"]);
-    let sdata: Vec<&E> = srun
-        .and_then(|r| r.get("RunArray"))
-        .and_then(E::as_array)
-        .map(|a| a.iter().filter_map(|x| x.path(&["StyleSheet", "StyleSheetData"])).collect())
-        .unwrap_or_default();
-    let slens = utf16_to_byte_lengths(&ed_text, &arr_f(srun.and_then(|r| r.get("RunLengthArray"))));
+    let ssheets: Vec<&E> =
+        srun.and_then(|r| r.get("RunArray")).and_then(E::as_array).map(|a| a.iter().filter_map(|x| x.get("StyleSheet")).collect()).unwrap_or_default();
+    let slens16 = arr_f(srun.and_then(|r| r.get("RunLengthArray")));
+    let slens = utf16_to_byte_lengths(&ed_text, &slens16);
+    // The paragraph run each character run starts in (UTF-16 offsets).
+    let para_of = |at: f64| -> Option<usize> {
+        let mut end = 0.0;
+        for (i, n) in plens16.iter().enumerate() {
+            end += n;
+            if at < end {
+                return Some(i);
+            }
+        }
+        plens16.len().checked_sub(1)
+    };
+    let mut at16 = 0.0;
+    let bases: Vec<E> = ssheets
+        .iter()
+        .enumerate()
+        .map(|(i, sheet)| {
+            let own = named(style_set, sheet).and_then(|i| style_set.get(i));
+            let para_default = para_of(at16).and_then(|p| para_bases.get(p)).and_then(|(_, c)| *c);
+            at16 += slens16.get(i).copied().unwrap_or(0.0);
+            merged(&[own, para_default, normal_style].map(|s| s.and_then(|s| s.get("StyleSheetData"))))
+        })
+        .collect();
+    let sdata: Vec<&E> = ssheets.iter().map(|s| s.get("StyleSheetData").unwrap_or(&empty)).collect();
     let incoming: Vec<(usize, bool, f32)> = sdata
         .iter()
+        .zip(&bases)
         .zip(&slens)
-        .map(|(d, len)| {
-            let auto = lookup(d, base_style, "AutoKerning").and_then(E::as_bool) != Some(false);
-            let kern = lookup(d, base_style, "Kerning").and_then(E::as_f64).filter(|v| v.is_finite()).unwrap_or(0.0) as f32;
+        .map(|((d, base), len)| {
+            let auto = lookup(d, Some(base), "AutoKerning").and_then(E::as_bool) != Some(false);
+            let kern = lookup(d, Some(base), "Kerning").and_then(E::as_f64).filter(|v| v.is_finite()).unwrap_or(0.0) as f32;
             (*len, auto, kern)
         })
         .collect();
-    layer.runs = sdata.iter().zip(slens).map(|(d, len)| TextRun { len, style: char_style(base_style, d, &fonts, k) }).collect();
+    layer.runs = sdata.iter().zip(&bases).zip(slens).map(|((d, base), len)| TextRun { len, style: char_style(Some(base), d, &fonts, k) }).collect();
     layer.runs = kerning_from_pairs(&layer.text, layer.char_runs(), &incoming);
-
-    // Paragraph runs.
-    let prun = e.path(&["EngineDict", "ParagraphRun"]);
-    let pdata: Vec<&E> = prun
-        .and_then(|r| r.get("RunArray"))
-        .and_then(E::as_array)
-        .map(|a| a.iter().filter_map(|x| x.path(&["ParagraphSheet", "Properties"])).collect())
-        .unwrap_or_default();
-    let plens = utf16_to_byte_lengths(&ed_text, &arr_f(prun.and_then(|r| r.get("RunLengthArray"))));
-    layer.paragraphs = pdata.iter().zip(plens).map(|(d, len)| ParagraphRun { len, style: para_style(base_para, d, k) }).collect();
 
     // Shape.
     let shape = e.path(&["EngineDict", "Rendered", "Shapes", "Children"]).and_then(E::as_array).and_then(|a| a.first());
@@ -368,6 +419,21 @@ fn apply_engine_data(layer: &mut TextLayer, e: &E, txt: Option<&str>, k: f32) {
             layer.shape = TextShape::Box { x: b[0] as f32, y: b[1] as f32, width: (b[2] - b[0]) as f32, height: (b[3] - b[1]) as f32 };
         }
     }
+}
+
+/// The dictionaries in `levels` as one: a key comes from the first level that has it.
+fn merged(levels: &[Option<&E>]) -> E {
+    let mut out: Vec<(String, E)> = Vec::new();
+    for level in levels.iter().flatten() {
+        if let E::Dict(kv) = level {
+            for (k, v) in kv {
+                if !out.iter().any(|(o, _)| o == k) {
+                    out.push((k.clone(), v.clone()));
+                }
+            }
+        }
+    }
+    E::Dict(out)
 }
 
 fn lookup<'a>(run: &'a E, base: Option<&'a E>, key: &str) -> Option<&'a E> {
