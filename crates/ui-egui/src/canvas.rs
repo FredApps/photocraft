@@ -4707,7 +4707,8 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                 return;
             }
             match tool {
-                Tool::PathSelection => {
+                // Select: Active Layers (#3631) never picks another layer.
+                Tool::PathSelection if crate::vector_ui::path_picks(app) => {
                     let tol = 6.0 / f64::from(app.point_zoom().max(0.01));
                     if let Some(st) = app.session.active()
                         && let Some(id) = crate::vector_ui::pick_shape_at(&st.doc, [x, y], tol)

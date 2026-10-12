@@ -764,17 +764,18 @@ pub fn path_selection_finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64
     let (dx, dy) = (end[0] - start[0], end[1] - start[1]);
     let tol = 6.0 / f64::from(app.point_zoom().max(0.01));
     if dx.abs() + dy.abs() < 0.5 {
-        let Some(st) = app.session.active() else { return };
+        let Some(st) = app.session.active().filter(|_| path_picks(app)) else { return };
         if let Some(id) = pick_shape_at(&st.doc, start, tol) {
             let _ = app.run("layer.select", json!({"layer": id.0}));
         }
         return;
     }
-    if target_path(app).is_none() {
-        let Some(st) = app.session.active() else { return };
-        if let Some(id) = pick_shape_at(&st.doc, start, tol) {
-            let _ = app.run("layer.select", json!({"layer": id.0}));
-        }
+    if target_path(app).is_none()
+        && path_picks(app)
+        && let Some(st) = app.session.active()
+        && let Some(id) = pick_shape_at(&st.doc, start, tol)
+    {
+        let _ = app.run("layer.select", json!({"layer": id.0}));
     }
     let Some((target, path)) = target_path(app) else { return };
     let _ = match target {

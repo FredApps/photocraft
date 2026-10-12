@@ -177,7 +177,8 @@ fn path_selection_select_all_layers_picks_and_outlines_the_shape_under_the_point
     app.run("shape.create", json!({"kind": "ellipse", "rect": [120, 110, 50, 40], "fill": "#0000ff"})).unwrap();
     let b = active(&app).unwrap();
     app.ui.tool = Tool::PathSelection;
-    assert!(!ToolOptions::default().path_select_all, "Active Layers by default");
+    assert!(ToolOptions::default().path_select_all, "All Layers by default (#3915)");
+    app.ui.tool_options.path_select_all = false;
     let bounds = |app: &PhotocraftApp, id: LayerId| crate::move_hover::outline(&app.session.active().unwrap().doc, id).unwrap();
     let (a0, b0) = (bounds(&app, a), bounds(&app, b));
     // Active Layers: no rollover, and a drag on `a` still moves the active `b`.
@@ -205,12 +206,13 @@ fn path_selection_select_all_layers_picks_and_outlines_the_shape_under_the_point
     assert_eq!(target(&mut app, Some([140.0, 130.0]), false, false), None);
     app.ui.vector_mask_target = false;
     // Remembered between launches and reset with the tool.
+    app.ui.tool_options.path_select_all = false;
     crate::tool_memory::persist(&mut app, &egui::Context::default());
     let saved = app.session.prefs().clone();
     let mut next = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     next.session.edit_prefs(|p| *p = saved);
     crate::tool_memory::restore(&mut next);
-    assert!(next.ui.tool_options.path_select_all);
-    crate::tool_reset::reset_options(&mut next.ui.tool_options, Tool::PathSelection);
     assert!(!next.ui.tool_options.path_select_all);
+    crate::tool_reset::reset_options(&mut next.ui.tool_options, Tool::PathSelection);
+    assert!(next.ui.tool_options.path_select_all);
 }

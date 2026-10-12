@@ -600,9 +600,10 @@ pub struct ToolOptions {
     #[serde(default)]
     pub path_show_bounding_box: bool,
     /// Path Selection › Select (#3631): `false` = Active Layers (a drag moves the active shape's
-    /// path, the old behaviour and the default), `true` = All Layers (a click picks the topmost
-    /// shape layer under the pointer, which the drag then moves; rollover outlines it).
-    #[serde(default)]
+    /// path; clicks never pick another layer), `true` = All Layers (a click picks the topmost
+    /// shape layer under the pointer, which the drag then moves; rollover outlines it). All Layers
+    /// is the default, keeping main's click-to-select-shapes behaviour (#3915).
+    #[serde(default = "yes")]
     pub path_select_all: bool,
     /// Artboard tool › Auto-Select (#3631): a click picks the board (`"artboard"`) or the layer
     /// (`"layer"`) under the pointer. On, with the Artboard target, as in Photoshop.
@@ -814,7 +815,7 @@ impl Default for ToolOptions {
             move_target: default_move_target(),
             move_show_transform: false,
             path_show_bounding_box: false,
-            path_select_all: false,
+            path_select_all: true,
             artboard_auto_select: true,
             artboard_target: default_artboard_target(),
             crop_ratio: String::new(),
