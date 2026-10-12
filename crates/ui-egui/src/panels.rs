@@ -4573,7 +4573,7 @@ mod properties_card_tests {
     /// Non-Pro themes must not hide ordinary pixel layer Properties or ignore its toggle (#2773).
     #[test]
     fn studio_and_adwaita_properties_show_pixel_layers_and_respect_visibility() {
-        for theme in [crate::theme::ThemeKind::Studio, crate::theme::ThemeKind::AdwaitaDark, crate::theme::ThemeKind::AdwaitaLight] {
+        for theme in [crate::theme::ThemeKind::Studio, crate::theme::ThemeKind::AdwaitaDark, crate::theme::ThemeKind::Adwaita] {
             let mut s = photocraft_engine::Session::new();
             s.execute("file.new", json!({"width": 120, "height": 80})).unwrap();
             s.execute("layer.new.layer", json!({"name":"Pixels"})).unwrap();
