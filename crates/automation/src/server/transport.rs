@@ -106,7 +106,7 @@ mod idle_tests {
         let mut replies = BufReader::new(responses).lines();
         initialise(&mut client, &mut replies).await;
         let exit = timeout(Duration::from_secs(3), server).await;
-        assert!(matches!(exit, Ok(Ok(Ok(())))), "MCP server did not exit cleanly after inactivity: {exit:?}");
+        assert!(matches!(&exit, Ok(Ok(Ok(())))), "MCP server did not exit cleanly after inactivity: {exit:?}");
     }
 
     #[tokio::test]
@@ -127,6 +127,6 @@ mod idle_tests {
             assert!(!server.is_finished(), "active transport shut down before its idle deadline");
         }
         let exit = timeout(Duration::from_secs(3), server).await;
-        assert!(matches!(exit, Ok(Ok(Ok(())))), "MCP server did not close after requests stopped: {exit:?}");
+        assert!(matches!(&exit, Ok(Ok(Ok(())))), "MCP server did not close after requests stopped: {exit:?}");
     }
 }
