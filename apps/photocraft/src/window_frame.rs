@@ -115,7 +115,7 @@ mod platform {
         );
     }
 
-    /// Return the corrected outer rect in desktop coordinates, preserving each resize border.
+    /// Return the corrected outer rect in desktop coordinates, preserving the resize border.
     /// Each edge must be parked just outside either the monitor or work-area edge. Accepting
     /// both makes the guard idempotent and handles Windows already correcting some edges.
     /// Dragged/snapped windows are left alone; no monitor-origin or DPI assumptions are needed.
@@ -126,12 +126,27 @@ mod platform {
         if ml >= mr || mt >= mb || wl < ml || wt < mt || wr > mr || wb > mb || wl >= wr || wt >= wb {
             return None;
         }
-        let margin = |monitor: Option<i32>, work: Option<i32>| monitor.into_iter().chain(work).filter(|n| (0..=FRAME).contains(n)).min();
-        let left = margin(ml.checked_sub(l), wl.checked_sub(l))?;
-        let top = margin(mt.checked_sub(t), wt.checked_sub(t))?;
-        let right = margin(r.checked_sub(mr), r.checked_sub(wr))?;
-        let bottom = margin(b.checked_sub(mb), b.checked_sub(wb))?;
-        let corrected = (wl.checked_sub(left)?, wt.checked_sub(top)?, wr.checked_add(right)?, wb.checked_add(bottom)?);
+        // Infer the frame from an edge without a taskbar. On an obstructed edge, the
+        // monitor and work-area offsets can both look like valid borders (e.g. auto-hide).
+        let border = [
+            (ml == wl).then(|| ml.checked_sub(l)).flatten(),
+            (mt == wt).then(|| mt.checked_sub(t)).flatten(),
+            (mr == wr).then(|| r.checked_sub(mr)).flatten(),
+            (mb == wb).then(|| b.checked_sub(mb)).flatten(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|n| (0..=FRAME).contains(n))
+        .min()?;
+        let parked = |monitor: Option<i32>, work: Option<i32>| monitor == Some(border) || work == Some(border);
+        if !parked(ml.checked_sub(l), wl.checked_sub(l))
+            || !parked(mt.checked_sub(t), wt.checked_sub(t))
+            || !parked(r.checked_sub(mr), r.checked_sub(wr))
+            || !parked(b.checked_sub(mb), b.checked_sub(wb))
+        {
+            return None;
+        }
+        let corrected = (wl.checked_sub(border)?, wt.checked_sub(border)?, wr.checked_add(border)?, wb.checked_add(border)?);
         (corrected != rect).then_some(corrected)
     }
 
@@ -167,6 +182,8 @@ mod platform {
             for (work, expected) in [
                 ((0, 0, 1920, 1046), (-8, -8, 1928, 1054)),
                 ((0, 48, 1920, 1080), (-8, 40, 1928, 1088)),
+                ((0, 2, 1920, 1080), (-8, -6, 1928, 1088)),
+                ((0, 0, 1920, 1078), (-8, -8, 1928, 1086)),
                 ((48, 0, 1920, 1080), (40, -8, 1928, 1088)),
                 ((0, 0, 1872, 1080), (-8, -8, 1880, 1088)),
             ] {
