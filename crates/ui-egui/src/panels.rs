@@ -4256,6 +4256,7 @@ mod color_tests {
 
     #[test]
     fn home_screen_does_not_enable_the_toolbar_chevron() {
+        use egui_kittest::kittest::Queryable;
         let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         let mut h = egui_kittest::Harness::builder().with_size(vec2(800.0, 1000.0)).build_ui_state(
             |ui, app: &mut PhotocraftApp| {
