@@ -107,12 +107,7 @@ mod platform {
         let (Some(width), Some(height)) = (right.checked_sub(left), bottom.checked_sub(top)) else {
             return;
         };
-        let _ = hwnd.SetWindowPos(
-            HwndPlace::None,
-            POINT { x: left, y: top },
-            SIZE { cx: width, cy: height },
-            co::SWP::NOZORDER | co::SWP::NOACTIVATE,
-        );
+        let _ = hwnd.SetWindowPos(HwndPlace::None, POINT { x: left, y: top }, SIZE { cx: width, cy: height }, co::SWP::NOZORDER | co::SWP::NOACTIVATE);
     }
 
     /// Return the corrected outer rect in desktop coordinates, preserving the resize border.
