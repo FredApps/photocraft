@@ -31,7 +31,7 @@ const TOOL_SECTIONS: &[&[&[Tool]]] = &[
         &[Tool::CloneStamp, Tool::PatternStamp],
         &[Tool::HistoryBrush],
         &[Tool::Eraser, Tool::BackgroundEraser, Tool::MagicEraser],
-        &[Tool::Gradient, Tool::PaintBucket],
+        &[Tool::PaintBucket, Tool::Gradient],
         &[Tool::Blur, Tool::Sharpen, Tool::Smudge],
         &[Tool::Dodge, Tool::Burn, Tool::Sponge],
     ],
@@ -6026,5 +6026,31 @@ mod properties_target_regressions {
         h.run_steps(2);
         let after = h.state().session.active().unwrap().doc.layer(layer).unwrap().surface().unwrap().content_bounds();
         assert_eq!(after, before, "pending width belongs to the old document/layer");
+    }
+}
+
+#[cfg(test)]
+mod toolbar_default_tests {
+    use super::*;
+
+    #[test]
+    fn paint_bucket_is_the_initial_tool_but_the_slot_remembers_gradient() {
+        let slot = visible_sections(&[])
+            .into_iter()
+            .flatten()
+            .find(|(_, tools)| tools.contains(&Tool::PaintBucket))
+            .expect("Paint Bucket toolbar slot")
+            .1;
+        assert_eq!(slot, [Tool::PaintBucket, Tool::Gradient]);
+
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let key = egui::Id::new("gradient-paint-bucket-test");
+            assert_eq!(slot_tool(ui, Tool::Brush, &slot, key), Tool::PaintBucket);
+            assert_eq!(slot_tool(ui, Tool::Gradient, &slot, key), Tool::Gradient);
+            assert_eq!(slot_tool(ui, Tool::Brush, &slot, key), Tool::Gradient);
+        })
+        .textures_delta
+        .clear();
     }
 }
