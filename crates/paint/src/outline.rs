@@ -1,9 +1,14 @@
 //! Brush tip outlines for the painting cursor: closed rings in units of the brush radius
 //! (1 = size / 2), screen-oriented (x right, y down), ready for the UI to scale by the radius.
+//! The Pencil's aliased dab is whole pixels instead: [`aliased_outline`] traces them, in pixels.
 
 use std::collections::HashMap;
 
+use photocraft_geom::{Point, Rect};
+
+use crate::Dab;
 use crate::brush::{BrushSettings, TipShape};
+use crate::render::BrushContext;
 use crate::tile::GrayTile;
 
 /// Segments in the outline of a computed round tip.
@@ -15,6 +20,14 @@ const MIN_AREA: f32 = 0.9;
 /// "Full size" outlines everything above 1/255; the normal cursor outlines the 50 % contour.
 const FULL_THRESHOLD: f32 = 1.0 / 255.0;
 const HALF_THRESHOLD: f32 = 0.5;
+/// The largest side, in pixels, of the box [`aliased_outline`] rasterises one dab in: about a
+/// million pixels, so tracing never stalls a frame (round tips up to about 1020 px fit).
+const MAX_ALIASED_SIDE: u32 = 1024;
+/// The most corners an aliased outline may have; a more ragged sampled tip gets none.
+const MAX_ALIASED_CORNERS: usize = 1 << 14;
+/// Pixel-edge directions, clockwise on screen (y down): east, south, west, north. A right turn
+/// is the next one.
+const DIRS: [[i64; 2]; 4] = [[1, 0], [0, 1], [-1, 0], [0, -1]];
 
 /// The tip outline as closed rings, or `None` when the tip has no usable shape. `full` outlines
 /// the whole tip; otherwise the 50 % contour (the Photoshop normal brush tip cursor).
@@ -48,6 +61,115 @@ pub fn tip_outline(b: &BrushSettings, full: bool) -> Option<Vec<Vec<[f32; 2]>>> 
             trace(t, if full { FULL_THRESHOLD } else { HALF_THRESHOLD }, (sn, cs, fx, fy, ro))
         }
     }
+}
+
+/// The whole pixels one aliased (Pencil) dab of `b` fills, for its cursor (#5262): closed rings
+/// of pixel corners in pixels (x right, y down) around a dab centred at the origin. Each ring
+/// keeps the filled pixels on its right, so an outer ring runs clockwise on screen and a hole
+/// counter-clockwise; where two filled pixels touch only at a corner, each ring turns there to
+/// stay on its own pixel. A dab centred at (x, y) fills the same pixels moved by
+/// `grid_center(x, y, b.size) − grid_center(0, 0, b.size)`.
+///
+/// The rings come from the renderer's own rasterisation of the dab, with the brush made aliased,
+/// so they are exactly what it paints: tip, size, roundness, angle, flips and Block's square.
+/// What changes with the dab or where it lands (Shape Dynamics, Scattering, Texture, the Dual
+/// Brush) is left out: the cursor shows the plain tip. `None` when the tip fills nothing, or is
+/// too big (a round tip over about 1020 px) or too ragged to outline.
+pub fn aliased_outline(b: &BrushSettings) -> Option<Vec<Vec<[i32; 2]>>> {
+    let mut b = b.clone();
+    b.aliased = true;
+    // The plain tip: Texture and the Dual Brush depend on where the dab lands, and Wet Edges and
+    // Noise never change which pixels an aliased dab covers.
+    b.texture.enabled = false;
+    b.dual_brush.enabled = false;
+    b.wet_edges = false;
+    b.noise = false;
+    let ctx = BrushContext::new(&b);
+    let b = &ctx.brush;
+    // The dab `DabBuilder::build` makes without dynamics, at full pressure and flow.
+    let dab = Dab {
+        angle: b.angle.to_radians(),
+        roundness: b.roundness.clamp(0.01, 1.0),
+        flip_x: b.flip_x,
+        flip_y: b.flip_y,
+        ..Dab::round(Point::new(0.0, 0.0), (b.size / 2.0).max(0.5), 1.0)
+    };
+    let rect = ctx.dab_rect(&dab, false);
+    if rect.width() > MAX_ALIASED_SIDE || rect.height() > MAX_ALIASED_SIDE {
+        return None;
+    }
+    let mut cov = Vec::new();
+    ctx.rasterize(&dab, false, rect, &mut cov);
+    pixel_rings(&cov, rect)
+}
+
+/// The boundary of the pixels of `rect` that `cov` (row-major) covers, as the rings
+/// [`aliased_outline`] describes: one corner per turn, so collinear edges make one side.
+fn pixel_rings(cov: &[f32], rect: Rect) -> Option<Vec<Vec<[i32; 2]>>> {
+    let (w, h) = (i64::from(rect.width()), i64::from(rect.height()));
+    let filled =
+        |x: i64, y: i64| (0..w).contains(&x) && (0..h).contains(&y) && usize::try_from(y * w + x).ok().and_then(|i| cov.get(i)).is_some_and(|c| *c > 0.0);
+    // The edges leaving each corner ((w + 1) × (h + 1) of them, row-major): bit k heads DIRS[k].
+    let corner = |x: i64, y: i64| usize::try_from(y * (w + 1) + x).ok();
+    let mut ways = vec![0u8; corner(w, h)? + 1];
+    let mut edges = 0usize;
+    for y in 0..h {
+        for x in 0..w {
+            if !filled(x, y) {
+                continue;
+            }
+            // Each side facing an empty pixel, run with this pixel on its right: the top heads
+            // east from the top-left corner, the right side south, the bottom west, the left north.
+            for (k, (nx, ny), (cx, cy)) in [(0, (x, y - 1), (x, y)), (1, (x + 1, y), (x + 1, y)), (2, (x, y + 1), (x + 1, y + 1)), (3, (x - 1, y), (x, y + 1))]
+            {
+                if !filled(nx, ny)
+                    && let Some(c) = corner(cx, cy).and_then(|i| ways.get_mut(i))
+                {
+                    *c |= 1u8 << k;
+                    edges += 1;
+                }
+            }
+        }
+    }
+    let mut used = vec![0u8; ways.len()];
+    let (mut rings, mut corners) = (Vec::new(), 0usize);
+    for (sx, sy) in (0..=h).flat_map(|y| (0..=w).map(move |x| (x, y))) {
+        let start = corner(sx, sy)?;
+        for k0 in 0..4usize {
+            if ways.get(start).is_none_or(|b| b & (1 << k0) == 0) || used.get(start).is_some_and(|b| b & (1 << k0) != 0) {
+                continue;
+            }
+            // Follow the edges until back on this one; each step takes one, so `edges` bounds
+            // the walk. A corner has one way on, or two where filled pixels touch diagonally:
+            // there the right turn stays on the pixel this ring follows.
+            let (mut x, mut y, mut k) = (sx, sy, k0);
+            let (mut ring, mut closed) = (Vec::new(), false);
+            for _ in 0..edges {
+                *used.get_mut(corner(x, y)?)? |= 1 << k;
+                let [dx, dy] = *DIRS.get(k)?;
+                (x, y) = (x + dx, y + dy);
+                let here = *ways.get(corner(x, y)?)?;
+                let next = if here.count_ones() == 1 { here.trailing_zeros() as usize } else { (k + 1) % 4 };
+                if here & (1 << next) == 0 {
+                    return None;
+                }
+                if next != k {
+                    ring.push([i32::try_from(i64::from(rect.x0) + x).ok()?, i32::try_from(i64::from(rect.y0) + y).ok()?]);
+                }
+                k = next;
+                if (x, y, k) == (sx, sy, k0) {
+                    closed = true;
+                    break;
+                }
+            }
+            corners += ring.len();
+            if !closed || corners > MAX_ALIASED_CORNERS {
+                return None;
+            }
+            rings.push(ring);
+        }
+    }
+    (!rings.is_empty()).then_some(rings)
 }
 
 /// Trace the contour(s) above `thr` (resampled ~2x, capped at 160 px a side) and map them with
@@ -319,6 +441,136 @@ mod tests {
         for angle in [f32::NAN, f32::INFINITY] {
             let b = BrushSettings { size: 40.0, angle, roundness: 0.5, ..Default::default() };
             assert!(tip_outline(&b, false).is_none(), "angle {angle}");
+        }
+    }
+
+    /// Directed unit pixel edges `(x, y, k)`: from corner (x, y) one pixel along `DIRS[k]`, with
+    /// the filled pixels on their right.
+    type Edges = std::collections::BTreeSet<(i64, i64, usize)>;
+
+    /// The unit edges of `rings` moved by `d` whole pixels. Every side runs along an axis and
+    /// every corner turns.
+    fn ring_edges(rings: &[Vec<[i32; 2]>], d: [i64; 2]) -> Edges {
+        let mut edges = Edges::new();
+        for r in rings {
+            assert!(r.len() >= 4, "{r:?}");
+            let side = |i: usize| {
+                let (a, b) = (r[i], r[(i + 1) % r.len()]);
+                let (dx, dy) = (i64::from(b[0] - a[0]), i64::from(b[1] - a[1]));
+                let k = DIRS.iter().position(|v| *v == [dx.signum(), dy.signum()]).unwrap_or_else(|| panic!("{a:?} to {b:?} is not along an axis"));
+                (k, dx.abs() + dy.abs())
+            };
+            for i in 0..r.len() {
+                let (k, n) = side(i);
+                assert_ne!(k, side((i + 1) % r.len()).0, "a corner of {r:?} doesn't turn");
+                for j in 0..n {
+                    edges.insert((i64::from(r[i][0]) + d[0] + DIRS[k][0] * j, i64::from(r[i][1]) + d[1] + DIRS[k][1] * j, k));
+                }
+            }
+        }
+        edges
+    }
+
+    /// The unit edges around the pixels one aliased stroke of `b` with the single point `at`
+    /// paints into a `fmt` layer, each pixel fully or not at all.
+    fn painted_edges(b: &BrushSettings, at: [f64; 2], fmt: photocraft_color::PixelFormat) -> Edges {
+        let b = BrushSettings { aliased: true, hardness: 1.0, flow: 1.0, opacity: 1.0, pressure_size: false, color: [0.0, 0.0, 0.0, 1.0], ..b.clone() };
+        let mut s = photocraft_raster::Surface::new(fmt);
+        crate::render::render_stroke(&mut s, &b, &[crate::StrokePoint::new(at[0], at[1], 1.0)], None, false, 1.0);
+        let filled = |x: i64, y: i64| {
+            let a = s.rgba(x as i32, y as i32)[3];
+            assert!(a == 0.0 || a == 1.0, "partial alpha {a} at ({x}, {y})");
+            a == 1.0
+        };
+        let (cx, cy) = (at[0].floor() as i64, at[1].floor() as i64);
+        let mut edges = Edges::new();
+        for y in cy - 16..=cy + 16 {
+            for x in cx - 16..=cx + 16 {
+                if !filled(x, y) {
+                    continue;
+                }
+                for (k, (nx, ny), (ex, ey)) in
+                    [(0, (x, y - 1), (x, y)), (1, (x + 1, y), (x + 1, y)), (2, (x, y + 1), (x + 1, y + 1)), (3, (x - 1, y), (x, y + 1))]
+                {
+                    if !filled(nx, ny) {
+                        edges.insert((ex, ey, k));
+                    }
+                }
+            }
+        }
+        edges
+    }
+
+    /// The pixels `rings` hold: the area inside the outer rings less the holes.
+    fn pixels(rings: &[Vec<[i32; 2]>]) -> i64 {
+        let twice: i64 = rings
+            .iter()
+            .flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
+            .map(|(a, b)| i64::from(a[0]) * i64::from(b[1]) - i64::from(b[0]) * i64::from(a[1]))
+            .sum();
+        twice / 2
+    }
+
+    /// The outline is exactly what one real dab paints (#5262): from 4 px a round Pencil dab is a
+    /// stair-stepped disc, not its square, and roundness, angle, flips, sampled tips and the
+    /// Block square shape it. Checked at sub-pixel positions either side of a pixel and of the
+    /// origin, on exact pixel edges and centres, at 8, 16 and 32 bits.
+    #[test]
+    fn aliased_outlines_are_the_pixels_one_dab_paints() {
+        // A sampled ring, so the outline has a hole.
+        let ring = GrayTile::from_fn(24, 24, |x, y| {
+            let d = (x as f32 - 11.5).hypot(y as f32 - 11.5) / 12.0;
+            if (0.35..0.85).contains(&d) { 1.0 } else { 0.0 }
+        });
+        let mut brushes: Vec<BrushSettings> = (1..=12).map(|n| BrushSettings { size: n as f32, ..Default::default() }).collect();
+        // The radius is half the unrounded size: 2.6 px is a plus, 4.4 px a whole square.
+        brushes.extend([0.3, 2.6, 4.4, 7.5].map(|size| BrushSettings { size, ..Default::default() }));
+        brushes.extend([
+            BrushSettings { size: 9.0, roundness: 0.5, ..Default::default() },
+            BrushSettings { size: 9.0, roundness: 0.5, angle: 30.0, flip_x: true, ..Default::default() },
+            BrushSettings { size: 8.0, roundness: 0.4, angle: -70.0, flip_y: true, ..Default::default() },
+            // So thin and turned 45°: a diagonal of pixels touching only at their corners.
+            BrushSettings { size: 9.0, roundness: 0.01, angle: 45.0, ..Default::default() },
+            BrushSettings { size: 12.0, tip: TipShape::Sampled(ring), ..Default::default() },
+            BrushSettings { size: 5.0, square: true, ..Default::default() },
+            BrushSettings { size: 4.0, square: true, angle: 30.0, roundness: 0.5, ..Default::default() },
+        ]);
+        let formats = [photocraft_color::PixelFormat::RGBA8, photocraft_color::PixelFormat::RGBA16, photocraft_color::PixelFormat::RGBA32F];
+        for b in &brushes {
+            let what = format!("{} px, roundness {}, angle {}, sampled {}, square {}", b.size, b.roundness, b.angle, b.tip != TipShape::Round, b.square);
+            let rings = aliased_outline(b).unwrap_or_else(|| panic!("{what}: no outline"));
+            for at in [[20.3, 15.6], [20.8, 15.2], [-7.5, 3.0], [0.0, -0.5], [13.5, 13.49]] {
+                let (cx, cy) = crate::grid_center(at[0], at[1], b.size);
+                let (ox, oy) = crate::grid_center(0.0, 0.0, b.size);
+                let want = ring_edges(&rings, [(cx - ox) as i64, (cy - oy) as i64]);
+                for fmt in formats {
+                    assert_eq!(want, painted_edges(b, at, fmt), "{what} at {at:?}, {fmt:?}");
+                }
+            }
+        }
+        let round = |size: f32| pixels(&aliased_outline(&BrushSettings { size, ..Default::default() }).unwrap_or_default());
+        assert_eq!([3.0, 4.0, 5.0, 9.0].map(round), [9, 12, 21, 69]);
+        let sampled = aliased_outline(&brushes[brushes.len() - 3]).unwrap_or_default();
+        assert!(sampled.len() >= 2, "the ring's hole is traced: {sampled:?}");
+        let thin = aliased_outline(&brushes[brushes.len() - 4]).unwrap_or_default();
+        assert!(thin.len() > 1 && thin.iter().all(|r| r.len() == 4), "each corner-touching pixel is its own ring: {thin:?}");
+    }
+
+    /// Sizes the renderer can't use paint one pixel, so that is the outline; a tip too big to
+    /// trace in a frame, or one that paints nothing, has none, and nothing panics.
+    #[test]
+    fn hostile_or_huge_aliased_tips_get_one_pixel_or_no_outline() {
+        for size in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -4.0, 0.0] {
+            let rings = aliased_outline(&BrushSettings { size, ..Default::default() });
+            assert_eq!(rings.as_deref().map(pixels), Some(1), "size {size}");
+        }
+        assert!(aliased_outline(&BrushSettings { size: 1000.0, ..Default::default() }).is_some());
+        assert!(aliased_outline(&BrushSettings { size: 5000.0, ..Default::default() }).is_none());
+        assert!(aliased_outline(&BrushSettings { size: 9.0, angle: f32::NAN, ..Default::default() }).is_none());
+        let blank = GrayTile::from_fn(8, 8, |_, _| 0.0);
+        assert!(aliased_outline(&BrushSettings { size: 9.0, tip: TipShape::Sampled(blank), ..Default::default() }).is_none());
+        for v in [f32::NAN, f32::INFINITY, -1.0, 1e9] {
+            let _ = aliased_outline(&BrushSettings { size: 9.0, roundness: v, angle: v, ..Default::default() });
         }
     }
 }
