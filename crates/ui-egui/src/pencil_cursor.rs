@@ -13,6 +13,10 @@ use crate::canvas::ViewXform;
 /// Closed rings of pixel corners, as `photocraft_paint::outline::aliased_outline` traces them.
 type Rings = Vec<Vec<[i32; 2]>>;
 
+/// Under this many points across, the cursor is too small to show where it is, so the hotspot
+/// crosshair joins it.
+const SMALL: f32 = 6.0;
+
 #[derive(Clone)]
 struct Cached {
     key: Key,
@@ -62,7 +66,7 @@ struct Lines {
 pub(crate) fn cursor(painter: &Painter, xf: &ViewXform, at: Pos2, brush: &BrushSettings, block: Option<f32>, centre: bool) -> CursorIcon {
     if let Some(size) = draw(painter, xf, xf.to_doc(at), brush, block) {
         // Too small to see where it is: the hotspot as well.
-        if centre || size < 6.0 {
+        if centre || size < SMALL {
             crate::tool_cursor::crosshair(painter, at, 4.0, 0.0);
         }
         return CursorIcon::None;
@@ -72,7 +76,7 @@ pub(crate) fn cursor(painter: &Painter, xf: &ViewXform, at: Pos2, brush: &BrushS
     // cuts them. A tip too big to trace is off by under a pixel at its edge.
     let radius = (brush.size / 2.0 * xf.zoom).max(1.0);
     let axes = crate::brush_cursor::tip_axes(xf, brush.size);
-    crate::brush_cursor::cursor(painter, at, brush, radius, axes, !matches!(brush.tip, TipShape::Round), centre)
+    crate::brush_cursor::cursor(painter, at, brush, radius, axes, !matches!(brush.tip, TipShape::Round), centre || 2.0 * radius < SMALL)
 }
 
 /// Draws the outline of the pixels a dab centred at document point `at` fills: `brush`'s, or with
@@ -290,6 +294,36 @@ mod tests {
         let first = outline(&ctx, &brush).unwrap();
         assert!(Arc::ptr_eq(&first, &outline(&ctx, &brush).unwrap()));
         assert!(!Arc::ptr_eq(&first, &outline(&ctx, &BrushSettings { size: 10.0, ..brush }).unwrap()));
+    }
+
+    /// Below 100 % a Pencil under 6 points across still shows its hotspot, as its cursor always
+    /// has when too small to see where it is: the smooth circle with the crosshair in it. A
+    /// bigger one is the plain circle unless Show Crosshair in Brush Tip asks for the crosshair.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn below_100_percent_a_tiny_pencil_still_shows_its_hotspot() {
+        // The OS cursor bitmap a pass that runs `f` shows.
+        let bitmap = |f: &dyn Fn(&Painter)| {
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(Default::default(), |ui| f(ui.painter()));
+            // No renderer takes the font atlas here.
+            output.textures_delta.clear();
+            output.platform_output.cursor_image.map(|i| (i.size, i.rgba))
+        };
+        let (xf, at) = (view(0.5, 0.0, false, 1.0), pos2(100.0, 100.0));
+        // At 50 % an 11 px tip is 5.5 points across and a 12 px one 6.
+        for (size, centre, crosshair) in [(1.0, false, true), (11.0, false, true), (12.0, false, false), (40.0, false, false), (40.0, true, true)] {
+            let brush = BrushSettings { size, ..Default::default() };
+            let radius = (size / 2.0 * 0.5).max(1.0);
+            let want = bitmap(&|p| {
+                crate::tool_cursor::circle(p, at, radius, crosshair);
+            });
+            assert!(want.is_some());
+            let got = bitmap(&|p| {
+                cursor(p, &xf, at, &brush, None, centre);
+            });
+            assert_eq!(got, want, "{size} px, Show Crosshair in Brush Tip {centre}");
+        }
     }
 
     /// The Block-mode Eraser's square is the engine's `16 / zoom` pixels at every zoom (#2770),

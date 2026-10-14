@@ -20,9 +20,11 @@ const MIN_AREA: f32 = 0.9;
 /// "Full size" outlines everything above 1/255; the normal cursor outlines the 50 % contour.
 const FULL_THRESHOLD: f32 = 1.0 / 255.0;
 const HALF_THRESHOLD: f32 = 0.5;
-/// The largest side, in pixels, of the box [`aliased_outline`] rasterises one dab in: about a
-/// million pixels, so tracing never stalls a frame (round tips up to about 1020 px fit).
-const MAX_ALIASED_SIDE: u32 = 1024;
+/// The largest side, in pixels, of the box [`aliased_outline`] rasterises one dab in: round tips
+/// up to 508 px fit, sampled ones up to about 359 px (they need the corner reach). Tracing it,
+/// once per brush change, takes a few milliseconds in a release build; past it the tip's smooth
+/// outline is within a pixel of the stair-steps anyway.
+const MAX_ALIASED_SIDE: u32 = 512;
 /// The most corners an aliased outline may have; a more ragged sampled tip gets none.
 const MAX_ALIASED_CORNERS: usize = 1 << 14;
 /// Pixel-edge directions, clockwise on screen (y down): east, south, west, north. A right turn
@@ -74,7 +76,7 @@ pub fn tip_outline(b: &BrushSettings, full: bool) -> Option<Vec<Vec<[f32; 2]>>> 
 /// so they are exactly what it paints: tip, size, roundness, angle, flips and Block's square.
 /// What changes with the dab or where it lands (Shape Dynamics, Scattering, Texture, the Dual
 /// Brush) is left out: the cursor shows the plain tip. `None` when the tip fills nothing, or is
-/// too big (a round tip over about 1020 px) or too ragged to outline.
+/// too big (a round tip over 508 px) or too ragged to outline.
 pub fn aliased_outline(b: &BrushSettings) -> Option<Vec<Vec<[i32; 2]>>> {
     let mut b = b.clone();
     b.aliased = true;
@@ -579,7 +581,7 @@ mod tests {
             let rings = aliased_outline(&BrushSettings { size, ..Default::default() });
             assert_eq!(rings.as_deref().map(pixels), Some(1), "size {size}");
         }
-        assert!(aliased_outline(&BrushSettings { size: 1000.0, ..Default::default() }).is_some());
+        assert!(aliased_outline(&BrushSettings { size: 500.0, ..Default::default() }).is_some());
         assert!(aliased_outline(&BrushSettings { size: 5000.0, ..Default::default() }).is_none());
         assert!(aliased_outline(&BrushSettings { size: 9.0, angle: f32::NAN, ..Default::default() }).is_none());
         let blank = GrayTile::from_fn(8, 8, |_, _| 0.0);
@@ -740,23 +742,26 @@ mod tests {
         assert!(fails.is_empty(), "{} of 600 cases:\n{}", fails.len(), fails.join("\n"));
     }
 
-    /// The limit: round and Block tips up to 1020 px get an outline, bigger ones none, and at
-    /// 1020 px it is still the footprint.
+    /// The limit: round and Block tips up to 508 px get an outline, bigger ones none, and at
+    /// 508 px it is still exactly the footprint.
     #[test]
-    fn round_tips_get_an_outline_up_to_1020_px() {
+    fn round_tips_get_an_outline_up_to_508_px() {
         for square in [false, true] {
             let brush = |size: f32| BrushSettings { size, square, ..Default::default() };
-            let rings = aliased_outline(&brush(1020.0)).unwrap_or_else(|| panic!("square {square}: no outline at 1020 px"));
-            assert!(aliased_outline(&brush(1021.0)).is_none(), "square {square}");
+            let rings = aliased_outline(&brush(508.0)).unwrap_or_else(|| panic!("square {square}: no outline at 508 px"));
+            assert!(aliased_outline(&brush(509.0)).is_none(), "square {square}");
             let corners: usize = rings.iter().map(Vec::len).sum();
             assert!(corners <= MAX_ALIASED_CORNERS, "{corners}");
-            // A disc of radius 510 holds about π·510² pixels; the Block square exactly 1020².
+            // A disc of radius 254 holds about π·254² pixels; the Block square exactly 508².
             let area = pixels(&rings);
             if square {
-                assert_eq!(area, 1020 * 1020);
+                assert_eq!(area, 508 * 508);
             } else {
-                assert!((area as f64 - std::f64::consts::PI * 510.0 * 510.0).abs() < 4.0 * 1020.0, "{area}");
+                assert!((area as f64 - std::f64::consts::PI * 254.0 * 254.0).abs() < 4.0 * 508.0, "{area}");
             }
+            let at = [3.3, -2.6];
+            let placed = placed(&brush(508.0), at).unwrap_or_else(|| panic!("square {square}: no outline at {at:?}"));
+            assert_eq!(placed, painted(&brush(508.0), at, PixelFormat::RGBA8, 260), "square {square}");
         }
     }
 
