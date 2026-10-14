@@ -769,13 +769,7 @@ mod tests {
         app.ui.clone_source_pick = Some((Tool::CloneStamp, doc));
         let ctx = egui::Context::default();
         ctx.begin_pass(egui::RawInput {
-            events: vec![egui::Event::Key {
-                key: egui::Key::Escape,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
+            events: vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
             ..Default::default()
         });
         crate::shortcuts::handle(&mut app, &ctx);
