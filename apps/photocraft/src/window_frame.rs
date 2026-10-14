@@ -81,7 +81,7 @@ mod platform {
             HwndPlace::None,
             POINT::new(),
             SIZE::new(),
-            co::SWP::FRAMECHANGED | co::SWP::NOMOVE | co::SWP::NOSIZE | co::SWP::NOZORDER | co::SWP::NOACTIVATE,
+            co::SWP::FRAMECHANGED | co::SWP::NOCOPYBITS | co::SWP::NOMOVE | co::SWP::NOSIZE | co::SWP::NOZORDER | co::SWP::NOACTIVATE,
         );
     }
 
@@ -107,7 +107,15 @@ mod platform {
         let (Some(width), Some(height)) = (right.checked_sub(left), bottom.checked_sub(top)) else {
             return;
         };
-        let _ = hwnd.SetWindowPos(HwndPlace::None, POINT { x: left, y: top }, SIZE { cx: width, cy: height }, co::SWP::NOZORDER | co::SWP::NOACTIVATE);
+        // Moving the outer frame while winit pins the client rect to the work area must
+        // not copy the old frame's pixels into the custom title bar.
+        let _ = hwnd.SetWindowPos(
+            HwndPlace::None,
+            POINT { x: left, y: top },
+            SIZE { cx: width, cy: height },
+            co::SWP::FRAMECHANGED | co::SWP::NOCOPYBITS | co::SWP::NOZORDER | co::SWP::NOACTIVATE,
+        );
+        let _ = hwnd.InvalidateRect(None, false);
     }
 
     /// Return the corrected outer rect in desktop coordinates, preserving the resize border.
