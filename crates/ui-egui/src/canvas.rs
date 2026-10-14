@@ -5066,7 +5066,11 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
         ToolEvent::Down { x, y, pressure } => {
             // Painting a type, shape, Smart Object or fill layer asks to rasterize it first
             // (⌥-click with the Clone Stamp or Healing Brush only sets the source).
-            let sets_source = matches!(tool, Tool::CloneStamp | Tool::Healing) && mods.alt;
+            let clone_tool = matches!(tool, Tool::CloneStamp | Tool::Healing);
+            let sets_source = clone_tool && (mods.alt || crate::retouch_ui::source_pick_active(app));
+            if clone_tool && !sets_source && !crate::retouch_ui::require_source(app) {
+                return;
+            }
             // Painting on or moving a hidden layer is refused at the press, as in Photoshop (#571).
             if !sets_source && let Some(why) = hidden_target(app, tool) {
                 app.ui.status = why.into();
@@ -5136,7 +5140,7 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                     crate::vector_ui::curvature_down(app, x, y);
                     return;
                 }
-                Tool::CloneStamp | Tool::Healing if mods.alt => {
+                Tool::CloneStamp | Tool::Healing if sets_source => {
                     crate::retouch_ui::set_source(app, x, y);
                     return;
                 }
