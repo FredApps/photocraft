@@ -396,6 +396,8 @@ fn seg_dist2(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use photocraft_color::{ColorMode, PixelFormat, SampleType};
+
     use super::*;
 
     fn max_radius(rings: &[Vec<[f32; 2]>]) -> f32 {
@@ -472,23 +474,25 @@ mod tests {
     }
 
     /// The unit edges around the pixels one aliased stroke of `b` with the single point `at`
-    /// paints into a `fmt` layer, each pixel fully or not at all.
-    fn painted_edges(b: &BrushSettings, at: [f64; 2], fmt: photocraft_color::PixelFormat) -> Edges {
+    /// paints into a `fmt` layer, scanned `reach` pixels around it, and how many pixels that is.
+    /// Each pixel is painted fully or not at all.
+    fn painted(b: &BrushSettings, at: [f64; 2], fmt: PixelFormat, reach: i64) -> (Edges, i64) {
         let b = BrushSettings { aliased: true, hardness: 1.0, flow: 1.0, opacity: 1.0, pressure_size: false, color: [0.0, 0.0, 0.0, 1.0], ..b.clone() };
         let mut s = photocraft_raster::Surface::new(fmt);
         crate::render::render_stroke(&mut s, &b, &[crate::StrokePoint::new(at[0], at[1], 1.0)], None, false, 1.0);
         let filled = |x: i64, y: i64| {
             let a = s.rgba(x as i32, y as i32)[3];
-            assert!(a == 0.0 || a == 1.0, "partial alpha {a} at ({x}, {y})");
+            assert!(a == 0.0 || a == 1.0, "{fmt:?}: partial alpha {a} at ({x}, {y})");
             a == 1.0
         };
         let (cx, cy) = (at[0].floor() as i64, at[1].floor() as i64);
-        let mut edges = Edges::new();
-        for y in cy - 16..=cy + 16 {
-            for x in cx - 16..=cx + 16 {
+        let (mut edges, mut count) = (Edges::new(), 0);
+        for y in cy - reach..=cy + reach {
+            for x in cx - reach..=cx + reach {
                 if !filled(x, y) {
                     continue;
                 }
+                count += 1;
                 for (k, (nx, ny), (ex, ey)) in
                     [(0, (x, y - 1), (x, y)), (1, (x + 1, y), (x + 1, y)), (2, (x, y + 1), (x + 1, y + 1)), (3, (x - 1, y), (x, y + 1))]
                 {
@@ -498,7 +502,7 @@ mod tests {
                 }
             }
         }
-        edges
+        (edges, count)
     }
 
     /// The pixels `rings` hold: the area inside the outer rings less the holes.
@@ -511,17 +515,31 @@ mod tests {
         twice / 2
     }
 
+    /// Where the outline of `b` lands for a dab at `at`, moved by whole pixels as the cursor moves
+    /// it, and how many pixels it holds.
+    fn placed(b: &BrushSettings, at: [f64; 2]) -> Option<(Edges, i64)> {
+        let rings = aliased_outline(b)?;
+        let (cx, cy) = crate::grid_center(at[0], at[1], b.size);
+        let (ox, oy) = crate::grid_center(0.0, 0.0, b.size);
+        let d = [(cx - ox) as i64, (cy - oy) as i64];
+        assert_eq!([f64::from(cx - ox), f64::from(cy - oy)], [d[0] as f64, d[1] as f64], "the move is whole pixels");
+        Some((ring_edges(&rings, d), pixels(&rings)))
+    }
+
+    /// A sampled ring, so the outline has a hole.
+    fn ring_tip() -> GrayTile {
+        GrayTile::from_fn(24, 24, |x, y| {
+            let d = (x as f32 - 11.5).hypot(y as f32 - 11.5) / 12.0;
+            if (0.35..0.85).contains(&d) { 1.0 } else { 0.0 }
+        })
+    }
+
     /// The outline is exactly what one real dab paints (#5262): from 4 px a round Pencil dab is a
     /// stair-stepped disc, not its square, and roundness, angle, flips, sampled tips and the
     /// Block square shape it. Checked at sub-pixel positions either side of a pixel and of the
     /// origin, on exact pixel edges and centres, at 8, 16 and 32 bits.
     #[test]
     fn aliased_outlines_are_the_pixels_one_dab_paints() {
-        // A sampled ring, so the outline has a hole.
-        let ring = GrayTile::from_fn(24, 24, |x, y| {
-            let d = (x as f32 - 11.5).hypot(y as f32 - 11.5) / 12.0;
-            if (0.35..0.85).contains(&d) { 1.0 } else { 0.0 }
-        });
         let mut brushes: Vec<BrushSettings> = (1..=12).map(|n| BrushSettings { size: n as f32, ..Default::default() }).collect();
         // The radius is half the unrounded size: 2.6 px is a plus, 4.4 px a whole square.
         brushes.extend([0.3, 2.6, 4.4, 7.5].map(|size| BrushSettings { size, ..Default::default() }));
@@ -531,20 +549,17 @@ mod tests {
             BrushSettings { size: 8.0, roundness: 0.4, angle: -70.0, flip_y: true, ..Default::default() },
             // So thin and turned 45°: a diagonal of pixels touching only at their corners.
             BrushSettings { size: 9.0, roundness: 0.01, angle: 45.0, ..Default::default() },
-            BrushSettings { size: 12.0, tip: TipShape::Sampled(ring), ..Default::default() },
+            BrushSettings { size: 12.0, tip: TipShape::Sampled(ring_tip()), ..Default::default() },
             BrushSettings { size: 5.0, square: true, ..Default::default() },
             BrushSettings { size: 4.0, square: true, angle: 30.0, roundness: 0.5, ..Default::default() },
         ]);
-        let formats = [photocraft_color::PixelFormat::RGBA8, photocraft_color::PixelFormat::RGBA16, photocraft_color::PixelFormat::RGBA32F];
+        let formats = [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F];
         for b in &brushes {
             let what = format!("{} px, roundness {}, angle {}, sampled {}, square {}", b.size, b.roundness, b.angle, b.tip != TipShape::Round, b.square);
-            let rings = aliased_outline(b).unwrap_or_else(|| panic!("{what}: no outline"));
             for at in [[20.3, 15.6], [20.8, 15.2], [-7.5, 3.0], [0.0, -0.5], [13.5, 13.49]] {
-                let (cx, cy) = crate::grid_center(at[0], at[1], b.size);
-                let (ox, oy) = crate::grid_center(0.0, 0.0, b.size);
-                let want = ring_edges(&rings, [(cx - ox) as i64, (cy - oy) as i64]);
+                let (want, _) = placed(b, at).unwrap_or_else(|| panic!("{what}: no outline"));
                 for fmt in formats {
-                    assert_eq!(want, painted_edges(b, at, fmt), "{what} at {at:?}, {fmt:?}");
+                    assert_eq!(want, painted(b, at, fmt, 16).0, "{what} at {at:?}, {fmt:?}");
                 }
             }
         }
@@ -572,5 +587,199 @@ mod tests {
         for v in [f32::NAN, f32::INFINITY, -1.0, 1e9] {
             let _ = aliased_outline(&BrushSettings { size: 9.0, roundness: v, angle: v, ..Default::default() });
         }
+    }
+
+    /// How far around a dab of `size` to scan for its pixels: past its corners.
+    fn reach(size: f32) -> i64 {
+        (size.clamp(0.5, 200.0) * 0.75).ceil() as i64 + 3
+    }
+
+    /// `None` when the outline of `b` placed at `at` is exactly what one dab there paints into a
+    /// `fmt` layer, unit edge for unit edge and pixel for pixel, else what differs. No outline is
+    /// right only for a dab that paints nothing.
+    fn mismatch(b: &BrushSettings, at: [f64; 2], fmt: PixelFormat) -> Option<String> {
+        let what = || {
+            let (flips, sampled) = ((b.flip_x, b.flip_y), b.tip != TipShape::Round);
+            format!("size {} roundness {} angle {} flips {flips:?} square {} sampled {sampled} at {at:?} {fmt:?}", b.size, b.roundness, b.angle, b.square)
+        };
+        let (got, count) = painted(b, at, fmt, reach(b.size));
+        let Some((want, area)) = placed(b, at) else {
+            return (count > 0).then(|| format!("{}: no outline, but the dab paints {count} px", what()));
+        };
+        if want == got && area == count {
+            return None;
+        }
+        let shared = want.intersection(&got).count();
+        Some(format!("{}: the outline holds {area} px ({} edges), the dab paints {count} px ({} edges, {shared} shared)", what(), want.len(), got.len()))
+    }
+
+    /// An L-shaped tip, wider than tall: not symmetric about either axis or a diagonal.
+    fn l_tip() -> GrayTile {
+        GrayTile::from_fn(20, 14, |x, y| if x < 6 || y >= 9 { 1.0 } else { 0.0 })
+    }
+
+    /// A soft wedge: its 50 % contour is a slanted edge, so the aliased cut lands between samples.
+    fn wedge_tip() -> GrayTile {
+        GrayTile::from_fn(17, 23, |x, y| (x as f32 / 16.0 - y as f32 / 22.0 + 0.5).clamp(0.0, 1.0))
+    }
+
+    /// Seeded noise: speckles, holes and pixels touching only at their corners.
+    fn noise_tip(seed: u64) -> GrayTile {
+        GrayTile::from_fn(16, 16, |x, y| {
+            let h = ((u64::from(x) * 73_856_093) ^ (u64::from(y) * 19_349_663) ^ seed.wrapping_mul(83_492_791)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            if (h >> 40) % 100 < 55 { 1.0 } else { 0.0 }
+        })
+    }
+
+    /// A small deterministic generator (SplitMix64) for the fuzz below.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+        /// In [0, 1).
+        fn unit(&mut self) -> f32 {
+            (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next_u64() % n
+        }
+    }
+
+    /// The footprint doesn't depend on the layer's format: every colour mode, at 8, 16 and 32 bits.
+    #[test]
+    fn the_outline_is_the_footprint_in_every_colour_mode_and_depth() {
+        let brushes = [
+            BrushSettings { size: 1.0, ..Default::default() },
+            BrushSettings { size: 4.0, ..Default::default() },
+            BrushSettings { size: 9.0, roundness: 0.5, angle: 30.0, ..Default::default() },
+            BrushSettings { size: 14.0, tip: TipShape::Sampled(l_tip()), angle: 70.0, flip_x: true, ..Default::default() },
+            BrushSettings { size: 6.0, square: true, ..Default::default() },
+        ];
+        let mut fails = Vec::new();
+        let modes = [
+            ColorMode::Bitmap,
+            ColorMode::Grayscale,
+            ColorMode::Indexed,
+            ColorMode::Rgb,
+            ColorMode::Cmyk,
+            ColorMode::Lab,
+            ColorMode::Multichannel,
+            ColorMode::Duotone,
+        ];
+        for mode in modes {
+            for sample in SampleType::ALL {
+                let fmt = PixelFormat { mode, sample, alpha: true };
+                for b in &brushes {
+                    for at in [[20.3, 15.6], [-7.5, 3.0], [13.5, 13.49]] {
+                        fails.extend(mismatch(b, at, fmt));
+                    }
+                }
+            }
+        }
+        assert!(fails.is_empty(), "{}", fails.join("\n"));
+    }
+
+    /// Tips with no symmetry, at quarter turns and in between, squashed, flipped either way: the
+    /// outline turns and mirrors exactly as the dab does.
+    #[test]
+    fn asymmetric_sampled_tips_turn_squash_and_flip_like_the_dab() {
+        let mut fails = Vec::new();
+        for tip in [l_tip(), wedge_tip()] {
+            for size in [7.0, 16.0, 33.0] {
+                for angle in [0.0, 17.0, 90.0, 135.0, 180.0, 270.0, -60.0] {
+                    for roundness in [1.0, 0.6, 0.25] {
+                        for (flip_x, flip_y) in [(false, false), (true, false), (false, true), (true, true)] {
+                            let b = BrushSettings { size, angle, roundness, flip_x, flip_y, tip: TipShape::Sampled(tip.clone()), ..Default::default() };
+                            for at in [[20.3, 15.6], [20.8, 15.2], [-3.5, -0.5]] {
+                                fails.extend(mismatch(&b, at, PixelFormat::RGBA8));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(fails.is_empty(), "{} mismatches:\n{}", fails.len(), fails.join("\n"));
+    }
+
+    /// A seeded fuzz over size, roundness, angle, flips, the Block square and four tips (round, an
+    /// L, a ring and noise), at positions on and between pixel edges and centres.
+    #[test]
+    fn fuzzed_brushes_outline_exactly_what_they_paint() {
+        let mut rng = Rng(0x5262);
+        let mut fails = Vec::new();
+        for case in 0..600 {
+            let tip = match rng.below(6) {
+                0 => TipShape::Sampled(l_tip()),
+                1 => TipShape::Sampled(ring_tip()),
+                2 => TipShape::Sampled(noise_tip(case)),
+                _ => TipShape::Round,
+            };
+            let size = match rng.below(4) {
+                0 => (1 + rng.below(12)) as f32,
+                1 => 0.3 + rng.unit() * 5.0,
+                2 => (2 * (1 + rng.below(20))) as f32 + [0.0, 0.5, 0.49, 0.51][rng.below(4) as usize],
+                _ => 1.0 + rng.unit() * 59.0,
+            };
+            let roundness = if rng.below(3) == 0 { 1.0 } else { 0.01 + rng.unit() * 0.99 };
+            let angle = if rng.below(4) == 0 { [0.0, 90.0, -90.0, 45.0, 180.0, 360.0][rng.below(6) as usize] } else { rng.unit() * 800.0 - 400.0 };
+            let (flip_x, flip_y, square) = (rng.below(2) == 0, rng.below(2) == 0, rng.below(10) == 0);
+            let b = BrushSettings { size, roundness, angle, flip_x, flip_y, square, tip, ..Default::default() };
+            let frac = [0.0, 0.5, 0.25, 0.75, 0.999, 0.001, f64::from(rng.unit())];
+            let mut coord = || rng.below(80) as f64 - 40.0 + frac[rng.below(frac.len() as u64) as usize];
+            let at = [coord(), coord()];
+            if let Some(m) = mismatch(&b, at, PixelFormat::RGBA8) {
+                fails.push(format!("case {case}: {m}"));
+            }
+        }
+        assert!(fails.is_empty(), "{} of 600 cases:\n{}", fails.len(), fails.join("\n"));
+    }
+
+    /// The limit: round and Block tips up to 1020 px get an outline, bigger ones none, and at
+    /// 1020 px it is still the footprint.
+    #[test]
+    fn round_tips_get_an_outline_up_to_1020_px() {
+        for square in [false, true] {
+            let brush = |size: f32| BrushSettings { size, square, ..Default::default() };
+            let rings = aliased_outline(&brush(1020.0)).unwrap_or_else(|| panic!("square {square}: no outline at 1020 px"));
+            assert!(aliased_outline(&brush(1021.0)).is_none(), "square {square}");
+            let corners: usize = rings.iter().map(Vec::len).sum();
+            assert!(corners <= MAX_ALIASED_CORNERS, "{corners}");
+            // A disc of radius 510 holds about π·510² pixels; the Block square exactly 1020².
+            let area = pixels(&rings);
+            if square {
+                assert_eq!(area, 1020 * 1020);
+            } else {
+                assert!((area as f64 - std::f64::consts::PI * 510.0 * 510.0).abs() < 4.0 * 1020.0, "{area}");
+            }
+        }
+    }
+
+    /// Hostile but finite tip numbers: no panic, and any outline is still exactly what a dab
+    /// paints. So is the round tip that sampled tips with unusable bitmaps paint instead.
+    #[test]
+    fn hostile_finite_tip_numbers_still_outline_the_footprint() {
+        let mut fails = Vec::new();
+        for size in [f32::MIN_POSITIVE, 1e-40, 0.499_999, 0.5, 0.500_001, 1.499_999, 1.5, 2.500_001, 13.0] {
+            for roundness in [0.0, -0.0, 1e-40, f32::MIN_POSITIVE, 0.01, 0.009, 1.0, 1.000_001, f32::MAX, -5.0] {
+                for angle in [0.0, -0.0, 1e-30, 1e30, -1e30, 360.0, 720.5, f32::MAX, -f32::MAX] {
+                    fails.extend(mismatch(&BrushSettings { size, roundness, angle, ..Default::default() }, [5.3, -2.7], PixelFormat::RGBA8));
+                }
+            }
+        }
+        for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let _ = aliased_outline(&BrushSettings { size: 9.0, angle: v, ..Default::default() });
+            let _ = aliased_outline(&BrushSettings { size: 9.0, roundness: v, ..Default::default() });
+        }
+        // An empty bitmap, and one whose data doesn't fit its size.
+        for tip in [GrayTile { width: 0, height: 0, data: Vec::new().into() }, GrayTile { width: 4, height: 4, data: vec![u16::MAX; 3].into() }] {
+            fails.extend(mismatch(&BrushSettings { size: 9.0, tip: TipShape::Sampled(tip), ..Default::default() }, [5.3, -2.7], PixelFormat::RGBA8));
+        }
+        assert!(fails.is_empty(), "{} mismatches:\n{}", fails.len(), fails.join("\n"));
     }
 }

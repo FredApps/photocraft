@@ -36,7 +36,7 @@ impl Key {
         Self { tip: b.tip.clone(), size: b.size, angle: b.angle, roundness: b.roundness, flip_x: b.flip_x, flip_y: b.flip_y, square: b.square }
     }
     fn matches(&self, b: &BrushSettings) -> bool {
-        self.tip == b.tip
+        crate::brush_cursor::same_tip(&self.tip, &b.tip)
             && self.size == b.size
             && self.angle == b.angle
             && self.roundness == b.roundness
@@ -167,8 +167,8 @@ mod tests {
 
     use super::*;
 
-    fn view(zoom: f32, rotation: f32, flip: bool) -> ViewXform {
-        ViewXform { rect: Rect::from_min_size(pos2(0.3, 0.7), egui::vec2(800.0, 600.0)), zoom, center: [50.2, 37.9], flip, rotation, aspect: 1.0 }
+    fn view(zoom: f32, rotation: f32, flip: bool, aspect: f32) -> ViewXform {
+        ViewXform { rect: Rect::from_min_size(pos2(0.3, 0.7), egui::vec2(800.0, 600.0)), zoom, center: [50.2, 37.9], flip, rotation, aspect }
     }
 
     /// A square of pixels is drawn where the old square cursor was (`rect_stroke` outside and
@@ -178,7 +178,7 @@ mod tests {
     fn the_outline_hugs_the_pixels_on_physical_pixels_and_turns_with_the_view() {
         let square = vec![vec![[8.0, 4.0], [12.0, 4.0], [12.0, 8.0], [8.0, 8.0]]];
         for (zoom, ppp) in [(8.0, 1.0), (3.3, 2.0), (1.0, 1.0), (13.7, 1.5)] {
-            let xf = view(zoom, 0.0, false);
+            let xf = view(zoom, 0.0, false, 1.0);
             let lines = screen_lines(&xf, &square, ppp).unwrap();
             let snap = |v: f32| (v * ppp).round() / ppp;
             let (a, b) = (xf.to_screen(8.0, 4.0), xf.to_screen(12.0, 8.0));
@@ -190,7 +190,7 @@ mod tests {
         }
         // Turned 30° and flipped: each corner of the dark line is half a pixel out along both
         // edges (√½ pixel diagonally), outside the square; the light line's inside it.
-        let xf = view(8.0, 30.0, true);
+        let xf = view(8.0, 30.0, true, 1.0);
         let lines = screen_lines(&xf, &square, 1.0).unwrap();
         let centre = xf.to_screen(10.0, 6.0);
         for (i, [x, y]) in square[0].iter().copied().enumerate() {
@@ -200,11 +200,70 @@ mod tests {
             assert!((lines.dark[0][i] - centre).length() > (p - centre).length(), "corner {i}");
         }
         // Hostile views and corners draw nothing.
-        for xf in [view(f32::NAN, 0.0, false), view(f32::INFINITY, 0.0, false), view(8.0, f32::NAN, false)] {
+        for xf in [view(f32::NAN, 0.0, false, 1.0), view(f32::INFINITY, 0.0, false, 1.0), view(8.0, f32::NAN, false, 1.0)] {
             assert!(screen_lines(&xf, &square, 1.0).is_none());
         }
-        assert!(screen_lines(&view(8.0, 0.0, false), &[vec![[f32::NAN, 4.0], [12.0, 4.0], [12.0, 8.0], [8.0, 8.0]]], 1.0).is_none());
-        assert!(screen_lines(&view(8.0, 0.0, false), &[], 1.0).is_none());
+        assert!(screen_lines(&view(8.0, 0.0, false, 1.0), &[vec![[f32::NAN, 4.0], [12.0, 4.0], [12.0, 8.0], [8.0, 8.0]]], 1.0).is_none());
+        assert!(screen_lines(&view(8.0, 0.0, false, 1.0), &[], 1.0).is_none());
+    }
+
+    /// At every corner of every ring the dark line's point lands in the empty pixel outside it and
+    /// the light line's in the filled pixel inside, on views turned by quarter turns (where the
+    /// corners snap to physical pixels) and in between, mirrored, stretched by Pixel Aspect Ratio
+    /// Correction, at several zooms and display densities.
+    #[test]
+    fn the_two_lines_straddle_every_corner_on_any_view() {
+        // At document (30, 20): an L of pixels, with a concave corner, and a 3×3 square with a
+        // hole.
+        let pixels = [(0, 0), (0, 1), (0, 2), (1, 2), (2, 2), (5, 0), (6, 0), (7, 0), (5, 1), (7, 1), (5, 2), (6, 2), (7, 2)];
+        let filled = |[x, y]: [f64; 2]| pixels.contains(&(x.floor() as i64 - 30, y.floor() as i64 - 20));
+        // Their outline: clockwise outer rings, the hole counter-clockwise.
+        let rings: Vec<Vec<[f32; 2]>> = vec![
+            vec![[30.0, 20.0], [31.0, 20.0], [31.0, 22.0], [33.0, 22.0], [33.0, 23.0], [30.0, 23.0]],
+            vec![[35.0, 20.0], [38.0, 20.0], [38.0, 23.0], [35.0, 23.0]],
+            vec![[36.0, 21.0], [36.0, 22.0], [37.0, 22.0], [37.0, 21.0]],
+        ];
+        let mut fails = Vec::new();
+        for zoom in [2.0f32, 8.0, 13.7] {
+            for ppp in [1.0f32, 1.5, 2.0] {
+                for rotation in [0.0f32, 90.0, 180.0, 270.0, -90.0, 30.0, 45.0] {
+                    for flip in [false, true] {
+                        for aspect in [1.0f32, 2.0, 0.75] {
+                            let what = format!("zoom {zoom}, ppp {ppp}, {rotation}°, flipped {flip}, aspect {aspect}");
+                            let xf = view(zoom, rotation, flip, aspect);
+                            let Some(lines) = screen_lines(&xf, &rings, ppp) else {
+                                fails.push(format!("{what}: nothing drawn"));
+                                continue;
+                            };
+                            for (r, ring) in rings.iter().enumerate() {
+                                for (i, c) in ring.iter().enumerate() {
+                                    let (d, l) = (lines.dark[r][i], lines.light[r][i]);
+                                    // Snapping to physical pixels can move the corner by half a
+                                    // pixel either way, so judge the two points from where it went.
+                                    let mid = xf.to_doc(pos2((d.x + l.x) / 2.0, (d.y + l.y) / 2.0));
+                                    let shift = [f64::from(c[0]) - mid[0], f64::from(c[1]) - mid[1]];
+                                    let slack = f64::from(0.75 / ppp / (zoom * aspect.min(1.0)));
+                                    let filled_at = |p: Pos2| {
+                                        let [x, y] = xf.to_doc(p);
+                                        filled([x + shift[0], y + shift[1]])
+                                    };
+                                    let (moved, dark, light) = (shift[0].hypot(shift[1]), filled_at(d), filled_at(l));
+                                    if moved > slack || dark || !light {
+                                        let kind = |f: bool| if f { "filled" } else { "empty" };
+                                        fails.push(format!(
+                                            "{what}: corner {c:?} moved {moved:.3} px, dark point in a {} pixel, light point in a {} pixel",
+                                            kind(dark),
+                                            kind(light),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(fails.is_empty(), "{} corners:\n{}", fails.len(), fails.join("\n"));
     }
 
     /// From 100 % up the outline is drawn (the Block square at any zoom); below it, for a tip
@@ -219,11 +278,11 @@ mod tests {
         let mut output = ctx.run_ui(Default::default(), |ui| {
             let p = ui.painter();
             for zoom in [0.5, 0.99, 1.0, 8.0] {
-                drawn.push(draw(p, &view(zoom, 0.0, false), [20.3, 15.6], &brush, None).is_some());
+                drawn.push(draw(p, &view(zoom, 0.0, false, 1.0), [20.3, 15.6], &brush, None).is_some());
             }
-            drawn.push(draw(p, &view(0.25, 0.0, false), [20.3, 15.6], &brush, Some(64.0)).is_some());
-            drawn.push(draw(p, &view(8.0, 0.0, false), [20.3, 15.6], &huge, None).is_some());
-            drawn.push(draw(p, &view(8.0, 0.0, false), [f64::NAN, 15.6], &brush, None).is_some());
+            drawn.push(draw(p, &view(0.25, 0.0, false, 1.0), [20.3, 15.6], &brush, Some(64.0)).is_some());
+            drawn.push(draw(p, &view(8.0, 0.0, false, 1.0), [20.3, 15.6], &huge, None).is_some());
+            drawn.push(draw(p, &view(8.0, 0.0, false, 1.0), [f64::NAN, 15.6], &brush, None).is_some());
         });
         // No renderer takes the font atlas here.
         output.textures_delta.clear();
@@ -231,5 +290,47 @@ mod tests {
         let first = outline(&ctx, &brush).unwrap();
         assert!(Arc::ptr_eq(&first, &outline(&ctx, &brush).unwrap()));
         assert!(!Arc::ptr_eq(&first, &outline(&ctx, &BrushSettings { size: 10.0, ..brush }).unwrap()));
+    }
+
+    /// The Block-mode Eraser's square is the engine's `16 / zoom` pixels at every zoom (#2770),
+    /// including those where the Pencil keeps the smooth outline.
+    #[test]
+    fn the_block_square_is_drawn_at_every_zoom() {
+        let ctx = egui::Context::default();
+        let brush = BrushSettings { size: 9.0, ..Default::default() };
+        let mut drawn = Vec::new();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            for zoom in [0.01f32, 0.25, 0.33, 0.5, 1.0, 3.0, 16.0, 64.0] {
+                let size = photocraft_engine::brush_cmds::block_size(f64::from(zoom));
+                drawn.push((zoom, size, draw(ui.painter(), &view(zoom, 0.0, false, 1.0), [20.3, 15.6], &brush, Some(size))));
+            }
+        });
+        // No renderer takes the font atlas here.
+        output.textures_delta.clear();
+        for (zoom, size, side) in drawn {
+            let side = side.unwrap_or_else(|| panic!("zoom {zoom}: no Block square"));
+            assert!((side - size * zoom).abs() <= 1.0, "zoom {zoom}: {side} points for a {size} px square");
+        }
+    }
+
+    /// A stored tip (#1843) paints its preview until the preset store loads the full bitmap,
+    /// which can be after the cursor first traced it: the outline is traced again then.
+    #[test]
+    fn a_stored_tip_is_traced_again_once_its_full_bitmap_loads() {
+        let preview = photocraft_paint::GrayTile::from_fn(12, 12, |_, _| 1.0);
+        let ring = photocraft_paint::GrayTile::from_fn(48, 48, |x, y| {
+            let d = (x as f32 - 23.5).hypot(y as f32 - 23.5) / 24.0;
+            if (0.5..0.95).contains(&d) { 1.0 } else { 0.0 }
+        });
+        let unloaded = photocraft_paint::StoredTile { key: "ring".into(), width: 48, height: 48, preview: Arc::new(preview), full: None };
+        let loaded = photocraft_paint::StoredTile { full: Some(Arc::new(ring)), ..unloaded.clone() };
+        let before = BrushSettings { size: 24.0, tip: TipShape::Stored(unloaded), ..Default::default() };
+        let after = BrushSettings { tip: TipShape::Stored(loaded), ..before.clone() };
+        assert_eq!(before.tip, after.tip, "stored tips compare by key");
+        let traced = photocraft_paint::outline::aliased_outline(&after);
+        assert!(traced.is_some() && photocraft_paint::outline::aliased_outline(&before) != traced);
+        let ctx = egui::Context::default();
+        let _ = outline(&ctx, &before);
+        assert_eq!(outline(&ctx, &after).map(|r| (*r).clone()), traced, "the outline is still the preview's");
     }
 }

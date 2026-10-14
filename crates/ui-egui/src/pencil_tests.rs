@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 
 use egui::{Key, Modifiers, Pos2, vec2};
 use egui_kittest::Harness;
+use photocraft_paint::brush::TipShape;
 use serde_json::json;
 
 use crate::PhotocraftApp;
@@ -117,14 +118,14 @@ fn ctrl_alt_drag_resizes_the_pencil_without_painting() {
 /// `(x, y, false)` from (x, y) to (x, y + 1).
 type GridEdges = BTreeSet<(i64, i64, bool)>;
 
-/// The canvas alone at 800 % around document point (20, 15), without the rulers or the pixel
-/// grid (which strokes every pixel edge itself).
-fn cursor_canvas() -> Harness<'static, PhotocraftApp> {
+/// The canvas alone at 800 % around document point (20, 15), on a display of `ppp` physical
+/// pixels per point, without the rulers or the pixel grid (which strokes every pixel edge itself).
+fn cursor_canvas(ppp: f32) -> Harness<'static, PhotocraftApp> {
     let mut app = app();
     app.ui.extras.rulers = false;
     app.ui.view.show.pixel_grid = false;
     app.sync_views();
-    let mut h = Harness::builder().with_size(vec2(900.0, 600.0)).build_ui_state(
+    let mut h = Harness::builder().with_size(vec2(900.0, 600.0)).with_pixels_per_point(ppp).build_ui_state(
         |ui, app: &mut PhotocraftApp| {
             let ctx = ui.ctx().clone();
             if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
@@ -209,6 +210,27 @@ fn drawn_grid_edges(shapes: &[egui::Shape], xf: &ViewXform, edges: &mut GridEdge
     }
 }
 
+/// The grid edges around the pixels of the 120 × 80 document where `inside` holds, and how many
+/// pixels that is.
+fn boundary(inside: impl Fn(i64, i64) -> bool) -> (usize, GridEdges) {
+    let inside = |x: i64, y: i64| (0..120).contains(&x) && (0..80).contains(&y) && inside(x, y);
+    let (mut pixels, mut edges) = (0, GridEdges::new());
+    for y in 0..80 {
+        for x in 0..120 {
+            if !inside(x, y) {
+                continue;
+            }
+            pixels += 1;
+            for (nx, ny, edge) in [(x, y - 1, (x, y, true)), (x, y + 1, (x, y + 1, true)), (x - 1, y, (x, y, false)), (x + 1, y, (x + 1, y, false))] {
+                if !inside(nx, ny) {
+                    edges.insert(edge);
+                }
+            }
+        }
+    }
+    (pixels, edges)
+}
+
 /// The pixels one `paint.pencil` dab at `at` fills (the session brush, plus `extra` params), as
 /// the grid edges around them, and how many there are: painted, read back and undone.
 fn dab_grid_edges(app: &mut PhotocraftApp, at: [f64; 2], extra: serde_json::Value) -> (usize, GridEdges) {
@@ -219,22 +241,7 @@ fn dab_grid_edges(app: &mut PhotocraftApp, at: [f64; 2], extra: serde_json::Valu
     app.run("paint.pencil", p).unwrap();
     let s = layer(app).surface().unwrap().clone();
     app.run("edit.undo", json!({})).unwrap();
-    let painted = |x: i64, y: i64| (0..120).contains(&x) && (0..80).contains(&y) && s.rgba(x as i32, y as i32)[3] == 1.0;
-    let (mut pixels, mut edges) = (0, GridEdges::new());
-    for y in 0..80 {
-        for x in 0..120 {
-            if !painted(x, y) {
-                continue;
-            }
-            pixels += 1;
-            for (nx, ny, edge) in [(x, y - 1, (x, y, true)), (x, y + 1, (x, y + 1, true)), (x - 1, y, (x, y, false)), (x + 1, y, (x + 1, y, false))] {
-                if !painted(nx, ny) {
-                    edges.insert(edge);
-                }
-            }
-        }
-    }
-    (pixels, edges)
+    boundary(|x, y| s.rgba(x as i32, y as i32)[3] == 1.0)
 }
 
 #[test]
@@ -267,7 +274,7 @@ fn the_pencil_cursor_outlines_the_pixels_its_dab_fills() {
     cases.push((Tool::Eraser, "pencil", round(6.0), 30.0, false, [20.8, 15.2]));
     cases.push((Tool::Eraser, "block", round(9.0), 0.0, false, [20.3, 15.6]));
     cases.push((Tool::Eraser, "block", round(9.0), 30.0, true, [20.3, 15.6]));
-    let mut h = cursor_canvas();
+    let mut h = cursor_canvas(1.0);
     let mut fails = Vec::new();
     for (tool, mode, brush, rotation, flip, at) in &cases {
         let app = h.state_mut();
@@ -307,6 +314,161 @@ fn the_pencil_cursor_outlines_the_pixels_its_dab_fills() {
         h.run_steps(1);
     }
     assert!(fails.is_empty(), "the cursor is not the dab's footprint:\n{}", fails.join("\n"));
+}
+
+/// A plain click (press and release, no movement) on the canvas at document point `at`.
+fn click(h: &mut Harness<'static, PhotocraftApp>, at: [f64; 2]) {
+    let pos = ViewXform::active(h.state()).unwrap().to_screen(at[0] as f32, at[1] as f32);
+    h.event(egui::Event::PointerMoved(pos));
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(3);
+}
+
+/// An L-shaped sampled tip: not symmetric about either axis or a diagonal.
+fn l_tip() -> TipShape {
+    TipShape::Sampled(photocraft_paint::GrayTile::from_fn(20, 14, |x, y| if x < 6 || y >= 9 { 1.0 } else { 0.0 }))
+}
+
+/// A click on the canvas, to compare with the cursor drawn just before it.
+struct Click {
+    tool: Tool,
+    /// The Eraser's mode.
+    mode: &'static str,
+    brush: serde_json::Value,
+    tip: TipShape,
+    /// The view's rotation and flip, and View › Pixel Aspect Ratio.
+    rotation: f32,
+    flip: bool,
+    pixel_aspect: &'static str,
+    at: [f64; 2],
+}
+
+impl Click {
+    /// The Pencil with a round tip and `brush` at `at`, on a plain view.
+    fn pencil(brush: serde_json::Value, at: [f64; 2]) -> Self {
+        Self { tool: Tool::Pencil, mode: "brush", brush, tip: TipShape::Round, rotation: 0.0, flip: false, pixel_aspect: "square", at }
+    }
+}
+
+/// Draws the cursor for `c`, clicks there and undoes the click: `None` when the click changed
+/// exactly the pixels the cursor outlined, in one undo step, else what differs.
+fn check_click(h: &mut Harness<'static, PhotocraftApp>, c: &Click) -> Option<String> {
+    let app = h.state_mut();
+    app.ui.tool = c.tool;
+    crate::paint_mouse::sync_tool_brush(app);
+    app.ui.tool_options.eraser_mode = c.mode.into();
+    app.run("tools.setBrush", json!({"brush": c.brush})).unwrap();
+    app.session.tools.brush.tip = c.tip.clone();
+    app.ui.views[0].rotation = c.rotation;
+    app.ui.view.flip_horizontal = c.flip;
+    app.ui.view.pixel_aspect = c.pixel_aspect.into();
+    let (xf, shapes) = cursor_shapes(h, c.at);
+    if xf.aspect != crate::view_cmds::pixel_aspect_ratio(c.pixel_aspect) {
+        return Some(format!("pixel aspect {}: the view's aspect is {}", c.pixel_aspect, xf.aspect));
+    }
+    let (mut drawn, mut other) = (GridEdges::new(), Vec::new());
+    drawn_grid_edges(&shapes, &xf, &mut drawn, &mut other);
+    let before = layer(h.state()).surface().unwrap().clone();
+    let past = h.state().session.active().unwrap().history.past_len();
+    click(h, c.at);
+    let after = layer(h.state()).surface().unwrap().clone();
+    let steps = h.state().session.active().unwrap().history.past_len().saturating_sub(past);
+    for _ in 0..steps {
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+    }
+    let (pixels, want) = boundary(|x, y| before.rgba(x as i32, y as i32) != after.rgba(x as i32, y as i32));
+    if pixels > 0 && drawn == want && other.is_empty() && steps == 1 {
+        return None;
+    }
+    Some(format!(
+        "{:?} ({}) {} with a {} tip at {:?}, view {}° flipped {}, pixel aspect {}: the click ({steps} undo steps) changed {pixels} px \
+         ({} grid edges); the cursor drew {} of those edges, {} other grid edges, and {other:?}",
+        c.tool,
+        c.mode,
+        c.brush,
+        if c.tip == TipShape::Round { "round" } else { "sampled" },
+        c.at,
+        c.rotation,
+        c.flip,
+        c.pixel_aspect,
+        want.len(),
+        drawn.intersection(&want).count(),
+        drawn.difference(&want).count(),
+    ))
+}
+
+#[test]
+fn a_real_click_paints_exactly_what_the_pencil_cursor_outlined() {
+    // #5262 end to end: a click on the canvas, through the live-stroke path, the pixel-grid snap
+    // and the commit, changes exactly the pixels the cursor outlined just before.
+    let round = |size: f64| json!({"size": size, "roundness": 1.0, "angle": 0.0});
+    let at = [20.3, 15.6];
+    let mut clicks: Vec<Click> = [1.0, 2.0, 3.0, 4.0, 5.0, 8.0, 9.0, 12.0].map(|n| Click::pencil(round(n), at)).into();
+    // Even and odd tips on a pixel corner, a pixel centre, half-way along an edge and just off a
+    // corner.
+    for p in [[20.0, 15.0], [20.5, 15.5], [20.5, 15.0], [19.999, 15.001]] {
+        clicks.extend([4.0, 5.0, 8.0].map(|n| Click::pencil(round(n), p)));
+    }
+    // A squashed, turned tip on every quarter turn of the view, mirrored or not, and in between.
+    let ellipse = json!({"size": 9, "roundness": 0.4, "angle": 30});
+    for rotation in [0.0, 90.0, 180.0, 270.0, 30.0] {
+        for flip in [false, true] {
+            clicks.push(Click { rotation, flip, ..Click::pencil(ellipse.clone(), at) });
+        }
+    }
+    // An asymmetric sampled tip, turned and flipped, on plain, quarter-turned and mirrored views.
+    let l = json!({"size": 12, "roundness": 1.0, "angle": 20, "flipX": true});
+    for (rotation, flip) in [(0.0, false), (90.0, true), (180.0, false), (30.0, true)] {
+        clicks.push(Click { tip: l_tip(), rotation, flip, ..Click::pencil(l.clone(), at) });
+    }
+    // Pixel Aspect Ratio Correction stretches the view, and the outline with it.
+    for (pixel_aspect, rotation) in [("anamorphic2To1", 0.0), ("anamorphic2To1", 90.0), ("d1DvNtsc", 30.0)] {
+        clicks.push(Click { pixel_aspect, rotation, ..Click::pencil(ellipse.clone(), at) });
+    }
+    let mut h = cursor_canvas(1.0);
+    let fails: Vec<String> = clicks.iter().filter_map(|c| check_click(&mut h, c)).collect();
+    assert!(fails.is_empty(), "{} of {} clicks:\n{}", fails.len(), clicks.len(), fails.join("\n"));
+}
+
+#[test]
+fn a_real_eraser_click_erases_exactly_what_its_cursor_outlined() {
+    // The report's tool: the Eraser in Pencil mode, and in Block mode, on an opaque layer (one
+    // 400 px dab covers the 120 × 80 document), with the view turned and mirrored.
+    let mut h = cursor_canvas(1.0);
+    h.state_mut().run("paint.pencil", json!({"points": [[60.0, 40.0]], "size": 400})).unwrap();
+    let eraser = |mode, brush| Click { tool: Tool::Eraser, mode, ..Click::pencil(brush, [20.3, 15.6]) };
+    let ellipse = json!({"size": 9, "roundness": 0.5, "angle": 45});
+    let mut clicks = Vec::new();
+    for (rotation, flip) in [(0.0, false), (90.0, true), (30.0, false), (270.0, true)] {
+        for (mode, brush) in [("pencil", ellipse.clone()), ("pencil", json!({"size": 6, "roundness": 1.0, "angle": 0})), ("block", ellipse.clone())] {
+            clicks.push(Click { rotation, flip, ..eraser(mode, brush) });
+        }
+    }
+    let l = json!({"size": 12, "angle": 20, "flipX": true});
+    clicks.push(Click { tip: l_tip(), rotation: 90.0, flip: true, at: [20.8, 15.2], ..eraser("pencil", l) });
+    let fails: Vec<String> = clicks.iter().filter_map(|c| check_click(&mut h, c)).collect();
+    assert!(fails.is_empty(), "{} of {} clicks:\n{}", fails.len(), clicks.len(), fails.join("\n"));
+}
+
+#[test]
+fn a_real_click_matches_the_cursor_on_high_density_displays() {
+    // At 2×, 1.5× and 1.25× the outline's corners snap to physical pixels, still on the
+    // document's pixel edges.
+    let at = [20.3, 15.6];
+    for ppp in [2.0, 1.5, 1.25] {
+        let mut h = cursor_canvas(ppp);
+        let clicks = [
+            Click::pencil(json!({"size": 9, "roundness": 1.0, "angle": 0}), at),
+            Click::pencil(json!({"size": 4, "roundness": 1.0, "angle": 0}), [20.5, 15.5]),
+            Click { rotation: 90.0, flip: true, ..Click::pencil(json!({"size": 9, "roundness": 0.4, "angle": 30}), at) },
+            Click { tip: l_tip(), flip: true, ..Click::pencil(json!({"size": 12, "roundness": 1.0, "angle": 20, "flipX": true}), [20.8, 15.2]) },
+        ];
+        let fails: Vec<String> = clicks.iter().filter_map(|c| check_click(&mut h, c)).collect();
+        assert!(fails.is_empty(), "ppp {ppp}: {} of {} clicks:\n{}", fails.len(), clicks.len(), fails.join("\n"));
+    }
 }
 
 #[test]
