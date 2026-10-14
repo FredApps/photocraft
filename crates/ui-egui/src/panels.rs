@@ -6063,12 +6063,7 @@ mod toolbar_default_tests {
 
     #[test]
     fn paint_bucket_is_the_initial_tool_but_the_slot_remembers_gradient() {
-        let slot = visible_sections(&[])
-            .into_iter()
-            .flatten()
-            .find(|(_, tools)| tools.contains(&Tool::PaintBucket))
-            .expect("Paint Bucket toolbar slot")
-            .1;
+        let slot = visible_sections(&[]).into_iter().flatten().find(|(_, tools)| tools.contains(&Tool::PaintBucket)).expect("Paint Bucket toolbar slot").1;
         assert_eq!(slot, [Tool::PaintBucket, Tool::Gradient]);
 
         let ctx = egui::Context::default();
