@@ -97,7 +97,9 @@ fn hovering_a_layer_row_outlines_it_with_any_tool() {
 
 #[test]
 fn auto_select_into_a_closed_group_opens_it_and_shows_the_row() {
-    let (app, inner, group) = doc();
+    let (mut app, inner, group) = doc();
+    // Main now defaults Auto-Select to Group; this case specifically exercises Layer mode.
+    app.ui.tool_options.move_target = "layer".into();
     let mut h = harness(app);
     assert!(row(&h, "Inner").is_none(), "hidden in its closed group");
     let app = h.state_mut();

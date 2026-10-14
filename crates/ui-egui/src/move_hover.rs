@@ -23,6 +23,7 @@ pub(crate) struct Hover {
     revision: u64,
     at: [i32; 2],
     pick: Pick,
+    target_layer: Option<LayerId>,
     bounds: Option<Rect>,
 }
 
@@ -49,6 +50,7 @@ enum Pick {
 /// Type and Vertical Type tools: the type layer a click would edit rather than start new text
 /// (not the Type Mask tools, for which existing type is only pixels).
 pub(crate) fn target(app: &mut PhotocraftApp, at: Option<[f64; 2]>, command: bool, pressed: bool) -> Option<Rect> {
+    app.canvas_hover_layer = None;
     if !app.session.prefs().tools.show_highlight_on_rollover || pressed || app.drag.is_some() || app.guide_drag.is_some() || app.ui.transform.is_some() {
         return None;
     }
@@ -66,10 +68,17 @@ pub(crate) fn target(app: &mut PhotocraftApp, at: Option<[f64; 2]>, command: boo
     let st = app.session.active()?;
     let (doc, revision) = (st.doc.id, st.revision);
     if let Some(h) = app.move_hover.as_ref().filter(|h| h.doc == doc && h.revision == revision && h.at == at && h.pick == pick) {
+        app.canvas_hover_layer = h.target_layer;
         return h.bounds;
     }
+    let mut target_layer = None;
     let bounds = match pick {
-        Pick::Move(group) => photocraft_engine::pick_cmds::auto_select_target(&st.doc, at[0], at[1], group).and_then(|id| outline(&st.doc, id)),
+        Pick::Move(group) => {
+            let id = photocraft_engine::pick_cmds::auto_select_target(&st.doc, at[0], at[1], group);
+            let bounds = id.and_then(|id| outline(&st.doc, id));
+            target_layer = id.filter(|_| bounds.is_some());
+            bounds
+        }
         Pick::Artboard(false) => crate::artboard_tool::board_at(&st.doc, p).map(|(_, r)| crate::artboard_tool::board_rect(r)),
         Pick::Artboard(true) => crate::artboard_tool::layer_at(&st.doc, p).and_then(|id| outline(&st.doc, id)),
         Pick::Path => {
@@ -81,7 +90,8 @@ pub(crate) fn target(app: &mut PhotocraftApp, at: Option<[f64; 2]>, command: boo
             crate::type_tool::hit_layer(app, p[0], p[1]).and_then(|id| outline(&doc, id))
         }
     };
-    app.move_hover = Some(Hover { doc, revision, at, pick, bounds });
+    app.move_hover = Some(Hover { doc, revision, at, pick, target_layer, bounds });
+    app.canvas_hover_layer = target_layer;
     bounds
 }
 
@@ -113,15 +123,39 @@ fn bounds(doc: &Document, l: &Layer) -> Rect {
     }
 }
 
+/// The document-space bounds to outline: either a layer hovered in the Layers panel, or what a
+/// click at `at` would pick with the Move tool.
+pub(crate) fn active_outline(app: &mut PhotocraftApp, at: Option<[f64; 2]>, command: bool, pressed: bool) -> Option<Rect> {
+    if !app.session.prefs().tools.show_highlight_on_rollover {
+        app.canvas_hover_layer = None;
+        return None;
+    }
+    // A layer hovered in the Layers panel takes precedence over canvas rollover.
+    if let Some(id) = app.hover_layer
+        && app.drag.is_none()
+        && app.guide_drag.is_none()
+        && app.ui.transform.is_none()
+        && let Some(st) = app.session.active()
+    {
+        return outline(&st.doc, id);
+    }
+    target(app, at, command, pressed)
+}
+
 /// Draws the highlight on the active document's canvas, in the theme's accent colour.
 pub(crate) fn draw(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewXform, idx: usize, hover: Option<Pos2>) {
     if app.session.active_index() != Some(idx) {
         return;
     }
+    let prev_canvas_hover = app.canvas_hover_layer;
     let (mods, pressed) = painter.ctx().input(|i| (i.modifiers, i.pointer.any_down()));
     let command = crate::workspace_ui::sticky_mods(app, mods).command;
     let at = hover.map(|p| xf.to_doc(p));
-    let Some(b) = target(app, at, command, pressed) else { return };
+    let outline_rect = active_outline(app, at, command, pressed);
+    if app.canvas_hover_layer != prev_canvas_hover {
+        painter.ctx().request_repaint();
+    }
+    let Some(b) = outline_rect else { return };
     let accent = crate::theme::Tokens::get(painter.ctx()).accent;
     painter.rect_stroke(xf.doc_rect(b), 0.0, Stroke::new(1.5, accent), egui::StrokeKind::Outside);
 }
@@ -158,6 +192,59 @@ mod tests {
         // Preferences › Tools › Show Highlight on Rollover off.
         app.session.edit_prefs(|p| p.tools.show_highlight_on_rollover = false);
         assert_eq!(target(&mut app, Some([10.5, 12.0]), true, false), None);
+    }
+
+    #[test]
+    fn layer_panel_hover_outlines_layer_on_canvas() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session
+            .edit("paint", |doc, a| {
+                doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(8, 8, 24, 24), &[1.0, 0.0, 0.0, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        let target_layer = app.session.active().unwrap().active_layer.unwrap();
+        let a = Rect::new(8, 8, 24, 24);
+
+        // Even with a different tool (e.g. Brush) and no canvas hover, hovering the layer in the panel outlines it:
+        app.ui.tool = Tool::Brush;
+        assert_eq!(active_outline(&mut app, None, false, false), None);
+        app.hover_layer = Some(target_layer);
+        assert_eq!(active_outline(&mut app, None, false, false), Some(a));
+
+        // When a drag or transform is in progress, no outline:
+        app.guide_drag = Some(crate::rulers::GuideDrag { vertical: false, index: None, pos: 10.0 });
+        assert_eq!(active_outline(&mut app, None, false, false), None);
+        app.guide_drag = None;
+
+        // When rollover preference is disabled, no outline:
+        app.session.edit_prefs(|p| p.tools.show_highlight_on_rollover = false);
+        assert_eq!(active_outline(&mut app, None, false, false), None);
+    }
+
+    #[test]
+    fn canvas_hover_sets_canvas_hover_layer() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session
+            .edit("paint", |doc, a| {
+                doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(8, 8, 24, 24), &[1.0, 0.0, 0.0, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        let target_layer = app.session.active().unwrap().active_layer.unwrap();
+        app.ui.tool = Tool::Move;
+
+        // Hovering over painted layer sets canvas_hover_layer:
+        assert!(target(&mut app, Some([10.5, 12.0]), false, false).is_some());
+        assert_eq!(app.canvas_hover_layer, Some(target_layer));
+
+        // Hovering empty area clears canvas_hover_layer:
+        assert!(target(&mut app, Some([40.0, 40.0]), false, false).is_none());
+        assert_eq!(app.canvas_hover_layer, None);
     }
 }
 
