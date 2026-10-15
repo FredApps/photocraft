@@ -4699,8 +4699,7 @@ fn transform_controls_layers(app: &PhotocraftApp) -> Vec<&photocraft_doc::Layer>
 /// convert and move it. Do not expose handles whose starting frame would jump to a different
 /// selection; Ctrl+T remains available for that combination.
 fn transform_controls_have_handles(app: &PhotocraftApp) -> bool {
-    app.ui.tool != Tool::Move
-        || app.session.active().is_some_and(|st| !st.selected_layers().iter().any(|&id| st.doc.is_background(id)))
+    app.ui.tool != Tool::Move || app.session.active().is_some_and(|st| !st.selected_layers().iter().any(|&id| st.doc.is_background(id)))
 }
 
 /// Move tool › Show Transform Controls: the boxes Free Transform would open on the selected
