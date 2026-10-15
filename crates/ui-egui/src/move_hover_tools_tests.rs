@@ -165,7 +165,7 @@ fn type_tool_outlines_the_text_a_click_would_edit() {
     }
 }
 
-/// #3631: Path Selection › Select: All Layers. Off (Active Layers, the default) a drag moves the
+/// #3631: Path Selection › Select: All Layers. Off (Active Layers) a drag moves the
 /// active shape wherever it starts, as before. On, a click picks the topmost shape layer under the
 /// pointer (inside its fill or on its outline) and the drag moves that one; the rollover outlines
 /// the shape a click would pick, and nothing over empty canvas or a targeted vector mask.

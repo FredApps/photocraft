@@ -3845,6 +3845,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             crate::icons::cursor_badge(&ctx, "scan", p);
         } else if let Some((r, p, c)) = response
             .hover_pos()
+            .filter(|_| transform_controls_have_handles(app))
             .and_then(|p| transform_controls_rect(app, &xf).and_then(|r| transform_controls_cursor(r, p).map(|c| (r, p, c))))
         {
             // The Move tool draws handles without opening a Free Transform session.
@@ -4694,6 +4695,14 @@ fn transform_controls_layers(app: &PhotocraftApp) -> Vec<&photocraft_doc::Layer>
     st.selected_layers().into_iter().filter_map(|id| st.doc.layer(id)).filter(|l| !crate::doc_props_ui::is_background(&st.doc, l)).collect()
 }
 
+/// The Move frame intentionally omits the Background (#5917), whereas Free Transform can
+/// convert and move it. Do not expose handles whose starting frame would jump to a different
+/// selection; Ctrl+T remains available for that combination.
+fn transform_controls_have_handles(app: &PhotocraftApp) -> bool {
+    app.ui.tool != Tool::Move
+        || app.session.active().is_some_and(|st| !st.selected_layers().iter().any(|&id| st.doc.is_background(id)))
+}
+
 /// Move tool › Show Transform Controls: the boxes Free Transform would open on the selected
 /// layers, joined into one.
 fn transform_controls_rect(app: &PhotocraftApp, xf: &ViewXform) -> Option<Rect> {
@@ -4767,6 +4776,9 @@ fn transform_controls_hit(r: Rect, p: Pos2) -> bool {
 
 /// Enter the existing Free Transform session when a Move-tool transform control is pressed.
 fn begin_transform_controls_at(app: &mut PhotocraftApp, ctx: &egui::Context, xf: &ViewXform, p: Pos2) -> bool {
+    if !transform_controls_have_handles(app) {
+        return false;
+    }
     let Some(r) = transform_controls_rect(app, xf) else { return false };
     if !transform_controls_hit(r, p) {
         return false;
@@ -4792,6 +4804,9 @@ fn draw_transform_controls(app: &mut PhotocraftApp, painter: &egui::Painter, xf:
         }
     }
     painter.rect_stroke(r, 0.0, Stroke::new(1.0, accent), egui::StrokeKind::Middle);
+    if !transform_controls_have_handles(app) {
+        return;
+    }
     for p in [r.left_top(), r.center_top(), r.right_top(), r.right_center(), r.right_bottom(), r.center_bottom(), r.left_bottom(), r.left_center()] {
         let h = Rect::from_center_size(p, vec2(7.0, 7.0));
         painter.rect_filled(h, 0.0, Color32::WHITE);
@@ -8166,6 +8181,9 @@ mod transform_controls_tests {
         let bg = app.session.active().unwrap().doc.layers[0].id;
         app.session.execute("layer.select", json!({"layer": bg.0, "mode": "add"})).unwrap();
         assert_eq!(transform_controls_layers(&app).len(), 2);
+        assert!(!transform_controls_have_handles(&app));
+        assert!(!begin_transform_controls_at(&mut app, &ctx, &xf, both.right_bottom()));
+        assert!(app.ui.transform.is_none(), "the frame must not jump to include the excluded Background");
     }
 
     #[test]
