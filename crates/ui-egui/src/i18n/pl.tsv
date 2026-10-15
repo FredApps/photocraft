@@ -3789,3 +3789,10 @@ curves	Smooth	Wygładź
 	{set} (modified)	{set} (zmieniony)
 	Set Source	Ustaw źródło
 	Click to set the source	Kliknij, aby ustawić źródło
+	Accept and Go to Conflict	Akceptuj i przejdź do konfliktu
+	Changes undone.	Zmiany cofnięte.
+	Choose a new shortcut for this command, or leave it without one.	Wybierz nowy skrót dla tego polecenia lub zostaw je bez skrótu.
+	Put this command's shortcuts back as they were	Przywróć skróty tego polecenia
+	Take the shortcut from the other command and select it	Odbierz skrót drugiemu poleceniu i zaznacz je
+	Undo Changes	Cofnij zmiany
+	{shortcut} is reserved by the system and can't be assigned.	{shortcut} jest zarezerwowany przez system i nie można go przypisać.
