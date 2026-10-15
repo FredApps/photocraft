@@ -1,6 +1,6 @@
 //! Capability-based filesystem policy for untrusted automation paths.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -71,8 +71,8 @@ impl AuthorizedWorkspace {
         if !metadata.is_file() {
             return Err(AutomationError::BadRequest(format!("automation read path is not a regular file: `{path}`")));
         }
-        // Bounded reads, and a clear error for a file larger than memory (#375).
-        let bytes = photocraft_format::read::read_all(&mut file, metadata.len()).map_err(|e| file_error("read", path, e))?;
+        // Retain main's bounded, growth-checked reads while keeping save provenance.
+        let bytes = read_to_observed_length(&mut file, metadata.len())?;
         let save_path = self.write.as_ref().filter(|write| Arc::ptr_eq(&root.dir, &write.dir)).map(|_| path.to_owned());
         Ok((bytes, save_path))
     }
@@ -160,6 +160,34 @@ impl AuthorizedWorkspace {
             }
         }
         Ok(())
+    }
+}
+
+fn read_to_observed_length(reader: &mut impl Read, observed_length: u64) -> Result<Vec<u8>, AutomationError> {
+    // Do not reserve from a potentially stale or attacker-controlled metadata length. Read in
+    // chunks, and reject growth beyond the length observed on the opened file before appending.
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 64 << 10];
+    loop {
+        let remaining = observed_length.saturating_sub(bytes.len() as u64);
+        let ask = chunk.len().min(usize::try_from(remaining.saturating_add(1)).unwrap_or(chunk.len()));
+        let n = match reader.read(&mut chunk[..ask]) {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(AutomationError::Io(format!("automation read failed: {e}"))),
+        };
+        if n == 0 {
+            return Ok(bytes);
+        }
+        if n as u64 > remaining {
+            return Err(AutomationError::BadRequest(format!("automation file grew beyond its observed length of {observed_length} bytes")));
+        }
+        let needed = bytes.len().checked_add(n).ok_or_else(|| AutomationError::BadRequest("automation file is too large to read".into()))?;
+        if needed > bytes.capacity() {
+            let target = bytes.capacity().saturating_add(bytes.capacity() / 2).max(needed).min(usize::try_from(observed_length).unwrap_or(usize::MAX));
+            bytes.try_reserve_exact(target - bytes.len()).map_err(|e| AutomationError::Io(format!("automation read allocation failed: {e}")))?;
+        }
+        bytes.extend_from_slice(&chunk[..n]);
     }
 }
 
@@ -293,6 +321,7 @@ pub fn authorize_engine_command(id: &str, params: &Value) -> Result<(), Automati
             | "file.fileInfo"
             | "file.automate.fitImage"
             | "file.automate.conditionalModeChange"
+            | "file.automate.cropAndStraightenPhotos"
             | "file.scripts.flattenAllLayerEffects"
             | "file.scripts.flattenAllMasks"
             | "file.scripts.deleteAllEmptyLayers"
@@ -375,7 +404,8 @@ fn params_contain_ambient_path(id: &str, params: &Value) -> bool {
 }
 
 fn profile_command_may_read_ambient(id: &str, params: &Value) -> bool {
-    if matches!(id, "color.profileMismatch" | "edit.colorSettings" | "view.proofSetup") {
+    // Installed profiles scan OS and user directories even without a request path.
+    if matches!(id, "color.profileMismatch" | "edit.colorSettings" | "edit.installedProfiles" | "view.proofSetup") {
         return true;
     }
     matches!(id, "edit.assignProfile" | "edit.convertToProfile" | "edit.profileInfo")
@@ -402,12 +432,12 @@ fn preference_uses_ambient_filesystem(path: &str) -> bool {
 
 fn command_uses_ambient_path(id: &str, params: &Value) -> bool {
     match id {
-        "brush.presets.importAbr" | "gradient.presets.importGrd" | "plugin.install" | "swatches.import" => {
+        "actions.load" | "brush.presets.importAbr" | "brush.presets.importImage" | "gradient.presets.importGrd" | "plugin.install" | "swatches.import" => {
             // `data` wins over `path` in these commands; any `path` without it reads the filesystem.
             params.get("data").is_none() && params.get("path").is_some()
         }
         // With a `path` the file is written there; without one the bytes come back as `data`.
-        "swatches.export" => params.get("path").is_some(),
+        "actions.save" | "swatches.export" => params.get("path").is_some(),
         "plugin.reload" => true,
         _ => false,
     }
@@ -629,6 +659,23 @@ mod tests {
     }
 
     #[test]
+    fn large_observed_length_does_not_trigger_a_fixed_limit_or_upfront_reservation() {
+        let mut shortened = std::io::Cursor::new(b"psb");
+        assert_eq!(read_to_observed_length(&mut shortened, (1 << 30) + 1).unwrap(), b"psb");
+    }
+
+    #[test]
+    fn read_growth_is_rejected_at_the_observed_length() {
+        let mut growing = std::io::repeat(b'x').take(65);
+        let error = read_to_observed_length(&mut growing, 64).unwrap_err().to_string();
+        assert!(error.contains("grew beyond its observed length of 64 bytes"), "{error}");
+        let mut allowed = std::io::repeat(b'x').take(64);
+        assert_eq!(read_to_observed_length(&mut allowed, 64).unwrap().len(), 64);
+        let mut empty = std::io::Cursor::new(b"x");
+        assert!(read_to_observed_length(&mut empty, 0).is_err());
+    }
+
+    #[test]
     fn open_pcraft_loads_a_directory_below_the_read_root() {
         let (inside, _, workspace) = roots("pcraft-dir");
         let doc = photocraft_doc::Document::new("Native", photocraft_doc::Size::new(16, 12), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
@@ -840,6 +887,8 @@ mod tests {
             assert!(authorize_engine_command(id, &serde_json::json!({})).is_err());
         }
         assert!(authorize_engine_command("file.new", &serde_json::json!({})).is_ok());
+        assert!(authorize_engine_command("file.automate.cropAndStraightenPhotos", &serde_json::json!({})).is_ok());
+        assert!(authorize_desktop_engine_command("file.automate.cropAndStraightenPhotos", &serde_json::json!({})).is_ok());
         for id in ["layer.smartObjects.editContents", "layer.smartObjects.convertToLayers", "layer.smartObjects.saveContents"] {
             assert!(authorize_desktop_engine_command(id, &serde_json::json!({"layer": 19})).is_ok(), "{id}");
         }
@@ -900,6 +949,7 @@ mod tests {
     fn automation_rejects_ambient_path_commands_and_preferences() {
         for (id, params) in [
             ("brush.presets.importAbr", serde_json::json!({"path": "/outside/set.abr"})),
+            ("brush.presets.importImage", serde_json::json!({"path": "/outside/tip.png"})),
             ("gradient.presets.importGrd", serde_json::json!({"path": "/outside/set.grd"})),
             ("plugin.install", serde_json::json!({"path": "/outside/plugin.wasm"})),
             ("plugin.reload", serde_json::json!({"path": "/outside/plugins"})),
@@ -907,15 +957,20 @@ mod tests {
             ("plugin.install", serde_json::json!({"path": " "})),
             ("swatches.import", serde_json::json!({"path": "/outside/set.aco"})),
             ("swatches.export", serde_json::json!({"path": "/outside/set.ase"})),
+            ("actions.load", serde_json::json!({"path": "/outside/set.atn"})),
+            ("actions.save", serde_json::json!({"path": "/outside/set.atn"})),
         ] {
             assert!(authorize_engine_command(id, &params).is_err(), "{id}: {params}");
         }
         for (id, params) in [
             ("brush.presets.importAbr", serde_json::json!({"data": "QUJD"})),
+            ("brush.presets.importImage", serde_json::json!({"data": "QUJD"})),
             ("gradient.presets.importGrd", serde_json::json!({"data": "QUJD"})),
             ("plugin.install", serde_json::json!({"data": "QUJD"})),
             ("swatches.import", serde_json::json!({"data": "QUJD"})),
             ("swatches.export", serde_json::json!({"format": "ase"})),
+            ("actions.load", serde_json::json!({"data": "QUJD"})),
+            ("actions.save", serde_json::json!({"set": "S"})),
         ] {
             assert!(authorize_engine_command(id, &params).is_ok(), "{id}: {params}");
         }
@@ -995,6 +1050,9 @@ mod tests {
                 | "path.deleteAnchor"
                 | "path.clippingPath.set"
                 | "path.rename"
+                | "path.stroke"
+                | "type.attachToPath"
+                | "type.detachFromPath"
                 | "select.toWorkPath"
                 | "layer.vectorMask.add"
                 | "layer.vectorMask.edit"
