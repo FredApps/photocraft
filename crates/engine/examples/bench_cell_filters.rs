@@ -1,6 +1,6 @@
 //! Time the actual menu command on a 24 MP layer, including history commit.
 //! RAYON_NUM_THREADS=16 cargo run --release -p photocraft-engine --example bench_cell_filters -- crystallize 10 5 8
-//! Arguments: crystallize|pointillize, cell size, repeats (1..9), depth (8|16|32).
+//! Arguments: crystallize|pointillize, cell size, repeats (1..9), depth (8|16|32), layer|background.
 //! Run the same example at the base and changed revisions; compare the output hashes.
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_engine::Session;
@@ -16,6 +16,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let depth: u32 = args.get(3).map(|v| v.parse()).transpose()?.unwrap_or(8);
     if !matches!(case, "crystallize" | "pointillize") || !(3.0..=300.0).contains(&cell) || !(1..=9).contains(&reps) {
         return Err("case, cell size or repeat count out of range".into());
+    }
+    let kind = args.get(4).map(String::as_str).unwrap_or("layer");
+    if !matches!(kind, "layer" | "background") {
+        return Err("kind must be layer or background".into());
     }
     let (w, h) = (6000, 4000);
     let bounds = Rect::new(0, 0, w, h);
@@ -34,7 +38,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let seed = (x as u32).wrapping_mul(0x9e37_79b9) ^ (y as u32).wrapping_mul(0x85eb_ca6b);
                 for c in 0..4 {
                     let value = seed.rotate_left(c * 7).wrapping_add(c * 71) % 65536;
-                    data.push(if c == 3 && seed.is_multiple_of(5) { 0.0 } else { value as f32 / 65535.0 });
+                    data.push(if c == 3 && kind == "background" {
+                        1.0
+                    } else if c == 3 && seed.is_multiple_of(5) {
+                        0.0
+                    } else {
+                        value as f32 / 65535.0
+                    });
                 }
             }
         }
@@ -53,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut output_hash = None;
     for run in 0..reps {
         let mut s = Session::new();
-        s.execute("file.new", json!({"width":w,"height":h,"depth":depth}))?;
+        s.execute("file.new", json!({"width":w,"height":h,"depth":depth,"background":if kind == "background" { "white" } else { "transparent" }}))?;
         s.edit("fixture", |doc, _| {
             let layer = doc.layers.first_mut().ok_or(photocraft_engine::EngineError::Other("no layer".into()))?;
             let surface = layer.surface_mut().ok_or(photocraft_engine::EngineError::Other("no surface".into()))?;
@@ -63,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let start = Instant::now();
         s.execute(&id, json!({"cellSize":cell,"seed":37,"background":[1.0,1.0,1.0,1.0]}))?;
         let seconds = start.elapsed().as_secs_f64();
-        println!("COMMAND {case} cell={cell} depth={depth} run={} seconds={seconds:.6}", run + 1);
+        println!("COMMAND {case} cell={cell} depth={depth} kind={kind} run={} seconds={seconds:.6}", run + 1);
         times.push(seconds);
         if run + 1 == reps {
             let doc = s.active().ok_or("no document")?;
