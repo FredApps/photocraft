@@ -582,7 +582,16 @@ fn with_panel_target(s: &Session, p: &Value) -> Value {
 
 /// Does `l` hold the layer `id` somewhere inside it (not counting `l` itself)?
 fn holds(l: &Layer, id: LayerId) -> bool {
-    matches!(&l.content, LayerContent::Group(g) if g.children.iter().any(|c| c.id == id || holds(c, id)))
+    let mut stack = vec![l];
+    while let Some(layer) = stack.pop() {
+        if let LayerContent::Group(g) = &layer.content {
+            if g.children.iter().any(|c| c.id == id) {
+                return true;
+            }
+            stack.extend(&g.children);
+        }
+    }
+    false
 }
 
 /// The layers a Free Transform of several selected layers moves together (#3592), bottom to top as
@@ -670,26 +679,44 @@ fn transform_many(s: &mut Session, p: &Value, ids: Vec<LayerId>) -> Result<Value
     let h = homography(p, rect)?;
     let affine = affine_of(&h);
     let interp = Interp::parse(p.get("interpolation").and_then(Value::as_str).unwrap_or("bicubic"));
-    s.edit("Free Transform", |doc, _| {
-        let sel = doc.selection.clone();
-        for &id in &ids {
-            let is_group = doc.layer(id).is_some_and(Layer::is_group);
-            let group = group_locks(doc, id);
-            let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
-            transform_layer(if is_group { None } else { sel.as_ref() }, group, l, &h, affine, interp)?;
-        }
-        let snapshot = doc.clone();
-        for &id in &ids {
-            if let Some(l) = doc.layer_mut(id) {
-                refresh_text(&snapshot, l);
-            }
-        }
-        if let Some(sel) = &doc.selection {
-            doc.selection = Some(warp_gray(sel, &h, Interp::Bilinear)?).filter(|s| !s.content_bounds().is_empty());
-        }
-        Ok(())
-    })?;
-    Ok(json!({"rect": rect, "layers": ids.iter().map(|l| l.0).collect::<Vec<_>>()}))
+    let result_ids = ids.iter().map(|id| id.0).collect::<Vec<_>>();
+    crate::jobs::edit_job(
+        s,
+        "Free Transform",
+        move |doc, _, ctx| {
+            ctx.stage(0.0, 1.0, "Transforming", |ctl| {
+                let sel = doc.selection.clone();
+                // Preflight every result, including the selection, before building any pixels.
+                if let Some(sel) = sel.as_ref().filter(|_| !h.is_identity()) {
+                    check_budget(sel.content_bounds(), &h, "selection")?;
+                }
+                for &id in &ids {
+                    let l = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+                    check_layer_budget(if l.is_group() { None } else { sel.as_ref() }, l, &h)?;
+                }
+                for &id in &ids {
+                    let is_group = doc.layer(id).is_some_and(Layer::is_group);
+                    let group = group_locks(doc, id);
+                    crate::extra_cmds::background_to_layer(doc, id);
+                    let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+                    transform_layer_with(if is_group { None } else { sel.as_ref() }, group, l, &h, affine, interp, ctl)?;
+                }
+                if !h.is_identity() {
+                    let snapshot = doc.clone();
+                    for &id in &ids {
+                        if let Some(l) = doc.layer_mut(id) {
+                            refresh_text(&snapshot, l);
+                        }
+                    }
+                    if let Some(sel) = &doc.selection {
+                        doc.selection = Some(warp_gray(sel, &h, Interp::Bilinear)?).filter(|s| !s.content_bounds().is_empty());
+                    }
+                }
+                Ok(())
+            })
+        },
+        move |()| json!({"rect": rect, "layers": result_ids}),
+    )
 }
 
 fn transform(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1417,6 +1444,53 @@ mod tests {
         .unwrap();
         assert!(s.execute("edit.transform.warp", json!({"layers": [a.0, b.0], "style": "arc", "bend": 50})).is_err());
         assert_eq!(bounds_of(&s, a), before.0);
+    }
+
+    #[test]
+    fn several_layers_convert_the_background_for_transform_and_warp() {
+        for warp in [false, true] {
+            let mut s = session();
+            let bg = s.active().unwrap().doc.layers[0].id;
+            let layer = s.active().unwrap().active_layer.unwrap();
+            assert!(s.active().unwrap().doc.is_background(bg));
+            let before = s.active().unwrap().doc.clone();
+            let steps = s.active().unwrap().history.past_len();
+            if warp {
+                s.execute("edit.transform.warp", json!({"layers": [bg.0, layer.0], "style": "arc", "bend": 20})).unwrap();
+            } else {
+                s.execute("edit.transform", json!({"layers": [bg.0, layer.0], "dx": 5})).unwrap();
+            }
+            let st = s.active().unwrap();
+            assert!(!st.doc.is_background(bg));
+            assert!(st.doc.layer(bg).unwrap().surface().unwrap().format().alpha);
+            assert_eq!(st.history.past_len(), steps + 1);
+            s.execute("edit.undo", json!({})).unwrap();
+            assert!(s.active().unwrap().doc == before);
+        }
+    }
+
+    #[test]
+    fn an_empty_warp_target_list_never_falls_back_to_the_active_layer() {
+        for layers in [json!([]), json!([u64::MAX]), json!(["invalid"])] {
+            let mut s = session();
+            let before = s.active().unwrap().doc.clone();
+            let steps = s.active().unwrap().history.past_len();
+            assert!(s.execute("edit.transform.warp", json!({"layers": layers, "style": "arc", "bend": 50})).is_err());
+            assert!(s.active().unwrap().doc == before);
+            assert_eq!(s.active().unwrap().history.past_len(), steps);
+        }
+    }
+
+    #[test]
+    fn several_layers_preflight_the_selection_pixel_budget() {
+        let (mut s, a, b) = two_layers();
+        s.execute("select.rect", json!({"x": 0, "y": 0, "width": 100, "height": 100})).unwrap();
+        let before = s.active().unwrap().doc.clone();
+        let steps = s.active().unwrap().history.past_len();
+        let err = s.execute("edit.transform", json!({"layers": [a.0, b.0], "matrix": [20, 0, 0, 20, 0, 0]})).unwrap_err().to_string();
+        assert!(err.contains("selection"), "{err}");
+        assert!(s.active().unwrap().doc == before);
+        assert_eq!(s.active().unwrap().history.past_len(), steps);
     }
 
     /// #5297: the box Free Transform opens with a selection is the selection's own rectangle,

@@ -548,3 +548,19 @@ fn free_transform_opens_on_the_selection_and_moves_it_with_the_pixels() {
     // What stayed (160..200 × 100..160) and what moved (to 150..210 × 130..190).
     assert_eq!(st.doc.layer(layer).unwrap().surface().unwrap().content_bounds(), photocraft_geom::Rect::new(150, 100, 210, 190));
 }
+
+#[test]
+fn several_layers_keep_the_selection_frame_and_move_the_selection_once() {
+    let mut h = harness();
+    let (red, blue) = two_selected(&mut h);
+    h.state_mut().run("select.rect", json!({"x": 60, "y": 80, "width": 280, "height": 220})).unwrap();
+    begin(&mut h);
+    assert_eq!(quad(&h), [[60.0, 80.0], [340.0, 80.0], [340.0, 300.0], [60.0, 300.0]]);
+    let q = quad(&h);
+    h.state_mut().ui.transform.as_mut().unwrap().quad = shift_x(q, 10.0);
+    key(&mut h, Modifiers::NONE, Key::Enter);
+    assert!(h.state().ui.transform.is_none());
+    assert_eq!(bounds(&h, red), photocraft_geom::Rect::new(110, 100, 210, 160));
+    assert_eq!(bounds(&h, blue), photocraft_geom::Rect::new(260, 200, 310, 250));
+    assert_eq!(h.state().session.active().unwrap().doc.selection.as_ref().unwrap().content_bounds(), photocraft_geom::Rect::new(70, 80, 350, 300));
+}

@@ -346,7 +346,8 @@ fn begin_many(app: &mut PhotocraftApp, ctx: &egui::Context, doc: Arc<Document>, 
         app.ui.open_dialog(crate::state::DialogKind::Error, json!({"message": tl!(LOCKED)}).as_object().cloned().unwrap_or_default());
         return Err(LOCKED.into());
     }
-    let b = tc::multi_bounds(&doc, &ids);
+    // Keep the selection-frame semantics of the single-layer tool (#5297).
+    let b = ids.iter().filter_map(|&id| doc.layer(id)).fold(photocraft_geom::Rect::EMPTY, |r, l| r.union(&tc::transform_frame(&doc, l)));
     if b.is_empty() {
         return Err("Could not transform: the layers are empty".into());
     }
