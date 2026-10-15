@@ -325,7 +325,8 @@ pub struct UiSetParams {
     /// dashes, dashOffset and opacity; null disables the stroke). Shape stroke fields use
     /// `shape.edit` names and units; colour comes from `tools.setColors`. camTransformOnDrop (bool,
     /// the Content-Aware Move tool's Transform On Drop). tileGrid (bool, a developer overlay of the
-    /// active layer's storage tiles). layerFilter (an object patching the Layers panel filter:
+    /// active layer's storage tiles). strokeTrace (true/false or "stderr"/"off", runtime stroke
+    /// latency tracing; file output is configured only at launch). layerFilter (an object patching the Layers panel filter:
     /// by: kind/name/mode; kinds: a list of pixel/adjustment/type/shape/smart; name: a string;
     /// mode: a blend mode name such as Multiply or Pass Through). Omitted filter fields keep
     /// their current values. Other fields are an error.
