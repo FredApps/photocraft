@@ -8,7 +8,7 @@ use photocraft_geom::{Point, Rect};
 
 use crate::Dab;
 use crate::brush::{BrushSettings, TipShape};
-use crate::render::BrushContext;
+use crate::render::{BrushContext, rect_around};
 use crate::tile::GrayTile;
 
 /// Segments in the outline of a computed round tip.
@@ -22,8 +22,9 @@ const FULL_THRESHOLD: f32 = 1.0 / 255.0;
 const HALF_THRESHOLD: f32 = 0.5;
 /// The largest side, in pixels, of the box [`aliased_outline`] rasterises one dab in: round tips
 /// up to 508 px fit, sampled ones up to about 359 px (they need the corner reach). Tracing it,
-/// once per brush change, takes a few milliseconds in a release build; past it the tip's smooth
-/// outline is within a pixel of the stair-steps anyway.
+/// once per brush change, takes a few milliseconds in a release build, plus the sampled tip's mip
+/// pyramid, which grows with its bitmap (about 12 ms for 2500 × 2500 px; each stroke with the tip
+/// builds it too). Past the cap the tip's smooth outline is within a pixel of the stair-steps.
 const MAX_ALIASED_SIDE: u32 = 512;
 /// The most corners an aliased outline may have; a more ragged sampled tip gets none.
 const MAX_ALIASED_CORNERS: usize = 1 << 14;
@@ -78,7 +79,7 @@ pub fn tip_outline(b: &BrushSettings, full: bool) -> Option<Vec<Vec<[f32; 2]>>> 
 /// Brush) is left out: the cursor shows the plain tip. `None` when the tip fills nothing, or is
 /// too big (a round tip over 508 px) or too ragged to outline.
 pub fn aliased_outline(b: &BrushSettings) -> Option<Vec<Vec<[i32; 2]>>> {
-    let mut b = b.clone();
+    let mut b = b.bounded_for_render();
     b.aliased = true;
     // The plain tip: Texture and the Dual Brush depend on where the dab lands, and Wet Edges and
     // Noise never change which pixels an aliased dab covers.
@@ -86,23 +87,42 @@ pub fn aliased_outline(b: &BrushSettings) -> Option<Vec<Vec<[i32; 2]>>> {
     b.dual_brush.enabled = false;
     b.wet_edges = false;
     b.noise = false;
+    let dab = plain_dab(&b);
+    // A tip too big to trace is turned away before `BrushContext::new` builds a sampled tip's
+    // whole mip pyramid, then by the context's own box in case the two ever differ.
+    let fits = |r: Rect| r.width() <= MAX_ALIASED_SIDE && r.height() <= MAX_ALIASED_SIDE;
+    if !fits(aliased_dab_rect(&b, &dab)) {
+        return None;
+    }
     let ctx = BrushContext::new(&b);
-    let b = &ctx.brush;
-    // The dab `DabBuilder::build` makes without dynamics, at full pressure and flow.
-    let dab = Dab {
-        angle: b.angle.to_radians(),
-        roundness: b.roundness.clamp(0.01, 1.0),
-        flip_x: b.flip_x,
-        flip_y: b.flip_y,
-        ..Dab::round(Point::new(0.0, 0.0), (b.size / 2.0).max(0.5), 1.0)
-    };
     let rect = ctx.dab_rect(&dab, false);
-    if rect.width() > MAX_ALIASED_SIDE || rect.height() > MAX_ALIASED_SIDE {
+    if !fits(rect) {
         return None;
     }
     let mut cov = Vec::new();
     ctx.rasterize(&dab, false, rect, &mut cov);
     pixel_rings(&cov, rect)
+}
+
+/// The dab `DabBuilder::build` makes of `b` without dynamics, at full pressure and flow, centred
+/// at the origin.
+fn plain_dab(b: &BrushSettings) -> Dab {
+    Dab {
+        angle: b.angle.to_radians(),
+        roundness: b.roundness.clamp(0.01, 1.0),
+        flip_x: b.flip_x,
+        flip_y: b.flip_y,
+        ..Dab::round(Point::new(0.0, 0.0), (b.size / 2.0).max(0.5), 1.0)
+    }
+}
+
+/// The box `BrushContext::dab_rect` gives `dab`, an aliased dab of `b` (bounded for rendering),
+/// without building the context: it reaches the radius from the centre, or for a sampled tip √2
+/// times it, the corners of its bitmap turned. Roundness, angle and the bitmap's aspect don't
+/// change it.
+fn aliased_dab_rect(b: &BrushSettings, dab: &Dab) -> Rect {
+    let sampled = b.tip.bitmap().is_some_and(GrayTile::is_valid);
+    rect_around(dab, if sampled { dab.radius * std::f32::consts::SQRT_2 } else { dab.radius })
 }
 
 /// The boundary of the pixels of `rect` that `cov` (row-major) covers, as the rings
@@ -762,6 +782,63 @@ mod tests {
             let at = [3.3, -2.6];
             let placed = placed(&brush(508.0), at).unwrap_or_else(|| panic!("square {square}: no outline at {at:?}"));
             assert_eq!(placed, painted(&brush(508.0), at, PixelFormat::RGBA8, 260), "square {square}");
+        }
+    }
+
+    /// The cap is checked before `BrushContext::new` builds a sampled tip's mipmaps, on the box
+    /// the context's `dab_rect` would give: for round, sampled, unusable and stored tips, at any
+    /// roundness, angle and flip, for the Block square and for sizes the renderer bounds. So the
+    /// early check turns away exactly the tips over the cap (round over 508 px, sampled over
+    /// about 359), and no others.
+    #[test]
+    fn the_cap_is_checked_before_the_mipmaps_are_built() {
+        let stored = |full: Option<GrayTile>| {
+            TipShape::Stored(crate::StoredTile {
+                key: "l".into(),
+                width: 20,
+                height: 14,
+                preview: std::sync::Arc::new(l_tip()),
+                full: full.map(std::sync::Arc::new),
+            })
+        };
+        let tips = [
+            ("round", TipShape::Round),
+            ("L", TipShape::Sampled(l_tip())),
+            ("3×40", TipShape::Sampled(GrayTile::from_fn(3, 40, |_, _| 1.0))),
+            ("unusable", TipShape::Sampled(GrayTile { width: 4, height: 4, data: vec![u16::MAX; 3].into() })),
+            ("stored", stored(None)),
+            ("stored, loaded", stored(Some(ring_tip()))),
+        ];
+        let sizes: Vec<f32> = (1..=40)
+            .map(|s| s as f32 / 2.0)
+            .chain((1430..=1450).map(|s| s as f32 / 4.0))
+            .chain((2028..=2040).map(|s| s as f32 / 4.0))
+            .chain([1000.0, 5000.0, 1e9, f32::NAN, f32::INFINITY, -4.0, 0.0])
+            .collect();
+        let mut fails = Vec::new();
+        for (name, tip) in &tips {
+            for &size in &sizes {
+                for (roundness, angle, flip_x, square) in [(1.0, 0.0, false, false), (0.2, 30.0, true, false), (0.5, -110.0, false, true)] {
+                    let b = BrushSettings { size, roundness, angle, flip_x, square, aliased: true, tip: tip.clone(), ..Default::default() };
+                    let b = b.bounded_for_render();
+                    let dab = plain_dab(&b);
+                    let (early, exact) = (aliased_dab_rect(&b, &dab), BrushContext::new(&b).dab_rect(&dab, false));
+                    if early != exact {
+                        fails.push(format!("{name} tip at {size} px, roundness {roundness}, angle {angle}: {early:?}, the context's {exact:?}"));
+                    }
+                }
+            }
+        }
+        assert!(fails.is_empty(), "{} boxes differ:\n{}", fails.len(), fails.join("\n"));
+        let fits = |tip: &TipShape, size: f32| {
+            let b = BrushSettings { size, aliased: true, tip: tip.clone(), ..Default::default() };
+            let r = aliased_dab_rect(&b, &plain_dab(&b));
+            r.width().max(r.height()) <= MAX_ALIASED_SIDE
+        };
+        for (name, tip, last) in [("round", TipShape::Round, 508.0), ("sampled", TipShape::Sampled(l_tip()), 359.0)] {
+            let b = |size: f32| BrushSettings { size, tip: tip.clone(), ..Default::default() };
+            assert!(fits(&tip, last) && aliased_outline(&b(last)).is_some(), "{name} tip at {last} px");
+            assert!(!fits(&tip, last + 1.0) && aliased_outline(&b(last + 1.0)).is_none(), "{name} tip at {} px", last + 1.0);
         }
     }
 

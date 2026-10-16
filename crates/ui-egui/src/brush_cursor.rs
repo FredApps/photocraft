@@ -74,8 +74,22 @@ pub(crate) fn cursor(painter: &Painter, at: Pos2, brush: &BrushSettings, radius:
         }
         return crate::tool_cursor::outline(painter, at, pts, centre);
     }
-    let r = if normal { photocraft_paint::half_coverage_radius(radius, brush.hardness).max(1.0) } else { radius };
-    crate::tool_cursor::circle(painter, at, r, centre)
+    crate::tool_cursor::circle(painter, at, circle_radius(brush, radius, normal), centre)
+}
+
+/// [`cursor`]'s outline, without the centre mark, painted around `at` instead of shown as the OS
+/// pointer: for a tip that lands away from the pointer, as the Pencil's does on the pixel grid.
+pub(crate) fn paint(painter: &Painter, at: Pos2, brush: &BrushSettings, radius: f32, axes: [Vec2; 2], normal: bool) {
+    match rings(painter.ctx(), brush, !normal) {
+        Some(rings) => crate::tool_cursor::paint_outline(painter, at, on_screen(&rings, axes)),
+        None => crate::tool_cursor::paint_circle(painter, at, circle_radius(brush, radius, normal)),
+    }
+}
+
+/// The plain circle's radius for a tip of screen radius `radius`: its 50 % contour's for the
+/// normal cursor.
+fn circle_radius(brush: &BrushSettings, radius: f32, normal: bool) -> f32 {
+    if normal { photocraft_paint::half_coverage_radius(radius, brush.hardness).max(1.0) } else { radius }
 }
 
 /// The tip outline in radius units, cached across frames; `None` when the plain circle says it all
