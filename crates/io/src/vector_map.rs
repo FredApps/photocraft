@@ -258,10 +258,20 @@ pub fn parse_vstk(data: &[u8], dpi: f32) -> Option<VstkInfo> {
         _ => Vec::new(),
     };
     let paint = get_desc(&d, "strokeStyleContent").and_then(content_fill).unwrap_or(Fill::Solid(photocraft_color::Color::BLACK));
+    let mut opacity = num(d.get("strokeStyleOpacity")).map_or(1.0, |v| v as f32 / 100.0);
+    // Write folds colour alpha into strokeStyleOpacity for Photoshop. Restore both Appearance
+    // fields when pcAl is present so PhotoCraft does not show a maxed colour alpha (#6180).
+    if let Fill::Solid(c) = &paint
+        && c.alpha.is_finite()
+        && c.alpha > 1e-6
+        && (c.alpha - 1.0).abs() > 1e-6
+    {
+        opacity = (opacity / c.alpha).clamp(0.0, 1.0);
+    }
     let stroke = ShapeStroke {
         width: unit_px(d.get("strokeStyleLineWidth"), dpi).unwrap_or(1.0) as f32,
         paint,
-        opacity: num(d.get("strokeStyleOpacity")).map_or(1.0, |v| v as f32 / 100.0),
+        opacity,
         align,
         cap,
         join,
@@ -294,7 +304,10 @@ pub fn vstk_bytes(stroke: Option<&ShapeStroke>, fill_enabled: bool, dpi: f32) ->
     let default = ShapeStroke::default();
     let folded = stroke.map(fold_stroke_color_alpha);
     let s = folded.as_ref().unwrap_or(&default);
-    let (_, content) = fill_to_desc(&s.paint);
+    // Keep pcAl on the original colour so Appearance can restore fill/stroke alphas separately
+    // from the folded Photoshop opacity (#6180).
+    let paint = stroke.map(|st| &st.paint).unwrap_or(&s.paint);
+    let (_, content) = fill_to_desc(paint);
     let class = match s.paint {
         Fill::Solid(_) => "solidColorLayer",
         Fill::Gradient { .. } => "gradientLayer",
@@ -678,10 +691,14 @@ mod tests {
     #[test]
     fn vstk_folds_color_alpha_into_stroke_opacity() {
         let s = ShapeStroke { width: 2.0, paint: Fill::Solid(Color::rgba(0.0, 0.0, 1.0, 0.4)), opacity: 0.5, ..ShapeStroke::default() };
-        let got = parse_vstk(&vstk_bytes(Some(&s), true, 72.0), 72.0).unwrap().stroke.unwrap();
-        assert!((got.opacity - 0.2).abs() < 1e-4);
+        let bytes = vstk_bytes(Some(&s), true, 72.0);
+        let raw = crate::blocks::parse_prefix_versioned(&bytes).unwrap();
+        let file_opacity = crate::blocks::num(raw.get("strokeStyleOpacity")).unwrap() as f32 / 100.0;
+        assert!((file_opacity - 0.2).abs() < 1e-4, "Photoshop sees the product in strokeStyleOpacity");
+        let got = parse_vstk(&bytes, 72.0).unwrap().stroke.unwrap();
+        assert!((got.opacity - 0.5).abs() < 1e-4);
         let Fill::Solid(c) = got.paint else { panic!("solid") };
-        assert!((c.alpha - 1.0).abs() < 1e-5);
+        assert!((c.alpha - 0.4).abs() < 1e-5);
         assert!((c.to_rgb()[2] - 1.0).abs() < 1e-3);
     }
 
