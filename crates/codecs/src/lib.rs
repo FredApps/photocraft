@@ -257,10 +257,7 @@ pub fn encode(image: &Image, format: Format, opts: &EncodeOptions) -> Result<Vec
         Format::Fits => fits::encode(image, plan, opts),
         Format::Dpx => dpx::encode(image, plan, opts),
         Format::Cineon => Err(CodecError::unsupported(format, "Cineon is import-only; save as DPX, TIFF or EXR instead")),
-        Format::PhotoshopRaw => Err(CodecError::unsupported(
-            format,
-            "Photoshop Raw export needs width, depth and header options; save as TIFF or PNG instead",
-        )),
+        Format::PhotoshopRaw => Err(CodecError::unsupported(format, "Photoshop Raw export needs width, depth and header options; save as TIFF or PNG instead")),
         Format::OpenExr => exr::encode(image, plan, opts),
         Format::Heif => Err(CodecError::unsupported(format, "encoding is not available in this build")),
         Format::Gif | Format::Bmp | Format::Tga | Format::Ico | Format::Qoi | Format::Hdr | Format::Avif => via_image::encode(format, image, plan, opts),

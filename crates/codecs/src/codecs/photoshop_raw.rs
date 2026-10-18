@@ -26,19 +26,11 @@ struct Header {
 }
 
 fn read_u16(b: &[u8], off: usize, be: bool) -> u16 {
-    if be {
-        u16::from_be_bytes([b[off], b[off + 1]])
-    } else {
-        u16::from_le_bytes([b[off], b[off + 1]])
-    }
+    if be { u16::from_be_bytes([b[off], b[off + 1]]) } else { u16::from_le_bytes([b[off], b[off + 1]]) }
 }
 
 fn read_u32(b: &[u8], off: usize, be: bool) -> u32 {
-    if be {
-        u32::from_be_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-    } else {
-        u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-    }
+    if be { u32::from_be_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]) } else { u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]) }
 }
 
 fn layout_for_channels(channels: u16) -> Option<ChannelLayout> {
@@ -95,15 +87,7 @@ fn try_parse_header(b: &[u8], be: bool) -> Option<Header> {
     if b.len() < header_size.saturating_add(payload as usize) {
         return None;
     }
-    Some(Header {
-        channels,
-        rows,
-        cols,
-        depth,
-        interleaved: mode == 0,
-        header_size,
-        big_endian: be,
-    })
+    Some(Header { channels, rows, cols, depth, interleaved: mode == 0, header_size, big_endian: be })
 }
 
 /// True when `b` begins with a plausible Photoshop Raw retained header.
@@ -146,11 +130,7 @@ fn read_u16_pixels(data: &[u8], w: usize, h: usize, ch: usize, interleaved: bool
     if interleaved {
         let mut pos = 0;
         for _ in 0..samples {
-            let v = if be {
-                u16::from_be_bytes([data[pos], data[pos + 1]])
-            } else {
-                u16::from_le_bytes([data[pos], data[pos + 1]])
-            };
+            let v = if be { u16::from_be_bytes([data[pos], data[pos + 1]]) } else { u16::from_le_bytes([data[pos], data[pos + 1]]) };
             raw.push(v);
             pos += 2;
         }
@@ -159,11 +139,7 @@ fn read_u16_pixels(data: &[u8], w: usize, h: usize, ch: usize, interleaved: bool
             let base = c * plane * 2;
             for i in 0..plane {
                 let pos = base + i * 2;
-                let v = if be {
-                    u16::from_be_bytes([data[pos], data[pos + 1]])
-                } else {
-                    u16::from_le_bytes([data[pos], data[pos + 1]])
-                };
+                let v = if be { u16::from_be_bytes([data[pos], data[pos + 1]]) } else { u16::from_le_bytes([data[pos], data[pos + 1]]) };
                 raw.push(v);
             }
         }

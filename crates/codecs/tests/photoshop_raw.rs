@@ -24,9 +24,7 @@ fn detect_and_extension() {
 
 #[test]
 fn decode_interleaved_rgb8() {
-    let pixels: [u8; 12] = [
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
-    ];
+    let pixels: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
     let bytes = pack_header(3, 2, 2, 8, 0, &pixels);
     let img = decode(&bytes).unwrap();
     assert_eq!(img.dimensions(), (2, 2));
@@ -37,24 +35,15 @@ fn decode_interleaved_rgb8() {
 
 #[test]
 fn decode_planar_rgb8() {
-    let pixels: [u8; 12] = [
-        1, 2, 3, 4, 10, 11, 12, 13, 20, 21, 22, 23,
-    ];
+    let pixels: [u8; 12] = [1, 2, 3, 4, 10, 11, 12, 13, 20, 21, 22, 23];
     let bytes = pack_header(3, 2, 2, 8, 1, &pixels);
     let img = decode(&bytes).unwrap();
-    assert_eq!(
-        img.data(),
-        &[
-            1, 10, 20, 2, 11, 21, 3, 12, 22, 4, 13, 23,
-        ]
-    );
+    assert_eq!(img.data(), &[1, 10, 20, 2, 11, 21, 3, 12, 22, 4, 13, 23,]);
 }
 
 #[test]
 fn decode_rgb16_big_endian() {
-    let pixels = [
-        0x00, 0x01, 0x01, 0x00, 0xFF, 0xFE, 0x00, 0x02, 0x02, 0x00, 0xFE, 0xFF,
-    ];
+    let pixels = [0x00, 0x01, 0x01, 0x00, 0xFF, 0xFE, 0x00, 0x02, 0x02, 0x00, 0xFE, 0xFF];
     let bytes = pack_header(3, 1, 2, 16, 0, &pixels);
     let img = decode(&bytes).unwrap();
     assert_eq!(img.sample_type(), SampleType::U16);
