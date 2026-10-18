@@ -1156,13 +1156,7 @@ mod tests {
         let (w, h) = (200usize, 100usize);
         let flat = vec![[0.5f32, 0.5, 0.5, 1.0]; w * h];
         let mut out = flat.clone();
-        develop(
-            &mut out,
-            w,
-            h,
-            &CameraRaw { vignette_amount: -80.0, vignette_midpoint: 0.0, vignette_feather: 50.0, ..Default::default() },
-            false,
-        );
+        develop(&mut out, w, h, &CameraRaw { vignette_amount: -80.0, vignette_midpoint: 0.0, vignette_feather: 50.0, ..Default::default() }, false);
         let corner = out[0][0];
         let top_mid = out[w / 2][0];
         assert!(corner < top_mid - 0.05, "corner {corner} should be darker than top edge {top_mid}");
