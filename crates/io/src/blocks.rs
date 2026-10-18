@@ -207,7 +207,14 @@ pub fn color_to_desc(c: &Color) -> Descriptor {
             Descriptor::new("RGBC").with("Rd  ", d(rgb[0] * 255.0)).with("Grn ", d(rgb[1] * 255.0)).with("Bl  ", d(rgb[2] * 255.0))
         }
     };
-    if c.alpha.is_finite() && (c.alpha - 1.0).abs() > 1e-6 { desc.with("pcAl", d(c.alpha.clamp(0.0, 1.0))) } else { desc }
+    desc
+}
+
+/// Solid shape fills have no other alpha slot. Write `pcAl` only here so gradient stops
+/// keep using `Trns` alone (#6180).
+fn color_to_desc_with_pc_alpha(c: &Color) -> Descriptor {
+    let desc = color_to_desc(c);
+    if c.alpha.is_finite() && (c.alpha - 1.0).abs() > 1e-6 { desc.with("pcAl", Value::Double(f64::from(c.alpha.clamp(0.0, 1.0)))) } else { desc }
 }
 
 pub(crate) fn get_desc<'a>(d: &'a Descriptor, key: &str) -> Option<&'a Descriptor> {
@@ -469,7 +476,7 @@ pub fn write_fill(f: &Fill) -> ([u8; 4], Vec<u8>) {
 /// A fill as (block key, descriptor with class `null`).
 pub fn fill_to_desc(f: &Fill) -> ([u8; 4], Descriptor) {
     match f {
-        Fill::Solid(c) => (*b"SoCo", Descriptor::new("null").with("Clr ", Value::Descriptor(color_to_desc(c)))),
+        Fill::Solid(c) => (*b"SoCo", Descriptor::new("null").with("Clr ", Value::Descriptor(color_to_desc_with_pc_alpha(c)))),
         Fill::Gradient { stops, angle, scale, style, reverse, opacity_stops, midpoints, offset, dither, align } => {
             let prc = |v: f32| Value::UnitFloat { unit: *b"#Prc", value: f64::from(v * 100.0) };
             let mut d = Descriptor::new("null")
@@ -836,12 +843,38 @@ mod tests {
     #[test]
     fn color_descriptor_keeps_photocraft_alpha() {
         use photocraft_color::Color;
+        use photocraft_doc::Fill;
         let c = Color::rgba(0.2, 0.4, 0.6, 0.25);
-        let back = super::color_from_desc(&super::color_to_desc(&c)).unwrap();
+        let (k, d) = super::fill_to_desc(&Fill::Solid(c));
+        let Fill::Solid(back) = super::fill_from_desc(&k, &d).unwrap() else { panic!("solid") };
         assert!((back.alpha - 0.25).abs() < 1e-5);
         assert!((back.to_rgb()[0] - 0.2).abs() < 1e-3);
-        let opaque = super::color_from_desc(&super::color_to_desc(&Color::rgb(1.0, 0.0, 0.0))).unwrap();
+        let (k, d) = super::fill_to_desc(&Fill::Solid(Color::rgb(1.0, 0.0, 0.0)));
+        let Fill::Solid(opaque) = super::fill_from_desc(&k, &d).unwrap() else { panic!("solid") };
         assert!((opaque.alpha - 1.0).abs() < 1e-6);
+        assert!(super::color_to_desc(&c).get("pcAl").is_none(), "generic colour descriptors have no pcAl");
+    }
+
+    #[test]
+    fn gradient_stop_alpha_round_trips_once() {
+        use photocraft_color::Color;
+        use photocraft_doc::Fill;
+        let fill = Fill::Gradient {
+            stops: vec![(0.0, Color::rgba(1.0, 0.0, 0.0, 0.5)), (1.0, Color::WHITE)],
+            angle: 90.0,
+            scale: 1.0,
+            style: photocraft_doc::GradientStyle::Linear,
+            reverse: false,
+            opacity_stops: vec![],
+            midpoints: vec![],
+            offset: (0.0, 0.0),
+            dither: false,
+            align: true,
+        };
+        let (k, d) = super::fill_to_desc(&fill);
+        let Fill::Gradient { stops, opacity_stops, .. } = super::fill_from_desc(&k, &d).unwrap() else { panic!("grad") };
+        assert!((stops[0].1.alpha - 1.0).abs() < 1e-4, "colour alpha lives in Trns, not the stop colour");
+        assert!(opacity_stops.iter().any(|(_, a)| (*a - 0.5).abs() < 1e-3), "{opacity_stops:?}");
     }
 
     #[test]
