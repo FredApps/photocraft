@@ -192,7 +192,7 @@ fn with_pc_alpha(mut c: Color, d: &Descriptor) -> Color {
 /// [`Color`] → descriptor in its own model.
 pub fn color_to_desc(c: &Color) -> Descriptor {
     let d = |v: f32| Value::Double(f64::from(v));
-    let desc = match c.mode {
+    match c.mode {
         ColorMode::Cmyk => Descriptor::new("CMYC")
             .with("Cyn ", d(c.c[0] * 100.0))
             .with("Mgnt", d(c.c[1] * 100.0))
@@ -206,8 +206,7 @@ pub fn color_to_desc(c: &Color) -> Descriptor {
             let rgb = c.to_rgb();
             Descriptor::new("RGBC").with("Rd  ", d(rgb[0] * 255.0)).with("Grn ", d(rgb[1] * 255.0)).with("Bl  ", d(rgb[2] * 255.0))
         }
-    };
-    desc
+    }
 }
 
 /// Solid shape fills have no other alpha slot. Write `pcAl` only here so gradient stops
