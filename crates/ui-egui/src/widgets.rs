@@ -350,6 +350,37 @@ pub fn value_field_units(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInc
     value_field_in(ui, value, range, "", width, 0.0, FieldOpts { decimals: Some(decimals), units: Some(units), ..Default::default() }).0
 }
 
+/// A [`value_field`] whose dimmed unit suffix is itself the button: the unit is drawn in the
+/// field's right edge (where a plain suffix sits) and a left click on it opens `menu` — the unit
+/// list — right there, as in Photoshop's size dialogs. The value is shown in `units.unit` and a
+/// typed unit converts at `units`' resolution. Returns whether the value changed and, when the
+/// menu picked a unit, its name.
+pub fn value_field_unit_menu(
+    ui: &mut Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    width: f32,
+    decimals: u32,
+    units: FieldUnits,
+    menu: impl FnOnce(&mut Ui) -> Option<&'static str>,
+) -> (bool, Option<&'static str>) {
+    let t = Tokens::get(ui.ctx());
+    let suffix = units.unit.suffix().to_owned();
+    let suffix_font = theme::mono(11.0);
+    // Room for the suffix plus a little padding: the number stops clear of it, and that same room
+    // is the click target. Drawn here (not by the field) so it can be sensed.
+    let suffix_w = if suffix.is_empty() { 0.0 } else { ui.painter().layout_no_wrap(suffix.clone(), suffix_font.clone(), t.text_faint).size().x + 6.0 };
+    let (resp, rect) = value_field_in(ui, value, range, "", width, suffix_w, FieldOpts { decimals: Some(decimals), units: Some(units), ..Default::default() });
+    let mut chosen = None;
+    if !suffix.is_empty() {
+        let suffix_rect = Rect::from_min_max(pos2(rect.right() - suffix_w, rect.top()), rect.max);
+        let click = ui.interact(suffix_rect, resp.id.with("unit-menu"), Sense::click());
+        ui.painter().text(pos2(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, &suffix, suffix_font, t.text_faint);
+        egui::Popup::menu(&click).show(|ui| chosen = menu(ui));
+    }
+    (resp.changed(), chosen)
+}
+
 fn field_resolution_id() -> egui::Id {
     egui::Id::new("pc-field-resolution")
 }
@@ -2467,6 +2498,54 @@ mod tests {
         let mut h = mode_dropdown(false);
         wheel(&mut h, egui::MouseWheelUnit::Line, egui::vec2(0.0, -1.0), Modifiers::NONE);
         assert_eq!(*h.state(), 0);
+    }
+
+    /// The unit in a size dialog sits inside the field: a left click on that suffix — and only
+    /// on it, never on the number — opens the unit list, and the pick comes back to the caller.
+    #[test]
+    fn value_field_unit_menu_opens_on_a_left_click_of_its_suffix() {
+        use egui::{PointerButton, Pos2, vec2};
+        use photocraft_engine::prefs::Unit;
+        /// Where the field was laid out, how often the menu ran, the pick it returned.
+        type Seen = (Option<Pos2>, u32, Option<&'static str>);
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(300.0, 120.0)).build_ui_state(
+            |ui, seen: &mut Seen| {
+                let units = super::FieldUnits { unit: Unit::Pixels, dpi: 300.0, ppi: 72.0 };
+                let mut value = 12.0f32;
+                if seen.0.is_none() {
+                    seen.0 = Some(ui.cursor().min);
+                }
+                let (_, pick) = super::value_field_unit_menu(ui, &mut value, 0.0..=300.0, 64.0, 0, units, |_| {
+                    seen.1 += 1;
+                    Some("cm")
+                });
+                if pick.is_some() {
+                    seen.2 = pick;
+                }
+            },
+            (None, 0, None),
+        );
+        h.run_steps(2);
+        let origin = h.state().0.expect("the field was laid out");
+        let suffix = origin + vec2(64.0 - 8.0, super::VALUE_FIELD_H / 2.0);
+        let number = origin + vec2(12.0, super::VALUE_FIELD_H / 2.0);
+        // The number is an ordinary field: pressing it must not open the unit menu.
+        h.hover_at(number);
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: number, button: PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: number, button: PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        h.run_steps(3);
+        assert_eq!(h.state().1, 0, "clicking the number is not the unit button");
+        // The suffix is: hover, press, release — and the menu runs with its pick flowing back.
+        h.hover_at(suffix);
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: suffix, button: PointerButton::Primary, pressed: true, modifiers: Default::default() });
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: suffix, button: PointerButton::Primary, pressed: false, modifiers: Default::default() });
+        h.run_steps(3);
+        assert!(h.state().1 >= 1, "a left click on the unit suffix opens the menu");
+        assert_eq!(h.state().2, Some("cm"), "the picked unit comes back to the caller");
     }
 }
 

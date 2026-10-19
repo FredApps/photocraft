@@ -324,3 +324,66 @@ fn preview_cache_tracks_document_revision() {
     app.run(COMMAND, json!({"margin":23})).unwrap();
     assert!(preview(&app, &app.session.active().unwrap().doc).unwrap().0.vertical.contains(&23.0));
 }
+
+#[test]
+fn the_margin_unit_is_the_dialogs_own_and_defaults_to_the_ruler_unit() {
+    use photocraft_engine::prefs::Unit;
+    let mut app = app();
+    app.run("prefs.set", json!({"path": "unitsAndRulers.rulers", "value": "cm"})).unwrap();
+    let id = open(&mut app);
+    let mut f = app.ui.dialog_mut(id).unwrap().fields.clone();
+    assert_eq!(margin_unit(&app, &f), Unit::Centimeters, "the dialog opens in the ruler unit");
+    f.insert("__marginUnit".into(), json!("mm"));
+    assert_eq!(margin_unit(&app, &f), Unit::Millimeters, "the dialog's own unit wins while it is open");
+    f.insert("__marginUnit".into(), json!("bogus"));
+    assert_eq!(margin_unit(&app, &f), Unit::Centimeters, "an unknown name falls back to the ruler unit");
+    app.run("prefs.set", json!({"path": "unitsAndRulers.rulers", "value": "percent"})).unwrap();
+    f.remove("__marginUnit");
+    assert_eq!(margin_unit(&app, &f), Unit::Pixels, "a margin is a length, never a percent");
+}
+
+#[test]
+fn margins_read_in_the_dialog_unit_commit_and_preview_in_pixels() {
+    use photocraft_engine::prefs::Unit;
+    for dpi in [96, 300] {
+        let mut app = app();
+        app.run("file.new", json!({"width": 1200, "height": 800, "resolution": dpi})).unwrap();
+        let id = open(&mut app);
+        let ppi = app.session.prefs().units_and_rulers.point_size.per_inch();
+        // 0.5 cm at this document's resolution — 59 px at 300 ppi — is what the field shows.
+        let half_cm = Unit::Centimeters.to_px(0.5, f64::from(dpi), 1.0, ppi);
+        {
+            let f = &mut app.ui.dialog_mut(id).unwrap().fields;
+            f.insert("margin".into(), json!([half_cm, 0, 0, 0]));
+            f.insert("__marginUnit".into(), json!("cm"));
+        }
+        draw(&mut app, id); // renders the four fields in centimetres
+        let f = &app.ui.dialog_mut(id).unwrap().fields;
+        let stored = f["margin"][0].as_f64().unwrap();
+        assert!((stored - half_cm).abs() < 1e-9, "{dpi} dpi: reading the fields in cm must not retype the pixels: {stored}");
+        let p = params(f);
+        assert!((p["margin"][0].as_f64().unwrap() - half_cm).abs() < 1e-9, "{dpi} dpi: committed parameters stay in pixels");
+        assert!(p.get("__marginUnit").is_none(), "{dpi} dpi: the unit is the dialog's own view, never a command parameter");
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        let guides = &app.session.active().unwrap().doc.guides;
+        assert!(
+            guides.horizontal.iter().any(|y| (y - half_cm).abs() < 1e-6),
+            "{dpi} dpi: the top guide sits at the print-accurate {half_cm} px: {:?}",
+            guides.horizontal
+        );
+    }
+}
+
+#[test]
+fn the_margin_unit_lives_only_while_the_dialog_is_open() {
+    let mut app = app();
+    let id = open(&mut app);
+    app.ui.dialog_mut(id).unwrap().fields.insert("__marginUnit".into(), json!("cm"));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert!(app.ui.view.guide_layout.get("__marginUnit").is_none(), "the unit is never remembered with the layout");
+    let id = open(&mut app);
+    let mut fields = app.ui.dialog_mut(id).unwrap().fields.clone();
+    fields.insert("__marginUnit".into(), json!("cm"));
+    reset(&app, &mut fields);
+    assert!(fields.get("__marginUnit").is_none(), "Alt+Cancel returns the unit to its default");
+}
