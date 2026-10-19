@@ -814,6 +814,33 @@ mod tests {
         assert_eq!(active_bounds(&s), Rect::new(0, 2, 10_000, 10));
     }
 
+    /// #7278 review: a type layer whose font is missing warps its pixels, so that warp is priced
+    /// too, and one past the budget is refused before anything changes.
+    #[test]
+    fn a_missing_font_type_layer_past_the_pixel_budget_is_refused_and_changes_nothing() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 16, "height": 16})).unwrap();
+        let r = s.execute("type.create", json!({"x": 2, "y": 10, "text": "Hi", "size": 8, "font": "NoSuchFamily7278"})).unwrap();
+        let id = LayerId(r["layer"].as_u64().unwrap());
+        s.edit("psd pixels", |doc, _| {
+            let LayerContent::Text(t) = &mut doc.layer_mut(id).unwrap().content else { panic!() };
+            let mut c = Surface::new(t.cache.as_ref().unwrap().format());
+            c.fill_rect(Rect::new(10, 2, 11, 10), &[1.0, 0.0, 0.0, 1.0]);
+            t.cache = Some(c);
+            Ok(())
+        })
+        .unwrap();
+        let st = s.active().unwrap();
+        let (before, revision, steps) = (st.doc.clone(), st.revision, st.history.past_len());
+        let mut p = stretch(2e5);
+        p["layer"] = json!(id.0);
+        let err = s.execute("edit.transform", p).unwrap_err().to_string();
+        assert!(err.starts_with("not enough memory for transforming pixels") && err.ends_with("the document was not changed"), "{err}");
+        let st = s.active().unwrap();
+        assert!(st.doc == before, "the document is untouched");
+        assert_eq!((st.revision, st.history.past_len()), (revision, steps));
+    }
+
     #[test]
     fn a_group_with_one_layer_past_the_budget_is_not_half_transformed() {
         let mut s = column();
