@@ -2976,6 +2976,11 @@ fn event_for(item: &AtnEvent) -> Option<&'static Event> {
 /// The event `id` exports as: the first event listing it whose converter accepts the params
 /// (Quick Mask on is a `set`, off a `clearEvent`).
 fn event_and_descriptor(id: &str, params: &Value) -> Option<(&'static Event, Descriptor)> {
+    // Crst carries cell size, but not PhotoCraft's random seed. Do not let the simple
+    // field mapper silently replace an explicit native seed with the default zero.
+    if id == "filter.pixelate.crystallize" && params.get("seed").is_some_and(|seed| seed.as_f64() != Some(0.0)) {
+        return None;
+    }
     EVENTS.iter().filter(|e| e.ids.contains(&id)).find_map(|e| (e.to)(id, params).map(|d| (e, d)))
 }
 
