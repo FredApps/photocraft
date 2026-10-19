@@ -724,19 +724,30 @@ fn selective_from(d: &Descriptor) -> Option<Value> {
 }
 
 fn selective_to(p: &Value) -> Option<Descriptor> {
+    // Match command execution: scalar components override only the selected range, `relative`
+    // takes precedence over `method`, and invalid values must not become a different edit.
+    let photocraft_doc::Adjustment::SelectiveColor { relative, adjustments } = crate::adjust_cmds::selective_from_params(p, None).ok()? else {
+        return None;
+    };
     let mut list = Vec::new();
-    for (ps, name) in SELECTIVE_RANGES {
-        if let Some(a) = p.get(*name).and_then(Value::as_array) {
-            let v = |i: usize| a.get(i).and_then(Value::as_f64).unwrap_or(0.0);
+    for (name, row) in crate::adjust_cmds::RANGES.into_iter().zip(adjustments) {
+        if p.get(name).is_some_and(|v| !v.is_null()) || jstr(p, "colors") == Some(name) {
+            let ps = lookup_back(SELECTIVE_RANGES, name)?;
+            let [cyan, magenta, yellow, black] = row.map(f64::from);
             list.push(D::Descriptor(
-                desc("ClrC").with("Clrs", enm("Clrs", ps)).with("Cyn ", pct(v(0))).with("Mgnt", pct(v(1))).with("Yllw", pct(v(2))).with("Blck", pct(v(3))),
+                desc("ClrC")
+                    .with("Clrs", enm("Clrs", ps))
+                    .with("Cyn ", pct(cyan))
+                    .with("Mgnt", pct(magenta))
+                    .with("Yllw", pct(yellow))
+                    .with("Blck", pct(black)),
             ));
         }
     }
     Some(
         desc("SlcC")
             .with("presetKind", enm("presetKindType", "presetKindCustom"))
-            .with("Mthd", enm("CrcM", if jstr(p, "method") == Some("absolute") { "Absl" } else { "Rltv" }))
+            .with("Mthd", enm("CrcM", if relative { "Rltv" } else { "Absl" }))
             .with("ClrC", D::List(list)),
     )
 }
