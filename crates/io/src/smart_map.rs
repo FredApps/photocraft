@@ -347,7 +347,8 @@ fn hue_sat_adjustments(p: &J) -> Result<Value, String> {
             }
         }
         for (key, param) in HUE_KEYS {
-            e = e.with(key, pi(o, param, 0.0));
+            let default = if param == "saturation" && p.get("colorize").and_then(|v| v.as_bool()) == Some(true) { 25.0 } else { 0.0 };
+            e = e.with(key, pi(o, param, default));
         }
         Ok(e)
     };
