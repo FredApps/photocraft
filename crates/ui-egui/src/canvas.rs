@@ -4185,7 +4185,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
                     if precise_other_cursor(app) {
                         egui::CursorIcon::Crosshair
                     } else {
-                        paint_bucket_cursor(ui.ctx(), p)
+                        paint_bucket_cursor(&painter, p)
                     }
                 }
                 // Over the first anchor, the close-path pointer (#4596), before the pens' own cursors.
@@ -5171,12 +5171,12 @@ pub(crate) fn pipette_cursor(ctx: &egui::Context, p: Pos2) -> egui::CursorIcon {
     egui::CursorIcon::None
 }
 
-/// The Paint Bucket's cursor: a bucket whose pouring corner is the filled pixel. Draws it at `p`
-/// and returns the OS cursor to set (hidden).
-pub(crate) fn paint_bucket_cursor(ctx: &egui::Context, p: Pos2) -> egui::CursorIcon {
-    // The left corner of the icon's bucket is at (2, 12) of its 24-unit box.
-    crate::icons::cursor(ctx, "paint-bucket", p, vec2(2.0, 12.0) / 24.0, 22.0);
-    egui::CursorIcon::None
+/// The Paint Bucket's cursor: the crosshair just beyond the drop marks the filled pixel at `p`.
+pub(crate) fn paint_bucket_cursor(painter: &egui::Painter, p: Pos2) -> egui::CursorIcon {
+    // Keep the toolbar SVG intact and put its lower-right crosshair at (26, 25) in the icon's
+    // 24-unit coordinates. Only the image moves; pointer input still targets `p`.
+    crate::icons::cursor(painter.ctx(), "paint-bucket", p, vec2(26.0, 25.0) / 24.0, 22.0);
+    crate::tool_cursor::crosshair(painter, p, 3.0, 0.0)
 }
 
 /// Decided when the press starts, so ⌥ pressed or released mid-stroke never switches between

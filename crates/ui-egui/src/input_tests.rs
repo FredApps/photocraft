@@ -855,20 +855,48 @@ fn eyedropper_and_alt_sampling_show_a_pipette() {
     assert_eq!(precise(&mut h), (egui::CursorIcon::Crosshair, desktop));
 }
 
-/// The Paint Bucket shows a bucket instead of the crosshair (#3968); Precise Other Cursors keeps
-/// the crosshair.
+/// The bucket sits above-left of the pointer; Precise Other Cursors hides the bucket icon.
 #[test]
 fn paint_bucket_shows_a_bucket_cursor() {
+    fn bucket_visible(h: &Harness<'static, PhotocraftApp>) -> bool {
+        let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("pc-icon-cursor"));
+        h.ctx.memory(|memory| memory.areas().visible_layer_ids().contains(&layer))
+    }
+    fn bucket_rect(h: &Harness<'static, PhotocraftApp>) -> egui::Rect {
+        h.ctx.memory(|memory| memory.area_rect(egui::Id::new("pc-icon-cursor"))).expect("bucket cursor area")
+    }
+
     let mut h = harness();
     let p = h.state().last_canvas_rect.center();
     h.state_mut().ui.tool = crate::state::Tool::PaintBucket;
     h.hover_at(p);
     h.run_steps(2);
-    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "the bucket replaces the pointer");
+
+    let output = h.output();
+    if cfg!(not(target_arch = "wasm32")) {
+        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::Crosshair, "the bitmap keeps a visible fallback");
+        let cursor = output.platform_output.cursor_image.as_ref().expect("native root viewport uses the OS crosshair bitmap");
+        let [hot_x, hot_y] = cursor.hotspot;
+        let hot_pixel = (usize::from(hot_y) * usize::from(cursor.size[0]) + usize::from(hot_x)) * 4 + 3;
+        assert!(cursor.rgba[hot_pixel] > 0, "the crosshair covers its exact bitmap hotspot");
+        assert_eq!(cursor.hotspot, [cursor.size[0] / 2, cursor.size[1] / 2]);
+    } else {
+        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::None, "the painted crosshair hides the OS arrow");
+    }
+    assert_eq!(h.ctx.pointer_latest_pos(), Some(p), "the click target stays at the cursor hotspot");
+    let area_min = bucket_rect(&h).min;
+    let expected_min = p - vec2(26.0, 25.0) / 24.0 * 22.0;
+    assert!(
+        (area_min.x - expected_min.x).abs() <= 0.5 && (area_min.y - expected_min.y).abs() <= 0.5,
+        "bucket is above-left of the unchanged pointer: {area_min:?} vs {expected_min:?}"
+    );
+    assert!(bucket_visible(&h), "the bucket icon area is shown");
+
     h.state_mut().run("prefs.set", json!({"values": {"cursors.other": "precise"}})).unwrap();
-    h.hover_at(p);
     h.run_steps(2);
-    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Crosshair, "Precise keeps the crosshair");
+    let precise = h.output();
+    assert_eq!(precise.platform_output.cursor_icon, egui::CursorIcon::Crosshair);
+    assert!(!bucket_visible(&h), "Precise omits the bucket image");
 }
 
 /// The Hand tool, and Space held over another tool, show an open hand while hovering and a fist
