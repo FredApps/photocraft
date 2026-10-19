@@ -243,6 +243,64 @@ fn a_flat_file_that_keeps_the_document_saves_in_place() {
     assert_eq!(written.borrow().len(), 1);
 }
 
+/// #5733: Save doesn't write one image back over a file that held more (here a two-size icon;
+/// animations and multi-page TIFFs are recorded the same way), nor through an encoder that
+/// quantises (GIF), nor a Grayscale document into a format that stores only colour.
+#[test]
+fn save_in_place_skips_files_it_would_write_back_with_less() {
+    let (mut app, written) = app_with(vec![None, None, None]);
+    app.services.import = Some(Box::new(|name: &str, bytes: &[u8], _depth: usize| {
+        photocraft_io::import(name, bytes).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
+    }));
+    let ctx = egui::Context::default();
+    let save = |app: &mut PhotocraftApp| menus::invoke(app, &ctx, "file.save", json!({})).unwrap();
+    // One icon size: written back.
+    app.open_file("/pics/one.ico", &ico(1)).unwrap();
+    assert_eq!(save(&mut app)["path"], "/pics/one.ico");
+    assert_eq!(written.borrow().len(), 1);
+    // Two sizes: the document holds one, so Save asks (cancelled).
+    app.open_file("/pics/two.ico", &ico(2)).unwrap();
+    assert_eq!(save(&mut app), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    // A GIF: its palette and on/off transparency would lose colours.
+    app.open_file("/pics/still.gif", &gif_bytes()).unwrap();
+    assert_eq!(save(&mut app), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    // Grayscale in a BMP, which stores only colour.
+    app.open_file("/pics/gray.bmp", &png_bytes(4, 3)).unwrap();
+    app.run("image.mode.grayscale", json!({})).unwrap();
+    assert_eq!(save(&mut app), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    assert_eq!(written.borrow().len(), 1);
+}
+
+/// An icon file whose `entries` directory entries all point at one 4×3 PNG image.
+fn ico(entries: u16) -> Vec<u8> {
+    let one = export_as(&png_bytes(4, 3), "i.ico");
+    // ICONDIR (6 bytes) + one 16-byte ICONDIRENTRY whose last 4 bytes are the image offset.
+    let (entry, image) = (&one[6..22], &one[22..]);
+    let offset = 6 + 16 * u32::from(entries);
+    let mut out = vec![0, 0, 1, 0];
+    out.extend(entries.to_le_bytes());
+    for _ in 0..entries {
+        out.extend(&entry[..12]);
+        out.extend(offset.to_le_bytes());
+    }
+    out.extend(image);
+    out
+}
+
+/// A one-frame GIF.
+fn gif_bytes() -> Vec<u8> {
+    export_as(&png_bytes(4, 3), "g.gif")
+}
+
+/// `bytes` (a PNG) re-encoded for the file name `name`.
+fn export_as(bytes: &[u8], name: &str) -> Vec<u8> {
+    let doc = photocraft_io::import("p.png", bytes).unwrap().document;
+    photocraft_io::export(&doc, name, &Default::default()).unwrap().bytes
+}
+
 #[test]
 fn templates_open_as_new_untitled_documents() {
     let (mut app, written) = app_with(Vec::new());

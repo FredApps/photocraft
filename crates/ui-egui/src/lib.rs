@@ -334,15 +334,22 @@ impl ExportSettings {
 /// Whether File › Save writes straight back to `path`, the flat file (JPEG, PNG, TIFF…) the
 /// document came from, as Photoshop's Save does (#5733): only while that file keeps everything,
 /// i.e. the document is one plain raster layer ([`plain_raster`]) with no extra channels, in RGB
-/// or Grayscale at a depth the format stores, and either the format keeps transparency or the
-/// layer is the Background. Anything else still goes through Save As, so the original is never
+/// or Grayscale at a depth (and, for Grayscale, a gray layout) the format stores, and either the
+/// format keeps transparency or the layer is the Background. The file itself must have held only
+/// this one image (not an animation, a multi-page TIFF or a multi-size icon), and its encoder
+/// must not quantise (GIF's palette and on/off transparency); a JPEG is rewritten at its own
+/// quality (#4032). Anything else still goes through Save As, so the original is never
 /// overwritten with less than the document has.
 pub(crate) fn saves_flat_in_place(doc: &Document, path: &str) -> bool {
     let Some(layer) = plain_raster(doc) else { return false };
-    let Some(caps) = photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_codecs::from_extension(&e)).map(|f| f.caps()) else {
+    let Some(format) = photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_codecs::from_extension(&e)) else {
         return false;
     };
+    let caps = format.caps();
     !photocraft_engine::file_cmds::saves_in_place(path)
+        && doc.file_encoding.source_images.is_none()
+        && (!caps.lossy || format == photocraft_codecs::Format::Jpeg)
+        && (doc.mode != photocraft_doc::ColorMode::Grayscale || caps.layouts.iter().any(|l| l.is_gray()))
         && caps.write
         && caps.depths.contains(&match doc.depth {
             photocraft_color::SampleType::U8 => photocraft_codecs::SampleType::U8,
