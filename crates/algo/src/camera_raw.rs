@@ -1157,18 +1157,7 @@ mod tests {
         let (w, h) = (200usize, 100usize);
         let flat = vec![[0.5f32, 0.5, 0.5, 1.0]; w * h];
         let mut out = flat.clone();
-        develop(
-            &mut out,
-            w,
-            h,
-            &CameraRaw {
-                vignette_amount: -80.0,
-                vignette_roundness: 100.0,
-                vignette_feather: 50.0,
-                ..Default::default()
-            },
-            false,
-        );
+        develop(&mut out, w, h, &CameraRaw { vignette_amount: -80.0, vignette_roundness: 100.0, vignette_feather: 50.0, ..Default::default() }, false);
         assert!(out[0][0] < 0.35, "corner should darken with roundness 100");
         assert!((out[(h / 2) * w + w / 2][0] - 0.5).abs() < 0.01, "centre should stay neutral");
     }
