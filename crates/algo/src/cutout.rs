@@ -1030,13 +1030,17 @@ fn line_clipped(acc: &mut [f32], stride: usize, h: usize, a: Pt, b: Pt) {
         return;
     }
     let wf = (stride - 2) as f32;
-    let mut cuts = vec![0.0f32, 1.0];
+    // At most the two ends and two crossings; on the stack, as this runs for every segment drawn.
+    let mut buf = [0.0f32, 1.0, 0.0, 0.0];
+    let mut n = 2;
     for x in [0.0, wf] {
         let t = (x - a[0]) / (b[0] - a[0]);
         if t > 0.0 && t < 1.0 {
-            cuts.push(t);
+            buf[n] = t;
+            n += 1;
         }
     }
+    let cuts = &mut buf[..n];
     cuts.sort_by(f32::total_cmp);
     for t in cuts.windows(2) {
         let p = [a[0] + (b[0] - a[0]) * t[0], a[1] + (b[1] - a[1]) * t[0]];
