@@ -1086,14 +1086,14 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                         ui.label(egui::RichText::new("X").color(t.text_dim));
                     });
                 });
-                let r = |v: f32| (v.clamp(0.0, 100.0) * 100.0).round() / 100.0;
-                f.insert(p.key, json!([r(x), r(y)]));
+                // Clamp only: rounding here would quietly change presets and defaults every frame.
+                f.insert(p.key, json!([x.clamp(0.0, 100.0), y.clamp(0.0, 100.0)]));
             }
             Kind::Angle(default) => {
                 let mut deg = f.get(&p.key).and_then(Value::as_f64).and_then(photocraft_plugins::wrap_angle).map_or(default, |a| a as f32);
                 angle_dial_row(ui, &field_label(f, &p.key), &mut deg);
                 let deg = photocraft_plugins::wrap_angle(f64::from(deg)).unwrap_or(0.0);
-                f.insert(p.key, json!((deg * 10.0).round() / 10.0));
+                f.insert(p.key, json!(deg));
             }
             Kind::Int { default } => {
                 let mut v = f.get(&p.key).and_then(Value::as_f64).unwrap_or(default as f64) as f32;

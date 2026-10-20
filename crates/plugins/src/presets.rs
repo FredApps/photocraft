@@ -39,12 +39,25 @@ pub enum Parsed {
     Corrupt(String),
 }
 
-/// The file name for `plugin_id`'s presets (`<id>.json`), or `None` if the id could name anything
+/// The file name for `plugin_id`'s presets (`<id>.json`, capitals escaped as `%XX`), or `None` if the id could name anything
 /// other than one plain file in the plug-in folder. Ids are already `[A-Za-z0-9._-]{1,64}`; this
 /// also refuses `.`/`..` sequences and leading dots, and checks for separators again.
 pub fn file_name(plugin_id: &str) -> Option<String> {
     let safe = valid_id(plugin_id) && !plugin_id.contains("..") && !plugin_id.starts_with('.') && !plugin_id.contains(['/', '\\', ':', '\0']);
-    safe.then(|| format!("{plugin_id}.json"))
+    // Ids are case-sensitive but Windows and macOS file names usually aren't: each capital becomes
+    // `%XX` (never part of an id), so `Foo` and `foo` can't share a file. Lowercase ids are unchanged.
+    safe.then(|| {
+        let mut name = String::with_capacity(plugin_id.len() + 5);
+        for b in plugin_id.bytes() {
+            if b.is_ascii_uppercase() {
+                name.push_str(&format!("%{b:02X}"));
+            } else {
+                name.push(char::from(b));
+            }
+        }
+        name.push_str(".json");
+        name
+    })
 }
 
 /// A preset name the dialog may store: 1-64 printable characters, no path separators and no `..`
@@ -168,6 +181,9 @@ mod tests {
     fn file_names_come_only_from_safe_ids() {
         assert_eq!(file_name("com.stack-tech.freecandy7").as_deref(), Some("com.stack-tech.freecandy7.json"));
         assert_eq!(file_name("a_b-1").as_deref(), Some("a_b-1.json"));
+        // Ids differing only in case get different files on case-insensitive file systems.
+        assert_eq!(file_name("org.example.Foo").as_deref(), Some("org.example.%46oo.json"));
+        assert_ne!(file_name("org.example.Foo").map(|n| n.to_lowercase()), file_name("org.example.foo").map(|n| n.to_lowercase()));
         for bad in ["", ".", "..", "a..b", "../x", "a/b", "a\\b", ".hidden", "a:b", "a\0b", "é", &"x".repeat(65)] {
             assert_eq!(file_name(bad), None, "{bad:?}");
         }
