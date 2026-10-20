@@ -516,6 +516,42 @@ fn desaturate_equalize_and_replace_color_record_smart_filters() {
         assert_eq!(sf[0].command, recorded);
         assert!(max_diff(&flatten(&smart), &flatten(&plain)) < 1.0 / 255.0, "{cmd} smart filter matches the destructive result");
     }
+    let mut smart = smart_session();
+    let mut plain = session(8, "rgb");
+    plain.execute("layer.new.layer", json!({})).unwrap();
+    paint(&mut plain, |x, y| [0.1 + x as f32 / 60.0, 0.2 + y as f32 / 50.0, 0.6 - x as f32 / 120.0, 1.0]);
+    smart.tools.foreground = [0.4, 0.5, 0.8, 1.0];
+    plain.tools.foreground = [0.4, 0.5, 0.8, 1.0];
+    let params = json!({"fuzziness": 180, "hue": 40});
+    plain.execute("image.adjustments.replaceColor", params.clone()).unwrap();
+    smart.execute("image.adjustments.replaceColor", params).unwrap();
+    let sf = smart_filters_of(&smart);
+    let recorded = sf[0].params["color"].as_array().expect("recorded colour");
+    let got: Vec<f32> = recorded.iter().map(|v| v.as_f64().unwrap() as f32).collect();
+    assert!((got[0] - 0.4).abs() < 1e-6 && (got[1] - 0.5).abs() < 1e-6 && (got[2] - 0.8).abs() < 1e-6, "omitted colour records the foreground: {got:?}");
+    assert!(max_diff(&flatten(&smart), &flatten(&plain)) < 1.0 / 255.0);
+}
+
+/// Equalize, Replace Color and Desaturate stay enabled when an alpha channel is targeted and
+/// the active layer is not a pixel layer (text/shape/fill/adjustment).
+#[test]
+fn desaturate_equalize_and_replace_color_edit_a_channel_on_a_non_pixel_layer() {
+    let cmds = ["image.adjustments.desaturate", "image.adjustments.equalize", "image.adjustments.replaceColor"];
+    for cmd in cmds {
+        let mut s = session(8, "rgb");
+        s.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap();
+        s.execute("channel.new", json!({"fill": "white"})).unwrap();
+        s.execute("channel.target", json!({"channel": 0})).unwrap();
+        s.edit("levels", |doc, active| {
+            let (surf, _) = crate::channel_cmds::target_surface(doc, *active, &json!({"target": {"channel": 0}})).unwrap();
+            surf.fill_rect(Rect::new(0, 0, 20, 16), &[0.3]);
+            surf.fill_rect(Rect::new(20, 0, 48, 16), &[0.7]);
+            Ok(())
+        })
+        .unwrap();
+        assert!(s.is_enabled(cmd), "{cmd} on a targeted channel over an adjustment layer");
+        s.execute(cmd, json!({"target": {"channel": 0}})).unwrap_or_else(|e| panic!("{cmd}: {e}"));
+    }
 }
 
 /// #780: a targeted mask enables Invert (and filters) on layers without pixels, such as an

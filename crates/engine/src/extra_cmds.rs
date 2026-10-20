@@ -879,7 +879,7 @@ pub fn specs() -> Vec<CommandSpec> {
             })?;
             Ok(json!({"selected": true}))
         }),
-        spec!("image.adjustments.equalize", "Equalize", &["Image", "Adjustments"], None, "{}", crate::adjust_cmds::has_pixels_or_smart, equalize),
+        spec!("image.adjustments.equalize", "Equalize", &["Image", "Adjustments"], None, "{}", crate::adjust_cmds::has_adjustable, equalize),
         spec!("image.revealAll", "Reveal All", &["Image"], None, "{}", has_doc, |s, _| {
             let d = s.active().ok_or(EngineError::NoDocument)?;
             let all = reveal_all_bounds(&d.doc);
