@@ -68,8 +68,13 @@ fn save_in(config_dir: &Path, plugin_id: &str, presets: &Presets) -> Result<(), 
         Ok(Some(Parsed::Corrupt(e))) => return Err(format!("{} is damaged ({e}); not overwriting it", path.display())),
         Err(e) => return Err(format!("can't read {}: {e}; not overwriting it", path.display())),
     }
+    // A file over the read limit would never load again, and then could never be replaced.
+    let bytes = presets::to_json(presets);
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(format!("these presets need {} bytes (limit {MAX_FILE_BYTES}); not saving them", bytes.len()));
+    }
     // `atomic_write` creates the `plugins` folder, writes a temp file beside the target and renames it.
-    photocraft_format::atomic_write(&path, presets::to_json(presets).as_bytes()).map_err(|e| e.to_string())
+    photocraft_format::atomic_write(&path, bytes.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// The parsed file, `None` when it doesn't exist. Refuses non-files and oversized files.
@@ -141,6 +146,20 @@ mod tests {
         assert!(load_in(&blocked, ID).is_empty(), "a folder in the way is not fatal");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&blocked);
+    }
+
+    #[test]
+    fn presets_too_large_to_load_again_are_not_saved() {
+        let root = temp("oversized");
+        let mut big = Presets::new();
+        let filler = "x".repeat(4096);
+        while presets::to_json(&big).len() as u64 <= MAX_FILE_BYTES {
+            let name = format!("p{}", big.len());
+            big.insert(name, json!({"note": filler}).as_object().unwrap().clone());
+        }
+        assert!(save_in(&root, ID, &big).unwrap_err().contains("limit"));
+        assert!(!root.join("plugins").join(format!("{ID}.json")).exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
