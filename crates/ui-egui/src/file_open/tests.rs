@@ -276,6 +276,39 @@ fn save_in_place_skips_files_it_would_write_back_with_less() {
     assert_eq!(written.borrow().len(), 1);
 }
 
+/// #5733: Save doesn't write in place where the format's writer would drop what the document has:
+/// a gray layer's transparency in DPX, an embedded colour profile in BMP, or a clipped layer.
+#[test]
+fn save_in_place_skips_alpha_profiles_and_layer_state_the_file_would_drop() {
+    let (mut app, written) = app_with(vec![None, None, None]);
+    let ctx = egui::Context::default();
+    let edit = |app: &mut PhotocraftApp, f: &dyn Fn(&mut Document)| f(std::sync::Arc::make_mut(&mut app.session.active_mut().unwrap().doc));
+    // An RGB layer with transparency: DPX keeps its alpha, so it is written back.
+    app.open_file("/pics/rgb.dpx", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap()["path"], "/pics/rgb.dpx");
+    assert_eq!(written.borrow().len(), 1);
+    // A gray one: DPX writes gray without alpha.
+    app.open_file("/pics/gray.dpx", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    edit(&mut app, &|d| d.mode = ColorMode::Grayscale);
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap(), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    // A profile BMP can't embed.
+    app.open_file("/pics/tagged.bmp", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    edit(&mut app, &|d| d.icc_profile = Some(std::sync::Arc::new(vec![0; 128])));
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap(), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    // A clipped layer: the flat file keeps only its pixels.
+    app.open_file("/pics/clipped.png", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    edit(&mut app, &|d| d.layers[0].clipped = true);
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap(), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    assert_eq!(written.borrow().len(), 1);
+}
+
 /// An icon file whose `entries` directory entries all point at one 4×3 PNG image.
 fn ico(entries: u16) -> Vec<u8> {
     let one = export_as(&png_bytes(4, 3), "i.ico");

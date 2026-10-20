@@ -338,14 +338,19 @@ impl ExportSettings {
 /// format keeps transparency or the layer is the Background. The file itself must have held only
 /// this one image (not an animation, a multi-page TIFF or a multi-size icon), and its encoder
 /// must not quantise (GIF's palette and on/off transparency); a JPEG is rewritten at its own
-/// quality (#4032). Anything else still goes through Save As, so the original is never
-/// overwritten with less than the document has.
+/// quality (#4032). An embedded colour profile needs a format that keeps one. Anything else still
+/// goes through Save As, so the original is never overwritten with less than the document has.
 pub(crate) fn saves_flat_in_place(doc: &Document, path: &str) -> bool {
     let Some(layer) = plain_raster(doc) else { return false };
     let Some(format) = photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_codecs::from_extension(&e)) else {
         return false;
     };
     let caps = format.caps();
+    // Transparency is kept where the format's plan writes alpha for this document: DPX has no
+    // gray + alpha, and float PNM (PFM) no alpha at all.
+    let keeps_alpha = caps.alpha
+        && !(format == photocraft_codecs::Format::Dpx && doc.mode == photocraft_doc::ColorMode::Grayscale)
+        && !(format == photocraft_codecs::Format::Pnm && doc.depth == photocraft_color::SampleType::F32);
     !photocraft_engine::file_cmds::saves_in_place(path)
         && doc.file_encoding.source_images.is_none()
         && (!caps.lossy || format == photocraft_codecs::Format::Jpeg)
@@ -356,13 +361,15 @@ pub(crate) fn saves_flat_in_place(doc: &Document, path: &str) -> bool {
             photocraft_color::SampleType::U16 => photocraft_codecs::SampleType::U16,
             photocraft_color::SampleType::F32 => photocraft_codecs::SampleType::F32,
         })
-        && (caps.alpha || doc.is_background(layer.id))
+        && (keeps_alpha || doc.is_background(layer.id))
+        && (doc.icc_profile.is_none() || caps.icc)
         && doc.channels.is_empty()
         && matches!(doc.mode, photocraft_doc::ColorMode::Rgb | photocraft_doc::ColorMode::Grayscale)
 }
 
 /// The document's lone layer when it is a plain raster a flat file keeps: visible, at full
-/// opacity, in Normal mode, with no masks, effects or blending restrictions (#2234).
+/// opacity, in Normal mode, with no masks, effects, clipping, advanced blending, blending
+/// restrictions or video frames (#2234).
 pub(crate) fn plain_raster(doc: &Document) -> Option<&photocraft_doc::Layer> {
     match doc.layers.as_slice() {
         [layer]
@@ -376,7 +383,10 @@ pub(crate) fn plain_raster(doc: &Document) -> Option<&photocraft_doc::Layer> {
                 && layer.effects.psd_raw.is_none()
                 && matches!(layer.blend, photocraft_color::BlendMode::Normal | photocraft_color::BlendMode::PassThrough)
                 && photocraft_compose::channel_weights(layer, doc.mode).is_none()
-                && !photocraft_compose::blend_if_active(layer, doc.mode) =>
+                && !photocraft_compose::blend_if_active(layer, doc.mode)
+                && !layer.clipped
+                && layer.advanced.is_default()
+                && layer.video.is_none() =>
         {
             Some(layer)
         }
