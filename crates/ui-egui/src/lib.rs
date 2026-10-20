@@ -867,6 +867,7 @@ pub struct PhotocraftApp {
 }
 
 impl PhotocraftApp {
+    /// Creates a new [`PhotocraftApp`] instance with initial session state, platform services, and startup components.
     pub fn new(session: Session, services: Services) -> Self {
         let mut app = Self {
             session,
@@ -1945,11 +1946,14 @@ impl eframe::App for PhotocraftApp {
         discard_ui::guard_window_close(self, ctx);
         // Background jobs: apply finished ones, keep frames coming, Esc cancels (before the
         // shortcuts see Esc).
+        let splash_active = self.splash.as_ref().is_some_and(|s| s.is_active(now));
         if !screen_picker::tick(self, ctx) {
             jobs_ui::tick(self, ctx);
             #[cfg(not(target_arch = "wasm32"))]
             filter_preview_worker::discard_closed(self);
-            shortcuts::handle(self, ctx);
+            if !splash_active {
+                shortcuts::handle(self, ctx);
+            }
         }
         let arrived: Vec<(String, Vec<u8>)> =
             self.services.inbox.as_ref().map(|q| std::mem::take(&mut *q.lock().unwrap_or_else(|e| e.into_inner()))).unwrap_or_default();
@@ -2018,6 +2022,7 @@ impl eframe::App for PhotocraftApp {
         }
     }
 
+    /// Renders the main application UI or the startup splash screen overlay if active.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.hover_layer = None;
@@ -2033,6 +2038,7 @@ impl eframe::App for PhotocraftApp {
             && let Some(s) = &mut self.splash
         {
             s.dismiss();
+            ctx.request_repaint();
         }
         if let Some(splash) = &mut self.splash {
             if splash.is_active(now) {
@@ -2041,6 +2047,7 @@ impl eframe::App for PhotocraftApp {
                 return;
             } else {
                 self.splash = None;
+                ctx.request_repaint();
             }
         }
         let t0 = gpu_canvas::now_ms();

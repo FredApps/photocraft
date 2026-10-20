@@ -7,26 +7,33 @@
 use crate::theme::Tokens;
 use egui::{Color32, CornerRadius, FontId, Rect, RichText, Stroke, Ui, vec2};
 
+/// State for managing the startup splash screen overlay, display timing, and font preloading.
 #[derive(Clone, Debug)]
 pub struct SplashState {
+    /// Start time of the splash display in seconds (from egui `time`).
     pub start_time: f64,
+    /// Total duration before the splash automatically finishes (in seconds).
     pub duration: f64,
+    /// Whether the splash screen has been explicitly dismissed by the user or system.
     pub dismissed: bool,
+    /// Whether the primary CJK fallback font has been preloaded and is active.
     pub fonts_preloaded: bool,
 }
 
 impl Default for SplashState {
+    /// Creates a default [`SplashState`] with the standard startup duration.
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl SplashState {
+    /// Creates a new startup splash screen state with standard display duration and animation parameters.
     pub fn new() -> Self {
         Self { start_time: 0.0, duration: 2.2, dismissed: false, fonts_preloaded: false }
     }
 
-    /// Whether the splash screen is still active.
+    /// Returns whether the splash screen is currently active and should be presented.
     pub fn is_active(&self, now: f64) -> bool {
         if self.dismissed {
             return false;
@@ -37,22 +44,35 @@ impl SplashState {
         (now - self.start_time) < self.duration
     }
 
-    /// Dismiss the splash screen immediately.
+    /// Dismisses the splash screen immediately, transitioning to the main workspace.
     pub fn dismiss(&mut self) {
         self.dismissed = true;
     }
 
-    /// Render the splash screen overlay.
+    /// Renders the startup splash screen card, brand mark, and animated progress bar.
     pub fn show(&mut self, ctx: &egui::Context, ui: &mut Ui) {
         let now = ctx.input(|i| i.time);
         if self.start_time <= 0.0 {
             self.start_time = now;
         }
 
-        // Trigger CJK fallback font preload on the very first splash frame
+        // Trigger CJK fallback font preload on early splash passes
         if !self.fonts_preloaded {
-            crate::cjk_fonts::preload_cjk(ctx);
-            self.fonts_preloaded = true;
+            match crate::cjk_fonts::preload_cjk(ctx) {
+                crate::cjk_fonts::PreloadStatus::JustInstalled => {
+                    self.fonts_preloaded = true;
+                    ctx.request_repaint();
+                    // Newly registered fonts in egui activate on the subsequent UI frame pass.
+                    // Yield this pass so localized status strings do not render with tofu glyphs.
+                    return;
+                }
+                crate::cjk_fonts::PreloadStatus::Ready => {
+                    self.fonts_preloaded = true;
+                }
+                crate::cjk_fonts::PreloadStatus::Pending => {
+                    // Background font discovery scan is pending; keep attempting on later passes.
+                }
+            }
         }
 
         let elapsed = (now - self.start_time).max(0.0);
@@ -151,11 +171,11 @@ impl SplashState {
 
             // Status message corresponding to progress
             let status_msg = if progress < 0.35 {
-                tl!("Initializing graphics & engine…")
+                crate::i18n::t("Initializing graphics & engine…")
             } else if progress < 0.85 {
-                tl!("Loading workspace & font assets…")
+                crate::i18n::t("Loading workspace & font assets…")
             } else {
-                tl!("Ready")
+                crate::i18n::t("Ready")
             };
 
             ui.label(RichText::new(status_msg).font(FontId::proportional(11.5)).color(t.text_dim));
@@ -163,7 +183,7 @@ impl SplashState {
             ui.add_space(10.0);
 
             // Skip hint
-            ui.label(RichText::new(tl!("Click anywhere to skip")).font(FontId::proportional(10.0)).color(Color32::from_white_alpha(45)));
+            ui.label(RichText::new(crate::i18n::t("Click anywhere to skip")).font(FontId::proportional(10.0)).color(Color32::from_white_alpha(45)));
         });
     }
 }
@@ -172,6 +192,7 @@ impl SplashState {
 mod tests {
     use super::*;
 
+    /// Verifies splash screen timing lifecycle, timeout expiration, and user dismissal.
     #[test]
     fn splash_state_lifecycle() {
         let mut splash = SplashState::new();
@@ -185,5 +206,15 @@ mod tests {
 
         splash.dismiss();
         assert!(!splash.is_active(1.5));
+    }
+
+    /// Verifies that [`SplashState::default`] initializes state identically to [`SplashState::new`].
+    #[test]
+    fn splash_state_default() {
+        let default = SplashState::default();
+        let new = SplashState::new();
+        assert_eq!(default.duration, new.duration);
+        assert_eq!(default.dismissed, new.dismissed);
+        assert_eq!(default.fonts_preloaded, new.fonts_preloaded);
     }
 }
