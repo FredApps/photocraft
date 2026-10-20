@@ -244,7 +244,8 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
             .inner;
     });
     let mut result = Ok(());
-    let mut acted = picked || save_as_clicked || delete_clicked;
+    // Opening the name field isn't an action: an earlier error stays until something succeeds.
+    let mut acted = picked || delete_clicked;
     if picked {
         if chosen.is_empty() {
             f.insert(CHOSEN.into(), json!(""));
