@@ -48,8 +48,8 @@ fn decode_rgb16_big_endian() {
     let img = decode(&bytes).unwrap();
     assert_eq!(img.sample_type(), SampleType::U16);
     let mut vals = Vec::new();
-    for chunk in img.data().chunks_exact(2) {
-        vals.push(u16::from_ne_bytes([chunk[0], chunk[1]]));
+    for chunk in img.data().as_chunks::<2>().0 {
+        vals.push(u16::from_ne_bytes(*chunk));
     }
     assert_eq!(vals, [1, 256, 65534, 2, 512, 65279]);
 }
