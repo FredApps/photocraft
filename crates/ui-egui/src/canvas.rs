@@ -607,7 +607,7 @@ fn visible_crosshair(icon: egui::CursorIcon, painter: &egui::Painter, p: Pos2, d
     if !draw || icon != egui::CursorIcon::Crosshair {
         return icon;
     }
-    crate::tool_cursor::crosshair(painter, p, 8.0, 2.0)
+    crate::tool_cursor::standard_crosshair(painter, p)
 }
 
 /// The Pencil's cursor at `doc` (document pixels): the whole-pixel square its dab fills

@@ -1,7 +1,7 @@
 //! One image owns the bucket artwork and its lower-right fill target. Splitting those between
 //! the frame and the OS pointer lets them drift apart whenever a frame arrives after the pointer.
 
-use super::{CursorIcon, CustomCursorImage, Painter, Pos2, Shape, native, native_scale};
+use super::{CursorIcon, CustomCursorImage, Painter, Pos2, native, native_scale};
 use std::sync::Arc;
 
 const SIZE: f32 = 22.0;
@@ -61,8 +61,7 @@ pub(super) fn rasterize(scale: f32) -> Result<CustomCursorImage, String> {
     // Keep one logical pixel of the existing icon halo and its antialiasing fringe inside the box.
     let margin = (scale + 1.0).ceil();
     let hot = [(HOT.x * scale).round() + margin, (HOT.y * scale).round() + margin];
-    let cross = super::rasterize(&Shape::Crosshair { length: 3.0, gap: 0.0 }, scale)
-        .ok_or_else(|| format!("Paint Bucket crosshair does not fit a cursor at scale {scale}"))?;
+    let cross = super::rasterize(&super::STANDARD_CROSSHAIR, scale).ok_or_else(|| format!("Paint Bucket crosshair does not fit a cursor at scale {scale}"))?;
     let size = [hot[0] + f32::from(cross.size[0] - cross.hotspot[0]), hot[1] + f32::from(cross.size[1] - cross.hotspot[1])];
     if size.iter().any(|side| !side.is_finite() || *side > f32::from(super::MAX_SIDE)) {
         return Err(format!("Paint Bucket cursor does not fit the platform bitmap limit at scale {scale}"));

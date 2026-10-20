@@ -875,7 +875,7 @@ fn paint_bucket_shows_a_bucket_cursor() {
         let cursor = output.platform_output.cursor_image.as_ref().expect("native root viewport uses the unified bucket bitmap");
         let [hot_x, hot_y] = cursor.hotspot;
         let hot_pixel = (usize::from(hot_y) * usize::from(cursor.size[0]) + usize::from(hot_x)) * 4 + 3;
-        assert!(cursor.rgba[hot_pixel] > 230, "the solid crosshair covers its exact bitmap hotspot");
+        assert_eq!(cursor.rgba[hot_pixel], 0, "the Gradient-style crosshair leaves its exact bitmap hotspot open");
         let side = usize::from(cursor.size[0]);
         assert!(
             cursor.rgba.as_chunks::<4>().0.iter().enumerate().any(|(i, pixel)| {

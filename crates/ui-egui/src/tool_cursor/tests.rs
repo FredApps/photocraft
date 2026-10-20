@@ -10,6 +10,11 @@ fn alpha(image: &CustomCursorImage, x: u16, y: u16) -> u8 {
     image.rgba[(usize::from(y) * usize::from(image.size[0]) + usize::from(x)) * 4 + 3]
 }
 
+fn rgba_at(image: &CustomCursorImage, x: u16, y: u16) -> [u8; 4] {
+    let offset = (usize::from(y) * usize::from(image.size[0]) + usize::from(x)) * 4;
+    image.rgba[offset..offset + 4].try_into().unwrap()
+}
+
 fn frame(ctx: &egui::Context, draw: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
     let mut output = ctx.run_ui(Default::default(), draw);
     // These tests inspect cursor output without a renderer.
@@ -68,7 +73,8 @@ fn bucket_bitmap_keeps_the_svg_above_left_of_its_exact_crosshair_hotspot() {
         let expected_x = (26.0 / 24.0 * 22.0 * scale).round() + (scale + 1.0).ceil();
         let expected_y = (25.0 / 24.0 * 22.0 * scale).round() + (scale + 1.0).ceil();
         assert_eq!(image.hotspot, [expected_x as u16, expected_y as u16], "bucket box target at {scale}x");
-        assert!(alpha(&image, image.hotspot[0], image.hotspot[1]) > 230, "solid crosshair center at {scale}x");
+        let gradient_cross = rasterize(&STANDARD_CROSSHAIR, scale).unwrap();
+        assert_eq!(alpha(&image, image.hotspot[0], image.hotspot[1]), 0, "Gradient-style open center at {scale}x");
 
         let side = usize::from(image.size[0]);
         let has_bucket_art = image.rgba.as_chunks::<4>().0.iter().enumerate().any(|(i, p)| {
@@ -78,9 +84,19 @@ fn bucket_bitmap_keeps_the_svg_above_left_of_its_exact_crosshair_hotspot() {
         });
         assert!(has_bucket_art, "opaque bucket art remains above-left of the hotspot at {scale}x");
 
-        let arm = (2.0 * scale).round() as u16;
-        assert!(alpha(&image, image.hotspot[0] + arm, image.hotspot[1]) > 200, "right arm belongs to the same bitmap at {scale}x");
-        assert!(alpha(&image, image.hotspot[0], image.hotspot[1] + arm) > 200, "lower arm belongs to the same bitmap at {scale}x");
+        for arm in [1, 5, 8] {
+            let arm = (arm as f32 * scale).round() as u16;
+            assert_eq!(
+                rgba_at(&image, image.hotspot[0] + arm, image.hotspot[1]),
+                rgba_at(&gradient_cross, gradient_cross.hotspot[0] + arm, gradient_cross.hotspot[1]),
+                "right arm matches the Gradient crosshair at {scale}x"
+            );
+            assert_eq!(
+                rgba_at(&image, image.hotspot[0], image.hotspot[1] + arm),
+                rgba_at(&gradient_cross, gradient_cross.hotspot[0], gradient_cross.hotspot[1] + arm),
+                "lower arm matches the Gradient crosshair at {scale}x"
+            );
+        }
     }
 }
 
