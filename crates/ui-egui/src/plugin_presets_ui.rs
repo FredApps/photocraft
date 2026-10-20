@@ -245,13 +245,15 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
     });
     let mut result = Ok(());
     // Opening the name field isn't an action: an earlier error stays until something succeeds.
-    let mut acted = picked || delete_clicked;
+    // A pick counts only once it applies.
+    let mut acted = delete_clicked;
     if picked {
         if chosen.is_empty() {
             f.insert(CHOSEN.into(), json!(""));
             f.insert(SOURCE.into(), json!(""));
+            acted = true;
         } else {
-            apply_from(m, f, &source, &chosen);
+            acted = apply_from(m, f, &source, &chosen);
         }
     }
     if save_as_clicked {
