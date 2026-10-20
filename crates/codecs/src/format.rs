@@ -222,7 +222,7 @@ impl Format {
             Format::Fits => "image/fits",
             Format::Dpx => "image/x-dpx",
             Format::Cineon => "image/x-cin",
-            Format::PhotoshopRaw => "application/x-photoshop-raw",
+            Format::PhotoshopRaw => "image/x-photoshop-raw",
         }
     }
 
