@@ -194,6 +194,7 @@ pub mod slice_ui;
 pub mod smart_ui;
 pub mod snap_ui;
 pub(crate) mod solid_fill_ui;
+pub mod splash;
 pub mod spring_tools;
 pub mod stack_dialog;
 pub mod state;
@@ -682,6 +683,8 @@ pub struct PhotocraftApp {
     /// sent again only when it changes, so idle frames don't spam the backend.
     last_window_title: String,
     fonts_ready: bool,
+    /// Startup splash screen showing loading progress before workspace is presented.
+    pub splash: Option<splash::SplashState>,
     /// Screen rect of the main canvas last frame (for overlays and the navigator).
     pub last_canvas_rect: egui::Rect,
     /// Window › Arrange: the first document of the shown run of tiles, when there are more
@@ -917,6 +920,7 @@ impl PhotocraftApp {
             custom_titlebar: false,
             last_window_title: String::new(),
             fonts_ready: false,
+            splash: Some(splash::SplashState::new()),
             last_canvas_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0)),
             arrange_start: 0,
             ppp: 1.0,
@@ -2023,6 +2027,21 @@ impl eframe::App for PhotocraftApp {
             ctx.request_repaint();
             self.automation_input = false;
             return;
+        }
+        let now = ctx.input(|i| i.time);
+        if (cfg!(test) || !self.synthetic.is_empty())
+            && let Some(s) = &mut self.splash
+        {
+            s.dismiss();
+        }
+        if let Some(splash) = &mut self.splash {
+            if splash.is_active(now) {
+                splash.show(&ctx, ui);
+                self.automation_input = false;
+                return;
+            } else {
+                self.splash = None;
+            }
         }
         let t0 = gpu_canvas::now_ms();
         self.perf.frame_refresh_ms = 0.0;
