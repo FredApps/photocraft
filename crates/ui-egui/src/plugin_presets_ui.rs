@@ -61,29 +61,32 @@ pub fn save_as(app: &mut PhotocraftApp, m: &Manifest, f: &mut Map<String, Value>
     }
     let current = crate::filter_dialog::params_of(f);
     let values = current.as_object().and_then(|c| m.preset_values(c)).ok_or("this plug-in has no values to save")?;
-    let mut list = listed(f);
-    list.insert(name.to_string(), values.clone());
-    f.insert(PRESETS.into(), to_value(&list));
-    f.insert(CHOSEN.into(), json!(name));
+    // The dialog lists the preset only once the store has accepted it.
     store(app, &m.id, |all| {
         if all.len() >= MAX_PRESETS && !all.contains_key(name) {
             return Err(format!("a plug-in keeps at most {MAX_PRESETS} presets"));
         }
-        all.insert(name.to_string(), values);
+        all.insert(name.to_string(), values.clone());
         Ok(())
-    })
+    })?;
+    let mut list = listed(f);
+    list.insert(name.to_string(), values);
+    f.insert(PRESETS.into(), to_value(&list));
+    f.insert(CHOSEN.into(), json!(name));
+    Ok(())
 }
 
 /// Deletes the preset `name`.
 pub fn delete(app: &mut PhotocraftApp, m: &Manifest, f: &mut Map<String, Value>, name: &str) -> Result<(), String> {
+    store(app, &m.id, |all| {
+        all.remove(name);
+        Ok(())
+    })?;
     let mut list = listed(f);
     list.remove(name);
     f.insert(PRESETS.into(), to_value(&list));
     f.insert(CHOSEN.into(), json!(""));
-    store(app, &m.id, |all| {
-        all.remove(name);
-        Ok(())
-    })
+    Ok(())
 }
 
 /// Re-reads the stored presets (so presets this version of the plug-in can't use are kept, and

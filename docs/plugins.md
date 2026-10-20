@@ -57,8 +57,9 @@ inside the settings folder (`PHOTOCRAFT_CONFIG_DIR`, the portable data folder, o
 - The file name comes only from the validated plug-in id; ids with `..`, a leading dot or a path
   separator get no presets. Preset names are 1–64 printable characters without `/`, `\` or `..`.
 - Saves are atomic (a temporary file in the same folder, then a rename).
-- A missing, unreadable or damaged file just means no presets (a warning is logged). A file with
-  another `version` is ignored and never overwritten.
+- A missing, unreadable or damaged file just means no presets (a warning is logged). Only a
+  missing or readable file is replaced on save: a damaged or unreadable file, or one with another
+  `version`, is never overwritten (saving reports an error instead), so its presets aren't lost.
 - Stored values are checked against the plug-in's current manifest when listed and applied:
   unknown keys and values of the wrong type are dropped, numbers and points are clamped into
   range, unknown choices are dropped (the parameter keeps its default), and a preset with nothing

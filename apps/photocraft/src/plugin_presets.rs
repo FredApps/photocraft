@@ -6,8 +6,9 @@
 //! only from that id, after [`photocraft_plugins::presets::file_name`] has checked it.
 //!
 //! Failures never stop the dialog: a missing, unreadable or damaged file loads as no presets
-//! (with a logged warning), and a file written by a newer PhotoCraft (another `version`) is left
-//! alone: it loads as no presets and is never overwritten.
+//! (with a logged warning). Only a missing or readable file is ever replaced: a damaged or
+//! unreadable file, or one written by a newer PhotoCraft (another `version`), is never
+//! overwritten, so presets that couldn't be loaded aren't lost by the next save.
 
 use std::path::{Path, PathBuf};
 
@@ -58,9 +59,14 @@ fn load_in(config_dir: &Path, plugin_id: &str) -> Presets {
 
 fn save_in(config_dir: &Path, plugin_id: &str, presets: &Presets) -> Result<(), String> {
     let path = path_in(config_dir, plugin_id).ok_or_else(|| format!("unsafe plug-in id {plugin_id:?}"))?;
-    // A file from a newer format version is never overwritten (its presets would be lost).
-    if let Ok(Some(Parsed::UnknownVersion(v))) = read(&path) {
-        return Err(format!("{} has version {v}, which this PhotoCraft doesn't know; not overwriting it", path.display()));
+    // Only a missing or readable file is replaced: anything else would lose presets never loaded.
+    match read(&path) {
+        Ok(None | Some(Parsed::Presets(_))) => {}
+        Ok(Some(Parsed::UnknownVersion(v))) => {
+            return Err(format!("{} has version {v}, which this PhotoCraft doesn't know; not overwriting it", path.display()));
+        }
+        Ok(Some(Parsed::Corrupt(e))) => return Err(format!("{} is damaged ({e}); not overwriting it", path.display())),
+        Err(e) => return Err(format!("can't read {}: {e}; not overwriting it", path.display())),
     }
     // `atomic_write` creates the `plugins` folder, writes a temp file beside the target and renames it.
     photocraft_format::atomic_write(&path, presets::to_json(presets).as_bytes()).map_err(|e| e.to_string())
@@ -141,8 +147,12 @@ mod tests {
     fn a_corrupt_file_loads_nothing() {
         let root = temp("corrupt");
         std::fs::create_dir_all(root.join("plugins")).unwrap();
-        std::fs::write(root.join("plugins").join(format!("{ID}.json")), b"{not json").unwrap();
+        let file = root.join("plugins").join(format!("{ID}.json"));
+        std::fs::write(&file, b"{not json").unwrap();
         assert!(load_in(&root, ID).is_empty());
+        // Saving must not replace the damaged file: its presets were never loaded.
+        assert!(save_in(&root, ID, &sample()).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"{not json");
         let _ = std::fs::remove_dir_all(&root);
     }
 
