@@ -4190,7 +4190,6 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
                             Err(error) => {
                                 let id = egui::Id::new("photocraft-bucket-cursor-error");
                                 if ui.ctx().data(|data| data.get_temp::<String>(id)).as_ref() != Some(&error) {
-                                    log::error!("{error}");
                                     if !app.ui.dialogs.iter().any(|dialog| {
                                         dialog.kind == crate::state::DialogKind::Error
                                             && dialog.fields.get("message").and_then(serde_json::Value::as_str) == Some(&error)

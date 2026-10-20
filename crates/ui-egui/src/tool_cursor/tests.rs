@@ -22,6 +22,7 @@ fn frame(ctx: &egui::Context, draw: impl FnMut(&mut egui::Ui)) -> egui::FullOutp
     output
 }
 
+#[cfg(target_os = "linux")]
 fn collect_meshes(shape: &egui::Shape, meshes: &mut Vec<(egui::TextureId, egui::Rect)>) {
     match shape {
         egui::Shape::Mesh(mesh) => meshes.push((mesh.texture_id, mesh.calc_bounds())),
@@ -108,6 +109,25 @@ fn bucket_rasterization_reports_invalid_scales_and_missing_artwork() {
     }
     let error = crate::icons::rasterize("missing-paint-bucket", 22).unwrap_err();
     assert!(error.contains("Cursor icon \"missing-paint-bucket\" is missing"), "{error}");
+}
+
+#[test]
+fn bucket_cursor_errors_preserve_the_concise_rasterization_message_across_frames() {
+    let ctx = egui::Context::default();
+    ctx.set_zoom_factor(100.0);
+    let mut errors = Vec::new();
+    for _ in 0..2 {
+        let output = frame(&ctx, |ui| {
+            let scale = if native(ui.ctx()) { native_scale(ui.ctx()) } else { ui.ctx().pixels_per_point() };
+            let expected = super::bucket::rasterize(scale).unwrap_err();
+            let error = super::bucket(ui.painter(), egui::pos2(100.0, 100.0)).unwrap_err();
+            assert_eq!(error, expected, "the dialog and status receive only the original rasterization error");
+            assert_eq!(error.lines().count(), 1, "diagnostic backtraces belong in the log");
+            errors.push(error);
+        });
+        assert!(output.platform_output.cursor_image.is_none(), "a failed rasterization never installs a cursor");
+    }
+    assert_eq!(errors[0], errors[1], "the cached failure stays stable across frames");
 }
 
 #[test]

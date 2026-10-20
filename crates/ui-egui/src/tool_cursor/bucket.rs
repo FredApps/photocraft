@@ -21,7 +21,8 @@ pub(super) fn show(painter: &Painter, at: Pos2) -> Result<CursorIcon, String> {
     let id = egui::Id::new("photocraft-bucket-cursor");
     let mut cached = ctx.data(|d| d.get_temp::<Cached>(id)).filter(|cached| cached.scale == scale).unwrap_or_else(|| Cached {
         scale,
-        image: rasterize(scale).map_err(|error| format!("{error}\n{}", std::backtrace::Backtrace::force_capture())),
+        // Keep diagnostics in the log once per cached failure; the error also reaches UI text.
+        image: rasterize(scale).inspect_err(|error| log::error!("{error}\n{}", std::backtrace::Backtrace::force_capture())),
         texture: None,
     });
     let result = match &cached.image {
