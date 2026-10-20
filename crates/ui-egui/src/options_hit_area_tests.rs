@@ -8,6 +8,9 @@ fn harness() -> Harness<'static, PhotocraftApp> {
     // The options bar is intentionally disabled on Home. Exercise its gesture tests
     // with a document open, while the separate Home tests cover disabled controls.
     app.run("file.new", serde_json::json!({"width":64,"height":64})).unwrap();
+    // Each gesture assertion counts only commands produced by the gesture, not
+    // the document creation needed to enable the options bar.
+    app.session.journal.clear();
     app.ui.tool = crate::state::Tool::Brush;
     app.session.tools.brush.hardness = 0.5;
     let mut h = Harness::builder().with_size(vec2(1400.0, 60.0)).build_ui_state(
