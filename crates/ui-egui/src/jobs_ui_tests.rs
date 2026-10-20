@@ -360,8 +360,19 @@ fn the_opening_card_keeps_a_long_name_and_cancel_inside() {
 
 #[test]
 fn templates_open_untitled_in_the_background() {
+    let dir = std::env::temp_dir().join(format!(
+        "photocraft-jobs-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("card.psdt");
+    let bytes = psd_bytes();
+    std::fs::write(&path, &bytes).unwrap();
+    let path_s = path.to_str().unwrap().to_owned();
+
     let mut h = app_harness();
-    h.state_mut().open_file("/tmp/photocraft-test/card.psdt", &psd_bytes()).unwrap();
+    h.state_mut().open_file(&path_s, &bytes).unwrap();
     assert_eq!(h.state().jobs.opens[0].name, "Untitled-1");
     let t = Instant::now();
     while !h.state().jobs.opens.is_empty() && t.elapsed() < Duration::from_secs(30) {
@@ -370,7 +381,9 @@ fn templates_open_untitled_in_the_background() {
     h.run_steps(2);
     let st = h.state().session.active().unwrap();
     assert_eq!((st.doc.name.as_str(), st.path.as_deref()), ("Untitled-1", None));
-    assert_eq!(h.state().ui.recent_files.first().map(String::as_str), Some("/tmp/photocraft-test/card.psdt"));
+    assert_eq!(h.state().ui.recent_files.first().map(String::as_str), Some(path_s.as_str()));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir(&dir);
 }
 
 /// Gates for a fake save: it encodes until `encode` opens and writes until `write` opens

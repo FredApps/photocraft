@@ -17,7 +17,11 @@ fn missing_paths(paths: &[String]) -> Vec<String> {
         .iter()
         .filter(|path| {
             // Permission and transient I/O errors do not prove a file was deleted.
-            std::fs::metadata(path).is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound)
+            // NotFound on the file while its parent is also gone is an unplugged drive or
+            // unmounted share, not a deleted file — keep the recent entry.
+            let p = std::path::Path::new(path.as_str());
+            std::fs::metadata(p).is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound)
+                && p.parent().is_some_and(|parent| std::fs::metadata(parent).is_ok())
         })
         .cloned()
         .collect()
@@ -112,5 +116,19 @@ mod tests {
         let before = app.ui.recent_files.clone();
         apply(&mut app, &checked, &checked);
         assert_eq!(app.ui.recent_files, before);
+    }
+
+    #[test]
+    fn a_missing_parent_directory_does_not_count_as_a_deleted_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "photocraft-recents-gone-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let gone = dir.join("unplugged").join("share.psd");
+        let missing = missing_paths(&[gone.to_string_lossy().to_string()]);
+        assert!(missing.is_empty(), "parent gone is an unmounted volume, not a deleted file: {missing:?}");
+        std::fs::remove_dir(dir).unwrap();
     }
 }
