@@ -460,7 +460,7 @@ fn printable(s: &str, max: usize) -> bool {
 }
 
 /// A character that draws something on its own.
-fn visible(c: char) -> bool {
+pub(crate) fn visible(c: char) -> bool {
     !c.is_whitespace() && !c.is_control() && !in_ranges(c, FORMAT) && !in_ranges(c, BLANK)
 }
 

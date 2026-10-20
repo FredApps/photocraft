@@ -57,6 +57,7 @@ pub fn valid_name(name: &str) -> bool {
         && !name.contains(['/', '\\'])
         && !name.contains("..")
         && name.chars().all(|c| !c.is_control() && !crate::manifest::hidden_format(c))
+        && name.chars().any(crate::manifest::visible)
 }
 
 /// Reads a presets file. Never fails: a damaged file is [`Parsed::Corrupt`].
@@ -156,7 +157,7 @@ mod tests {
     fn preset_names_refuse_separators_and_dot_dot() {
         assert!(valid_name("Soft glow"));
         assert!(valid_name("Été 2"));
-        for bad in ["", " lead", "trail ", "a/b", "a\\b", "..", "x..y", "../etc", "tab\there", "bidi\u{202E}", &"n".repeat(65)] {
+        for bad in ["", " lead", "trail ", "a/b", "a\\b", "..", "x..y", "../etc", "tab\there", "bidi\u{202E}", "\u{3164}", "\u{FE0F}", &"n".repeat(65)] {
             assert!(!valid_name(bad), "{bad:?}");
         }
     }

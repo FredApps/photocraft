@@ -112,6 +112,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
         delete_clicked = ui.add_enabled_ui(!chosen.is_empty(), |ui| crate::widgets::secondary_button(ui, tl!("Delete"), 0.0).clicked()).inner;
     });
     let mut result = Ok(());
+    let mut acted = picked || save_as_clicked || delete_clicked;
     if picked {
         if chosen.is_empty() {
             f.insert(CHOSEN.into(), json!(""));
@@ -134,12 +135,14 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
                 r.request_focus();
             }
             let ok = valid_name(name.trim());
-            save = ui.add_enabled_ui(ok, |ui| crate::widgets::secondary_button(ui, tl!("Save"), 0.0).clicked()).inner
-                || (ok && r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            // Enter here belongs to the name field: keep it from also confirming the dialog.
+            let entered = r.lost_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+            save = ui.add_enabled_ui(ok, |ui| crate::widgets::secondary_button(ui, tl!("Save"), 0.0).clicked()).inner || (ok && entered);
             cancel = crate::widgets::secondary_button(ui, tl!("Cancel"), 0.0).clicked();
         });
         if save {
             f.remove(NAMING);
+            acted = true;
             result = save_as(app, m, f, name.trim());
         } else if cancel {
             f.remove(NAMING);
@@ -148,7 +151,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
         }
     }
     match result {
-        Ok(()) if picked || save_as_clicked => {
+        Ok(()) if acted => {
             f.remove(ERROR);
         }
         Ok(()) => {}
