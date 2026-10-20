@@ -62,6 +62,7 @@ impl SplashState {
         let dismissed_by_user = ctx.input(|i| i.pointer.any_click() || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })));
         if dismissed_by_user && elapsed > 0.4 {
             self.dismiss();
+            ctx.request_repaint();
             return;
         }
 
