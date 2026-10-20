@@ -11,6 +11,7 @@ use egui::{CursorIcon, CustomCursorImage, Painter, Pos2, Stroke, Vec2, vec2};
 
 use crate::canvas::ViewXform;
 
+mod bucket;
 mod hand;
 mod zoom;
 
@@ -68,6 +69,11 @@ impl egui::plugin::Plugin for CursorLifecycle {
             }
         });
     }
+}
+
+/// The bucket artwork and its exact fill crosshair move as one native cursor or painted image.
+pub(crate) fn bucket(painter: &Painter, at: Pos2) -> Result<CursorIcon, String> {
+    bucket::show(painter, at)
 }
 
 pub(crate) fn circle(painter: &Painter, at: Pos2, radius: f32, centre: bool) -> CursorIcon {

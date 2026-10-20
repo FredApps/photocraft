@@ -855,15 +855,12 @@ fn eyedropper_and_alt_sampling_show_a_pipette() {
     assert_eq!(precise(&mut h), (egui::CursorIcon::Crosshair, desktop));
 }
 
-/// The bucket sits above-left of the pointer; Precise Other Cursors hides the bucket icon.
+/// The bucket and fill target share one pointer bitmap or one painted image, and Precise Other Cursors hides both.
 #[test]
 fn paint_bucket_shows_a_bucket_cursor() {
-    fn bucket_visible(h: &Harness<'static, PhotocraftApp>) -> bool {
-        let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("pc-icon-cursor"));
+    fn cursor_area_visible(h: &Harness<'static, PhotocraftApp>, id: &str) -> bool {
+        let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new(id));
         h.ctx.memory(|memory| memory.areas().visible_layer_ids().contains(&layer))
-    }
-    fn bucket_rect(h: &Harness<'static, PhotocraftApp>) -> egui::Rect {
-        h.ctx.memory(|memory| memory.area_rect(egui::Id::new("pc-icon-cursor"))).expect("bucket cursor area")
     }
 
     let mut h = harness();
@@ -875,28 +872,39 @@ fn paint_bucket_shows_a_bucket_cursor() {
     let output = h.output();
     if cfg!(not(target_arch = "wasm32")) {
         assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::Crosshair, "the bitmap keeps a visible fallback");
-        let cursor = output.platform_output.cursor_image.as_ref().expect("native root viewport uses the OS crosshair bitmap");
+        let cursor = output.platform_output.cursor_image.as_ref().expect("native root viewport uses the unified bucket bitmap");
         let [hot_x, hot_y] = cursor.hotspot;
         let hot_pixel = (usize::from(hot_y) * usize::from(cursor.size[0]) + usize::from(hot_x)) * 4 + 3;
-        assert!(cursor.rgba[hot_pixel] > 0, "the crosshair covers its exact bitmap hotspot");
-        assert_eq!(cursor.hotspot, [cursor.size[0] / 2, cursor.size[1] / 2]);
+        assert!(cursor.rgba[hot_pixel] > 230, "the solid crosshair covers its exact bitmap hotspot");
+        let side = usize::from(cursor.size[0]);
+        assert!(
+            cursor.rgba.as_chunks::<4>().0.iter().enumerate().any(|(i, pixel)| {
+                let x = (i % side) as u16;
+                let y = (i / side) as u16;
+                pixel[3] > 200 && x + 2 < hot_x && y + 2 < hot_y
+            }),
+            "the bucket artwork is opaque above-left of the same hotspot"
+        );
+        assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "native cursor has no frame-painted icon overlay");
+        assert!(!cursor_area_visible(&h, "pc-tool-cursor"), "native cursor does not create a painted cursor Area");
     } else {
-        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::None, "the painted crosshair hides the OS arrow");
+        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::None, "the painted image hides the OS arrow");
+        assert!(cursor_area_visible(&h, "pc-tool-cursor"), "scaled or web cursor uses one unified image Area");
+        assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "the old icon overlay is absent");
     }
     assert_eq!(h.ctx.pointer_latest_pos(), Some(p), "the click target stays at the cursor hotspot");
-    let area_min = bucket_rect(&h).min;
-    let expected_min = p - vec2(26.0, 25.0) / 24.0 * 22.0;
-    assert!(
-        (area_min.x - expected_min.x).abs() <= 0.5 && (area_min.y - expected_min.y).abs() <= 0.5,
-        "bucket is above-left of the unchanged pointer: {area_min:?} vs {expected_min:?}"
-    );
-    assert!(bucket_visible(&h), "the bucket icon area is shown");
 
     h.state_mut().run("prefs.set", json!({"values": {"cursors.other": "precise"}})).unwrap();
     h.run_steps(2);
     let precise = h.output();
     assert_eq!(precise.platform_output.cursor_icon, egui::CursorIcon::Crosshair);
-    assert!(!bucket_visible(&h), "Precise omits the bucket image");
+    assert_eq!(
+        precise.platform_output.cursor_image.is_some(),
+        cfg!(not(target_arch = "wasm32")),
+        "Precise uses its crosshair bitmap on native and the system cursor on web"
+    );
+    assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "Precise omits the bucket artwork");
+    assert!(!cursor_area_visible(&h, "pc-tool-cursor"), "Precise omits the painted bucket image");
 }
 
 /// The Hand tool, and Space held over another tool, show an open hand while hovering and a fist
