@@ -30,6 +30,11 @@ pub struct Limits {
     /// cost the same in grayscale as RGBA; additional channels still receive their allowance.
     pub fuel_base: u64,
     pub fuel_per_sample: u64,
+    /// Whether `pc_filter` is held to the instruction budget above. The web build keeps it: there
+    /// it is the only bound on a run. Desktop builds lift it so complex plug-ins can run as long
+    /// as they need; the wall-clock deadline and the memory cap still stop them, and loading,
+    /// allocation and overlap negotiation keep `fuel_base`.
+    pub filter_instruction_budget: bool,
     /// Deepest call nesting.
     pub max_recursion_depth: usize,
     /// Wall-clock budget for one filter run (all bands), in milliseconds. Native builds only:
@@ -45,6 +50,7 @@ impl Default for Limits {
             band_bytes: 4 << 20,
             fuel_base: 50_000_000,
             fuel_per_sample: 8_000,
+            filter_instruction_budget: cfg!(target_arch = "wasm32"),
             max_recursion_depth: 1024,
             wall_time_ms: 60_000,
         }
@@ -280,7 +286,12 @@ impl Plugin {
         }
         let pixel_samples = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4);
         let work_samples = (data.len() as u64).max(pixel_samples);
-        let fuel = self.limits.fuel_base.saturating_add(work_samples.saturating_mul(self.limits.fuel_per_sample));
+        // Unbudgeted runs are still metered in slices, so the deadline and abort flag are checked.
+        let fuel = if self.limits.filter_instruction_budget {
+            self.limits.fuel_base.saturating_add(work_samples.saturating_mul(self.limits.fuel_per_sample))
+        } else {
+            u64::MAX
+        };
         let args = (ptr as i32, bytes as i32, w as i32, h as i32, channels as i32, format as i32, pptr as i32, params.len() as i32);
         let rc = self.call(&mut live, &filter, args, fuel, deadline)?;
         if rc != 0 {

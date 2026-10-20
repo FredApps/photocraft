@@ -212,7 +212,9 @@ fn hostile_plugins_fail_without_touching_the_document() {
         ("test.cmds.spin", "(loop $l (br $l)) (i32.const 0)"),
         ("test.cmds.oob", "(i32.store (i32.const -4) (i32.const 1)) (i32.const 0)"),
     ] {
-        Session::new().execute("plugin.install", json!({"data": b64(&wat_plugin(id, "{}", body))})).unwrap();
+        // Desktop runs have no instruction budget, so a short wall-clock deadline ends the spin.
+        let limits = photocraft_plugins::Limits { wall_time_ms: 2_000, ..Default::default() };
+        registry::install(Plugin::load(&wat_plugin(id, "{}", body), limits).unwrap());
         let mut s = doc(8);
         let before = pixels(&s);
         let undo_before = s.active().unwrap().history.can_undo();

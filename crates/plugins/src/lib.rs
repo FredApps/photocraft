@@ -6,7 +6,8 @@
 //! - **no host imports**: no WASI, file system, network, clock or randomness. A module that
 //!   imports anything is rejected;
 //! - an **instruction budget** (fuel) per call, metered in slices so a wall-clock deadline is
-//!   also enforced (native builds), so infinite loops end with an error;
+//!   also enforced (native builds), so infinite loops end with an error. Desktop builds lift the
+//!   budget for `pc_filter` itself and rely on the deadline and memory cap;
 //! - a **linear-memory cap**, a **recursion-depth cap** and wasmi's strict module limits;
 //! - a **fresh instance per band**, so no state leaks between calls.
 //!
