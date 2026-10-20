@@ -262,6 +262,8 @@ fn save_in_place_skips_files_it_would_write_back_with_less() {
     app.open_file("/pics/two.ico", &ico(2)).unwrap();
     assert_eq!(save(&mut app), json!({"fileDialog": "save"}));
     answer(&mut app);
+    // A recorded Save played on it doesn't write over the other sizes either.
+    assert!(app.replay_save("file.save", &json!({})).is_err());
     // A GIF: its palette and on/off transparency would lose colours.
     app.open_file("/pics/still.gif", &gif_bytes()).unwrap();
     assert_eq!(save(&mut app), json!({"fileDialog": "save"}));
