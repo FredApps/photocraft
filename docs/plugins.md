@@ -40,7 +40,8 @@ The desktop app keeps each plug-in's presets in one file named after its id, in 
 inside the settings folder (`PHOTOCRAFT_CONFIG_DIR`, the portable data folder, or
 `~/.config/photocraft` on Linux, `~/Library/Application Support/Photocraft` on macOS,
 `%APPDATA%\Photocraft` on Windows), for example
-`~/.config/photocraft/plugins/com.stack-tech.freecandy7.json`:
+`~/.config/photocraft/plugins/com.stack-tech.freecandy7.json`. Capital letters in an id are written
+as `%XX` (`Foo` → `%46oo`), so ids that differ only in case never share a file:
 
 ```json
 {
