@@ -181,9 +181,6 @@ const KNOWN: [Known; 41] = [
     Known { class: "Lvls", filter_id: code(b"Lvls"), name: "Levels...", command: "image.adjustments.levels" },
     Known { class: "Crvs", filter_id: code(b"Crvs"), name: "Curves...", command: "image.adjustments.curves" },
     Known { class: "HStr", filter_id: code(b"HStr"), name: "Hue/Saturation...", command: "image.adjustments.hueSaturation" },
-    Known { class: "DstS", filter_id: code(b"DstS"), name: "Dust & Scratches...", command: "filter.noise.dustAndScratches" },
-    // Sharpen has no settings: Photoshop stores no `Fltr`, only the name and `filterID`.
-    Known { class: "Shrp", filter_id: code(b"Shrp"), name: "Sharpen", command: "filter.sharpen.sharpen" },
     // Shadows/Highlights at its defaults stores no `Fltr` (`hasoptions` false).
     Known { class: "adaptCorrect", filter_id: 781, name: "Shado&ws/Highlights...", command: "image.adjustments.shadowsHighlights" },
     // Filters without options (measured in Photoshop): `hasoptions` false, no `Fltr`, only the
@@ -584,7 +581,6 @@ fn known_params(class: &str, f: Option<&Descriptor>, item: &Descriptor) -> Optio
         ("Lvls", Some(f)) => levels_params(f)?,
         ("Crvs", Some(f)) => curves_params(f)?,
         ("HStr", Some(f)) => hue_sat_params(f)?,
-        ("DstS", Some(f)) => json!({"radius": px(f, "Rds ")?, "threshold": int(f, "Thsh")?}),
         _ => return None,
     };
     Some((k.command, params))
@@ -1092,8 +1088,6 @@ fn fltr_for(k: &Known, p: &J) -> Result<Option<Descriptor>, String> {
             .with("presetKind", Value::Enumerated { type_id: Id::new("presetKindType"), value: Id::new("presetKindCustom") })
             .with("Clrz", Value::Boolean(p.get("colorize").and_then(J::as_bool).unwrap_or(false)))
             .with("Adjs", hue_sat_adjustments(p)?),
-        "DstS" => d.with("Rds ", pi(p, "radius", 1.0)).with("Thsh", pi(p, "threshold", 0.0)),
-        "Shrp" => return Ok(None),
         "adaptCorrect" => {
             if p.as_object().is_some_and(|o| o.keys().any(|k| !is_meta(k))) {
                 return Err("only default Shadows/Highlights settings are written to PSD".into());
