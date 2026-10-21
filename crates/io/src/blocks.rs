@@ -570,7 +570,30 @@ pub fn parse_placed_warp(key: &[u8; 4], data: &[u8]) -> Option<photocraft_geom::
     }
     let d = data.get(8..).and_then(parse_prefix_versioned)?;
     // A split (quilt) warp is stored under `quiltWarp`; `warp` then holds no usable mesh.
-    warp_of(get_desc(&d, "quiltWarp").or_else(|| get_desc(&d, "warp"))?).flatten()
+    let warp = warp_of(get_desc(&d, "quiltWarp").or_else(|| get_desc(&d, "warp"))?).flatten()?;
+    Some(match source_size(&d) {
+        Some(size) => over_source(warp, size),
+        None => warp,
+    })
+}
+
+/// The source size (`Sz  `) of a `SoLd` / `SoLE` descriptor; `None` when absent, empty or not
+/// finite.
+fn source_size(d: &Descriptor) -> Option<(f64, f64)> {
+    let sz = get_desc(d, "Sz  ")?;
+    let (w, h) = (num(sz.get("Wdth"))?, num(sz.get("Hght"))?);
+    (w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0).then_some((w, h))
+}
+
+/// A placed layer's custom warp as Photoshop draws it: the mesh spans the source rect
+/// `0..w × 0..h`, whatever box the file's `bounds` give (#8227). `bounds` only frames the
+/// control points; reading the source through it shifts the contents by its offset on a
+/// re-render. Other styles are built from their box and keep it.
+pub(crate) fn over_source(mut warp: photocraft_geom::warp::Warp, (w, h): (f64, f64)) -> photocraft_geom::warp::Warp {
+    if warp.style == photocraft_geom::warp::WarpStyle::Custom {
+        warp.bounds = [0.0, 0.0, w, h];
+    }
+    warp
 }
 
 /// A `warp` or `quiltWarp` descriptor (the `SoLd` key, or the whole descriptor after a `PlLd`

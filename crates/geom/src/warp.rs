@@ -1016,6 +1016,42 @@ impl Warp {
         )
     }
 
+    /// The same custom warp with its mesh spanning the box `r` (source space) instead of
+    /// `bounds`, as a PSD placed layer stores it (its mesh spans the source rect). Exact over `r`:
+    /// every new patch is a piece of one old patch, or of its clamped edge where `r` runs past
+    /// `bounds`. Other styles, a warp without a mesh and empty or non-finite boxes come back as
+    /// they are.
+    pub fn over_box(&self, r: [f64; 4]) -> Warp {
+        let (WarpStyle::Custom, Some(m)) = (self.style, &self.mesh) else { return self.clone() };
+        let b = self.bounds;
+        let (bw, bh, rw, rh) = (b[2] - b[0], b[3] - b[1], r[2] - r[0], r[3] - r[1]);
+        let finite = b.iter().chain(&r).all(|v| v.is_finite());
+        if !(finite && bw > 0.0 && bh > 0.0 && rw > 0.0 && rh > 0.0) || b.iter().zip(&r).all(|(x, y)| (x - y).abs() < 1e-9) {
+            return self.clone();
+        }
+        // The old knots (its box's edges among them) where they fall inside `r`, on `r`'s scale.
+        let knots = |old: &[f64], b0: f64, bs: f64, r0: f64, rs: f64| {
+            let mut k = vec![0.0];
+            for u in old.iter().map(|u| (b0 + u * bs - r0) / rs) {
+                if u > 1e-9 && u < 1.0 - 1e-9 && k.last().is_some_and(|l| u - l > 1e-9) {
+                    k.push(u);
+                }
+            }
+            k.push(1.0);
+            k
+        };
+        let (us, vs) = (knots(&m.us, b[0], bw, r[0], rw), knots(&m.vs, b[1], bh, r[1], rh));
+        let mesh = BezierMesh::fit(
+            &|s, t| {
+                let (x, y) = self.map(r[0] + s * rw, r[1] + t * rh);
+                [x, y]
+            },
+            us,
+            vs,
+        );
+        Warp { bounds: r, mesh: Some(mesh), ..self.clone() }
+    }
+
     /// The same warp followed by the affine map `[a, b, c, d, e, f]` (`x' = a·x + c·y + e`,
     /// `y' = b·x + d·y + f`), as a custom mesh (exact for custom warps).
     pub fn then_affine(&self, m: [f64; 6]) -> Warp {

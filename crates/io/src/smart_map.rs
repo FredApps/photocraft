@@ -853,7 +853,10 @@ fn pad4(mut v: Vec<u8>) -> Vec<u8> {
 /// the placed id (for a duplicate), transform (when it moved), warp and filter stack are rewritten;
 /// otherwise a fresh descriptor in Photoshop's key order. A split warp goes in `quiltWarp`.
 pub fn sold_bytes(template: Option<&Descriptor>, s: &PlacedSpec<'_>, warnings: &mut Vec<String>) -> Vec<u8> {
-    let stored = sold_warp(s.warp, warnings);
+    // A placed layer's custom mesh spans the source rect (#8227): one over another box (a warp
+    // made here) is re-expressed over it, which draws the same.
+    let source = s.warp.map(|w| w.over_box([0.0, 0.0, s.size.0, s.size.1]));
+    let stored = sold_warp(source.as_ref(), warnings);
     let warp = warp_desc(stored, s.size, warnings);
     let split = stored.zip(split_mesh(stored));
     let d = match template {
@@ -866,12 +869,17 @@ pub fn sold_bytes(template: Option<&Descriptor>, s: &PlacedSpec<'_>, warnings: &
                 set(&mut d, "Trnf", quad(s, stored));
                 set(&mut d, "nonAffineTransform", quad(s, stored));
             }
-            set(&mut d, "warp", warp);
+            // An imported warp is read over the source rect (#8227): one that reads back as the
+            // layer's warp is kept as the file has it, its own `bounds` and all.
+            let read = |q: &Descriptor| crate::blocks::warp_of(q).map(|w| w.map(|w| crate::blocks::over_source(w, s.size)));
+            if get_desc(t, "warp").and_then(read).is_none_or(|w| w.as_ref() != stored) {
+                set(&mut d, "warp", warp);
+            }
             // `quiltWarp` is read before `warp`, so the imported one stays only while it still
             // says what the layer's warp is (unchanged, or unreadable while the layer has none);
             // otherwise it is rewritten, or dropped for a warp that isn't split.
             let old = get_desc(t, "quiltWarp");
-            let kept = old.is_some_and(|q| match crate::blocks::warp_of(q) {
+            let kept = old.is_some_and(|q| match read(q) {
                 Some(w) => w.as_ref() == stored,
                 None => s.warp.is_none(),
             });
