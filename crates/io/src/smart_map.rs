@@ -308,10 +308,15 @@ fn hue_sat_params(f: &Descriptor) -> Option<J> {
         for (key, param) in HUE_KEYS {
             o.insert(param.into(), json!(hue_value(a, key)?));
         }
+        // A repeated entry would overwrite the first, so such a filter is kept verbatim instead.
         match int(a, "LclR") {
+            None if out.contains_key("hue") => return None,
             None => out.extend(o),
             Some(r) => {
                 let name = *HUE_RANGES.get(usize::try_from(r).ok()?.checked_sub(1)?)?;
+                if out.contains_key(name) {
+                    return None;
+                }
                 let range: Option<Vec<i32>> = HUE_RANGE_KEYS.iter().map(|k| int(a, k)).collect();
                 o.insert("range".into(), json!(range?));
                 out.insert(name.into(), J::Object(o));
@@ -347,15 +352,19 @@ fn hue_sat_adjustments(p: &J) -> Result<Value, String> {
             }
         }
         for (key, param) in HUE_KEYS {
-            let default = if param == "saturation" && p.get("colorize").and_then(|v| v.as_bool()) == Some(true) { 25.0 } else { 0.0 };
+            // Colorize starts the master saturation at 25; a colour range's sliders start at 0.
+            let colorize = p.get("colorize").and_then(J::as_bool) == Some(true);
+            let default = if range.is_none() && param == "saturation" && colorize { 25.0 } else { 0.0 };
             e = e.with(key, pi(o, param, default));
         }
         Ok(e)
     };
     let mut list = vec![Value::Descriptor(entry(p, None)?)];
     for (i, name) in HUE_RANGES.iter().enumerate() {
-        if let Some(r) = p.get(*name).filter(|v| v.is_object()) {
-            list.push(Value::Descriptor(entry(r, Some((i, r)))?));
+        match p.get(*name) {
+            None | Some(J::Null) => {}
+            Some(r) if r.is_object() => list.push(Value::Descriptor(entry(r, Some((i, r)))?)),
+            Some(_) => return Err(format!("hue range `{name}` must be an object")),
         }
     }
     Ok(Value::List(list))
@@ -1282,6 +1291,41 @@ mod tests {
             .with("Fltr", Value::Descriptor(Descriptor::new("DstS").with("Rds ", Value::Integer(3))))
             .with("filterID", Value::Integer(code(b"DstS")));
         assert_eq!(filter_from_item(&dust).command, UNSUPPORTED_FILTER);
+    }
+
+    #[test]
+    fn hue_saturation_ranges_are_not_lost() {
+        let hue_sat = |params: J| item_for_filter(&sf("image.adjustments.hueSaturation", params));
+        // A range that is not an object is an error, not a silently dropped setting.
+        assert!(hue_sat(json!({"reds": 5})).is_err());
+        assert!(hue_sat(json!({"reds": null})).is_ok());
+        // Colorize's 25% default is the master saturation's only: a range's stays 0.
+        let d = hue_sat(json!({"colorize": true, "reds": {"hue": 5}})).unwrap();
+        let adjs = adjustment_list(get_desc(&d, "Fltr").unwrap()).unwrap();
+        let saturations: Vec<_> = adjs.iter().map(|a| int(a, "Strt")).collect();
+        assert_eq!(saturations, [Some(25), Some(0)]);
+        // A repeated range (or master) would overwrite the first: the filter is kept verbatim.
+        let entry = |range: Option<i32>| {
+            let e = Descriptor::new("Hst2").with("H   ", Value::Integer(0)).with("Strt", Value::Integer(0)).with("Lght", Value::Integer(0));
+            let Some(r) = range else { return Value::Descriptor(e) };
+            let e = HUE_RANGE_KEYS.iter().fold(e.with("LclR", Value::Integer(r)), |e, k| e.with(k, Value::Integer(10)));
+            Value::Descriptor(e)
+        };
+        for adjs in [vec![entry(None), entry(Some(1)), entry(Some(1))], vec![entry(None), entry(None)]] {
+            let fltr = Descriptor::new("HStr").with("Clrz", Value::Boolean(false)).with("Adjs", Value::List(adjs));
+            let item = Descriptor::new("filterFX")
+                .with("Nm  ", Value::Text(UnicodeString::new_nul("Hue/Saturation...")))
+                .with(
+                    "blendOptions",
+                    Value::Descriptor(Descriptor::new("blendOptions").with("Opct", unit(b"#Prc", 100.0)).with("Md  ", enumv("BlnM", "normal"))),
+                )
+                .with("enab", Value::Boolean(true))
+                .with("Fltr", Value::Descriptor(fltr))
+                .with("filterID", Value::Integer(code(b"HStr")));
+            let f = filter_from_item(&item);
+            assert_eq!(f.command, UNSUPPORTED_FILTER);
+            assert_eq!(item_for_filter(&f).unwrap(), item);
+        }
     }
 
     #[test]
