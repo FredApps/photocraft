@@ -2351,6 +2351,9 @@ pub(crate) fn composite_with_effects_prepared(
 /// layer, `share + l (1 - share) = (1 - cov) + l`.
 pub fn outline_share(cov: f32, l: f32) -> f32 {
     let outside = (1.0 - cov.clamp(0.0, 1.0)).max(0.0);
+    if outside <= 1e-6 {
+        return 0.0;
+    }
     let rest = 1.0 - l.clamp(0.0, 1.0);
     if rest <= 1e-6 { 1.0 } else { (outside / rest).min(1.0) }
 }
