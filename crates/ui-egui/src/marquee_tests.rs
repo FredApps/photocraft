@@ -166,7 +166,8 @@ fn shift_square_pressed_between_pixels_has_equal_sides() {
 
 /// #6015: Fixed Size pressed between pixels selected one pixel more on each side (10 × 10 became
 /// 11 × 11, 1 × 1 became 2 × 2). The readout and the selection are the entered size, and a click
-/// without a drag places it too, as in Photoshop.
+/// without a drag places it too, as in Photoshop. The later pressed-pixel fix (#5577)
+/// anchors at the containing pixel, including fractional coordinates above half a pixel.
 #[test]
 fn fixed_size_selects_exactly_the_entered_size() {
     for tool in [Tool::RectMarquee, Tool::EllipseMarquee] {
@@ -178,7 +179,7 @@ fn fixed_size_selects_exactly_the_entered_size() {
             press_at(&mut h, 50.4, 60.6, Modifiers::NONE);
             assert!(readout(&h, w, ht), "{tool:?} {w} × {ht}: the readout shows the entered size");
             release_at(&mut h, 90.0, 90.0, Modifiers::NONE);
-            assert_eq!(selection(&h), Rect::new(50, 61, 50 + w, 61 + ht), "{tool:?} {w} × {ht}: dragged");
+            assert_eq!(selection(&h), Rect::new(50, 60, 50 + w, 60 + ht), "{tool:?} {w} × {ht}: dragged");
 
             // A click: the button goes down and up at one point.
             h.state_mut().run("select.deselect", json!({})).unwrap();
@@ -188,7 +189,7 @@ fn fixed_size_selects_exactly_the_entered_size() {
             button(&mut h, p, true, Modifiers::NONE);
             button(&mut h, p, false, Modifiers::NONE);
             h.run_steps(2);
-            assert_eq!(selection(&h), Rect::new(121, 100, 121 + w, 100 + ht), "{tool:?} {w} × {ht}: clicked");
+            assert_eq!(selection(&h), Rect::new(120, 100, 120 + w, 100 + ht), "{tool:?} {w} × {ht}: clicked");
         }
     }
 }

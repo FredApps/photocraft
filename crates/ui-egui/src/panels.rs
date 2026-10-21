@@ -6431,6 +6431,7 @@ mod toolbar_tests {
     fn a_click_without_a_prior_hover_picks_the_tool() {
         for tool in [Tool::Brush, Tool::Type] {
             let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
             app.ui.tool = Tool::Move;
             let mut h = toolbar_harness(app);
             let p = tool_button(&h, tool);
@@ -6829,6 +6830,7 @@ mod compact_visual_regressions {
             crate::theme::install_fonts(&ctx);
             crate::theme::apply(&ctx, kind);
             let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+            app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
             app.session.tools.foreground = [1.0, 0.0, 1.0, 1.0];
             app.session.tools.background = [0.0, 1.0, 0.0, 1.0];
             app.ui.panels.toolbar_double = double;

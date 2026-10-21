@@ -376,6 +376,7 @@ mod tests {
         app.sync_views();
         let id = app.session.execute("shape.create", json!({"kind": "rect", "rect": [40, 16, 50, 32], "fill": "#ff0000"})).unwrap()["layer"].as_u64().unwrap();
         let id = photocraft_doc::LayerId(id);
+        app.ui.tool_options.move_show_transform = false;
         app.ui.tool = Tool::Move;
         app.ui.extras.snap = false;
         app.ui.view.show.smart_guides = false;
