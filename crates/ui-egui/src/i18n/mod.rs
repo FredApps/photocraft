@@ -916,6 +916,16 @@ mod tests {
         assert_eq!(fmt(&brushes, &[("group", "水彩")]), "已从 水彩 导入 2 个画笔");
         assert_eq!(trn(lang, 5, "{n} slice", "{n} slices"), "5 个切片");
     }
+    /// Counted status messages read in Korean instead of falling back to English (they were
+    /// missing from the catalog).
+    #[test]
+    fn korean_counted_messages_are_translated() {
+        let lang = Lang::from_code("ko").expect("ko registered");
+        assert_eq!(trn(lang, 3, "Played {n} step", "Played {n} steps"), "단계 3개를 재생했습니다");
+        let brushes = trn(lang, 2, "Imported {n} brush from {group}", "Imported {n} brushes from {group}");
+        assert_eq!(fmt(&brushes, &[("group", "수채화")]), "수채화에서 브러시 2개를 가져왔습니다");
+        assert_eq!(trn(lang, 5, "{n} slice", "{n} slices"), "분할 영역 5개");
+    }
 
     #[test]
     fn czech_plural_rule() {
