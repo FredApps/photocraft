@@ -1,0 +1,46 @@
+{
+  "generator": "make_fixtures.py",
+  "provenance": "Original procedural neutral test images, MIT; 8-bit RGBA, 300 ppi; complex PSD/PSB/ATN inputs must be authored in Photoshop or sourced separately.",
+  "files": [
+    {
+      "file": "blue-400x200-control.png",
+      "sha256": "1657e2d2b4915b6870537e24e8ce153c0de40a1c434a53e39ad77ff1812489cc",
+      "bytes": 670
+    },
+    {
+      "file": "blue-400x200.png",
+      "sha256": "b02a32216e9d319db0fabe4b6f7c204010648f7d8bbffd04134c547df2314c1d",
+      "bytes": 669
+    },
+    {
+      "file": "grid-512.png",
+      "sha256": "74ea25298884474b84ef0e1e33705967c0b4de8d1ed907d4355e6675be1492fb",
+      "bytes": 106023
+    },
+    {
+      "file": "marquee-400x300.png",
+      "sha256": "6450b4a66038fa76684bf18a107a1a3f087eaa5d78a2cb573cc1895f6da9e59b",
+      "bytes": 2037
+    },
+    {
+      "file": "opaque-grid-512.png",
+      "sha256": "74ea25298884474b84ef0e1e33705967c0b4de8d1ed907d4355e6675be1492fb",
+      "bytes": 106023
+    },
+    {
+      "file": "pencil-64-transparent.png",
+      "sha256": "f330483735a40640f603814eca842f565117b4f64c125b94f1d3bef8be5d2084",
+      "bytes": 117
+    },
+    {
+      "file": "red-200.png",
+      "sha256": "70b04d6da72e3d68052549daad43e78eb5959a6c07ce0417a3076ea9848e7f65",
+      "bytes": 492
+    },
+    {
+      "file": "soft-edge-control.png",
+      "sha256": "86729721d1da6079a6bf26bb25bb13b9317071dacccec5f7a6c240efde9d383c",
+      "bytes": 2645
+    }
+  ]
+}

@@ -1,0 +1,156 @@
+[
+  {
+    "pr": 8042,
+    "source_head": "3bd2274aa230e48bda2ab17f071a2879971e9655",
+    "before": "6a2d027ee2e7ca12afd248544ed2262b0fa078dd",
+    "after": "78eed69368a48a8dc332f0637273c9e466eff21c",
+    "changed_paths": [
+      "crates/codecs/src/codecs/jpeg.rs",
+      "crates/codecs/src/resolution.rs"
+    ]
+  },
+  {
+    "pr": 8250,
+    "source_head": "000a480f917b32c09a8e80a31bd223e254841592",
+    "before": "78eed69368a48a8dc332f0637273c9e466eff21c",
+    "after": "98550a4325bf27803c46f30b7b93dd0d91348703",
+    "changed_paths": [
+      "crates/geom/src/warp.rs",
+      "crates/io/src/blocks.rs",
+      "crates/io/src/smart_map.rs"
+    ]
+  },
+  {
+    "pr": 8098,
+    "source_head": "3d7d62e349447a2078df23fdc7e5d42f1960e4ea",
+    "before": "98550a4325bf27803c46f30b7b93dd0d91348703",
+    "after": "8f7ff6d4f7460cf489b574c3037dce1bf582878f",
+    "changed_paths": [
+      "crates/io/src/comps_map.rs",
+      "crates/io/tests/comps_artboards.rs"
+    ]
+  },
+  {
+    "pr": 7857,
+    "source_head": "194dcf3631ec81e481995b79060143931ae8ab27",
+    "before": "8f7ff6d4f7460cf489b574c3037dce1bf582878f",
+    "after": "6d6879f903327d82ec81f65db440c09f86217991",
+    "changed_paths": [
+      "crates/engine/src/smart_cmds.rs",
+      "crates/engine/src/smart_cmds/tests.rs"
+    ]
+  },
+  {
+    "pr": 6815,
+    "source_head": "ae0823efe41d5be9793d4bfe3548c70c487106a7",
+    "before": "6d6879f903327d82ec81f65db440c09f86217991",
+    "after": "c1bf47620858f6322ab89b12cee0aeb4a8118938",
+    "changed_paths": [
+      "crates/io/src/adjust_map.rs",
+      "crates/io/src/psd_export.rs",
+      "crates/io/src/psd_import.rs"
+    ]
+  },
+  {
+    "pr": 5607,
+    "source_head": "dcc824d477da5795142b38ac419651e8e0ac75fb",
+    "before": "c1bf47620858f6322ab89b12cee0aeb4a8118938",
+    "after": "bb33aadfb7b686203883a60c58155e3f444ce924",
+    "changed_paths": [
+      "crates/psd/src/tiff.rs"
+    ]
+  },
+  {
+    "pr": 6244,
+    "source_head": "08487cdd293c311e86c33f6009170d32f15eb6e6",
+    "before": "bb33aadfb7b686203883a60c58155e3f444ce924",
+    "after": "5524163a0c8d0640cff9d77b2fc35f58056a14df",
+    "changed_paths": [
+      "crates/algo/src/transform.rs",
+      "crates/engine/src/file_cmds.rs",
+      "crates/engine/src/smart_cmds/tests.rs"
+    ]
+  },
+  {
+    "pr": 8005,
+    "source_head": "24970b162288e10dd0fd66ad210f53c664d1b5a4",
+    "before": "5524163a0c8d0640cff9d77b2fc35f58056a14df",
+    "after": "ac48bfa037028faf2cc8c0057d7281878f57aab1",
+    "changed_paths": [
+      "crates/engine/src/jobs.rs",
+      "crates/engine/src/type_extra_cmds.rs",
+      "crates/engine/src/type_extra_cmds/tests.rs"
+    ]
+  },
+  {
+    "pr": 7894,
+    "source_head": "aede66995d91ace98dfba8f159c841f0ef13fe84",
+    "before": "ac48bfa037028faf2cc8c0057d7281878f57aab1",
+    "after": "a0407efdfd900e4334e92b4dc950bf90a645fcfe",
+    "changed_paths": [
+      "crates/ui-egui/src/shortcuts.rs",
+      "crates/ui-egui/src/slice_ui.rs"
+    ]
+  },
+  {
+    "pr": 8053,
+    "source_head": "480c12304d5cacdfd8f7af210afad5d5905e7619",
+    "before": "a0407efdfd900e4334e92b4dc950bf90a645fcfe",
+    "after": "b885479e385e6260d0171a02b76063f65aea03dc",
+    "changed_paths": [
+      "crates/paint/src/brush_tests.rs",
+      "crates/paint/src/dynamics.rs",
+      "crates/paint/src/render.rs",
+      "crates/ui-egui/src/pencil_tests.rs"
+    ]
+  },
+  {
+    "pr": 8043,
+    "source_head": "86ebcca73533786fd2717ed12016eed098e58715",
+    "before": "b885479e385e6260d0171a02b76063f65aea03dc",
+    "after": "13c6470499b316d27ff7760b45ba1fb683523c5c",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/marquee_tests.rs"
+    ]
+  },
+  {
+    "pr": 7919,
+    "source_head": "4a3f3ba665a91b2934e9dd907655cdbd31cf1279",
+    "before": "13c6470499b316d27ff7760b45ba1fb683523c5c",
+    "after": "e0ff5a9f8034e1c9a05a147cc33bc40a58558f57",
+    "changed_paths": [
+      "crates/ui-egui/src/liquify_ui.rs"
+    ]
+  },
+  {
+    "pr": 7968,
+    "source_head": "6d2c6cc0174c05ee19d00f28f645f81814f62a2c",
+    "before": "e0ff5a9f8034e1c9a05a147cc33bc40a58558f57",
+    "after": "59c3640a8b3fb127e494bad088ce5396c29a7145",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ]
+  },
+  {
+    "pr": 7959,
+    "source_head": "52312331d818ffd6960de652d4c280a6e057957c",
+    "before": "59c3640a8b3fb127e494bad088ce5396c29a7145",
+    "after": "5d29c3b1bf6d6ab382328647ac85e633ee7bb36b",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ]
+  },
+  {
+    "pr": 7755,
+    "source_head": "7771c375359f7f1730e255d638642dee07df244f",
+    "before": "5d29c3b1bf6d6ab382328647ac85e633ee7bb36b",
+    "after": "3ab5d4a439d6c0353fe58cacf7359c176b3baf10",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/tests/atn_crystallize_seed.rs"
+    ]
+  }
+]

@@ -1,0 +1,190 @@
+{
+  "schema": 1,
+  "candidate_commit": null,
+  "candidate_tree": null,
+  "artifact_sha256": null,
+  "run_url": null,
+  "photoshop_build": null,
+  "windows_build": null,
+  "session": null,
+  "status": "NOT_RUN",
+  "cases": [
+    {
+      "id": "G01",
+      "pr": 8042,
+      "title": "CMYK JPEG interoperability and resolution",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G02",
+      "pr": 8250,
+      "title": "Offset custom warp survives forced re-render",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G03",
+      "pr": 8098,
+      "title": "Photoshop layer-comp visibility inheritance",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G04",
+      "pr": 7857,
+      "title": "Replace Contents keeps centre and scale",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G05",
+      "pr": 6815,
+      "title": "Unsupported Photoshop Light data is preserved with a warning",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G06",
+      "pr": 5607,
+      "title": "Layered TIFF/PSB foreign byte-order long blocks",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G07",
+      "pr": 6244,
+      "title": "Opaque Smart Object edges stay opaque when downscaled",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G08",
+      "pr": 8005,
+      "title": "Opening images does not block on unrelated font scanning",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G09",
+      "pr": 7894,
+      "title": "Slice Select deletion never deletes the image layer",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G10",
+      "pr": 8053,
+      "title": "One-pixel Pencil click/Shift-line agreement",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G11",
+      "pr": 8043,
+      "title": "Fixed Ratio marquee remains proportional at canvas edges",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G12",
+      "pr": 7919,
+      "title": "Liquify brush resize stays anchored and paints nothing",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G13",
+      "pr": 7968,
+      "title": "Group Layers ATN targets survive cross-application playback",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G14",
+      "pr": 7959,
+      "title": "Emboss ATN uses Photoshop event and values",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    },
+    {
+      "id": "G15",
+      "pr": 7755,
+      "title": "Seeded Crystallize ATN export refuses silent changes",
+      "status": "NOT_RUN",
+      "attempts": [],
+      "observations": "",
+      "evidence": [],
+      "fixture_hashes": [],
+      "native_test_evidence": []
+    }
+  ],
+  "excluded": [
+    {
+      "number": 6868,
+      "reason": "Fresh human discussion reports non-finite alpha and zero-alpha stroke opacity loss; author acknowledges unresolved opacity setting loss."
+    }
+  ],
+  "known_risks": [
+    "G11 fractional-edge square rounding",
+    "G12 modifier changes mid-stroke and release-frame anchor",
+    "G05 preservation-only Light support",
+    "G06 test-only wire-format coverage"
+  ]
+}

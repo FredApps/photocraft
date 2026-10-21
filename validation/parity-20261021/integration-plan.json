@@ -1,0 +1,164 @@
+{
+  "repository": "storytold/photocraft",
+  "fork": "FredApps/photocraft",
+  "base": "6a2d027ee2e7ca12afd248544ed2262b0fa078dd",
+  "branch": "integration/parity-approved-20261021",
+  "included": [
+    {
+      "number": 8042,
+      "head": "3bd2274aa230e48bda2ab17f071a2879971e9655",
+      "title": "Codecs: Fix corrupted CMYK JPEG exports (#8008)",
+      "files": [
+        "crates/codecs/src/codecs/jpeg.rs",
+        "crates/codecs/src/resolution.rs"
+      ]
+    },
+    {
+      "number": 8250,
+      "head": "000a480f917b32c09a8e80a31bd223e254841592",
+      "title": "fix(io): read a placed layer's custom warp over its source rect (#8227)",
+      "files": [
+        "crates/geom/src/warp.rs",
+        "crates/io/src/blocks.rs",
+        "crates/io/src/smart_map.rs"
+      ]
+    },
+    {
+      "number": 8098,
+      "head": "3d7d62e349447a2078df23fdc7e5d42f1960e4ea",
+      "title": "PSD layer comps: an entry without enab inherits the previous visibility, as in Photoshop (#8093)",
+      "files": [
+        "crates/io/src/comps_map.rs",
+        "crates/io/tests/comps_artboards.rs"
+      ]
+    },
+    {
+      "number": 7857,
+      "head": "194dcf3631ec81e481995b79060143931ae8ab27",
+      "title": "Replace Contents: contents of another size keep the placement's centre, as in Photoshop (#7844)",
+      "files": [
+        "crates/engine/src/smart_cmds.rs",
+        "crates/engine/src/smart_cmds/tests.rs"
+      ]
+    },
+    {
+      "number": 6815,
+      "head": "ae0823efe41d5be9793d4bfe3548c70c487106a7",
+      "title": "PSD: keep Photoshop 2026 Light adjustment layers verbatim and warn (#6542)",
+      "files": [
+        "crates/io/src/adjust_map.rs",
+        "crates/io/src/psd_export.rs",
+        "crates/io/src/psd_import.rs"
+      ]
+    },
+    {
+      "number": 5607,
+      "head": "dcc824d477da5795142b38ac419651e8e0ac75fb",
+      "title": "PSD: PSB foreign-order long-key blocks keep 8-byte length in little-endian TIFFs (#5599)",
+      "files": [
+        "crates/psd/src/tiff.rs"
+      ]
+    },
+    {
+      "number": 6244,
+      "head": "08487cdd293c311e86c33f6009170d32f15eb6e6",
+      "title": "Preserve opaque edges when placing scaled Smart Objects",
+      "files": [
+        "crates/algo/src/transform.rs",
+        "crates/engine/src/file_cmds.rs",
+        "crates/engine/src/smart_cmds/tests.rs"
+      ]
+    },
+    {
+      "number": 8005,
+      "head": "24970b162288e10dd0fd66ad210f53c664d1b5a4",
+      "title": "Open: a file without type never waits for the font scan (#7332)",
+      "files": [
+        "crates/engine/src/jobs.rs",
+        "crates/engine/src/type_extra_cmds.rs",
+        "crates/engine/src/type_extra_cmds/tests.rs"
+      ]
+    },
+    {
+      "number": 7894,
+      "head": "aede66995d91ace98dfba8f159c841f0ef13fe84",
+      "title": "Slice Select: Delete deletes the selected slice, not the layer (#7862)",
+      "files": [
+        "crates/ui-egui/src/shortcuts.rs",
+        "crates/ui-egui/src/slice_ui.rs"
+      ]
+    },
+    {
+      "number": 8053,
+      "head": "480c12304d5cacdfd8f7af210afad5d5905e7619",
+      "title": "Pencil: align 1 px click snapping with the line walker (#4895)",
+      "files": [
+        "crates/paint/src/brush_tests.rs",
+        "crates/paint/src/dynamics.rs",
+        "crates/paint/src/render.rs",
+        "crates/ui-egui/src/pencil_tests.rs"
+      ]
+    },
+    {
+      "number": 8043,
+      "head": "86ebcca73533786fd2717ed12016eed098e58715",
+      "title": "Keep Fixed Ratio marquee ratio when dragged past the canvas edge",
+      "files": [
+        "crates/ui-egui/src/canvas.rs",
+        "crates/ui-egui/src/marquee_tests.rs"
+      ]
+    },
+    {
+      "number": 7919,
+      "head": "4a3f3ba665a91b2934e9dd907655cdbd31cf1279",
+      "title": "Liquify: Alt-drag brush resize keeps the brush in place and no longer paints a dab (#7884)",
+      "files": [
+        "crates/ui-egui/src/liquify_ui.rs"
+      ]
+    },
+    {
+      "number": 7968,
+      "head": "6d2c6cc0174c05ee19d00f28f645f81814f62a2c",
+      "title": "fix(atn): a Group Layers step keeps its explicit layer through .atn (#7236)",
+      "files": [
+        "crates/engine/src/atn_cmds.rs",
+        "crates/engine/src/atn_cmds/tests.rs"
+      ]
+    },
+    {
+      "number": 7959,
+      "head": "52312331d818ffd6960de652d4c280a6e057957c",
+      "title": "Actions: Emboss saves to and loads from .atn as Photoshop's Embs step (#7946)",
+      "files": [
+        "crates/engine/src/atn_cmds.rs",
+        "crates/engine/src/atn_cmds/tests.rs"
+      ]
+    },
+    {
+      "number": 7755,
+      "head": "7771c375359f7f1730e255d638642dee07df244f",
+      "title": "fix(actions): refuse lossy seeded Crystallize ATN export",
+      "files": [
+        "crates/engine/src/atn_cmds.rs",
+        "crates/engine/tests/atn_crystallize_seed.rs"
+      ]
+    }
+  ],
+  "excluded": [
+    {
+      "number": 6868,
+      "reason": "Fresh human discussion reports non-finite alpha and zero-alpha stroke opacity loss; author acknowledges unresolved opacity setting loss."
+    }
+  ],
+  "otherHeld": [
+    7318,
+    6880,
+    8012,
+    8034,
+    3283,
+    7904,
+    5145,
+    3342,
+    7970
+  ]
+}

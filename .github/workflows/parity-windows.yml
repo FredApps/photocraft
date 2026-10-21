@@ -1,0 +1,91 @@
+name: Parity Windows candidate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [ci/parity-base-20261021]
+permissions:
+  contents: read
+concurrency:
+  group: parity-windows-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  portable:
+    name: Windows x64 release build and provenance
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: "2"
+      PHOTOCRAFT_NO_PRINT: "1"
+      PHOTOCRAFT_REQUIRE_WINRES: "1"
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C target-feature=+crt-static"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: parity-windows-release
+          save-if: false
+      - name: Pin build identity and prove every included source head
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Get-Content validation/parity-20261021/integration-plan.json -Raw | ConvertFrom-Json
+          $buildSha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read build commit' }
+          if ($buildSha -ne '${{ github.event.pull_request.head.sha }}') { throw 'Wrong checkout' }
+          foreach ($item in $manifest.included) {
+            git merge-base --is-ancestor $item.head HEAD
+            if ($LASTEXITCODE -ne 0) { throw "Missing source head for PR $($item.number)" }
+          }
+          "PHOTOCRAFT_BUILD_SHA=$buildSha" >> $env:GITHUB_ENV
+          "PHOTOCRAFT_BUILD_DATE=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd'))" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force out | Out-Null
+          git rev-parse HEAD | Set-Content out/source-commit.txt
+          git rev-parse 'HEAD^{tree}' | Set-Content out/source-tree.txt
+          rustc -Vv | Set-Content out/toolchain.txt
+          cargo -V | Add-Content out/toolchain.txt
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,OSArchitecture | ConvertTo-Json | Set-Content out/windows.json
+      - name: Build native portable binaries
+        shell: pwsh
+        run: |
+          cargo build --release --locked --target x86_64-pc-windows-msvc -p photocraft -p photocraft-cli --features heif
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+      - name: Check PE architecture, versions and package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path (Get-Location) out/photocraft-parity-windows-x64
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          foreach ($item in @(@('photocraft.exe',2),@('photocraft-cli.exe',3))) {
+            $path = Join-Path target/x86_64-pc-windows-msvc/release $item[0]
+            $bytes = [IO.File]::ReadAllBytes($path)
+            $pe = [BitConverter]::ToInt32($bytes,0x3c)
+            if ([BitConverter]::ToUInt16($bytes,$pe+4) -ne 0x8664) { throw 'Wrong PE machine' }
+            if ([BitConverter]::ToUInt16($bytes,$pe+0x5c) -ne $item[1]) { throw 'Wrong PE subsystem' }
+            Copy-Item -LiteralPath $path -Destination $stage
+          }
+          & (Join-Path $stage photocraft-cli.exe) --version | Set-Content out/cli-version.txt
+          if ($LASTEXITCODE -ne 0) { throw 'CLI version smoke failed' }
+          if ((Get-Content out/cli-version.txt -Raw) -notmatch $env:PHOTOCRAFT_BUILD_SHA.Substring(0,9)) { throw 'Version does not identify candidate' }
+          Copy-Item packaging/windows/portable.txt $stage
+          Copy-Item validation/parity-20261021 (Join-Path $stage validation) -Recurse
+          Copy-Item out/source-commit.txt,out/source-tree.txt,out/toolchain.txt,out/windows.json,out/cli-version.txt $stage
+          Get-ChildItem -LiteralPath $stage -File -Recurse | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetRelativePath($stage,$_.Path))" } | Set-Content (Join-Path $stage SHA256SUMS.txt)
+          Compress-Archive -Path "$stage/*" -DestinationPath out/photocraft-parity-windows-x64.zip
+          Get-FileHash out/photocraft-parity-windows-x64.zip -Algorithm SHA256 | Format-List | Out-String | Set-Content out/zip-sha256.txt
+          @("Candidate commit: $env:PHOTOCRAFT_BUILD_SHA","Unsigned Windows x64 validation build.","Native automated suites run in the separate full-ci workflow.","Graphical Photoshop comparison remains NOT_RUN until the protocol is executed.") | Set-Content out/STATUS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: photocraft-parity-windows-x64
+          path: out/
+          if-no-files-found: error
+          retention-days: 14
+
