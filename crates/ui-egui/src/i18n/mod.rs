@@ -926,6 +926,16 @@ mod tests {
         assert_eq!(fmt(&brushes, &[("group", "수채화")]), "수채화에서 브러시 2개를 가져왔습니다");
         assert_eq!(trn(lang, 5, "{n} slice", "{n} slices"), "분할 영역 5개");
     }
+    /// Counted status messages read in Indonesian instead of falling back to English (they were
+    /// missing from the catalog).
+    #[test]
+    fn indonesian_counted_messages_are_translated() {
+        let lang = Lang::from_code("id").expect("id registered");
+        assert_eq!(trn(lang, 3, "Played {n} step", "Played {n} steps"), "3 langkah diputar");
+        let brushes = trn(lang, 2, "Imported {n} brush from {group}", "Imported {n} brushes from {group}");
+        assert_eq!(fmt(&brushes, &[("group", "Cat Air")]), "2 kuas diimpor dari Cat Air");
+        assert_eq!(trn(lang, 5, "{n} slice", "{n} slices"), "5 slice");
+    }
 
     #[test]
     fn czech_plural_rule() {
