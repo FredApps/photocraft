@@ -413,7 +413,8 @@ enum Kind {
 /// One descriptor key ↔ one command param.
 struct F(&'static str, &'static str, Kind);
 
-/// Read the supported descriptor fields into native command parameters.
+/// Import mapped descriptor fields, leaving absent values to command defaults.
+/// Return `None` when a present enum, blend mode or colour cannot be represented.
 fn fields_from(d: &Descriptor, fields: &[F]) -> Option<Map<String, Value>> {
     let mut m = Map::new();
     for F(key, param, kind) in fields {
@@ -440,7 +441,8 @@ fn fields_from(d: &Descriptor, fields: &[F]) -> Option<Map<String, Value>> {
     Some(m)
 }
 
-/// Encode supported parameters, refusing a provided field that cannot be represented.
+/// Export supplied mapped params, omitting absent values to preserve event defaults.
+/// Return `None` for unsupported values; `ExactLong` also rejects rounding or saturation.
 fn fields_to(p: &Value, fields: &[F], mut d: Descriptor) -> Option<Descriptor> {
     for F(key, param, kind) in fields {
         let Some(v) = p.get(param) else { continue };
@@ -449,7 +451,14 @@ fn fields_to(p: &Value, fields: &[F], mut d: Descriptor) -> Option<Descriptor> {
             Kind::Pct => pct(v.as_f64()?),
             Kind::Ang => ang(v.as_f64()?),
             Kind::Long => long(v.as_f64()?),
-            Kind::ExactLong => long_exact(v.as_f64()?)?,
+            Kind::ExactLong => {
+                let number = v.as_f64()?;
+                let integer = number as i32;
+                if f64::from(integer) != number {
+                    return None;
+                }
+                D::Integer(integer)
+            }
             Kind::Dbl => D::Double(v.as_f64()?),
             Kind::Bool => D::Boolean(v.as_bool()?),
             Kind::Enum(ty, table) => enm(ty, lookup_back(table, v.as_str()?)?),
@@ -3139,7 +3148,7 @@ const EVENTS: &[Event] = &[
         &[F("Hrzn", "horizontal", Kind::Long), F("Vrtc", "vertical", Kind::Long), F("Fl  ", "undefinedAreas", Kind::Enum("FlMd", OFFSET_FILL))]
     ),
     ev!("Rple", "ripple", "Ripple", "filter.distort.ripple", &[F("Amnt", "amount", Kind::ExactLong), F("RplS", "size", Kind::Enum("RplS", RIPPLE_SIZE))]),
-    ev!("Crst", "crystallize", "Crystallize", "filter.pixelate.crystallize", &[F("ClSz", "cellSize", Kind::ExactLong)]),
+    ev!("Crst", "crystallize", "Crystallize", "filter.pixelate.crystallize", &[F("ClSz", "cellSize", Kind::Long)]),
     Event { code: "GEfc", name: "filterGallery", label: "Filter Gallery", ids: GALLERY_IDS, from: gallery_from, to: gallery_to },
     // Adjustments (Image › Adjustments).
     Event {
