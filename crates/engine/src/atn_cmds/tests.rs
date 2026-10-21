@@ -2056,3 +2056,25 @@ fn radial_blur_off_center_strict_export_refuses_silent_recentering() {
     let saved_pixels = s.execute("actions.save", json!({"action": "PixelsTarget"})).unwrap();
     assert_eq!(saved_pixels["steps"], 1);
 }
+/// Photoshop's Select and Mask descriptor as mapped has no field for the Refine Edge Brush,
+/// so a step with brush strokes must not export as a plain Select and Mask without them.
+#[test]
+fn refine_edge_with_brush_strokes_is_not_exported_without_them() {
+    for mode in ["add", "subtract"] {
+        let brushed = Action {
+            name: "Probe".into(),
+            steps: vec![("select.refineEdge".into(), json!({"radius": 1, "refineStrokes": [{"points": [[5, 4]], "size": 4, "mode": mode}]}))],
+            ..Default::default()
+        };
+        assert!(export("Audit", &[&brushed], &[], false).is_err(), "{mode}");
+        let (_, skipped) = export("Audit", &[&brushed], &[], true).unwrap();
+        assert_eq!(skipped, vec![Skipped { action: "Probe".into(), step: 0, id: "select.refineEdge".into() }]);
+    }
+    for params in [json!({"radius": 1}), json!({"radius": 1, "refineStrokes": []}), json!({"radius": 1, "refineStrokes": null})] {
+        let plain = Action { name: "Plain".into(), steps: vec![("select.refineEdge".into(), params)], ..Default::default() };
+        let (bytes, skipped) = export("Audit", &[&plain], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        let imported = import(&bytes).unwrap();
+        assert_eq!(imported.actions[0].steps, vec![("select.refineEdge".to_string(), json!({"radius": 1}))]);
+    }
+}
