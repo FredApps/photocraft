@@ -341,7 +341,7 @@ fn check_layer_budget(doc_sel: Option<&Surface>, l: &Layer, h: &Homography) -> R
             LayerContent::Group(g) => stack.extend(g.children.iter().map(|c| (c, None))),
             LayerContent::Text(t) if keeps_pixels(t) => {
                 if let Some(c) = &t.cache {
-                    check_budget(c.content_bounds(), h, &format!("layer \"{}\"", l.name))?;
+                    check_budget(c.content_bounds(), h, &format!("layer \"{}\"", l.name), c.format())?;
                 }
             }
             LayerContent::Text(_) | LayerContent::Shape(_) => {}
