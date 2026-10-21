@@ -1689,7 +1689,6 @@ fn image_size_round_trip(params: &Value) -> Option<Value> {
         _ => panic!("image size descriptor did not import as steps"),
     }
 }
-
 #[test]
 fn image_size_resolution_only_does_not_gain_keep_print_size() {
     // The .atn cannot tell resolution-only from keepPrintSize:true, so the former must not
@@ -1697,7 +1696,6 @@ fn image_size_resolution_only_does_not_gain_keep_print_size() {
     let params = json!({"resolution": 144, "resample": "nearest"});
     assert_eq!(image_size_round_trip(&params), None);
 }
-
 #[test]
 fn image_size_intentional_controls_still_round_trip() {
     for params in [
@@ -1706,4 +1704,24 @@ fn image_size_intentional_controls_still_round_trip() {
     ] {
         assert_eq!(image_size_round_trip(&params), Some(params.clone()));
     }
+}
+/// A crop with W x H x Resolution output options must not export as a plain rectangle crop
+/// that keeps the old size and resolution on replay: the mapper has no field for them.
+#[test]
+fn crop_with_output_size_or_resolution_is_not_exported_as_plain_crop() {
+    for params in [
+        json!({"x": 1, "y": 1, "width": 4, "height": 3, "targetWidth": 8, "targetHeight": 6, "resolution": 144, "resample": "nearest"}),
+        json!({"x": 1, "y": 1, "width": 4, "height": 3, "resolution": 144}),
+        json!({"x": 1, "y": 1, "width": 4, "height": 3, "targetWidth": 8, "targetHeight": 6}),
+    ] {
+        let sized = Action { name: "Probe".into(), steps: vec![("image.crop".into(), params)], ..Default::default() };
+        assert!(export("Audit", &[&sized], &[], false).is_err());
+        let (_, skipped) = export("Audit", &[&sized], &[], true).unwrap();
+        assert_eq!(skipped, vec![Skipped { action: "Probe".into(), step: 0, id: "image.crop".into() }]);
+    }
+    let plain = Action { name: "Plain".into(), steps: vec![("image.crop".into(), json!({"x": 1, "y": 1, "width": 4, "height": 3}))], ..Default::default() };
+    let (bytes, skipped) = export("Audit", &[&plain], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    let imported = import(&bytes).unwrap();
+    assert_eq!(imported.actions[0].steps, vec![("image.crop".to_string(), json!({"x": 1, "y": 1, "width": 4, "height": 3, "deleteCroppedPixels": true}))]);
 }
