@@ -34,6 +34,8 @@ pub enum Format {
     Fits,
     /// DPX (SMPTE 268M Digital Picture Exchange): luma, RGB or RGBA film and video frames.
     Dpx,
+    /// JPEG XL: lossless export-only until the separate importer lands.
+    Jxl,
     /// Kodak Cineon (`.cin`, the 10-bit film-scan format DPX grew from): read-only.
     Cineon,
     /// Adobe Photoshop Raw (`.raw`): read-only when a retained header is present.
@@ -79,6 +81,7 @@ pub const ASYMMETRIC_EXCEPTIONS: &[(Format, &str)] = &[
         "AVIF encode uses ravif (pure Rust) but decoding requires dav1d (C); read stays unsupported \
          until a pure-Rust AV1 decoder is viable. Only enabled with the non-default `avif` feature.",
     ),
+    (Format::Jxl, "Lossless JPEG XL export uses the pure-Rust zune-jpegxl encoder; JPEG XL reading is tracked separately and is not yet available."),
     (
         Format::Cineon,
         "Cineon frames are imported for film work; this crate has no Cineon writer, so save an \
@@ -129,6 +132,7 @@ impl Format {
         Format::Heif,
         Format::Fits,
         Format::Dpx,
+        Format::Jxl,
         Format::Cineon,
         Format::PhotoshopRaw,
     ];
@@ -164,6 +168,7 @@ impl Format {
             Format::Heif => "HEIF",
             Format::Fits => "FITS",
             Format::Dpx => "DPX",
+            Format::Jxl => "JPEG XL",
             Format::Cineon => "Cineon",
             Format::PhotoshopRaw => "Photoshop Raw",
         }
@@ -192,6 +197,7 @@ impl Format {
             Format::Heif => &["heic", "heif", "hif"],
             Format::Fits => &["fits", "fit", "fts"],
             Format::Dpx => &["dpx"],
+            Format::Jxl => &["jxl"],
             Format::Cineon => &["cin"],
             Format::PhotoshopRaw => &["raw"],
         }
@@ -218,6 +224,7 @@ impl Format {
             Format::Heif => "image/heif",
             Format::Fits => "image/fits",
             Format::Dpx => "image/x-dpx",
+            Format::Jxl => "image/jxl",
             Format::Cineon => "image/x-cin",
             Format::PhotoshopRaw => "image/x-photoshop-raw",
         }
@@ -276,6 +283,8 @@ pub fn caps(format: Format) -> FormatCaps {
         Format::Fits => FormatCaps { depths: &[S::U8, S::U16, S::F32], layouts: &[L::Gray, L::Rgb], alpha: false, text: true, ..base },
         // `text`: the DPX header fields only (see `fidelity_warnings_with`).
         Format::Dpx => FormatCaps { depths: &[S::U8, S::U16], layouts: &[L::Gray, L::Rgb, L::Rgba], text: true, ..base },
+        // GrayA is widened to RGBA at the same depth; the 16-bit alpha header is corrected.
+        Format::Jxl => FormatCaps { read: false, depths: &[S::U8, S::U16], layouts: &[L::Gray, L::Rgb, L::Rgba], ..base },
         Format::Cineon => FormatCaps { read: true, write: false, depths: &[S::U16], layouts: &[L::Gray, L::Rgb], alpha: false, ..base },
         Format::PhotoshopRaw => {
             FormatCaps { read: true, write: false, depths: &[S::U8, S::U16], layouts: &[L::Gray, L::GrayA, L::Rgb, L::Rgba], alpha: true, ..base }
@@ -292,6 +301,10 @@ pub fn detect(bytes: &[u8]) -> Option<Format> {
     }
     if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return Some(Format::Jpeg);
+    }
+    // JPEG XL bare codestream and ISO/IEC 18181-2 container signature box.
+    if b.starts_with(&[0xFF, 0x0A]) || b.starts_with(b"\0\0\0\x0cJXL \r\n\x87\n") {
+        return Some(Format::Jxl);
     }
     if b.starts_with(b"II*\0") || b.starts_with(b"MM\0*") || b.starts_with(b"II+\0") || b.starts_with(b"MM\0+") {
         return Some(Format::Tiff);
