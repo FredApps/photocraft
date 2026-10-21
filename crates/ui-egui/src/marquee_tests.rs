@@ -1,5 +1,5 @@
-//! Marquee modifiers through the real canvas (#208): ⇧ during the drag draws a square or circle,
-//! ⌥ draws from the centre (both together work too), a "W × H px" readout follows the cursor, and
+//! Marquee modifiers through the real canvas (#208): â‡§ during the drag draws a square or circle,
+//! âŒ¥ draws from the centre (both together work too), a "W Ã— H px" readout follows the cursor, and
 //! modifiers held before the drag still pick add/subtract (#188) instead of constraining.
 
 use egui::{Modifiers, PointerButton, Pos2, pos2, vec2};
@@ -137,17 +137,17 @@ fn shift_during_the_drag_draws_a_square_and_the_readout_follows() {
     let mut h = harness(Tool::RectMarquee);
     press_at(&mut h, 50.0, 50.0, Modifiers::NONE);
     move_to(&mut h, 150.0, 90.0);
-    assert!(readout(&h, 100, 40), "free drag: 100 × 40");
+    assert!(readout(&h, 100, 40), "free drag: 100 Ã— 40");
     mods(&mut h, Modifiers::SHIFT);
     move_to(&mut h, 150.0, 91.0);
-    assert!(readout(&h, 100, 100), "⇧: the larger extent wins");
+    assert!(readout(&h, 100, 100), "â‡§: the larger extent wins");
     release_at(&mut h, 150.0, 91.0, Modifiers::SHIFT);
     mods(&mut h, Modifiers::NONE);
     assert_eq!(selection(&h), Rect::new(50, 50, 150, 150));
     assert!(h.query_by_label("W:").is_none() && h.query_by_label_contains(" px").is_none(), "the readout goes away with the drag");
 }
 
-/// #5472: a ⇧ square pressed between pixels read 101 × 102 and selected that, because each axis
+/// #5472: a â‡§ square pressed between pixels read 101 Ã— 102 and selected that, because each axis
 /// snapped to the pixel grid on its own. The readout and the selection are square, and the
 /// Elliptical Marquee's circle too.
 #[test]
@@ -164,9 +164,9 @@ fn shift_square_pressed_between_pixels_has_equal_sides() {
     }
 }
 
-/// #6015: Fixed Size pressed between pixels selected one pixel more on each side (10 × 10 became
-/// 11 × 11, 1 × 1 became 2 × 2). The readout and the selection are the entered size, and a click
-/// without a drag places it too, as in Photoshop. The later pressed-pixel fix (#5577)
+/// #6015: Fixed Size pressed between pixels selected one pixel more on each side (10 Ã— 10 became
+/// 11 Ã— 11, 1 Ã— 1 became 2 Ã— 2). The readout and the selection are the entered size, and a click
+/// without a drag places it too, as in Photoshop. The later pressed-pixel fix (PR #6025)
 /// anchors at the containing pixel, including fractional coordinates above half a pixel.
 #[test]
 fn fixed_size_selects_exactly_the_entered_size() {
@@ -177,9 +177,9 @@ fn fixed_size_selects_exactly_the_entered_size() {
             o.marquee_style = "fixedSize".into();
             (o.marquee_width, o.marquee_height) = (w as f32, ht as f32);
             press_at(&mut h, 50.4, 60.6, Modifiers::NONE);
-            assert!(readout(&h, w, ht), "{tool:?} {w} × {ht}: the readout shows the entered size");
+            assert!(readout(&h, w, ht), "{tool:?} {w} Ã— {ht}: the readout shows the entered size");
             release_at(&mut h, 90.0, 90.0, Modifiers::NONE);
-            assert_eq!(selection(&h), Rect::new(50, 60, 50 + w, 60 + ht), "{tool:?} {w} × {ht}: dragged");
+            assert_eq!(selection(&h), Rect::new(50, 60, 50 + w, 60 + ht), "{tool:?} {w} Ã— {ht}: dragged");
 
             // A click: the button goes down and up at one point.
             h.state_mut().run("select.deselect", json!({})).unwrap();
@@ -189,12 +189,12 @@ fn fixed_size_selects_exactly_the_entered_size() {
             button(&mut h, p, true, Modifiers::NONE);
             button(&mut h, p, false, Modifiers::NONE);
             h.run_steps(2);
-            assert_eq!(selection(&h), Rect::new(120, 100, 120 + w, 100 + ht), "{tool:?} {w} × {ht}: clicked");
+            assert_eq!(selection(&h), Rect::new(120, 100, 120 + w, 100 + ht), "{tool:?} {w} Ã— {ht}: clicked");
         }
     }
 }
 
-/// #204: Preferences › Tools › Show Transformation Values off hides the readout, not the marquee.
+/// #204: Preferences â€º Tools â€º Show Transformation Values off hides the readout, not the marquee.
 #[test]
 fn show_transformation_values_off_hides_the_readout() {
     for shown in [false, true] {
@@ -232,7 +232,7 @@ fn show_transformation_values_off_hides_the_free_transform_readout() {
         let at = screen(&h, 130.0, 120.0);
         h.event(egui::Event::PointerMoved(at));
         h.run_steps(2);
-        assert_eq!(h.query_by_label("ΔX:").is_some(), shown, "shown: {shown}");
+        assert_eq!(h.query_by_label("Î”X:").is_some(), shown, "shown: {shown}");
     }
 }
 
@@ -246,7 +246,7 @@ fn alt_draws_from_the_centre_and_shift_alt_a_centred_circle() {
     release_at(&mut h, 240.0, 170.0, Modifiers::ALT);
     mods(&mut h, Modifiers::NONE);
     assert_eq!(selection(&h), Rect::new(160, 130, 240, 170), "centred on the press point");
-    // Elliptical, ⇧⌥: a circle centred on the press point (replacing the selection).
+    // Elliptical, â‡§âŒ¥: a circle centred on the press point (replacing the selection).
     let mut h = harness(Tool::EllipseMarquee);
     press_at(&mut h, 200.0, 150.0, Modifiers::NONE);
     mods(&mut h, Modifiers::SHIFT | Modifiers::ALT);
@@ -389,20 +389,20 @@ fn a_one_pixel_column_or_row_is_kept_on_release() {
 
 #[test]
 fn modifiers_held_before_the_drag_pick_the_mode_not_the_shape() {
-    // #188: ⇧ held at the press adds (no square); released and pressed again it constrains.
+    // #188: â‡§ held at the press adds (no square); released and pressed again it constrains.
     let mut h = harness(Tool::RectMarquee);
     h.state_mut().run("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20})).unwrap();
     mods(&mut h, Modifiers::SHIFT);
     press_at(&mut h, 100.0, 100.0, Modifiers::SHIFT);
     move_to(&mut h, 180.0, 130.0);
-    assert!(readout(&h, 80, 30), "not squared by the add-mode ⇧");
+    assert!(readout(&h, 80, 30), "not squared by the add-mode â‡§");
     release_at(&mut h, 180.0, 130.0, Modifiers::SHIFT);
     mods(&mut h, Modifiers::NONE);
     assert_eq!(selection(&h), Rect::new(10, 10, 180, 130), "added to the first selection");
     let st = h.state().session.active().unwrap();
     let sel = st.doc.selection.as_ref().unwrap();
     assert!(sel.sample_channel(20, 20, 0) > 0.99 && sel.sample_channel(150, 120, 0) > 0.99 && sel.sample_channel(60, 60, 0) < 0.01);
-    // ⇧ at the press, released, pressed again: add mode and a square.
+    // â‡§ at the press, released, pressed again: add mode and a square.
     let mut h = harness(Tool::RectMarquee);
     h.state_mut().run("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20})).unwrap();
     mods(&mut h, Modifiers::SHIFT);
@@ -418,7 +418,7 @@ fn modifiers_held_before_the_drag_pick_the_mode_not_the_shape() {
     let sel = st.doc.selection.as_ref().unwrap();
     assert!(sel.sample_channel(20, 20, 0) > 0.99, "still added");
     assert!(sel.sample_channel(170, 170, 0) > 0.99 && sel.sample_channel(170, 185, 0) < 0.01, "an 80 px square");
-    // ⌥ held at the press subtracts.
+    // âŒ¥ held at the press subtracts.
     let mut h = harness(Tool::RectMarquee);
     h.state_mut().run("select.rect", json!({"x": 0, "y": 0, "width": 400, "height": 300})).unwrap();
     mods(&mut h, Modifiers::ALT);
@@ -430,8 +430,8 @@ fn modifiers_held_before_the_drag_pick_the_mode_not_the_shape() {
     assert!(sel.sample_channel(120, 110, 0) < 0.01 && sel.sample_channel(90, 110, 0) > 0.99, "subtracted, not centred");
 }
 
-/// #208: `⇧⌥` held at the press intersects, the third selection mode after add (`⇧`) and subtract
-/// (`⌥`). Like those, the modifier at the press picks the mode; here the keys are released once the
+/// #208: `â‡§âŒ¥` held at the press intersects, the third selection mode after add (`â‡§`) and subtract
+/// (`âŒ¥`). Like those, the modifier at the press picks the mode; here the keys are released once the
 /// press has fixed the mode, so the drag stays a plain rectangle and only the overlap of the
 /// existing selection and the dragged rectangle survives. The three sample points below are each in
 /// exactly one of {overlap, first-only, drag-only}, so they pass only for intersect, not for
@@ -490,7 +490,7 @@ fn marquee_drag_bench() {
     assert!(h.query_by_label("W:").is_some());
 }
 
-/// An 80×60 transparent document, red over (10..30)², that square selected, Rectangular Marquee.
+/// An 80Ã—60 transparent document, red over (10..30)Â², that square selected, Rectangular Marquee.
 fn painted() -> (PhotocraftApp, photocraft_doc::LayerId) {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 80, "height": 60, "background": "transparent"})).unwrap();
@@ -515,7 +515,7 @@ fn drag(app: &mut PhotocraftApp, from: [f64; 2], to: [f64; 2], m: Modifiers) {
     tool_event(app, ToolEvent::Up { x: to[0], y: to[1] }, m);
 }
 
-/// A drag inside the ants moves the outline (`select.transformSelection`); ⇧ still draws (adds);
+/// A drag inside the ants moves the outline (`select.transformSelection`); â‡§ still draws (adds);
 /// a click inside deselects.
 #[test]
 fn drag_inside_the_selection_moves_the_outline() {
@@ -530,7 +530,7 @@ fn drag_inside_the_selection_moves_the_outline() {
     assert_eq!(sel(&app), None);
 }
 
-/// ⌘-drag cuts the selected pixels into a floating piece (`select.float`): shown at the pointer
+/// âŒ˜-drag cuts the selected pixels into a floating piece (`select.float`): shown at the pointer
 /// while dragging, moved again by plain drags, put back by Undo, dropped by Deselect.
 #[test]
 fn cmd_drag_floats_the_selected_pixels() {
@@ -576,7 +576,7 @@ fn mouse_drag_inside_the_selection_moves_it() {
     assert_eq!(selection(&h), Rect::new(120, 90, 220, 170), "moved by (20, 10)");
 }
 
-/// #6290: with a fresh app's View › Snap To, a selection moved through the real canvas snaps its
+/// #6290: with a fresh app's View â€º Snap To, a selection moved through the real canvas snaps its
 /// edges to a guide and the document bounds. Layers' targets were clipped to the selection, so
 /// it snapped back to its own starting edges and centre (shown as layer alignments) instead.
 #[test]
@@ -623,7 +623,7 @@ fn hovering_inside_the_selection_shows_the_move_cursor() {
     }
 }
 
-/// #1428: with a marquee, the arrow keys nudge the selection outline 1 px, ⇧ 10 px (Photoshop);
+/// #1428: with a marquee, the arrow keys nudge the selection outline 1 px, â‡§ 10 px (Photoshop);
 /// each press is one undoable step with Bundle Arrow-Key Nudges off, a run of them one step with
 /// it on (#2259, the default).
 #[test]
@@ -674,7 +674,7 @@ fn arrow_keys_without_a_selection_do_nothing() {
     assert!(!h.state().ui.status_error);
 }
 
-/// ⌘⌥-drag copies the selected pixels instead of cutting them: the original stays.
+/// âŒ˜âŒ¥-drag copies the selected pixels instead of cutting them: the original stays.
 #[test]
 fn cmd_alt_drag_floats_a_copy() {
     let (mut app, layer) = painted();
@@ -689,8 +689,8 @@ fn cmd_alt_drag_floats_a_copy() {
 
 #[test]
 fn alt_with_nothing_selected_draws_a_new_selection() {
-    // #1106: with no selection, ⌥ has nothing to subtract from, so a marquee drawn with it held
-    // still selects (Photoshop: ⌥ then only draws from the centre). With a selection it subtracts.
+    // #1106: with no selection, âŒ¥ has nothing to subtract from, so a marquee drawn with it held
+    // still selects (Photoshop: âŒ¥ then only draws from the centre). With a selection it subtracts.
     let mut h = harness(Tool::RectMarquee);
     mods(&mut h, Modifiers::ALT);
     press_at(&mut h, 100.0, 100.0, Modifiers::ALT);
@@ -698,7 +698,7 @@ fn alt_with_nothing_selected_draws_a_new_selection() {
     release_at(&mut h, 140.0, 130.0, Modifiers::ALT);
     mods(&mut h, Modifiers::NONE);
     assert!(h.state().session.active().unwrap().doc.selection.as_ref().is_some_and(|s| !s.content_bounds().is_empty()), "a selection was made");
-    // Now ⌥ subtracts from it.
+    // Now âŒ¥ subtracts from it.
     let before = selection(&h);
     mods(&mut h, Modifiers::ALT);
     press_at(&mut h, 0.0, 0.0, Modifiers::ALT);
@@ -706,7 +706,7 @@ fn alt_with_nothing_selected_draws_a_new_selection() {
     release_at(&mut h, 400.0, 400.0, Modifiers::ALT);
     mods(&mut h, Modifiers::NONE);
     let after = h.state().session.active().unwrap().doc.selection.as_ref().map(|s| s.content_bounds());
-    assert!(after.is_none_or(|r| r.is_empty() || r != before), "⌥ subtracted: {before:?} -> {after:?}");
+    assert!(after.is_none_or(|r| r.is_empty() || r != before), "âŒ¥ subtracted: {before:?} -> {after:?}");
 }
 
 fn error_dialogs(app: &PhotocraftApp) -> Vec<String> {
@@ -714,7 +714,7 @@ fn error_dialogs(app: &PhotocraftApp) -> Vec<String> {
 }
 
 /// Photoshop's "Could not use the move tool because the layer is locked." when a Move-tool drag
-/// (the Move tool, or ⌘ with a marquee) starts on a layer it can't move: the Background with no
+/// (the Move tool, or âŒ˜ with a marquee) starts on a layer it can't move: the Background with no
 /// selection, a position-locked layer; a plain click says nothing, and the drag never starts.
 #[test]
 fn move_on_the_background_without_a_selection_shows_photoshops_lock_message() {
@@ -738,7 +738,7 @@ fn move_on_the_background_without_a_selection_shows_photoshops_lock_message() {
     assert!(app.drag.is_none(), "no drag started");
     assert_eq!(app.session.active().unwrap().history.past_len(), steps);
     app.ui.dialogs.clear();
-    // ⌘-drag with a marquee (the Move tool for the drag, #896): the same.
+    // âŒ˜-drag with a marquee (the Move tool for the drag, #896): the same.
     app.ui.tool = Tool::RectMarquee;
     drag(&mut app, [20.0, 20.0], [40.0, 20.0], Modifiers::COMMAND);
     assert_eq!(error_dialogs(&app), [crate::move_lock::MESSAGE]);
@@ -765,7 +765,7 @@ fn move_on_the_background_without_a_selection_shows_photoshops_lock_message() {
 }
 
 /// With a selection the Background's pixels do move (its lock is partial: transparency and
-/// position), so no message; a layer locked all over gets it, with the marquee's ⌘-drag inside the
+/// position), so no message; a layer locked all over gets it, with the marquee's âŒ˜-drag inside the
 /// selection as with the Move tool.
 #[test]
 fn selected_pixels_move_off_the_background_but_not_off_a_fully_locked_layer() {
@@ -786,7 +786,7 @@ fn selected_pixels_move_off_the_background_but_not_off_a_fully_locked_layer() {
             Ok(())
         })
         .unwrap();
-    // ⌘ with the Brush is the Move tool too (#2248).
+    // âŒ˜ with the Brush is the Move tool too (#2248).
     for (tool, m) in [(Tool::RectMarquee, Modifiers::COMMAND), (Tool::Move, Modifiers::NONE), (Tool::Brush, Modifiers::COMMAND)] {
         app.ui.tool = tool;
         drag(&mut app, [20.0, 20.0], [40.0, 20.0], m);
@@ -797,7 +797,7 @@ fn selected_pixels_move_off_the_background_but_not_off_a_fully_locked_layer() {
 }
 
 /// Photoshop's cursor over a selection: the move cursor where a marquee press moves the outline,
-/// scissors where ⌘ (or the Move tool) cuts the selected pixels, a double arrow where ⌥ copies
+/// scissors where âŒ˜ (or the Move tool) cuts the selected pixels, a double arrow where âŒ¥ copies
 /// them, a hollow arrowhead while they are dragged, and a plain arrow over the floating piece.
 #[test]
 fn selection_cursor_follows_the_modifiers_and_the_floating_piece() {
@@ -811,7 +811,7 @@ fn selection_cursor_follows_the_modifiers_and_the_floating_piece() {
     assert_eq!(selection_cursor(&app, Tool::RectMarquee, inside, Modifiers::SHIFT), None);
     assert_eq!(selection_cursor(&app, Tool::RectMarquee, inside, Modifiers::COMMAND), Some(SelCursor::Cut));
     assert_eq!(selection_cursor(&app, Tool::RectMarquee, inside, cmd_alt), Some(SelCursor::Copy));
-    assert_eq!(selection_cursor(&app, Tool::RectMarquee, inside, Modifiers::ALT), None, "⌥ alone subtracts");
+    assert_eq!(selection_cursor(&app, Tool::RectMarquee, inside, Modifiers::ALT), None, "âŒ¥ alone subtracts");
     assert_eq!(selection_cursor(&app, Tool::Move, inside, none), Some(SelCursor::Cut));
     assert_eq!(selection_cursor(&app, Tool::Move, outside, none), Some(SelCursor::Cut), "the Move tool moves them from anywhere");
     assert_eq!(selection_cursor(&app, Tool::Move, inside, Modifiers::ALT), Some(SelCursor::Copy));
@@ -843,7 +843,7 @@ fn click_with(app: &mut PhotocraftApp, tool: Tool, x: f64, y: f64, m: Modifiers)
 }
 
 /// Single Row / Single Column Marquee (#2837): a click selects one pixel row (column) across the
-/// whole canvas; ⇧ adds, ⌥ subtracts, as with the other marquees.
+/// whole canvas; â‡§ adds, âŒ¥ subtracts, as with the other marquees.
 #[test]
 fn single_row_and_column_marquee_select_one_pixel_lines() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -866,10 +866,10 @@ fn single_row_and_column_marquee_select_one_pixel_lines() {
     click_with(&mut app, Tool::SingleColumnMarquee, 150.5, 3.0, Modifiers::SHIFT);
     assert_eq!(bounds(&app), Rect::new(42, 0, 151, 100));
     click_with(&mut app, Tool::SingleColumnMarquee, 42.0, 10.0, Modifiers::ALT);
-    assert_eq!(bounds(&app), Rect::new(150, 0, 151, 100), "⌥ subtracts the column");
+    assert_eq!(bounds(&app), Rect::new(150, 0, 151, 100), "âŒ¥ subtracts the column");
 }
 
-/// The two single-line marquees sit in the Marquee flyout but M (⇧M) cycles only the
+/// The two single-line marquees sit in the Marquee flyout but M (â‡§M) cycles only the
 /// Rectangular and Elliptical Marquee, as in Photoshop; automation picks them by name.
 #[test]
 fn m_cycles_only_the_rectangular_and_elliptical_marquee() {
@@ -899,7 +899,7 @@ fn m_cycles_only_the_rectangular_and_elliptical_marquee() {
 fn size_readout_follows_the_ruler_unit() {
     use photocraft_engine::prefs::{Unit, UnitsAndRulers};
     let mut ur = UnitsAndRulers::default();
-    // 1644 × 2659 px at 72 dpi: 58 cm wide
+    // 1644 Ã— 2659 px at 72 dpi: 58 cm wide
     let r = [0.0, 0.0, 1644.0, 2659.0];
     ur.rulers = Unit::Pixels;
     assert_eq!(crate::canvas::readout_in(&ur, 72.0, [1644.0, 2659.0], r), ["1644 px".to_string(), "2659 px".to_string()]);
@@ -932,7 +932,7 @@ fn magic_wand_click_inside_the_selection_deselects() {
     tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, Modifiers::NONE);
     tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, Modifiers::NONE);
     assert!(app.session.active().unwrap().doc.selection.is_none());
-    // ⇧ add mode still samples on a selected pixel.
+    // â‡§ add mode still samples on a selected pixel.
     tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, Modifiers::NONE);
     tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, Modifiers::NONE);
     assert!(app.session.active().unwrap().doc.selection.is_some());
