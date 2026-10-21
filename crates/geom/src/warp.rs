@@ -1400,4 +1400,31 @@ mod tests {
         let ob = Warp::none(B).output_bounds();
         assert!((ob[0] - 10.0).abs() < 1e-9 && (ob[3] - 70.0).abs() < 1e-9);
     }
+
+    /// A custom mesh re-expressed over another box (a PSD placed layer's mesh spans the source
+    /// rect, #8227) draws the same over that box: exactly, whether the box lies inside the old
+    /// one, past it (the clamped edge) or across a patch boundary. Other styles are unchanged.
+    #[test]
+    fn over_box_keeps_the_surface() {
+        let mut m = BezierMesh::identity(B, 2, 1);
+        m.points[1] = [30.0, 5.0];
+        m.points[9] = [95.0, 80.0];
+        m.points[11] = [118.0, 40.0];
+        let w = Warp::custom(m, B);
+        for r in [[0.0, 0.0, 100.0, 50.0], [20.0, 25.0, 90.0, 60.0], [-5.0, 10.0, 130.0, 90.0], B] {
+            let o = w.over_box(r);
+            assert_eq!(o.bounds, r);
+            assert!(o.mesh.as_ref().is_some_and(BezierMesh::is_valid), "{r:?}");
+            for j in 0..=8 {
+                for i in 0..=8 {
+                    let (x, y) = (r[0] + (r[2] - r[0]) * f64::from(i) / 8.0, r[1] + (r[3] - r[1]) * f64::from(j) / 8.0);
+                    assert!(close(o.map(x, y), w.map(x, y), 1e-6), "{r:?} at ({x}, {y}): {:?} vs {:?}", o.map(x, y), w.map(x, y));
+                }
+            }
+        }
+        let arc = Warp::preset(WarpStyle::Arc, 30.0, B);
+        assert_eq!(arc.over_box([0.0, 0.0, 5.0, 5.0]), arc);
+        assert_eq!(w.over_box([0.0, 0.0, 0.0, 5.0]), w, "an empty box");
+        assert_eq!(w.over_box([0.0, 0.0, f64::NAN, 5.0]), w, "not finite");
+    }
 }
