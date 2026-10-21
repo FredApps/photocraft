@@ -45,9 +45,12 @@ pub fn parse(s: &str) -> Option<KeyboardShortcut> {
 
 /// [`Key::from_name`], ignoring case as a fallback: older builds saved `PageUp` as `Pageup`
 /// (and `ArrowLeft` as `Arrowleft`), which egui doesn't read, so those shortcuts never fired
-/// (#6827).
+/// (#6827). egui's other spellings (`ArrowLeft` for `Left`, `NumpadEnter`) are matched in any
+/// case through the engine's spelling of them.
 pub fn key_from_name(name: &str) -> Option<Key> {
-    Key::from_name(name).or_else(|| Key::ALL.iter().copied().find(|k| k.name().eq_ignore_ascii_case(name)))
+    Key::from_name(name)
+        .or_else(|| Key::ALL.iter().copied().find(|k| k.name().eq_ignore_ascii_case(name)))
+        .or_else(|| photocraft_engine::prefs::normalize_shortcut(name).as_deref().and_then(Key::from_name))
 }
 
 /// Human-readable form for menus, tooltips and inline hints (`Cmd+Shift+N` → `⌘⇧N` on
@@ -902,6 +905,10 @@ mod tests {
         // Bindings saved by older builds still work.
         assert_eq!(parse("Shift+Pageup").unwrap().logical_key, Key::PageUp);
         assert_eq!(parse("Ctrl+Alt+Pagedown").unwrap().logical_key, Key::PageDown);
+        // egui's aliases whose name differs (`ArrowLeft` is `Left`), in any case.
+        let sc = parse("Alt+Arrowleft").unwrap();
+        assert_eq!((sc.logical_key, sc.modifiers), (Key::ArrowLeft, Modifiers::ALT));
+        assert_eq!(parse("Cmd+Numpadenter").unwrap().logical_key, Key::Enter);
     }
 
     #[test]
