@@ -1,0 +1,219 @@
+name: Parity Linux candidate
+
+on:
+  push:
+    branches: [ci/linux-package-20261021]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parity-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable:
+    name: Linux x64 AppImage, tar archive and startup smoke
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: "2"
+      PHOTOCRAFT_NO_PRINT: "1"
+      LPDEST: photocraft-no-such-printer
+      SOURCE_SHA: 9fe2e2b910e8f8c34d404f3564d9c0a50d947aeb
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 9fe2e2b910e8f8c34d404f3564d9c0a50d947aeb
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install build, packaging and software-display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev libgtk-3-dev libxkbcommon-x11-0 libx11-xcb1 libxcursor1 \
+            libvulkan1 mesa-vulkan-drivers libegl1 xvfb xauth squashfs-tools \
+            zsync desktop-file-utils python3-pil
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.1"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: parity-linux-ubuntu2204-release
+          save-if: true
+          cache-on-failure: true
+      - name: Prove pinned source and record provenance
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse 'HEAD^{tree}')" = 0df50cd517d8e857344977a235601a424445e036
+          python3 - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          plan = json.loads(Path('validation/parity-20261021/integration-plan.json').read_text())
+          assert len(plan['included']) == 221 and len(plan['excluded']) == 6
+          for item in plan['included']:
+              subprocess.run(['git', 'merge-base', '--is-ancestor', item['head'], 'HEAD'], check=True)
+          PY
+          echo "PHOTOCRAFT_BUILD_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "PHOTOCRAFT_BUILD_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+          mkdir -p out/packages out/smoke
+          git rev-parse HEAD > out/source-commit.txt
+          git rev-parse 'HEAD^{tree}' > out/source-tree.txt
+          printf '%s\n' "$GITHUB_SHA" > out/build-workflow-commit.txt
+          rustc -Vv > out/toolchain.txt
+          cargo -V >> out/toolchain.txt
+          cp /etc/os-release out/linux-os-release.txt
+          getconf GNU_LIBC_VERSION > out/build-glibc.txt
+          uname -a > out/kernel.txt
+      - name: Build and package the pinned application
+        run: bash packaging/linux/package.sh --formats "appimage tar"
+      - name: Check packaged ELF files, dependencies and CLI entry points
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, re, struct, subprocess
+          from pathlib import Path
+          result = []
+          for name in ['photocraft', 'photocraft-cli']:
+              path = Path('target/linux-package/root/usr/bin') / name
+              data = path.read_bytes()
+              assert data[:6] == b'\x7fELF\x02\x01'
+              assert struct.unpack_from('<H', data, 18)[0] == 62
+              versions = subprocess.check_output(['readelf', '--version-info', str(path)], text=True)
+              required = sorted({tuple(map(int, v.split('.'))) for v in re.findall(r'GLIBC_([0-9.]+)', versions)})
+              assert required and required[-1] <= (2, 35), required
+              dependencies = subprocess.check_output(['ldd', str(path)], text=True)
+              assert 'not found' not in dependencies
+              Path(f'out/ldd-{name}.txt').write_text(dependencies)
+              version = subprocess.check_output([str(path), '--version'], text=True).strip()
+              assert '9fe2e2b91' in version, version
+              result.append({'name': name, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest(),
+                             'machine': 'x86_64', 'max_required_glibc': '.'.join(map(str, required[-1])), 'version': version})
+          Path('out/binary-provenance.json').write_text(json.dumps(result, indent=2) + '\n')
+          PY
+          appimage=$(find dist/release -maxdepth 1 -name '*.AppImage' -print -quit)
+          test -n "$appimage"
+          APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --cli --version > out/appimage-cli-version.txt
+          grep -q 9fe2e2b91 out/appimage-cli-version.txt
+      - name: Smoke-test the packaged GUI in an isolated X11 software-display session
+        env:
+          WINIT_UNIX_BACKEND: x11
+          WGPU_BACKEND: vulkan
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          PHOTOCRAFT_NO_DESKTOP_INTEGRATION: "1"
+        run: |
+          cat > "$RUNNER_TEMP/parity-linux-gui-smoke.py" <<'PY'
+          import json, os, socket, struct, subprocess, tempfile, time
+          from pathlib import Path
+          from PIL import Image
+          output = Path('out/smoke').resolve()
+          appimage = next(Path('dist/release').glob('*.AppImage')).resolve()
+          with tempfile.TemporaryDirectory(prefix='photocraft-linux-smoke-') as private:
+              private = Path(private)
+              runtime = private / 'runtime'
+              runtime.mkdir(mode=0o700)
+              token_file = private / 'control.token'
+              env = dict(os.environ, PHOTOCRAFT_CONFIG_DIR=str(private / 'config'), XDG_RUNTIME_DIR=str(runtime))
+              log_file = private / 'application.log'
+              with log_file.open('wb') as log:
+                  process = subprocess.Popen([str(appimage), '--control', '7878', '--control-token-file', str(token_file),
+                                              '--automation-write-root', str(output)], env=env, stdout=log, stderr=log)
+                  try:
+                      deadline = time.monotonic() + 120
+                      while True:
+                          if process.poll() is not None:
+                              raise RuntimeError(f'GUI exited during startup: {process.returncode}')
+                          try:
+                              if token_file.exists():
+                                  connection = socket.create_connection(('127.0.0.1', 7878), timeout=1)
+                                  break
+                          except OSError:
+                              pass
+                          if time.monotonic() >= deadline:
+                              raise TimeoutError('GUI control server did not become ready')
+                          time.sleep(0.25)
+                      connection.settimeout(65)
+                      with connection, connection.makefile('rwb') as stream:
+                          serial = 0
+                          def rpc(method, params):
+                              global serial
+                              serial += 1
+                              stream.write((json.dumps({'id': serial, 'method': method, 'params': params}) + '\n').encode())
+                              stream.flush()
+                              response = json.loads(stream.readline())
+                              assert response['id'] == serial and response.get('ok'), response
+                              return response.get('result')
+                          rpc('auth', {'token': token_file.read_text().strip()})
+                          rpc('engine.execute', {'command': 'file.new', 'params': {'width': 320, 'height': 240}})
+                          rpc('engine.execute', {'command': 'edit.fill', 'params': {'color': '#3377cc'}})
+                          time.sleep(2)
+                          state = rpc('ui.inspect', {})
+                          assert state, 'Empty UI state'
+                          rpc('ui.screenshot', {'path': 'gui-smoke.png'})
+                          image = Image.open(output / 'gui-smoke.png').convert('RGB')
+                          assert image.width >= 320 and image.height >= 240
+                          assert len(image.getcolors(image.width * image.height) or []) > 32
+                          (output / 'gui-smoke.json').write_text(json.dumps({
+                              'source_commit': os.environ['SOURCE_SHA'], 'status': 'PASS',
+                              'display': 'Xvfb X11; software graphics', 'document': [320, 240],
+                              'fill': '#3377cc', 'screenshot_size': list(image.size),
+                              'scope': 'Packaged AppImage startup, authenticated control, document creation/fill, window capture and graceful exit; not Photoshop parity.'
+                          }, indent=2) + '\n')
+                          rpc('app.quit', {})
+                      assert process.wait(timeout=45) == 0
+                  finally:
+                      if process.poll() is None:
+                          process.terminate()
+                          try:
+                              process.wait(timeout=10)
+                          except subprocess.TimeoutExpired:
+                              process.kill()
+                              process.wait()
+                      log.flush()
+                      token = token_file.read_text().strip() if token_file.exists() else ''
+                      text = log_file.read_text(errors='replace')
+                      if token:
+                          text = text.replace(token, '[redacted control token]')
+                      (output / 'gui-startup.log').write_text(text)
+          PY
+          xvfb-run -a -s '-screen 0 1280x900x24' python3 "$RUNNER_TEMP/parity-linux-gui-smoke.py"
+      - name: Assemble downloadable packages and checksums
+        run: |
+          set -euo pipefail
+          cp dist/release/*.AppImage dist/release/*.tar.gz out/packages/
+          cp -R validation/parity-20261021 out/validation
+          cat > out/README-LINUX.txt <<'EOF'
+          PhotoCraft 221-candidate Linux x86_64 validation build
+          Application source: 9fe2e2b910e8f8c34d404f3564d9c0a50d947aeb
+          Same application source as the validated Windows build. No release was published.
+
+          AppImage: chmod +x packages/*.AppImage; then launch the AppImage.
+          Without FUSE: APPIMAGE_EXTRACT_AND_RUN=1 ./packages/<filename>.AppImage
+          Bundled CLI: APPIMAGE_EXTRACT_AND_RUN=1 ./packages/<filename>.AppImage --cli --version
+          Tar archive: extract, then run photocraft-0.12.0-linux-x86_64/bin/photocraft
+          or photocraft-0.12.0-linux-x86_64/bin/photocraft-cli.
+
+          Built on Ubuntu 22.04; glibc 2.35 or newer. Requires an X11 or Wayland desktop,
+          Vulkan or EGL graphics drivers and the runtime windowing libraries listed in
+          packaging/linux/nfpm.yaml at the source commit. The AppImage does not bundle
+          a replacement glibc or graphics/windowing drivers.
+
+          GUI smoke evidence is under smoke/. It covers X11 software-rendered startup,
+          a small document/fill, capture and clean exit on the GitHub-hosted runner.
+          It does not establish physical GPU, Wayland, pen input or Photoshop parity.
+          validation/ contains the original Windows/Photoshop acceptance kit for this batch;
+          those graphical cases remain NOT_RUN and Windows-specific recipes remain Windows-only.
+          EOF
+          (cd out && find . -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: photocraft-parity-linux-x64
+          path: out/
+          if-no-files-found: error
+          retention-days: 14
