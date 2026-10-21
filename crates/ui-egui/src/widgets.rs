@@ -516,11 +516,26 @@ fn take_label_scrub(ui: &Ui, rect: Rect) -> Option<LabelScrub> {
 struct FieldOpts {
     /// Decimal places shown (default: one, or two for a small range).
     decimals: Option<u32>,
+    /// Arrow-key and scrub step follow `decimals` (adjustment rows via [`slider_row_prec`], #5914).
+    step_from_decimals: bool,
     /// The unit typed units convert into (default: the suffix's, at [`set_field_resolution`]).
     units: Option<FieldUnits>,
     /// The length (px) 100 % stands for, so lengths and percentages convert into each other.
     extent: Option<f64>,
     wrap_drag: bool,
+}
+
+/// Arrow-key and drag step for a value field: [`FieldOpts::step_from_decimals`] uses `decimals`;
+/// otherwise the range width picks 0.01 (≤10) or 1.0.
+fn field_step(range: &std::ops::RangeInclusive<f32>, decimals: Option<u32>, step_from_decimals: bool) -> f32 {
+    if step_from_decimals && let Some(d) = decimals {
+        return 10f32.powi(-(d.min(6) as i32));
+    }
+    if *range.end() - *range.start() <= 10.0 { 0.01 } else { 1.0 }
+}
+
+fn field_fine(range: &std::ops::RangeInclusive<f32>, decimals: Option<u32>, step_from_decimals: bool) -> bool {
+    if step_from_decimals { decimals.is_some_and(|d| d > 0) || *range.end() - *range.start() <= 10.0 } else { *range.end() - *range.start() <= 10.0 }
 }
 
 /// A [`value_field`] that leaves `trailing` points free inside its box, right of the suffix, and
@@ -547,7 +562,7 @@ fn value_field_box(
     trailing: f32,
     opts: FieldOpts,
 ) -> (Response, Rect) {
-    let FieldOpts { decimals, units, extent, wrap_drag } = opts;
+    let FieldOpts { decimals, step_from_decimals, units, extent, wrap_drag } = opts;
     let t = Tokens::get(ui.ctx());
     let (rect, slot) = ui.allocate_exact_size(size, Sense::hover());
     let scrub = take_label_scrub(ui, rect).map(|s| {
@@ -585,9 +600,10 @@ fn value_field_box(
     let cy = rect.center().y;
     let field = Rect::from_min_max(pos2(rect.left() + 4.0, cy - slot_h / 2.0), pos2(rect.right() - 4.0 - suffix_w - trailing, cy + slot_h / 2.0));
     // Small ranges (gamma 0.01–9.99, 0–1 centres) need two decimals and a finer drag, like Photoshop.
-    let fine = range.end() - range.start() <= 10.0;
+    let fine = field_fine(&range, decimals, step_from_decimals);
+    let unit = field_step(&range, decimals, step_from_decimals);
     let (lo, hi) = (*range.start(), *range.end());
-    let (step, grid) = arrow_step(ui, slot.id, if fine { 0.01 } else { 1.0 });
+    let (step, grid) = arrow_step(ui, slot.id, unit);
     // new_child (not scope_builder): a scope would move the parent cursor back to the child rect.
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
     let mut resp = {
@@ -617,7 +633,6 @@ fn value_field_box(
             ui.memory_mut(|m| m.surrender_focus(resp.id));
         }
         if s.steps != 0.0 {
-            let unit = if fine { 0.01 } else { 1.0 };
             // Onto the step grid first, so a whole-number field drops its decimals (55.4 + 1 = 56).
             let v = ((*value / unit).round() + s.steps) * unit;
             let v = (v * 1e4).round() / 1e4;
@@ -1164,7 +1179,18 @@ pub fn slider_row_prec(
         let l = ui.label(egui::RichText::new(tl!(label)).color(t.text_dim));
         scrub_label_within(ui, &l, f32::INFINITY);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            changed_resp = Some(value_field_in(ui, value, range.clone(), suffix, 74.0, 0.0, FieldOpts { decimals, ..Default::default() }).0);
+            changed_resp = Some(
+                value_field_in(
+                    ui,
+                    value,
+                    range.clone(),
+                    suffix,
+                    74.0,
+                    0.0,
+                    FieldOpts { decimals, step_from_decimals: decimals.is_some(), ..Default::default() },
+                )
+                .0,
+            );
         });
     });
     let s = slider_with(ui, value, range, gradient, g);
@@ -1422,15 +1448,17 @@ pub fn vline(ui: &mut Ui, height: f32) {
     ui.painter().line_segment([r.center_top(), r.center_bottom()], Stroke::new(1.0, t.separator));
 }
 
-/// Hue spectrum stops for colour sliders.
+/// The fully saturated colour at hue `deg` (degrees), built on sRGB values as Photoshop's hue
+/// tracks are: 0 is (255,0,0), 60 is (255,255,0), 120 is (0,255,0) and so on (#6540).
+pub fn hue_color(deg: f32) -> Color32 {
+    let [r, g, b] = photocraft_color::convert::hsb_to_rgb([deg, 1.0, 1.0]);
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    Color32::from_rgb(q(r), q(g), q(b))
+}
+
+/// Hue spectrum stops for colour sliders: red, yellow, green, cyan, blue, magenta, red.
 pub fn hue_stops() -> Vec<Color32> {
-    (0..=12)
-        .map(|i| {
-            let h = i as f32 / 12.0;
-            let rgb = egui::ecolor::Hsva::new(h, 0.85, 1.0, 1.0).to_srgb();
-            Color32::from_rgb(rgb[0], rgb[1], rgb[2])
-        })
-        .collect()
+    (0..=12).map(|i| hue_color(i as f32 * 30.0)).collect()
 }
 
 /// A compact labelled dropdown in the studio style.
@@ -1485,54 +1513,53 @@ fn dropdown_with<T: PartialEq + Clone>(
     // The list opens on the press: press, drag onto an option and release to choose it (#2735).
     let (press, close) = crate::press_menu::PressCombo::before(ui, id);
     let texts: Vec<String> = options.iter().map(|(_, l)| shown(l)).collect();
-    let response =
-        egui::ComboBox::from_id_salt(id).selected_text(label).width(width).height(420.0).icon(chevron_icon).close_behavior(close).show_ui(ui, |ui| {
-            fit_widest_option(ui, texts.iter().map(|l| l.as_str()));
-            // A typed letter jumps to the next option starting with it, ↩ closes the list (#1481).
-            let labels: Vec<&str> = texts.iter().map(|l| l.as_str()).collect();
-            let shown = options.iter().position(|(v, _)| v == current);
-            if let Some((v, _)) = type_ahead::keys(ui, ui.make_persistent_id(id), shown, &labels).and_then(|i| options.get(i)) {
+    let response = combo(ui, id, label, width, close, |ui| {
+        fit_widest_option(ui, texts.iter().map(|l| l.as_str()));
+        // A typed letter jumps to the next option starting with it, ↩ closes the list (#1481).
+        let labels: Vec<&str> = texts.iter().map(|l| l.as_str()).collect();
+        let shown = options.iter().position(|(v, _)| v == current);
+        if let Some((v, _)) = type_ahead::keys(ui, ui.make_persistent_id(id), shown, &labels).and_then(|i| options.get(i)) {
+            *current = v.clone();
+            chosen.push(v.clone());
+            reveal = true;
+            keyed = true;
+        }
+        // Over the open list the wheel steps the value too, instead of scrolling the list.
+        over_list = wheel && ui.rect_contains_pointer(ui.clip_rect());
+        if over_list {
+            let stepped = wheel_steps(ui, wheel_id, true, current, options);
+            wheeled = !stepped.is_empty();
+            reveal |= wheeled;
+            chosen.extend(stepped);
+        }
+        // The row nearest the pointer, by its distance to each row.
+        let pointer = ui.ctx().pointer_hover_pos().filter(|_| ui.rect_contains_pointer(ui.clip_rect()));
+        let mut nearest: Option<(f32, &T)> = None;
+        for ((v, _), text) in options.iter().zip(texts.iter()) {
+            let item = ui.selectable_label(v == current, text.as_str());
+            if reveal && v == current {
+                item.scroll_to_me(None);
+            }
+            if item.hovered() {
+                hovered = Some(v.clone());
+            }
+            if let Some(p) = pointer {
+                let d = (item.rect.top() - p.y).max(p.y - item.rect.bottom()).max(0.0);
+                if nearest.is_none_or(|(n, _)| d < n) {
+                    nearest = Some((d, v));
+                }
+            }
+            if press.chosen(ui, &item) {
                 *current = v.clone();
                 chosen.push(v.clone());
-                reveal = true;
-                keyed = true;
             }
-            // Over the open list the wheel steps the value too, instead of scrolling the list.
-            over_list = wheel && ui.rect_contains_pointer(ui.clip_rect());
-            if over_list {
-                let stepped = wheel_steps(ui, wheel_id, true, current, options);
-                wheeled = !stepped.is_empty();
-                reveal |= wheeled;
-                chosen.extend(stepped);
-            }
-            // The row nearest the pointer, by its distance to each row.
-            let pointer = ui.ctx().pointer_hover_pos().filter(|_| ui.rect_contains_pointer(ui.clip_rect()));
-            let mut nearest: Option<(f32, &T)> = None;
-            for ((v, _), text) in options.iter().zip(texts.iter()) {
-                let item = ui.selectable_label(v == current, text.as_str());
-                if reveal && v == current {
-                    item.scroll_to_me(None);
-                }
-                if item.hovered() {
-                    hovered = Some(v.clone());
-                }
-                if let Some(p) = pointer {
-                    let d = (item.rect.top() - p.y).max(p.y - item.rect.bottom()).max(0.0);
-                    if nearest.is_none_or(|(n, _)| d < n) {
-                        nearest = Some((d, v));
-                    }
-                }
-                if press.chosen(ui, &item) {
-                    *current = v.clone();
-                    chosen.push(v.clone());
-                }
-            }
-            // Between two rows (item spacing) the pointer hovers neither; it is still over the list,
-            // so keep previewing the nearest row instead of flashing the current value back (#2553).
-            if hovered.is_none() {
-                hovered = nearest.map(|(_, v)| v.clone());
-            }
-        });
+        }
+        // Between two rows (item spacing) the pointer hovers neither; it is still over the list,
+        // so keep previewing the nearest row instead of flashing the current value back (#2553).
+        if hovered.is_none() {
+            hovered = nearest.map(|(_, v)| v.clone());
+        }
+    });
     press.after(&response.response);
     if combo_box_arrow_keys(ui, &response.response, current, options) {
         chosen.push(current.clone());
@@ -1639,14 +1666,167 @@ pub fn menu_scroll<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R
     // The popup frame's margin and stroke, and a small gap to the window's edges.
     let frame = ui.spacing().menu_margin.sum().y + 2.0 + 2.0 * MENU_EDGE;
     let room = (crate::work_area::visible_rect(ui.ctx()).height() - frame).max(MENU_MIN_HEIGHT);
+    // An overflowing menu gets Photoshop's scroll arrows above and below its rows (#2091): the
+    // thin floating scroll bar alone gave no hint that more items were hidden. Whether it
+    // overflows is known only after layout, so it is remembered from the last frame.
+    let id = ui.id().with("menu_scroll");
+    let overflow = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    let offset = ui.data(|d| d.get_temp::<f32>(id.with("offset"))).unwrap_or(0.0);
+    let arrows = if overflow { 2.0 * MENU_ARROW_HEIGHT } else { 0.0 };
+    let room = (room - arrows).max(MENU_MIN_HEIGHT);
+    // The arrows sit flush against the rows, so no item spacing is added around them that `room`
+    // doesn't count; the rows keep the menu's own spacing.
+    let spacing = ui.spacing().item_spacing.y;
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let mut step = 0.0;
+    if overflow {
+        step += menu_scroll_arrow(ui, true, offset > 0.5);
+    }
     // A popup's Ui is only as tall as the popup was last frame (400 pt on the first), so ask for
     // the whole room: the area still shrinks to its rows when they need less.
-    egui::ScrollArea::vertical().max_height(room).min_scrolled_height(room).show(ui, add_contents).inner
+    let mut area = egui::ScrollArea::vertical().id_salt(id).max_height(room).min_scrolled_height(room);
+    // A step is taken on the pass after the arrow was hovered, and only then: a menu closed while
+    // an arrow was hovered doesn't jump when it next opens.
+    let now = ui.ctx().cumulative_pass_nr();
+    let pending = ui.data(|d| d.get_temp::<(f32, u64)>(id.with("step"))).filter(|&(_, pass)| pass.saturating_add(1) == now).map_or(0.0, |(step, _)| step);
+    if pending != 0.0 {
+        area = area.vertical_scroll_offset((offset + pending).max(0.0));
+    }
+    let out = area.show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = spacing;
+        add_contents(ui)
+    });
+    let max = (out.content_size.y - out.inner_rect.height()).max(0.0);
+    let offset = out.state.offset.y.clamp(0.0, max);
+    if overflow {
+        step += menu_scroll_arrow(ui, false, offset < max - 0.5);
+    }
+    ui.spacing_mut().item_spacing.y = spacing;
+    ui.data_mut(|d| {
+        d.insert_temp(id, max > 0.5);
+        d.insert_temp(id.with("offset"), offset);
+        d.insert_temp(id.with("step"), (step, now));
+    });
+    out.inner
+}
+
+/// One scroll arrow of an overflowing menu: hovering scrolls that way, as in Photoshop's and the
+/// system menus. It doesn't page on a click: egui closes a context menu on any click inside it,
+/// so the page would never be seen. Returns the scroll step for the next frame.
+fn menu_scroll_arrow(ui: &mut Ui, up: bool, enabled: bool) -> f32 {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(MENU_ARROW_HEIGHT), MENU_ARROW_HEIGHT), Sense::hover());
+    let t = Tokens::get(ui.ctx());
+    let color = if enabled { t.text } else { t.text_dim.gamma_multiply(0.5) };
+    let (c, h) = (rect.center(), 3.5);
+    let pts = if up {
+        vec![pos2(c.x - h * 1.4, c.y + h * 0.6), pos2(c.x + h * 1.4, c.y + h * 0.6), pos2(c.x, c.y - h * 0.8)]
+    } else {
+        vec![pos2(c.x - h * 1.4, c.y - h * 0.6), pos2(c.x + h * 1.4, c.y - h * 0.6), pos2(c.x, c.y + h * 0.8)]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+    if !enabled {
+        return 0.0;
+    }
+    if !resp.hovered() {
+        return 0.0;
+    }
+    ui.ctx().request_repaint();
+    let sign = if up { -1.0 } else { 1.0 };
+    sign * MENU_ARROW_SPEED * ui.input(|i| i.stable_dt).clamp(0.0, 0.1)
+}
+
+/// A dropdown: `egui::ComboBox`'s box, with the same ids (so [`egui::ComboBox::is_open`] and
+/// [`crate::press_menu::PressCombo`] still find it), and its list as tall as its options up to the
+/// window ([`menu_scroll`]): below the box, or above it when it only fits there, and otherwise
+/// below and moved up to fit. egui's own list stopped at a fixed 420 pt, so the Layers panel's
+/// blend modes ended at Overlay and the rest hid behind a thin scroll bar (#7261). Allowed to
+/// grow, egui's list lay beside the box, the only place it fit, and jumped to the box's other
+/// side when a longer choice widened the box.
+fn combo<R>(
+    ui: &mut Ui,
+    id: &str,
+    selected: impl Into<egui::WidgetText>,
+    width: f32,
+    close: egui::PopupCloseBehavior,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let selected: egui::WidgetText = selected.into();
+    let button_id = ui.make_persistent_id(egui::IdSalt::new(id));
+    let popup_id = button_id.with("popup");
+    let open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+    let response = ui.horizontal(|ui| combo_box(ui, button_id, &selected, width, open)).inner;
+    response.widget_info(|| {
+        let mut info = egui::WidgetInfo::new(egui::WidgetType::ComboBox);
+        info.enabled = ui.is_enabled();
+        info.current_text_value = Some(selected.text().to_owned());
+        info
+    });
+    let inner = egui::Popup::menu(&response)
+        .id(popup_id)
+        .width(response.rect.width())
+        .close_behavior(close)
+        .style(egui::style::StyleModifier::default())
+        .align(egui::RectAlign::BOTTOM_START)
+        .align_alternatives(&[egui::RectAlign::TOP_START])
+        .show(|ui| {
+            ui.set_min_width(ui.available_width());
+            menu_scroll(ui, |ui| {
+                // Options stay on one line, so a narrow box's list widens to fit them.
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                add(ui)
+            })
+        })
+        .map(|r| r.inner);
+    egui::InnerResponse { inner, response }
+}
+
+/// The box of [`combo`], drawn as `egui::ComboBox` draws it: the selected text and a chevron in a
+/// button frame at least `width` wide, framed as open while its list is.
+fn combo_box(ui: &mut Ui, id: egui::Id, selected: &egui::WidgetText, width: f32, open: bool) -> Response {
+    let background = ui.painter().add(egui::Shape::Noop);
+    let margin = ui.spacing().button_padding;
+    let interact = ui.spacing().interact_size;
+    let mut outer = ui.available_rect_before_wrap();
+    outer.set_height(outer.height().max(interact.y));
+    let mut content = ui.new_child(egui::UiBuilder::new().max_rect(outer.shrink2(margin)));
+    let (icon_spacing, icon) = (content.spacing().icon_spacing, Vec2::splat(content.spacing().icon_width));
+    let wrap = content.wrap_mode();
+    let wrap_width = if wrap == egui::TextWrapMode::Extend { f32::INFINITY } else { content.available_width() - icon_spacing - icon.x };
+    let galley = selected.clone().into_galley(&content, Some(wrap), wrap_width, egui::TextStyle::Button);
+    let size = vec2((galley.size().x + icon_spacing + icon.x).max(width - 2.0 * margin.x), galley.size().y.max(icon.y));
+    let (_, rect) = content.allocate_space(size);
+    let response = content.interact(content.min_rect().expand2(margin), id, Sense::click());
+    if content.is_rect_visible(rect) {
+        let visuals = if open { &content.visuals().widgets.open } else { content.style().interact(&response) };
+        chevron_icon(&content, Align2::RIGHT_CENTER.align_size_within_rect(icon, rect).expand(visuals.expansion), visuals, open);
+        let text = Align2::LEFT_CENTER.align_size_within_rect(galley.size(), rect);
+        content.painter().galley(text.min, galley, visuals.text_color());
+    }
+    let mut outer = content.min_rect().expand2(margin);
+    outer.set_height(outer.height().max(interact.y));
+    let response = ui.interact(outer, id, Sense::click());
+    if ui.is_rect_visible(outer) {
+        let visuals = if open { &ui.visuals().widgets.open } else { ui.style().interact(&response) };
+        let frame = egui::epaint::RectShape::new(
+            outer.expand(visuals.expansion),
+            visuals.corner_radius,
+            visuals.weak_bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().set(background, frame);
+    }
+    ui.advance_cursor_after_rect(outer);
+    response
 }
 
 /// Gap kept between a context menu and the window's edges, and the shortest it gets.
 const MENU_EDGE: f32 = 4.0;
 const MENU_MIN_HEIGHT: f32 = 120.0;
+/// Height of an overflowing menu's scroll arrows, and how fast hovering one scrolls (points per
+/// second).
+const MENU_ARROW_HEIGHT: f32 = 14.0;
+const MENU_ARROW_SPEED: f32 = 400.0;
 
 /// The colour picker popup of a colour swatch: a click on `swatch` toggles it, a click outside
 /// closes it. While open, its left edge stays where it first showed (at the swatch, or further
@@ -1682,23 +1862,22 @@ pub fn dropdown_with_tooltips<T: PartialEq + Clone>(ui: &mut Ui, id: &str, curre
     let label = options.iter().find(|(v, _, _)| v == current).map(|(_, l, _)| tl!(l)).unwrap_or("—");
     let mut changed = false;
     let (press, close) = crate::press_menu::PressCombo::before(ui, id);
-    let response =
-        egui::ComboBox::from_id_salt(id).selected_text(label).width(width).height(420.0).icon(chevron_icon).close_behavior(close).show_ui(ui, |ui| {
-            fit_widest_option(ui, options.iter().map(|(_, l, _)| tl!(l)));
-            let labels: Vec<&str> = options.iter().map(|(_, l, _)| tl!(l)).collect();
-            let shown = options.iter().position(|(v, _, _)| v == current);
-            if let Some((v, _, _)) = type_ahead::keys(ui, ui.make_persistent_id(id), shown, &labels).and_then(|i| options.get(i)) {
+    let response = combo(ui, id, label, width, close, |ui| {
+        fit_widest_option(ui, options.iter().map(|(_, l, _)| tl!(l)));
+        let labels: Vec<&str> = options.iter().map(|(_, l, _)| tl!(l)).collect();
+        let shown = options.iter().position(|(v, _, _)| v == current);
+        if let Some((v, _, _)) = type_ahead::keys(ui, ui.make_persistent_id(id), shown, &labels).and_then(|i| options.get(i)) {
+            *current = v.clone();
+            changed = true;
+        }
+        for (v, l, tip) in options {
+            let item = ui.selectable_label(v == current, tl!(l)).on_hover_text(tl!(tip));
+            if press.chosen(ui, &item) {
                 *current = v.clone();
                 changed = true;
             }
-            for (v, l, tip) in options {
-                let item = ui.selectable_label(v == current, tl!(l)).on_hover_text(tl!(tip));
-                if press.chosen(ui, &item) {
-                    *current = v.clone();
-                    changed = true;
-                }
-            }
-        });
+        }
+    });
     press.after(&response.response);
     if let Some((_, _, tip)) = options.iter().find(|(v, _, _)| v == current) {
         let _ = response.response.on_hover_text(tl!(tip));
@@ -1865,7 +2044,20 @@ fn clean(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use egui::{Key, Modifiers};
+    use super::{hue_color, hue_stops};
+    use egui::{Color32, Key, Modifiers};
+
+    #[test]
+    fn hue_stops_are_pure_and_evenly_spaced() {
+        let c = |r, g, b| Color32::from_rgb(r, g, b);
+        let want = [c(255, 0, 0), c(255, 255, 0), c(0, 255, 0), c(0, 255, 255), c(0, 0, 255), c(255, 0, 255), c(255, 0, 0)];
+        let stops = hue_stops();
+        assert_eq!(stops.len(), 13);
+        for (k, w) in want.iter().enumerate() {
+            assert_eq!(stops[k * 2], *w, "stop at {} degrees", k * 60);
+            assert_eq!(hue_color(k as f32 * 60.0), *w);
+        }
+    }
 
     #[test]
     fn checkbox_label_is_a_button_target_not_selectable_text() {
@@ -1976,6 +2168,75 @@ mod tests {
             h.run_steps(1);
         }
         assert_eq!(h.state().0, "abc", "typing reaches the bound string");
+    }
+
+    /// #2091: a menu taller than the window shows scroll arrows; hovering the lower one scrolls
+    /// it, and a short menu gets none.
+    #[test]
+    fn overflowing_menus_get_scroll_arrows_that_scroll_on_hover() {
+        // (rows, overflowing, scroll offset, bottom of the menu)
+        type S = (usize, bool, f32, f32);
+        let run = |rows: usize| {
+            let mut h = Harness::builder().with_size(egui::vec2(220.0, 300.0)).build_ui_state(
+                |ui, s: &mut S| {
+                    let id = ui.id().with("menu_scroll");
+                    super::menu_scroll(ui, |ui| {
+                        for i in 0..s.0 {
+                            ui.label(format!("Item {i}"));
+                        }
+                    });
+                    s.1 = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+                    s.2 = ui.data(|d| d.get_temp::<f32>(id.with("offset"))).unwrap_or(0.0);
+                    s.3 = ui.min_rect().bottom();
+                },
+                (rows, false, 0.0, 0.0),
+            );
+            h.run_steps(3);
+            h
+        };
+        let short = run(3);
+        assert!(!short.state().1, "a short menu has no arrows");
+        let mut long = run(80);
+        assert!(long.state().1, "a long menu overflows");
+        assert_eq!(long.state().2, 0.0);
+        let below = egui::pos2(100.0, long.state().3 - super::MENU_ARROW_HEIGHT / 2.0);
+        long.event(egui::Event::PointerMoved(below));
+        long.run_steps(10);
+        assert!(long.state().2 > 0.0, "hovering the lower arrow scrolls down");
+    }
+
+    /// #2091: the step a hovered arrow leaves for the next frame isn't taken when a menu closed
+    /// while hovering it opens again.
+    #[test]
+    fn a_reopened_menu_takes_no_stale_scroll_step() {
+        // (shown, scroll offset, bottom of the menu)
+        type S = (bool, f32, f32);
+        let mut h = Harness::builder().with_size(egui::vec2(220.0, 300.0)).build_ui_state(
+            |ui, s: &mut S| {
+                let id = ui.id().with("menu_scroll");
+                if s.0 {
+                    super::menu_scroll(ui, |ui| {
+                        for i in 0..80 {
+                            ui.label(format!("Item {i}"));
+                        }
+                    });
+                    s.2 = ui.min_rect().bottom();
+                }
+                s.1 = ui.data(|d| d.get_temp::<f32>(id.with("offset"))).unwrap_or(0.0);
+            },
+            (true, 0.0, 0.0),
+        );
+        h.run_steps(3);
+        h.event(egui::Event::PointerMoved(egui::pos2(100.0, h.state().2 - super::MENU_ARROW_HEIGHT / 2.0)));
+        h.run_steps(3);
+        let offset = h.state().1;
+        assert!(offset > 0.0, "hovering the lower arrow scrolls down");
+        h.state_mut().0 = false;
+        h.run();
+        h.state_mut().0 = true;
+        h.event(egui::Event::PointerGone);
+        h.run();
+        assert_eq!(h.state().1, offset, "the reopened menu stays where it was left");
     }
 
     /// Sets up a test with one value field. Its state is its value and how many times it changed.
@@ -2124,6 +2385,29 @@ mod tests {
         let _ = press(&mut h, Modifiers::NONE, Key::ArrowUp);
         let mut h = focused(5.0, f32::NAN..=10.0);
         let _ = press(&mut h, Modifiers::NONE, Key::ArrowDown);
+    }
+
+    /// #5914: Exposure's ±20 stops keep 0.01 arrow steps when the field shows two decimals.
+    #[test]
+    fn arrow_keys_step_fractional_stops_when_decimals_are_set() {
+        let mut h = Harness::new_ui_state(
+            |ui, v: &mut f32| {
+                super::slider_row_prec(ui, "Exposure", v, -20.0..=20.0, "", None, super::RowGestures::default(), Some(2));
+            },
+            0.0,
+        );
+        h.run();
+        h.get_by_role(egui::accesskit::Role::SpinButton).click();
+        h.run();
+        h.key_press_modifiers(Modifiers::NONE, Key::ArrowUp);
+        h.run();
+        assert!((*h.state() - 0.01).abs() < 1e-6);
+        h.key_press_modifiers(Modifiers::NONE, Key::ArrowUp);
+        h.run();
+        assert!((*h.state() - 0.02).abs() < 1e-6);
+        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowUp);
+        h.run();
+        assert!((*h.state() - 0.12).abs() < 1e-6);
     }
 
     #[test]

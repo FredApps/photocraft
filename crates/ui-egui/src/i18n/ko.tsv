@@ -789,6 +789,22 @@
 	Split Warp Vertically	뒤틀기 세로로 분할
 	Statistics…	통계…
 	Refine Strokes	다듬기 획
+# Counted status and panel messages
+@plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	색상 견본 {n}개를 {file}(으)로 내보냈습니다
+@plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	{file}에서 색상 견본 {n}개를 가져왔습니다
+@plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	{group}에서 브러시 {n}개를 가져왔습니다
+@plural	Played {n} step|Played {n} steps	단계 {n}개를 재생했습니다
+@plural	{n} step|{n} steps	단계 {n}개
+@plural	Saved for Web: {n} file|Saved for Web: {n} files	웹용으로 저장됨: 파일 {n}개
+@plural	Updated {n} linked smart object changed on disk|Updated {n} linked smart objects changed on disk	디스크에서 변경된 연결된 스마트 오브젝트 {n}개를 업데이트했습니다
+@plural	{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.|{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.	이 레이어 구성 요소에 기록된 레이어 {n}개가 삭제되었습니다. 레이어 구성 요소를 업데이트하거나 경고를 지우세요.
+@plural	{n} plane|{n} planes	평면 {n}개
+@plural	{n} preset|{n} presets	사전 설정 {n}개
+@plural	{n} sample point removed|{n} sample points removed	샘플 지점 {n}개를 제거했습니다
+@plural	{n} slice|{n} slices	분할 영역 {n}개
+@plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (브러시 사전 설정 경고 {n}개 더 있음)
+@plural	{what} with {n} warning|{what} with {n} warnings	{what}: 경고 {n}개
+
 @plural	{n} item|{n} items	항목 {n}개
 	Auto	자동
 	(print to the printer)	(프린터로 인쇄)
@@ -1071,7 +1087,7 @@
 	Done	완료
 	Dots	점
 	Drag a rectangle around the object	오브젝트를 둘러싸는 사각형을 드래그하세요
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	이미지 위에서 드래그하여 제약 조건 추가; Shift 키로 수평/수직 유지; 오른쪽 클릭하여 삭제.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	이미지 위에서 드래그하여 제약 조건 추가; Shift 키로 수평/수직 유지; 제약 조건을 오른쪽 클릭하여 변경 또는 삭제.
 	Drag to move the active shape's path or the Work Path	드래그하여 활성 모양의 패스 또는 작업 패스 이동
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	클릭: 기준점 선택 · 드래그: 기준점, 핸들 또는 세그먼트 이동 · {shift}-클릭: 추가 · {alt}-클릭: 하위 패스 전체
 	Draw with the Pen tool (P) or make a work path from a selection.	펜 도구(P)로 그리거나 선택 영역에서 작업 패스를 만드세요.
@@ -2040,6 +2056,8 @@
 	Collapse	접기
 	Collapse All Groups	모든 그룹 접기
 	Collapse Panel Group	패널 그룹 접기
+	Collapse to Icons	아이콘으로 축소
+	Expand Panels	패널 확장
 	Collapse group  ({key}-click: all groups)	그룹 접기  ({key} 키를 누른 채 클릭: 모든 그룹)
 	Create new brush from the current settings	현재 설정으로 새 브러시 만들기
 	Create new brush from these settings	이 설정으로 새 브러시 만들기
@@ -3018,6 +3036,7 @@ cameraRaw	Color	색상
 	open source	오픈 소스
 	…and {n} more	…외 {n}개
 	Selection Preview:	선택 영역 미리 보기:
+	Cryptomatte Selection	Cryptomatte 선택
 	Black Matte	검정 배경
 	White Matte	흰색 배경
 
@@ -3072,6 +3091,7 @@ fontWeight	Italic	기울임
 	Out of gamut for printing: click for the nearest printable colour	인쇄 색역 밖: 클릭하면 가장 가까운 인쇄 가능한 색상으로 바뀝니다
 	Not a web colour: click for the nearest web colour	웹 색상이 아님: 클릭하면 가장 가까운 웹 색상으로 바뀝니다
 	Color to Alpha…	색상을 알파로…
+	Frequency Separation…	주파수 분리…
 	Transparency Threshold	투명도 한계값
 	Opacity Threshold	불투명도 한계값
 	PhotoCraft — Screen Color Picker	PhotoCraft — 화면 색상 선택기
@@ -3318,6 +3338,7 @@ curves	Smooth	매끄럽게
 	Stop	정지
 	Object Finder	개체 찾기
 	No object found there — drag a rectangle around it	그곳에서 개체를 찾지 못했습니다 — 주위에 사각형을 드래그하세요
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	활성 레이어의 이 위치에는 픽셀이 없습니다 — 모든 레이어 샘플링을 켜거나 픽셀이 있는 레이어를 선택하세요
 	Remove after each stroke	획마다 제거
 	Apply the removal ({key})	제거 적용 ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	제거할 획: {n} (Enter 적용, Esc 취소)
@@ -3428,6 +3449,7 @@ curves	Smooth	매끄럽게
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut}은(는) 시스템에서 예약되어 할당할 수 없습니다.
 	Low-Latency Drawing (vsync off, applies at next launch)	저지연 그리기(수직 동기화 끔, 다음 실행 시 적용)
 # Free Transform: a new layer while the box is open (#5859)
+	Reference point location	기준점 위치
 	Free Transform is still being applied; try again when it has finished.	자유 변형을 아직 적용하는 중입니다. 완료된 후 다시 시도하세요.
 	The transform couldn't be applied.	변형을 적용할 수 없습니다.
 # Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
@@ -3436,6 +3458,7 @@ curves	Smooth	매끄럽게
 	GPU Memory Full	GPU 메모리 부족
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	레이어에 GPU 메모리 {needed}가 필요하지만 {budget}만 사용할 수 있어 문서 전체를 다시 그리는 편집은 CPU에서 처리됩니다. 클릭하여 GPU 메모리를 설정합니다.
 	GPU memory budget: {budget}	GPU 메모리 예산: {budget}
+	Graphics memory: {size}	그래픽 메모리: {size}
 	This document's layers: {needed} of {budget} for layers	이 문서의 레이어: 레이어용 {budget} 중 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	이 문서의 레이어에 {needed}가 필요하지만 {budget}만 사용할 수 있습니다: 문서 전체 다시 그리기는 CPU를 사용합니다
 	GPU Memory (MB, 0 = Automatic)	GPU 메모리(MB, 0 = 자동)

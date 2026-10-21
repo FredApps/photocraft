@@ -1061,7 +1061,7 @@
 	Done	Gotovo
 	Dots	Tačke
 	Drag a rectangle around the object	Prevucite pravougaonik oko objekta
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Prevucite po slici da dodate ograničenje; Shift za horizontalno/vertikalno; desni klik za brisanje.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Prevucite po slici da dodate ograničenje; Shift za horizontalno/vertikalno; desni klik na ograničenje za izmenu ili brisanje.
 	Drag to move the active shape's path or the Work Path	Prevucite da pomerite putanju aktivnog oblika ili radnu putanju
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Klik: izaberi sidrišnu tačku · Prevlačenje: pomeri tačku, ručicu ili segment · {shift}-klik: dodaj · {alt}-klik: cela podputanja
 	Draw with the Pen tool (P) or make a work path from a selection.	Crtajte alatkom pero (P) ili napravite radnu putanju od selekcije.
@@ -2025,6 +2025,8 @@
 	Collapse	Skupi
 	Collapse All Groups	Skupi sve grupe
 	Collapse Panel Group	Skupi grupu panela
+	Collapse to Icons	Skupi u ikone
+	Expand Panels	Proširi panele
 	Collapse group  ({key}-click: all groups)	Skupi grupu  ({key}-klik: sve grupe)
 	Create new brush from the current settings	Napravi novu četkicu od tekućih podešavanja
 	Create new brush from these settings	Napravi novu četkicu od ovih podešavanja
@@ -2886,6 +2888,7 @@ fontWeight	Italic	Kurziv
 	Out of gamut for printing: click for the nearest printable colour	Van gamuta za štampu: kliknite za najbližu boju koja može da se odštampa
 	Not a web colour: click for the nearest web colour	Nije veb boja: kliknite za najbližu veb boju
 	Color to Alpha…	Boja u alfu…
+	Frequency Separation…	Razdvajanje frekvencija…
 	Transparency Threshold	Prag providnosti
 	Opacity Threshold	Prag neprozirnosti
 	PhotoCraft — Screen Color Picker	PhotoCraft — birač boja sa ekrana
@@ -3847,6 +3850,7 @@ layerLabel	No Color	Bez boje
 	Search menus	Pretraži menije
 	Seed	Seme
 	Select and Mask	Izaberi i maskiraj
+	Cryptomatte Selection	Cryptomatte selekcija
 	Set Measurement Scale	Postavi razmeru merenja
 	Shadows/Highlights	Senke/svetla
 	Shape Blur	Zamućenje oblikom
@@ -4190,6 +4194,7 @@ shape	Appearance	Izgled
 	Drag to pan · Scroll to zoom · Double-click to fit	Prevucite za pomeranje · Skrolujte za zumiranje · Dvaput kliknite za uklapanje
 	Object Finder	Pronalazač objekata
 	No object found there — drag a rectangle around it	Tu nije pronađen nijedan objekat — prevucite pravougaonik oko njega
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Aktivni sloj ovde nema piksela — uključite Uzorkuj sve slojeve ili izaberite sloj sa pikselima
 	Clear Brush Controls	Obriši kontrole četkice
 	Reset All Locked Settings	Vrati sva zaključana podešavanja
 	Copy Texture to Other Tools	Kopiraj teksturu u druge alatke
@@ -4322,6 +4327,7 @@ shape	Appearance	Izgled
 	GPU Memory Full	GPU memorija je puna
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Slojevima treba {needed} GPU memorije, a smeju da zauzmu {budget}, pa izmene koje ponovo iscrtavaju ceo dokument to rade na CPU-u. Kliknite da podesite GPU memoriju.
 	GPU memory budget: {budget}	Budžet GPU memorije: {budget}
+	Graphics memory: {size}	Grafička memorija: {size}
 	This document's layers: {needed} of {budget} for layers	Slojevi ovog dokumenta: {needed} od {budget} za slojeve
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Slojevima ovog dokumenta treba {needed}, a smeju da zauzmu {budget}: ceo dokument se ponovo iscrtava na CPU-u
 	GPU Memory (MB, 0 = Automatic)	GPU memorija (MB, 0 = Automatski)

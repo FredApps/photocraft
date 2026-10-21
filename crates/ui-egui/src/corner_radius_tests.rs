@@ -16,6 +16,7 @@ fn app(tool: Tool) -> PhotocraftApp {
     app.sync_views();
     app.run("shape.create", json!({"kind": "roundedRect", "rect": [40, 40, 120, 80], "radii": 10})).unwrap();
     app.ui.tool = tool;
+    app.ui.tool_options.move_show_transform = false;
     app
 }
 
@@ -121,6 +122,7 @@ fn three(tool: Tool) -> (PhotocraftApp, Vec<photocraft_doc::LayerId>) {
     app.run("layer.select", json!({"layer": ids[0].0})).unwrap();
     app.run("layer.select", json!({"layer": ids[1].0, "mode": "add"})).unwrap();
     app.ui.tool = tool;
+    app.ui.tool_options.move_show_transform = false;
     (app, ids)
 }
 

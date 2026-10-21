@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use photocraft_algo::resample::{Resample, resize_surface, translate_surface};
+use photocraft_algo::resample::{Resample, resize_surface_in_canvas, translate_surface};
 use photocraft_color::{ColorMode, PixelFormat};
 use photocraft_doc::{Affine, Document, Layer, LayerContent, LayerId, SmartObject, SmartSource};
 use photocraft_geom::Rect;
@@ -105,7 +105,7 @@ pub fn list_images(dir: &str) -> Result<Vec<String>> {
     let mut out: Vec<String> = rd
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().and_then(|x| x.to_str()).is_some_and(|x| OPENABLE.contains(&x.to_ascii_lowercase().as_str())))
+        .filter(|p| p.is_file() && openable_name(&p.to_string_lossy()))
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     out.sort();
@@ -116,12 +116,20 @@ pub fn list_images(dir: &str) -> Result<Vec<String>> {
     Err(EngineError::Other(format!("cannot list {dir}: no file system on the web")))
 }
 
+/// Whether a folder entry is one the batch commands open: an `OPENABLE` extension, or GIMP's
+/// gzipped `.xcf.gz`, whose last extension alone says nothing.
+#[cfg(not(target_arch = "wasm32"))]
+fn openable_name(path: &str) -> bool {
+    let lower = file_name(path).to_ascii_lowercase();
+    lower.ends_with(".xcf.gz") || lower.rsplit_once('.').is_some_and(|(_, ext)| OPENABLE.contains(&ext))
+}
+
 /// Extensions the batch commands pick up from a folder.
 #[cfg(not(target_arch = "wasm32"))]
 const OPENABLE: &[&str] = &[
-    "pdn", "ora", "kra", "krz", "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi", "ico", "pnm",
-    "ppm", "pgm", "fits", "fit", "fts", "dpx", "heic", "heif", "hif", "dng", "cr2", "nef", "nrw", "arw", "pef", "svg", "svgz", "af", "afdesign", "afphoto",
-    "afpub",
+    "pdn", "ora", "xcf", "xcfgz", "kra", "krz", "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi",
+    "ico", "pnm", "ppm", "pgm", "fits", "fit", "fts", "dpx", "heic", "heif", "hif", "dng", "cr2", "nef", "nrw", "arw", "pef", "svg", "svgz", "af", "afdesign",
+    "afphoto", "afpub",
 ];
 
 /// Whether saving `doc` as a TIFF writes Photoshop layer data (anything beyond a lone
@@ -142,6 +150,10 @@ impl crate::DocState {
         let name = file_name(&path);
         if self.doc.name != name {
             Arc::make_mut(&mut self.doc).name = name;
+        }
+        // The file now holds just this document, whatever the one it was opened from held.
+        if self.doc.file_encoding.source_images.is_some() {
+            Arc::make_mut(&mut self.doc).file_encoding.source_images = None;
         }
         self.path = Some(path);
         self.saved_revision = self.revision;
@@ -631,7 +643,8 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let (dx, dy) = ((center.0 - w * scale / 2.0).round(), (center.1 - h * scale / 2.0).round());
     let mut px = flattened(&src, fmt);
     if (scale - 1.0).abs() > 1e-9 {
-        px = resize_surface(&px, scale, scale, Resample::Bicubic);
+        let source_bounds = px.content_bounds();
+        px = resize_surface_in_canvas(&px, scale, scale, Resample::Bicubic, source_bounds);
     }
     let px = translate_surface(&px, dx as i32, dy as i32);
     // Preferences ▸ General ▸ Always Create Smart Objects When Placing (on by default): off, an
@@ -694,7 +707,42 @@ fn xml_escape(s: &str) -> String {
 }
 
 fn xml_unescape(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let decoded = rest.find(';').filter(|&e| e <= 12).and_then(|e| {
+            let c = match &rest[1..e] {
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" => '\'',
+                "amp" => '&',
+                n => {
+                    let n = n.strip_prefix('#')?;
+                    let code = match n.strip_prefix(['x', 'X']) {
+                        Some(h) => u32::from_str_radix(h, 16).ok()?,
+                        None => n.parse().ok()?,
+                    };
+                    char::from_u32(code)?
+                }
+            };
+            Some((c, e + 1))
+        });
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The element `<tag …>…</tag>` (first occurrence) as (start, end, inner).
@@ -796,16 +844,30 @@ fn short_num(v: f64, decimals: usize) -> String {
 }
 
 /// Exposure time as cameras print it: "1/250 s" for fractions of a second, "0.4 s" or "2 s"
-/// when the reciprocal isn't a whole number or the exposure is a second or longer.
+/// otherwise. The `1/n` form uses the nearest whole denominator when it is within 5 % of the
+/// stored value (EXIF often stores 1/32 s as 0.031714 s, not exactly 1/32); exposures that
+/// don't round to a close `1/n` keep three significant digits, so 0.0317 s never shows as "0.03 s".
 fn exposure_text(t: f64) -> Option<String> {
     if !(t.is_finite() && t > 0.0) {
         return None;
     }
-    let r = 1.0 / t;
-    if t < 1.0 && (r - r.round()).abs() <= r * 0.01 {
-        return Some(format!("1/{} s", r.round()));
+    if t < 1.0 {
+        let r = 1.0 / t;
+        let n = r.round();
+        if n >= 2.0 && (r - n).abs() <= n * 0.05 {
+            return Some(format!("1/{n:.0} s"));
+        }
+        // Keep the near-one-second fix while preserving precision for shorter exposures.
+        let seconds = if n < 2.0 { short_num(t, 2) } else { short_sig(t, 3) };
+        return Some(format!("{seconds} s"));
     }
-    Some(format!("{} s", short_num(t, if t < 1.0 { 2 } else { 1 })))
+    Some(format!("{} s", short_num(t, 1)))
+}
+
+/// `v` with at most `sig` significant digits and no trailing zeros (0.031714 → "0.0317").
+fn short_sig(v: f64, sig: usize) -> String {
+    let decimals = (sig as i32 - 1 - v.abs().log10().floor() as i32).clamp(0, 9) as usize;
+    short_num(v, decimals)
 }
 
 /// EXIF (`2024:02:17 12:40:19`) or XMP (`2024-02-17T12:40:19.00+01:00`) dates as

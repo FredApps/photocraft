@@ -164,6 +164,36 @@ fn shift_square_pressed_between_pixels_has_equal_sides() {
     }
 }
 
+/// #6015: Fixed Size pressed between pixels selected one pixel more on each side (10 × 10 became
+/// 11 × 11, 1 × 1 became 2 × 2). The readout and the selection are the entered size, and a click
+/// without a drag places it too, as in Photoshop. The later pressed-pixel fix (PR #6025)
+/// anchors at the containing pixel, including fractional coordinates above half a pixel.
+#[test]
+fn fixed_size_selects_exactly_the_entered_size() {
+    for tool in [Tool::RectMarquee, Tool::EllipseMarquee] {
+        for (w, ht) in [(10, 10), (1, 1), (64, 32)] {
+            let mut h = harness(tool);
+            let o = &mut h.state_mut().ui.tool_options;
+            o.marquee_style = "fixedSize".into();
+            (o.marquee_width, o.marquee_height) = (w as f32, ht as f32);
+            press_at(&mut h, 50.4, 60.6, Modifiers::NONE);
+            assert!(readout(&h, w, ht), "{tool:?} {w} × {ht}: the readout shows the entered size");
+            release_at(&mut h, 90.0, 90.0, Modifiers::NONE);
+            assert_eq!(selection(&h), Rect::new(50, 60, 50 + w, 60 + ht), "{tool:?} {w} × {ht}: dragged");
+
+            // A click: the button goes down and up at one point.
+            h.state_mut().run("select.deselect", json!({})).unwrap();
+            let p = screen(&h, 120.6, 100.4);
+            h.event(egui::Event::PointerMoved(p));
+            h.run_steps(1);
+            button(&mut h, p, true, Modifiers::NONE);
+            button(&mut h, p, false, Modifiers::NONE);
+            h.run_steps(2);
+            assert_eq!(selection(&h), Rect::new(120, 100, 120 + w, 100 + ht), "{tool:?} {w} × {ht}: clicked");
+        }
+    }
+}
+
 /// #204: Preferences › Tools › Show Transformation Values off hides the readout, not the marquee.
 #[test]
 fn show_transformation_values_off_hides_the_readout() {
@@ -877,4 +907,36 @@ fn size_readout_follows_the_ruler_unit() {
     assert_eq!(crate::canvas::readout_in(&ur, 72.0, [1644.0, 2659.0], r), ["58 cm".to_string(), "93.8 cm".to_string()]);
     ur.rulers = Unit::Millimeters;
     assert_eq!(crate::canvas::readout_in(&ur, 150.0, [1644.0, 2659.0], [0.0, 0.0, 3425.0, 100.0])[0], "579.97 mm");
+}
+
+/// #5775: a second Magic Wand click on the selected region clears the selection (marquee parity).
+#[test]
+fn magic_wand_click_inside_the_selection_deselects() {
+    use crate::canvas::{ToolEvent, tool_event};
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 80, "height": 60, "background": "transparent"})).unwrap();
+    app.sync_views();
+    let layer = app.session.active().unwrap().active_layer.unwrap();
+    app.session
+        .edit("paint", |doc, _| {
+            doc.layer_mut(layer).unwrap().surface_mut().unwrap().fill_rect(Rect::new(10, 10, 30, 30), &[1.0, 0.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+    app.ui.tool = Tool::MagicWand;
+    app.ui.tool_options.tolerance = 0.0;
+    app.ui.tool_options.anti_alias = false;
+    tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, Modifiers::NONE);
+    assert!(app.session.active().unwrap().doc.selection.is_some());
+    tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, Modifiers::NONE);
+    assert!(app.session.active().unwrap().doc.selection.is_none());
+    // ⇧ add mode still samples on a selected pixel.
+    tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, Modifiers::NONE);
+    assert!(app.session.active().unwrap().doc.selection.is_some());
+    tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, Modifiers::SHIFT);
+    tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, Modifiers::SHIFT);
+    assert!(app.session.active().unwrap().doc.selection.is_some());
 }

@@ -1104,7 +1104,7 @@
 	Done	Hotovo
 	Dots	Tečky
 	Drag a rectangle around the object	Táhněte obdélník kolem objektu
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Tažením v obraze přidáte omezení; Shift pro vodorovné/svislé; pravým kliknutím odstraníte.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Tažením v obraze přidáte omezení; Shift pro vodorovné/svislé; pravým kliknutím na omezení ho změníte nebo odstraníte.
 	Drag to move the active shape's path or the Work Path	Tažením přesunete cestu aktivního tvaru nebo pracovní cestu
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Klik: vybrat bod · Tažení: přesunout bod, úchyt nebo segment · {shift}+klik: přidat · {alt}+klik: celá podcesta
 	Draw with the Pen tool (P) or make a work path from a selection.	Kreslete nástrojem pero (P) nebo vytvořte pracovní cestu z výběru.
@@ -2092,6 +2092,8 @@
 	Collapse	Sbalit
 	Collapse All Groups	Sbalit všechny skupiny
 	Collapse Panel Group	Sbalit skupinu panelů
+	Collapse to Icons	Sbalit na ikony
+	Expand Panels	Rozbalit panely
 	Collapse group  ({key}-click: all groups)	Sbalit skupinu  ({key}+kliknutí: všechny skupiny)
 	Create new brush from the current settings	Vytvořit nový štětec z aktuálního nastavení
 	Create new brush from these settings	Vytvořit nový štětec z tohoto nastavení
@@ -2434,6 +2436,7 @@ cameraRaw	Color	Barvy
 	Set White Point	Nastavit bílý bod
 	Unavailable in this color mode	V tomto barevném režimu není k dispozici
 	Selection Preview:	Náhled výběru:
+	Cryptomatte Selection	Výběr Cryptomatte
 	Black Matte	Černý podklad
 	White Matte	Bílý podklad
 
@@ -2490,6 +2493,7 @@ fontWeight	Italic	Kurzíva
 	Out of gamut for printing: click for the nearest printable colour	Mimo gamut tisku: klepnutím zvolíte nejbližší tisknutelnou barvu
 	Not a web colour: click for the nearest web colour	Není webová barva: klepnutím zvolíte nejbližší webovou barvu
 	Color to Alpha…	Barva na alfu…
+	Frequency Separation…	Frekvenční separace…
 	Transparency Threshold	Práh průhlednosti
 	Opacity Threshold	Práh krytí
 	PhotoCraft — Screen Color Picker	PhotoCraft — Výběr barvy obrazovky
@@ -3747,6 +3751,7 @@ navigator	Zoom	Zvětšení
 	Medium Blue	Středně modrá
 	Object Finder	Hledání objektů
 	No object found there — drag a rectangle around it	Nebyl tam nalezen žádný objekt — přetáhněte kolem něj obdélník
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Aktivní vrstva tu nemá žádné pixely — zapněte Vzorkovat všechny vrstvy nebo vyberte vrstvu s pixely
 	Remove after each stroke	Odstranit po každém tahu
 	Apply the removal ({key})	Použít odstranění ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Tahy k odstranění: {n} (Enter použije, Esc zruší)
@@ -3854,6 +3859,7 @@ navigator	Zoom	Zvětšení
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} je vyhrazena systémem a nelze ji přiřadit.
 	Low-Latency Drawing (vsync off, applies at next launch)	Kreslení s nízkou latencí (bez vertikální synchronizace, platí po dalším spuštění)
 # Free Transform: a new layer while the box is open (#5859)
+	Reference point location	Umístění referenčního bodu
 	Free Transform is still being applied; try again when it has finished.	Volná transformace se stále použije; zkuste to znovu, až skončí.
 	The transform couldn't be applied.	Transformaci nelze použít.
 # Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
@@ -3862,6 +3868,7 @@ navigator	Zoom	Zvětšení
 	GPU Memory Full	Paměť GPU je plná
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Vrstvy potřebují {needed} paměti GPU a mohou zabrat {budget}, takže úpravy, které překreslují celý dokument, to dělají na CPU. Kliknutím nastavíte Paměť GPU.
 	GPU memory budget: {budget}	Rozpočet paměti GPU: {budget}
+	Graphics memory: {size}	Paměť GPU: {size}
 	This document's layers: {needed} of {budget} for layers	Vrstvy tohoto dokumentu: {needed} z {budget} pro vrstvy
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Vrstvy tohoto dokumentu potřebují {needed}, ale mohou zabrat {budget}: překreslení celého dokumentu probíhá na CPU
 	GPU Memory (MB, 0 = Automatic)	Paměť GPU (MB, 0 = Automaticky)

@@ -1278,7 +1278,10 @@ fn pad4(mut v: Vec<u8>) -> Vec<u8> {
 /// the placed id (for a duplicate), transform (when it moved), warp and filter stack are rewritten;
 /// otherwise a fresh descriptor in Photoshop's key order. A split warp goes in `quiltWarp`.
 pub fn sold_bytes(template: Option<&Descriptor>, s: &PlacedSpec<'_>, warnings: &mut Vec<String>) -> Vec<u8> {
-    let stored = sold_warp(s.warp, warnings);
+    // A placed layer's custom mesh spans the source rect (#8227): one over another box (a warp
+    // made here) is re-expressed over it, which draws the same.
+    let source = s.warp.map(|w| w.over_box([0.0, 0.0, s.size.0, s.size.1]));
+    let stored = sold_warp(source.as_ref(), warnings);
     let warp = warp_desc(stored, s.size, warnings);
     let split = stored.zip(split_mesh(stored));
     let d = match template {
@@ -1291,12 +1294,17 @@ pub fn sold_bytes(template: Option<&Descriptor>, s: &PlacedSpec<'_>, warnings: &
                 set(&mut d, "Trnf", quad(s, stored));
                 set(&mut d, "nonAffineTransform", quad(s, stored));
             }
-            set(&mut d, "warp", warp);
+            // An imported warp is read over the source rect (#8227): one that reads back as the
+            // layer's warp is kept as the file has it, its own `bounds` and all.
+            let read = |q: &Descriptor| crate::blocks::warp_of(q).map(|w| w.map(|w| crate::blocks::over_source(w, s.size)));
+            if get_desc(t, "warp").and_then(read).is_none_or(|w| w.as_ref() != stored) {
+                set(&mut d, "warp", warp);
+            }
             // `quiltWarp` is read before `warp`, so the imported one stays only while it still
             // says what the layer's warp is (unchanged, or unreadable while the layer has none);
             // otherwise it is rewritten, or dropped for a warp that isn't split.
             let old = get_desc(t, "quiltWarp");
-            let kept = old.is_some_and(|q| match crate::blocks::warp_of(q) {
+            let kept = old.is_some_and(|q| match read(q) {
                 Some(w) => w.as_ref() == stored,
                 None => s.warp.is_none(),
             });
@@ -1610,6 +1618,13 @@ mod tests {
             sf("image.adjustments.levels", json!({"inBlack": 20, "inWhite": 220, "gamma": 1.4, "red": {"inBlack": 0, "inWhite": 255, "gamma": 0.8}})),
             sf("image.adjustments.curves", json!({"points": [[0.0, 0.0], [64.0, 40.0], [255.0, 255.0]], "blue": [[0.0, 20.0], [255.0, 235.0]]})),
             sf("image.adjustments.shadowsHighlights", json!({})),
+            sf("filter.sharpen.sharpen", json!({})),
+            // Photoshop stores Dust & Scratches' radius in whole pixels (a `long`).
+            sf("filter.noise.dustAndScratches", json!({"radius": 4, "threshold": 12})),
+            sf(
+                "image.adjustments.hueSaturation",
+                json!({"colorize": false, "hue": 10, "saturation": -20, "lightness": 5, "reds": {"hue": 5, "saturation": 0, "lightness": -3, "range": [315, 345, 15, 45]}}),
+            ),
             // A pencil-drawn curve: 256 output levels (`Mpng`).
             sf("image.adjustments.curves", json!({"pencil": true, "points": (0..256).rev().collect::<Vec<i32>>()})),
         ];
@@ -2443,6 +2458,68 @@ mod tests {
     }
 
     #[test]
+    fn photoshop_sharpen_without_fltr_imports_as_sharpen() {
+        // #6267: Photoshop's Sharpen item holds only its name, blending and `filterID`.
+        let item = Descriptor::new("filterFX")
+            .with("Nm  ", Value::Text(UnicodeString::new_nul("Sharpen")))
+            .with("blendOptions", Value::Descriptor(Descriptor::new("blendOptions").with("Opct", unit(b"#Prc", 100.0)).with("Md  ", enumv("BlnM", "normal"))))
+            .with("enab", Value::Boolean(true))
+            .with("hasoptions", Value::Boolean(false))
+            .with("filterID", Value::Integer(1_399_353_968));
+        let f = filter_from_item(&item);
+        assert_eq!((f.command.as_str(), &f.params), ("filter.sharpen.sharpen", &json!({})));
+        // Hue/Saturation with an unnumbered range and Dust & Scratches with a missing setting fail
+        // cleanly instead of panicking.
+        let bad = SmartFilter {
+            command: "image.adjustments.hueSaturation".into(),
+            params: json!({"reds": {"range": [1, "x", 3, 4]}}),
+            blend: BlendMode::Normal,
+            opacity: 1.0,
+            visible: true,
+        };
+        assert!(item_for_filter(&bad).is_err());
+        let dust = Descriptor::new("filterFX")
+            .with("Fltr", Value::Descriptor(Descriptor::new("DstS").with("Rds ", Value::Integer(3))))
+            .with("filterID", Value::Integer(code(b"DstS")));
+        assert_eq!(filter_from_item(&dust).command, UNSUPPORTED_FILTER);
+    }
+
+    #[test]
+    fn hue_saturation_ranges_are_not_lost() {
+        let hue_sat = |params: J| item_for_filter(&sf("image.adjustments.hueSaturation", params));
+        // A range that is not an object is an error, not a silently dropped setting.
+        assert!(hue_sat(json!({"reds": 5})).is_err());
+        assert!(hue_sat(json!({"reds": null})).is_ok());
+        // Colorize's 25% default is the master saturation's only: a range's stays 0.
+        let d = hue_sat(json!({"colorize": true, "reds": {"hue": 5}})).unwrap();
+        let adjs = adjustment_list(get_desc(&d, "Fltr").unwrap()).unwrap();
+        let saturations: Vec<_> = adjs.iter().map(|a| int(a, "Strt")).collect();
+        assert_eq!(saturations, [Some(25), Some(0)]);
+        // A repeated range (or master) would overwrite the first: the filter is kept verbatim.
+        let entry = |range: Option<i32>| {
+            let e = Descriptor::new("Hst2").with("H   ", Value::Integer(0)).with("Strt", Value::Integer(0)).with("Lght", Value::Integer(0));
+            let Some(r) = range else { return Value::Descriptor(e) };
+            let e = ["BgnR", "BgnS", "EndS", "EndR"].iter().fold(e.with("LclR", Value::Integer(r)), |e, k| e.with(k, Value::Integer(10)));
+            Value::Descriptor(e)
+        };
+        for adjs in [vec![entry(None), entry(Some(1)), entry(Some(1))], vec![entry(None), entry(None)]] {
+            let fltr = Descriptor::new("HStr").with("Clrz", Value::Boolean(false)).with("Adjs", Value::List(adjs));
+            let item = Descriptor::new("filterFX")
+                .with("Nm  ", Value::Text(UnicodeString::new_nul("Hue/Saturation...")))
+                .with(
+                    "blendOptions",
+                    Value::Descriptor(Descriptor::new("blendOptions").with("Opct", unit(b"#Prc", 100.0)).with("Md  ", enumv("BlnM", "normal"))),
+                )
+                .with("enab", Value::Boolean(true))
+                .with("Fltr", Value::Descriptor(fltr))
+                .with("filterID", Value::Integer(code(b"HStr")));
+            let f = filter_from_item(&item);
+            assert_eq!(f.command, UNSUPPORTED_FILTER);
+            assert_eq!(item_for_filter(&f).unwrap(), item);
+        }
+    }
+
+    #[test]
     fn unknown_filters_keep_their_descriptor() {
         let item = Descriptor::new("filterFX")
             .with("Nm  ", Value::Text(UnicodeString::new_nul("Twirl...")))
@@ -3206,6 +3283,41 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(crate::blocks::parse_smart(b"SoLd", &sold).1, transform);
         assert_eq!(crate::blocks::parse_placed_warp(b"SoLd", &sold), Some(warp));
+    }
+
+    /// #8227: a placed layer's custom mesh spans the source rect. One made here over a box past
+    /// the source is written over the source rect and reads back drawing the same, placed where
+    /// it was; an imported one whose `bounds` sit elsewhere reads the same and is written back
+    /// as the file has it.
+    #[test]
+    fn custom_warp_bounds_off_the_source_round_trip() {
+        use photocraft_geom::warp::BezierMesh;
+        let transform = Affine { m: [2.0, 0.0, 0.0, 2.0, 120.0, 210.0] };
+        let b = [-4.0, -3.0, 56.0, 27.0];
+        let mut m = BezierMesh::identity(b, 1, 1);
+        m.points[5] = [14.0, 1.0];
+        m.points[15] = [60.0, 31.0];
+        let made = Warp::custom(m, b);
+        let sold = sold_bytes(None, &placed(transform, Some(&made)), &mut Vec::new());
+        let back = crate::blocks::parse_placed_warp(b"SoLd", &sold).expect("the warp");
+        assert_eq!(back.bounds, [0.0, 0.0, 50.0, 25.0]);
+        for (x, y) in [(0.0, 0.0), (50.0, 25.0), (12.5, 20.0), (31.0, 4.0), (50.0, 0.0)] {
+            let (p, q) = (back.map(x, y), made.map(x, y));
+            assert!((p.0 - q.0).abs() < 1e-6 && (p.1 - q.1).abs() < 1e-6, "({x}, {y}): {p:?} vs {q:?}");
+        }
+        let t = crate::blocks::parse_smart(b"SoLd", &sold).1;
+        assert!(t.m.iter().zip(transform.m).all(|(a, b)| (a - b).abs() < 1e-9), "placed where it was: {t:?}");
+        // The same mesh with `bounds` off the source, as Photoshop may write it.
+        let mut template = sold_descriptor(&sold).expect("a descriptor");
+        let Some((_, Value::Descriptor(w))) = template.items.iter_mut().find(|(k, _)| k.is("warp")) else { panic!("a warp") };
+        let Some((_, Value::Descriptor(bx))) = w.items.iter_mut().find(|(k, _)| k.is("bounds")) else { panic!("its bounds") };
+        for (k, v) in [("Left", -5.0), ("Top ", -2.0), ("Rght", 45.0), ("Btom", 23.0)] {
+            set(bx, k, Value::Double(v));
+        }
+        let read = crate::blocks::parse_placed_warp(b"SoLd", &sold_of(template.clone())).expect("the warp");
+        assert_eq!(read, back, "bounds don't move the contents");
+        let again = sold_bytes(Some(&template), &placed(transform, Some(&read)), &mut Vec::new());
+        assert_eq!(get_desc(&sold_descriptor(&again).expect("a descriptor"), "warp"), get_desc(&template, "warp"));
     }
 
     /// A split (multi-patch) custom warp is written as Photoshop writes it, a `quiltWarp` before a

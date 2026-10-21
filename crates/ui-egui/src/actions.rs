@@ -115,6 +115,7 @@ pub(crate) fn play(app: &mut PhotocraftApp, params: &Value) -> Result<Value, Str
             paused = Some(json!({"step": i, "id": id, "dialog": dialog}));
             break;
         }
+        let target = app.session.active().map(|d| d.doc.id);
         let result = (|| {
             if let Some(auth) = app.session.authorize {
                 auth(id, p).map_err(|e| e.to_string())?;
@@ -137,7 +138,7 @@ pub(crate) fn play(app: &mut PhotocraftApp, params: &Value) -> Result<Value, Str
         })();
         match result {
             Ok(value) => {
-                if let Some(error) = actions_cmds::nested_failure(id, &value) {
+                if let Some(error) = actions_cmds::nested_failure(id, &value).or_else(|| actions_cmds::save_target_closed(&app.session, id, target)) {
                     failed = Some(json!({"step": i, "id": id, "error": error}));
                     break;
                 }
@@ -308,7 +309,13 @@ fn source(name: &str, bytes: &[u8]) -> Value {
 
 /// Load a `.atn` file's bytes into the Actions panel (the panel menu's Load Actions…).
 pub fn load_bytes(app: &mut PhotocraftApp, name: &str, bytes: &[u8]) -> Result<Value, String> {
-    let r = app.run("actions.load", source(name, bytes))?;
+    let is_json = std::path::Path::new(name).extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+    let r = if is_json {
+        let data = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+        app.run("actions.import", json!({"data": data}))?
+    } else {
+        app.run("actions.load", source(name, bytes))?
+    };
     let n = r["actions"].as_array().map_or(0, Vec::len) as u64;
     let unsupported = r["unsupported"].as_array().map_or(0, Vec::len);
     let shown = crate::file_open::display_name(name);
@@ -329,7 +336,7 @@ pub fn load_bytes(app: &mut PhotocraftApp, name: &str, bytes: &[u8]) -> Result<V
     };
     // Show what arrived: select the first loaded action, expanded.
     let list = &app.session.actions.list;
-    if let Some(first) = r["actions"][0].as_str()
+    if let Some(first) = r["actions"].as_array().and_then(|a| a.first()).and_then(Value::as_str)
         && let Some(i) = list.iter().position(|a| a.name == first)
     {
         app.ui.actions.selected = Some(i);
@@ -344,7 +351,22 @@ pub fn load_bytes(app: &mut PhotocraftApp, name: &str, bytes: &[u8]) -> Result<V
 }
 
 fn load_dialog(app: &mut PhotocraftApp) -> Result<Value, String> {
-    app.pick_file_bytes_filtered(&["atn"], |app, name, bytes| load_bytes(app, &name, &bytes))
+    app.pick_file_bytes_filtered(&["atn", "json"], |app, name, bytes| load_bytes(app, &name, &bytes))
+}
+
+fn save_json_dialog(app: &mut PhotocraftApp) -> Result<Value, String> {
+    let r = app.run("actions.export", json!({}))?;
+    let data = r["data"].as_str().ok_or("the export returned no JSON data")?.to_string();
+    let n = r["count"].as_u64().unwrap_or(0);
+    app.pick_save("Actions.json", move |app, path| {
+        let write = app.services.write.as_mut().ok_or("no writer configured")?;
+        write(&path, data.as_bytes())?;
+        let shown = crate::file_open::display_name(&path);
+        app.ui.status =
+            crate::i18n::fmt(&crate::i18n::trn(crate::i18n::current(), n, "Saved {n} action to {file}", "Saved {n} actions to {file}"), &[("file", &shown)]);
+        app.ui.status_error = false;
+        Ok(json!({"path": path, "actions": n}))
+    })
 }
 
 /// Save Actions…: the selected action's set (every action of it), or every action when none
@@ -480,6 +502,9 @@ pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if ui.add_enabled(any, egui::Button::new(tl!("Save Actions…"))).clicked() {
         act = Some("save");
     }
+    if ui.add_enabled(any, egui::Button::new(format!("{} (.json)", tl!("Save Actions…")))).clicked() {
+        act = Some("save-json");
+    }
     ui.separator();
     let selected = app.ui.actions.selected.is_some_and(|i| i < app.session.actions.list.len());
     if ui.add_enabled(selected, egui::Button::new(tl!("Insert Stop…"))).clicked() {
@@ -489,6 +514,7 @@ pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.close();
     let r = match a {
         "load" => load_dialog(app),
+        "save-json" => save_json_dialog(app),
         "stop" => insert_stop_dialog(app),
         _ => save_dialog(app, None),
     };
@@ -1007,6 +1033,23 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loading_json_actions_uses_engine_import_and_selects_the_new_action() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let action = Action::new("Portable", vec![("select.all".into(), json!({}))]);
+        let file = actions_cmds::ActionsFile { version: 1, actions: vec![action.clone()] };
+        let bytes = serde_json::to_vec(&file).unwrap();
+        assert_eq!(load_bytes(&mut app, "Actions.JSON", &bytes).unwrap()["imported"], 1);
+        assert_eq!(app.session.actions.list, [action]);
+        assert_eq!(app.ui.actions.selected, Some(0));
+        assert_eq!(app.ui.actions.selected_step, None);
+        assert!(app.ui.actions.expanded[0]);
+        assert!(!app.ui.status_error);
+        let before = app.session.actions.clone();
+        assert_eq!(load_bytes(&mut app, "Actions.json", &bytes).unwrap()["imported"], 0);
+        assert_eq!(app.session.actions, before);
+    }
 
     #[test]
     fn selected_layer_name_is_visible_during_recording_and_after_stop() {
@@ -1708,5 +1751,73 @@ mod tests {
         assert!(!h.state().ui.actions.button_mode);
         assert!(h.query_by_label("Button Mode").is_some());
         assert_eq!(h.query_all_by_role(egui::accesskit::Role::CheckBox).count(), 1, "the step list returns when Button Mode is turned off");
+    }
+
+    /// An imported Close with Save: Yes plays as Save then Close. A Save Document script event
+    /// that closes the saved document stops playback, so the Close never reaches another dirty
+    /// document (#7367).
+    #[test]
+    fn save_hook_closing_the_target_stops_an_imported_close_with_save() {
+        use photocraft_psd::atn::{self, AtnEvent, AtnItem};
+        use photocraft_psd::descriptor::{Descriptor, Id, Value as D};
+        use std::{cell::RefCell, rc::Rc};
+        // A one-step .atn: Close (`Cls `) with Save: Yes.
+        let seed = Action::new("Seed", vec![("layer.new.layer".into(), json!({}))]);
+        let (bytes, _) = photocraft_engine::atn_cmds::export("Set", &[&seed], &[], false).unwrap();
+        let mut f = atn::parse(&bytes).unwrap();
+        f.actions[0].items = vec![AtnItem {
+            event: AtnEvent::Code(*b"Cls "),
+            dictionary: "Close".into(),
+            descriptor: Some(Descriptor::new("null").with("Svng", D::Enumerated { type_id: Id::new("YsN "), value: Id::new("Ys  ") })),
+            ..Default::default()
+        }];
+        let imported = photocraft_engine::atn_cmds::import(&atn::write(&f).unwrap()).unwrap();
+        let close_with_save = imported.actions[0].clone();
+        assert_eq!(close_with_save.steps, [("file.save".into(), json!({})), ("file.close".into(), json!({}))]);
+        for hook in ["none", "activate", "close"] {
+            let writes = Rc::new(RefCell::new(Vec::<String>::new()));
+            let w = writes.clone();
+            let services = crate::Services {
+                export: Some(Box::new(|doc, _, _| Ok((doc.name.clone().into_bytes(), Vec::new())))),
+                write: Some(Box::new(move |path, _| {
+                    w.borrow_mut().push(path.to_string());
+                    Ok(())
+                })),
+                ..Default::default()
+            };
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+            // B is dirty with an unsaved KeepB layer; A is active and has its own file.
+            for name in ["B", "A"] {
+                app.run("file.new", json!({"name": name, "width": 2, "height": 2})).unwrap();
+            }
+            assert!(app.session.set_active(0));
+            app.run("layer.new.layer", json!({"name": "KeepB"})).unwrap();
+            assert!(app.session.set_active(1));
+            app.session.active_mut().unwrap().path = Some("A.psd".into());
+            app.session.actions.list.push(close_with_save.clone());
+            let steps = match hook {
+                "activate" => json!([["document.activate", {"document": 0}]]),
+                "close" => json!([["file.close", {}]]),
+                _ => Value::Null,
+            };
+            if !steps.is_null() {
+                app.run("file.scripts.scriptEventsManager", json!({"add": {"event": "saveDocument", "steps": steps}})).unwrap();
+            }
+            let r = app.run("actions.play", json!({"action": 0})).unwrap();
+            assert_eq!(*writes.borrow(), ["A.psd"], "hook={hook}: A is saved once");
+            let names: Vec<Vec<String>> = app.session.documents().iter().map(|d| d.doc.layers.iter().map(|l| l.name.clone()).collect()).collect();
+            assert_eq!(app.session.documents().len(), 1, "hook={hook}: only A closes; result={r}");
+            assert_eq!(app.session.active().unwrap().doc.name, "B", "hook={hook}");
+            assert_eq!(names, [["Background", "KeepB"]], "hook={hook}: B stays open with its unsaved layer");
+            if hook == "close" {
+                assert_eq!(r["failed"]["step"], 0, "{r}");
+                assert_eq!(r["failed"]["id"], "file.save", "{r}");
+                assert!(r["failed"]["error"].as_str().unwrap().contains("closed during the save"), "{r}");
+            } else {
+                assert!(r.get("failed").is_none(), "hook={hook}: {r}");
+            }
+            assert_eq!(app.session.actions.playing, 0);
+            assert!(app.session.actions.playback_stack.is_empty());
+        }
     }
 }

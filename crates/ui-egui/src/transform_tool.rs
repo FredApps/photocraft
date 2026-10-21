@@ -187,6 +187,26 @@ fn corners(r: [f64; 4]) -> [[f64; 2]; 4] {
     [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]]
 }
 
+/// The transform choices supported by the options bar, from Preferences › General › Image Interpolation.
+pub(crate) fn default_interpolation(app: &PhotocraftApp) -> &'static str {
+    use photocraft_engine::prefs::Interpolation;
+    match app.session.prefs().general.image_interpolation {
+        Interpolation::Nearest => "nearest",
+        Interpolation::Bilinear => "bilinear",
+        _ => "bicubic",
+    }
+}
+
+fn interpolation_preference(interpolation: &str) -> Option<photocraft_engine::prefs::Interpolation> {
+    use photocraft_engine::prefs::Interpolation;
+    match interpolation {
+        "nearest" => Some(Interpolation::Nearest),
+        "bilinear" => Some(Interpolation::Bilinear),
+        "bicubic" => Some(Interpolation::Bicubic),
+        _ => None,
+    }
+}
+
 /// Start Free Transform on the active layer (or its selected pixels), or on the targeted unlinked
 /// layer mask, alpha channel or Quick Mask.
 pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
@@ -270,7 +290,7 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
         rect,
         quad: corners(rect),
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bicubic".into(),
+        interpolation: default_interpolation(app).into(),
         warp: None,
         selection: false,
         target: None,
@@ -371,7 +391,7 @@ pub(crate) fn begin_content_aware(
         rect,
         quad: corners(rect),
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bicubic".into(),
+        interpolation: default_interpolation(app).into(),
         warp: None,
         selection: false,
         target: None,
@@ -492,7 +512,7 @@ fn begin_lone(
         rect,
         quad: corners(rect),
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bicubic".into(),
+        interpolation: default_interpolation(app).into(),
         warp: None,
         selection: false,
         target: Some(target),
@@ -545,7 +565,7 @@ fn begin_path(app: &mut PhotocraftApp, ctx: &egui::Context, params: serde_json::
         rect,
         quad: corners(rect),
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bicubic".into(),
+        interpolation: default_interpolation(app).into(),
         warp: None,
         selection: false,
         target: None,
@@ -630,7 +650,7 @@ pub fn begin_selection(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(
         rect,
         quad: corners(rect),
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bilinear".into(),
+        interpolation: default_interpolation(app).into(),
         warp: None,
         selection: true,
         target: None,
@@ -890,9 +910,9 @@ impl Above {
     }
 
     /// Draw the composite over the moving pixels.
-    fn draw(&self, painter: &egui::Painter, xf: &ViewXform) {
+    fn draw(&self, painter: &egui::Painter, xf: &ViewXform, display: Option<&photocraft_engine::display_color::CanvasDisplay>) {
         let Some((texture, r)) = &self.shown else { return };
-        let (tex, uv) = texture.pick(painter.ctx(), xf.zoom * painter.ctx().pixels_per_point(), 1.0, false);
+        let (tex, uv) = texture.pick_display(painter.ctx(), xf.zoom * painter.ctx().pixels_per_point(), 1.0, false, display);
         let mut mesh = egui::Mesh::with_texture(tex);
         let corners = [(r.x0, r.y0, 0.0, 0.0), (r.x1, r.y0, uv[0], 0.0), (r.x1, r.y1, uv[0], uv[1]), (r.x0, r.y1, 0.0, uv[1])];
         for (x, y, u, v) in corners {
@@ -1013,8 +1033,9 @@ fn contains(l: &photocraft_doc::Layer, id: LayerId) -> bool {
     l.id == id || matches!(&l.content, LayerContent::Group(g) if g.children.iter().any(|c| contains(c, id)))
 }
 
-/// Undo and Redo while the commit runs in the background.
+/// Undo and Redo while the commit runs in the background (Free Transform, or Warp).
 const STILL_APPLYING: &str = "Free Transform is still being applied";
+const STILL_WARPING: &str = "Warp is still being applied";
 
 pub fn commit(app: &mut PhotocraftApp) {
     if committing(app).is_some() {
@@ -1316,7 +1337,7 @@ fn box_command(id: &str) -> bool {
 pub fn intercept(app: &mut PhotocraftApp, id: &str) -> Option<Result<serde_json::Value, String>> {
     let warping = app.ui.transform.as_ref()?.warp.is_some();
     if committing(app).is_some() {
-        return box_command(id).then(|| Err(STILL_APPLYING.into()));
+        return box_command(id).then(|| Err(if warping { STILL_WARPING } else { STILL_APPLYING }.into()));
     }
     match id {
         "edit.undo" => Some(Ok(step(app, false))),
@@ -1835,6 +1856,43 @@ pub(crate) fn apply_drag(s: &mut TransformSession, g: Gesture, p: [f64; 2], mods
     }
 }
 
+fn anchor_uv(anchor: usize) -> (f64, f64) {
+    match anchor {
+        0 => (0.0, 0.0),
+        1 => (0.5, 0.0),
+        2 => (1.0, 0.0),
+        3 => (0.0, 0.5),
+        4 => (0.5, 0.5),
+        5 => (1.0, 0.5),
+        6 => (0.0, 1.0),
+        7 => (0.5, 1.0),
+        8 => (1.0, 1.0),
+        _ => (0.5, 0.5),
+    }
+}
+
+fn point_on_quad(quad: [[f64; 2]; 4], anchor: usize) -> [f64; 2] {
+    let (u, v) = anchor_uv(anchor);
+    if let Some(h) = Homography::rect_to_quad([0.0, 0.0, 1.0, 1.0], quad) {
+        let (x, y) = h.apply(u, v);
+        if x.is_finite() && y.is_finite() {
+            return [x, y];
+        }
+    }
+    match anchor {
+        0 => quad[0],
+        1 => [(quad[0][0] + quad[1][0]) / 2.0, (quad[0][1] + quad[1][1]) / 2.0],
+        2 => quad[1],
+        3 => [(quad[0][0] + quad[3][0]) / 2.0, (quad[0][1] + quad[3][1]) / 2.0],
+        4 => [(quad[0][0] + quad[1][0] + quad[2][0] + quad[3][0]) / 4.0, (quad[0][1] + quad[1][1] + quad[2][1] + quad[3][1]) / 4.0],
+        5 => [(quad[1][0] + quad[2][0]) / 2.0, (quad[1][1] + quad[2][1]) / 2.0],
+        6 => quad[3],
+        7 => [(quad[2][0] + quad[3][0]) / 2.0, (quad[2][1] + quad[3][1]) / 2.0],
+        8 => quad[2],
+        _ => [(quad[0][0] + quad[1][0] + quad[2][0] + quad[3][0]) / 4.0, (quad[0][1] + quad[1][1] + quad[2][1] + quad[3][1]) / 4.0],
+    }
+}
+
 /// Where the reference point lands when the box goes from `quad0` to `quad`: the same place
 /// within the box, as in Photoshop, where it is attached to the bounding box (#1329). A box
 /// that has collapsed leaves it where it was.
@@ -2145,12 +2203,17 @@ fn front_vertices(h: &Homography, n: usize) -> Vec<bool> {
 /// Photoshop. The box, handles and reference point are [`draw_overlay`], drawn over the guides.
 pub fn draw_content(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     let (Some(t), Some(pv)) = (&app.ui.transform, &app.transform_preview) else { return };
+    let output = crate::monitor_status::view_display(app, painter.ctx());
+    let (display, _) = crate::canvas::canvas_display(app, &pv.doc, output);
+    // Selection tint and lone mask/channel values are UI diagnostics, not document colors.
+    let display = display.as_deref().filter(|_| !t.selection && t.target.is_none() && t.path.is_none());
     if let Some(w) = &t.warp {
-        draw_warp_content(painter, xf, t, w, pv);
+        draw_warp_content(painter, xf, t, w, pv, display);
         return;
     }
     let ctx = painter.ctx();
-    let styled = styled_frame(app, xf.zoom * ctx.pixels_per_point(), ctx.input(|i| i.pointer.any_down())).and_then(|(s, frame)| s.texture(ctx, &frame));
+    let styled =
+        styled_frame(app, xf.zoom * ctx.pixels_per_point(), ctx.input(|i| i.pointer.any_down())).and_then(|(s, frame)| s.texture(ctx, &frame, display));
     if let Some((tex, r)) = styled {
         let mut mesh = egui::Mesh::with_texture(tex);
         for (x, y, u, v) in [(r[0], r[1], 0.0, 0.0), (r[2], r[1], 1.0, 0.0), (r[2], r[3], 1.0, 1.0), (r[0], r[3], 0.0, 1.0)] {
@@ -2165,8 +2228,8 @@ pub fn draw_content(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         let zoom = xf.zoom * painter.ctx().pixels_per_point();
         // Content-Aware Scale shows its latest live result once there is one.
         let (tex, uv) = match pv.content_aware.as_ref().and_then(|l| l.shown(t)) {
-            Some((texture, texel)) => texture.pick(painter.ctx(), zoom, texel, false),
-            None => pv.texture.pick(painter.ctx(), zoom, quad_scale(t), t.interpolation == "nearest"),
+            Some((texture, texel)) => texture.pick_display(painter.ctx(), zoom, texel, false, display),
+            None => pv.texture.pick_display(painter.ctx(), zoom, quad_scale(t), t.interpolation == "nearest", display),
         };
         let mut mesh = egui::Mesh::with_texture(tex);
         let tint = Color32::from_white_alpha((pv.opacity.clamp(0.0, 1.0) * 255.0) as u8);
@@ -2192,7 +2255,7 @@ pub fn draw_content(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         painter.add(clip_to_canvas(mesh, canvas_size(pv), |p| xf.to_screen(p.x, p.y)));
     }
     if let Some(a) = &pv.above {
-        a.draw(painter, xf);
+        a.draw(painter, xf, display);
     }
 }
 
@@ -2514,11 +2577,18 @@ fn draw_warp_points(painter: &egui::Painter, m: &BezierMesh, scr: impl Fn([f64; 
 }
 
 /// The warped pixels and the layers above them ([`draw_content`] for a warp).
-fn draw_warp_content(painter: &egui::Painter, xf: &ViewXform, t: &TransformSession, w: &Warp, pv: &TransformPreview) {
+fn draw_warp_content(
+    painter: &egui::Painter,
+    xf: &ViewXform,
+    t: &TransformSession,
+    w: &Warp,
+    pv: &TransformPreview,
+    display: Option<&photocraft_engine::display_color::CanvasDisplay>,
+) {
     let r = t.rect;
     let m = w.to_mesh(1, 1);
     let (us, vs) = crate::warp_preview::samples(&m, xf.zoom as f64);
-    let (tex, uv) = pv.texture.pick(painter.ctx(), xf.zoom * painter.ctx().pixels_per_point(), 1.0, t.interpolation == "nearest");
+    let (tex, uv) = pv.texture.pick_display(painter.ctx(), xf.zoom * painter.ctx().pixels_per_point(), 1.0, t.interpolation == "nearest", display);
     let mut mesh = egui::Mesh::with_texture(tex);
     let tint = Color32::from_white_alpha((pv.opacity.clamp(0.0, 1.0) * 255.0) as u8);
     for v in &vs {
@@ -2532,7 +2602,7 @@ fn draw_warp_content(painter: &egui::Painter, xf: &ViewXform, t: &TransformSessi
     mesh.indices = crate::warp_preview::triangle_order(&pos, &rest, us.len());
     painter.add(clip_to_canvas(mesh, canvas_size(pv), |p| xf.to_screen(p.x, p.y)));
     if let Some(a) = &pv.above {
-        a.draw(painter, xf);
+        a.draw(painter, xf, display);
     }
 }
 
@@ -2843,10 +2913,47 @@ fn transform_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &TransformSes
     let mut interp = t.interpolation.clone();
     let opts = [("bicubic".to_string(), tl!("Bicubic")), ("bilinear".to_string(), tl!("Bilinear")), ("nearest".to_string(), tl!("Nearest Neighbor"))];
     if crate::widgets::dropdown(ui, "transform-interp", &mut interp, &opts, 130.0)
+        && let Some(preference) = interpolation_preference(&interp)
         && let Some(s) = app.ui.transform.as_mut()
     {
         s.interpolation = interp;
+        app.session.prefs.edit(|p| p.general.image_interpolation = preference);
     }
+}
+
+fn matching_anchor(quad: [[f64; 2]; 4], pivot: [f64; 2]) -> Option<usize> {
+    (0..9).find(|&i| {
+        let p = point_on_quad(quad, i);
+        (p[0] - pivot[0]).abs() <= 0.05 && (p[1] - pivot[1]).abs() <= 0.05
+    })
+}
+
+fn anchor_grid_widget(ui: &mut egui::Ui, current_anchor: Option<usize>) -> Option<usize> {
+    let size = egui::vec2(16.0, 16.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let tk = crate::theme::Tokens::get(ui.ctx());
+    let painter = ui.painter();
+    painter.rect_stroke(rect, 1.0, egui::Stroke::new(1.0, tk.card_border), egui::StrokeKind::Inside);
+    let mut clicked = None;
+    let pointer = resp.interact_pointer_pos();
+    for row in 0..3 {
+        for col in 0..3 {
+            let idx = row * 3 + col;
+            let cx = rect.min.x + (col as f32 + 0.5) * (rect.width() / 3.0);
+            let cy = rect.min.y + (row as f32 + 0.5) * (rect.height() / 3.0);
+            let pt_rect = egui::Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(3.5, 3.5));
+            if resp.clicked() && pointer.is_some_and(|p| (p.x - cx).abs() <= 3.0 && (p.y - cy).abs() <= 3.0) {
+                clicked = Some(idx);
+            }
+            if current_anchor == Some(idx) {
+                painter.rect_filled(pt_rect, 0.5, tk.accent);
+            } else {
+                painter.rect_filled(pt_rect, 0.5, tk.text_dim);
+            }
+        }
+    }
+    resp.on_hover_text(tl!("Reference point location"));
+    clicked
 }
 
 /// The reference point's X/Y and the W/H scale fields (with the aspect link) of the options bar.
@@ -2856,8 +2963,18 @@ pub(crate) fn position_size_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, t
     let lbl = |ui: &mut egui::Ui, s: &str| {
         ui.label(egui::RichText::new(s).color(tk.text_dim).size(12.0));
     };
-    let mut px = t.pivot[0] as f32;
-    let mut py = t.pivot[1] as f32;
+    let current_anchor = matching_anchor(t.quad, t.pivot);
+    let mut pivot = t.pivot;
+    if let Some(new_anchor) = anchor_grid_widget(ui, current_anchor) {
+        let new_p = point_on_quad(t.quad, new_anchor);
+        if let Some(s) = app.ui.transform.as_mut() {
+            s.pivot = new_p;
+        }
+        pivot = new_p;
+    }
+    ui.add_space(4.0);
+    let mut px = pivot[0] as f32;
+    let mut py = pivot[1] as f32;
     lbl(ui, "X:");
     let rx = crate::widgets::value_field(ui, &mut px, -POSITION_LIMIT_PX..=POSITION_LIMIT_PX, "px", 72.0);
     lbl(ui, "Y:");
@@ -3283,6 +3400,46 @@ mod tests {
         h.get_by_label("Cancel transform").click();
         h.run_steps(2);
         assert!(h.state().ui.transform.is_none());
+    }
+
+    #[test]
+    fn interpolation_selection_is_reused_for_the_next_transform() {
+        use egui::accesskit::Role;
+        use egui_kittest::{Harness, kittest::Queryable};
+
+        let app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+        let mut h = Harness::builder().with_size(vec2(2400.0, 360.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    ui.horizontal_centered(|ui| options_bar(app, ui));
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
+        let ctx = h.ctx.clone();
+        begin(h.state_mut(), &ctx).unwrap();
+        h.run_steps(6);
+        assert!(h.state().ui.transform.is_some(), "transform stays open while the bar renders");
+
+        h.get_by_role(Role::ComboBox).click();
+        h.run();
+        assert!(h.state().ui.transform.is_some(), "opening interpolation dropdown keeps the transform open");
+        h.key_press(egui::Key::ArrowDown);
+        h.run();
+        assert!(h.state().ui.transform.is_some(), "first interpolation step keeps the transform open");
+        h.key_press(egui::Key::ArrowDown);
+        h.run();
+        assert!(h.state().ui.transform.is_some(), "second interpolation step keeps the transform open");
+        assert_eq!(h.state().ui.transform.as_ref().unwrap().interpolation, "nearest");
+        assert_eq!(h.state().session.prefs().general.image_interpolation, photocraft_engine::prefs::Interpolation::Nearest);
+
+        let transform = h.state_mut().ui.transform.as_mut().unwrap();
+        transform.quad = transform.quad.map(|[x, y]| [x + 1.0, y]);
+        commit(h.state_mut());
+        assert!(h.state().ui.transform.is_none());
+        begin(h.state_mut(), &ctx).unwrap();
+        assert_eq!(h.state().ui.transform.as_ref().unwrap().interpolation, "nearest");
     }
 
     #[test]
@@ -5367,6 +5524,59 @@ mod tests {
     }
 
     #[test]
+    fn transform_preview_preserves_displayed_profile_colors() {
+        let bounds = photocraft_geom::Rect::new(0, 0, 8, 8);
+        for (wide_gamut, monitor, warp) in [(false, "srgb", false), (true, "srgb", false), (false, "display-p3", false), (true, "srgb", true)] {
+            let mut app = app_with_square(8, bounds);
+            app.session
+                .edit("original color sample", |doc, active| {
+                    if wide_gamut {
+                        doc.icc_profile = Some(photocraft_cms::Builtin::AdobeRgbCompat.profile().to_bytes());
+                    }
+                    doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(bounds, &[0.55, 0.35, 0.2, 1.0]);
+                    Ok(())
+                })
+                .unwrap();
+            app.session.color.settings.monitor_profile = monitor.into();
+            let st = app.session.active().unwrap();
+            let display = app.session.color.canvas_display(&st.doc).unwrap();
+            assert_eq!(!display.is_identity(), wide_gamut || monitor != "srgb");
+            let composite = photocraft_compose::render(&st.doc, bounds);
+            let expected = crate::canvas::display_image(Some(&display), &composite);
+            let ctx = gpu_ctx();
+            if warp {
+                begin_warp(&mut app, &ctx).unwrap();
+            } else {
+                begin(&mut app, &ctx).unwrap();
+            }
+            let xf = ViewXform {
+                rect: egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(80.0, 80.0)),
+                zoom: 1.0,
+                center: [4.0, 4.0],
+                flip: false,
+                rotation: 0.0,
+                aspect: 1.0,
+            };
+            let mut out = ctx.run_ui(egui::RawInput { max_texture_side: Some(16384), ..Default::default() }, |ui| {
+                draw_content(&app, &ui.ctx().layer_painter(egui::LayerId::background()), &xf);
+            });
+            let texture = out
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => Some(mesh.texture_id),
+                    _ => None,
+                })
+                .expect("transform draws a textured mesh");
+            let upload = out.textures_delta.set.get(&texture).and_then(|updates| updates.last()).expect("drawn texture was uploaded");
+            let egui::ImageData::Color(image) = &upload.image;
+            let shown = image.pixels[0];
+            out.textures_delta.clear();
+            assert_eq!(shown, expected.pixels[0], "transform changed displayed color; wide_gamut={wide_gamut}, monitor={monitor}, warp={warp}");
+        }
+    }
+
+    #[test]
     fn preview_applies_the_linked_mask() {
         for linked in [true, false] {
             let app = masked_app(linked);
@@ -5391,6 +5601,150 @@ mod tests {
         let (img, _) = preview_image(&st.doc, id, Some(&lifted), b, 4096, false);
         assert_eq!(texel_alpha(&img, 2, 4), 0, "masked");
         assert_eq!(texel_alpha(&img, 10, 4), 255, "revealed");
+    }
+
+    #[test]
+    fn transform_selection_tint_is_not_document_color() {
+        let mut app = app_with_square(8, photocraft_geom::Rect::new(0, 0, 8, 8));
+        app.session.color.settings.monitor_profile = "display-p3".into();
+        app.session.execute("select.rect", json!({"x": 0, "y": 0, "width": 8, "height": 8})).unwrap();
+        let ctx = gpu_ctx();
+        begin_selection(&mut app, &ctx).unwrap();
+        let raw = app.transform_preview.as_ref().unwrap().texture.level_image(0).unwrap().0;
+        let xf = ViewXform {
+            rect: egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(80.0, 80.0)),
+            zoom: 1.0,
+            center: [4.0, 4.0],
+            flip: false,
+            rotation: 0.0,
+            aspect: 1.0,
+        };
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            draw_content(&app, &ui.ctx().layer_painter(egui::LayerId::background()), &xf);
+        });
+        let id = out
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Mesh(m) if m.texture_id != egui::TextureId::default() => Some(m.texture_id),
+                _ => None,
+            })
+            .unwrap();
+        let egui::ImageData::Color(shown) = &out.textures_delta.set.get(&id).unwrap().last().unwrap().image;
+        assert_eq!(shown.pixels, raw.pixels);
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn transform_covering_layer_uses_the_same_monitor_profile() {
+        let bounds = photocraft_geom::Rect::new(0, 0, 8, 8);
+        let mut app = app_with_square(8, bounds);
+        let lower = app.session.active().unwrap().active_layer.unwrap();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        let upper = app.session.active().unwrap().active_layer.unwrap();
+        app.session
+            .edit("original color samples", |doc, _| {
+                doc.layer_mut(lower).unwrap().surface_mut().unwrap().fill_rect(bounds, &[0.55, 0.35, 0.2, 1.0]);
+                doc.layer_mut(upper).unwrap().surface_mut().unwrap().fill_rect(bounds, &[0.2, 0.5, 0.7, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        app.session.color.settings.monitor_profile = "display-p3".into();
+        let doc = app.session.active().unwrap().doc.clone();
+        let display = app.session.color.canvas_display(&doc).unwrap();
+        let expected = [lower, upper].map(|id| {
+            let mut solo = (*doc).clone();
+            for layer in &mut solo.layers {
+                layer.visible = layer.id == id;
+            }
+            crate::canvas::display_image(Some(&display), &photocraft_compose::render(&solo, bounds)).pixels[0]
+        });
+        app.session.execute("layer.select", json!({"layer": lower.0})).unwrap();
+        let ctx = gpu_ctx();
+        begin(&mut app, &ctx).unwrap();
+        let xf = ViewXform {
+            rect: egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(80.0, 80.0)),
+            zoom: 1.0,
+            center: [4.0, 4.0],
+            flip: false,
+            rotation: 0.0,
+            aspect: 1.0,
+        };
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            draw_content(&app, &ui.ctx().layer_painter(egui::LayerId::background()), &xf);
+        });
+        let shown: Vec<_> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Mesh(m) if m.texture_id != egui::TextureId::default() => {
+                    let egui::ImageData::Color(image) = &out.textures_delta.set.get(&m.texture_id).unwrap().last().unwrap().image;
+                    Some(image.pixels[0])
+                }
+                _ => None,
+            })
+            .collect();
+        out.textures_delta.clear();
+        assert_eq!(shown, expected, "moving pixels and covering pixels use the same display conversion");
+    }
+
+    #[test]
+    #[ignore = "requires a GPU adapter; renders profile-managed transform evidence"]
+    fn transform_profile_visual_evidence() {
+        let _guard = photocraft_testkit::gpu_lock();
+        let destination = std::env::var("PHOTOCRAFT_TRANSFORM_EVIDENCE").unwrap_or_else(|_| "transform-profile-evidence".into());
+        std::fs::create_dir_all(&destination).unwrap();
+        for monitor in ["srgb", "display-p3"] {
+            let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 800.0)).with_max_steps(64).wgpu().build_eframe(move |cc| {
+                PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+                let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+                app.set_wgpu(cc.wgpu_render_state.as_ref().unwrap().clone());
+                app.run("file.new", json!({"width": 400, "height": 300, "background": "transparent"})).unwrap();
+                app.run("layer.new.layer", json!({})).unwrap();
+                app.session
+                    .edit("original color swatches", |doc, active| {
+                        let surface = doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap();
+                        for (x, color) in [(60, [0.55, 0.35, 0.2, 1.0]), (160, [0.2, 0.6, 0.35, 1.0]), (260, [0.3, 0.4, 0.7, 1.0])] {
+                            surface.fill_rect(photocraft_geom::Rect::new(x, 60, x + 80, 220), &color);
+                        }
+                        Ok(())
+                    })
+                    .unwrap();
+                app.session.color.settings.monitor_profile = monitor.into();
+                app.ui.extras.rulers = false;
+                app.sync_views();
+                app.ui.views[0].zoom = 1.0;
+                app.ui.views[0].center = [200.0, 150.0];
+                app.ui.views[0].fit_pending = false;
+                app
+            });
+            h.run_steps(8);
+            let app = h.state();
+            let view = &app.ui.views[0];
+            let xf = ViewXform { rect: app.last_canvas_rect, zoom: view.zoom, center: view.center, flip: false, rotation: 0.0, aspect: 1.0 };
+            let points = [100.0, 200.0, 300.0].map(|x| xf.to_screen(x, 100.0) * h.ctx.pixels_per_point());
+            let before = h.render().unwrap();
+            before.save(std::path::Path::new(&destination).join(format!("{monitor}-before.png"))).unwrap();
+            let ctx = h.ctx.clone();
+            begin(h.state_mut(), &ctx).unwrap();
+            h.run_steps(8);
+            assert!(h.state().ui.transform.is_some());
+            let during = h.render().unwrap();
+            during.save(std::path::Path::new(&destination).join(format!("{monitor}-during.png"))).unwrap();
+            commit(h.state_mut());
+            h.run_steps(8);
+            assert!(h.state().ui.transform.is_none());
+            let after = h.render().unwrap();
+            after.save(std::path::Path::new(&destination).join(format!("{monitor}-after.png"))).unwrap();
+            for point in points {
+                let (x, y) = (point.x as u32, point.y as u32);
+                let expected = before.get_pixel(x, y).0;
+                assert_ne!(expected[0], expected[1], "sample must hit a color swatch, not the checkerboard");
+                for actual in [during.get_pixel(x, y).0, after.get_pixel(x, y).0] {
+                    assert!(actual.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 2), "{monitor}: before={expected:?}, shown={actual:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -5577,5 +5931,31 @@ mod tests {
         let st = app.session.active().unwrap();
         assert!(matches!(&st.doc.layer(st.active_layer.unwrap()).unwrap().content, LayerContent::Text(t) if t.warp.is_none()));
         assert_eq!(past(&app), before + 2);
+    }
+
+    #[test]
+    fn anchor_grid_point_on_quad_and_carry_pivot() {
+        let quad = [[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]];
+        assert_eq!(point_on_quad(quad, 0), [0.0, 0.0]);
+        assert_eq!(point_on_quad(quad, 1), [50.0, 0.0]);
+        assert_eq!(point_on_quad(quad, 2), [100.0, 0.0]);
+        assert_eq!(point_on_quad(quad, 3), [0.0, 25.0]);
+        assert_eq!(point_on_quad(quad, 4), [50.0, 25.0]);
+        assert_eq!(point_on_quad(quad, 5), [100.0, 25.0]);
+        assert_eq!(point_on_quad(quad, 6), [0.0, 50.0]);
+        assert_eq!(point_on_quad(quad, 7), [50.0, 50.0]);
+        assert_eq!(point_on_quad(quad, 8), [100.0, 50.0]);
+
+        let quad_scaled = [[0.0, 0.0], [200.0, 0.0], [200.0, 100.0], [0.0, 100.0]];
+        let p_top_right = carry_pivot(quad, quad_scaled, [100.0, 0.0]);
+        assert_eq!(p_top_right, [200.0, 0.0]);
+        let p_center = carry_pivot(quad, quad_scaled, [50.0, 25.0]);
+        assert_eq!(p_center, [100.0, 50.0]);
+
+        for anchor in 0..9 {
+            assert_eq!(matching_anchor(quad, point_on_quad(quad, anchor)), Some(anchor));
+        }
+        assert_eq!(matching_anchor(quad, [12.3, 45.6]), None);
+        assert_eq!(matching_anchor(quad, [50.0, 30.0]), None);
     }
 }

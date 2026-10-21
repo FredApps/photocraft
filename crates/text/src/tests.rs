@@ -1728,10 +1728,17 @@ fn craft_fonts_cover_japanese_without_system_fonts() {
     let l = e.layout(&point(text, 24.0), 72.0);
     assert_eq!(l.glyphs.len(), text.chars().count());
     assert!(l.glyphs.iter().all(|g| g.id != 0), "no .notdef with craft-fonts");
-    // Sans (Inter) runs fall back to the Gothic UI family.
-    assert_eq!(craft_family_of(&l), vec![crate::craft_fonts::UI_JAPANESE_FAMILY]);
-    // Serif runs fall back to a Mincho face when the build has one (not the web build).
-    if crate::CRAFT_FONTS.iter().any(|f| f.is_mincho()) {
+    // Sans (Inter) runs fall back to the first CJK craft family in the UI locale's script order:
+    // the Gothic UI family when Japanese leads that order or the build has no other CJK craft font.
+    let cjk = |f: &crate::CraftFont| f.scripts.iter().any(|s| matches!(*s, "Jpan" | "Hans" | "Hant" | "Kore"));
+    let first = e.fonts.fallback_stack().find_map(|fam| crate::CRAFT_FONTS.iter().find(|f| f.family == fam && cjk(f))).map(|f| f.family);
+    if !crate::CRAFT_FONTS.iter().any(|f| cjk(f) && !f.is_japanese()) || crate::cjk::ui_script_order()[0] == crate::cjk::CjkScript::Japanese {
+        assert_eq!(first, Some(crate::craft_fonts::UI_JAPANESE_FAMILY));
+    }
+    assert_eq!(craft_family_of(&l), first.into_iter().collect::<Vec<_>>());
+    // Serif runs fall back to a Mincho face when the build has one (not the web build) and the
+    // Japanese craft fonts come first.
+    if first == Some(crate::craft_fonts::UI_JAPANESE_FAMILY) && crate::CRAFT_FONTS.iter().any(|f| f.is_mincho()) {
         let mut t = point(text, 24.0);
         t.font_family = "Times New Roman".into();
         let l = e.layout(&t, 72.0);
@@ -1742,6 +1749,23 @@ fn craft_fonts_cover_japanese_without_system_fonts() {
     // Latin keeps Inter.
     let l = e.layout(&point("Layer 1", 24.0), 72.0);
     assert!(craft_family_of(&l).is_empty());
+}
+
+/// Chinese, Arabic and Thai set in Inter fall back to the craft font for their script when the
+/// build has one (Noto Sans CJK SC, Noto Sans Arabic and Noto Sans Thai in newer craft-fonts).
+#[test]
+fn craft_fonts_cover_their_other_scripts_without_system_fonts() {
+    let mut e = TextEngine::new();
+    for (script, text) in [("Hans", "中文图层"), ("Arab", "مرحبا"), ("Thai", "ภาษาไทย")] {
+        if !crate::CRAFT_FONTS.iter().any(|f| f.scripts.contains(&script)) {
+            eprintln!("skipping {script}: built without a craft font for it (set CRAFT_FONTS_DIR to a craft-fonts checkout)");
+            continue;
+        }
+        let l = e.layout(&point(text, 24.0), 72.0);
+        assert!(!l.glyphs.is_empty() && l.glyphs.iter().all(|g| g.id != 0), "{script}: no .notdef with craft-fonts");
+        let fams = craft_family_of(&l);
+        assert!(fams.iter().any(|fam| crate::CRAFT_FONTS.iter().any(|f| f.family == *fam && f.scripts.contains(&script))), "{script}: drawn with {fams:?}");
+    }
 }
 
 #[test]
@@ -2178,6 +2202,30 @@ fn engine_data_antialias_numbers_match_photoshop() {
         let back = crate::psd::text_layer_from_tysh(&crate::psd::write_tysh(&tysh), 72.0).unwrap();
         assert_eq!(back.antialias, mode, "{n}");
     }
+}
+
+/// Anti-alias modes must change edge coverage (storytold/photocraft#5902).
+#[test]
+fn antialias_modes_change_edge_fringe() {
+    use photocraft_doc::text::AntiAlias;
+
+    let fringe_mass = |mode: AntiAlias| {
+        let mut e = TextEngine::new();
+        let layer = TextLayer { antialias: mode, ..point("O", 48.0) };
+        let (_, r) = e.render(&layer, 72.0, PixelFormat::RGBA8);
+        let n = r.surface.channels();
+        r.surface.read_region(r.rect).chunks_exact(n).map(|p| f64::from(p[n - 1])).filter(|&a| a > 0.02 && a < 0.98).sum::<f64>()
+    };
+
+    let none = fringe_mass(AntiAlias::None);
+    let sharp = fringe_mass(AntiAlias::Sharp);
+    let smooth = fringe_mass(AntiAlias::Smooth);
+    let strong = fringe_mass(AntiAlias::Strong);
+
+    assert_eq!(none, 0.0, "aliased-off edges are hard");
+    assert!(strong > smooth + 1.0, "strong smooths more than smooth: {strong} vs {smooth}");
+    assert!(smooth > sharp + 0.5, "sharp thins the fringe vs smooth: {sharp} vs {smooth}");
+    assert!(sharp > 0.0);
 }
 
 /// Type on a path (#218): along a vertical line the type runs top to bottom with its glyphs

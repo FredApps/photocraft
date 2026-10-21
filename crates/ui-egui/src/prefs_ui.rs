@@ -25,6 +25,8 @@ use crate::theme::{ThemeKind, Tokens};
 /// Shell runtime state for preferences, autosave and snapping (not serialised).
 #[derive(Default)]
 pub struct Runtime {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) recent_files: crate::recent_files::Runtime,
     loaded: bool,
     /// Preferences revision last written to storage (or loaded from it).
     saved_rev: u64,
@@ -236,9 +238,13 @@ pub fn load(app: &mut PhotocraftApp) {
     }
     app.prefs_rt.loaded = true;
     let mut invalid = Vec::new();
+    let mut stored = None;
     if let Some(text) = app.services.load_prefs.as_mut().and_then(|f| f()) {
         match app.session.load_prefs_json(&text) {
-            Ok(found) => invalid = found,
+            Ok(found) => {
+                invalid = found;
+                stored = serde_json::from_str::<Value>(&text).ok();
+            }
             Err(e) => {
                 let template = "Preferences were reset: {error}";
                 app.ui.status = crate::i18n::fmt(tl!(template), &[("error", &e)]);
@@ -253,9 +259,24 @@ pub fn load(app: &mut PhotocraftApp) {
     crate::view_cmds::restore(app);
     app.sync_recent();
     app.prefs_rt.saved_rev = app.session.prefs.rev();
-    app.prefs_rt.saved_value = Some(app.session.prefs_value());
+    let loaded = app.session.prefs_value();
+    app.prefs_rt.saved_value = Some(match stored {
+        Some(stored) => stored_base(&loaded, &stored),
+        None => loaded,
+    });
     if !invalid.is_empty() {
         repair_invalid(app, &invalid);
+    }
+}
+
+/// The save base after loading `stored`: what the file holds, limited to the keys `loaded` (this
+/// version's preferences) has. Whatever loading changed there (a migrated default, the file's
+/// version) then differs from the base, so the next save writes it rather than keeping the old
+/// value under a newer version (#5647). Keys only the file has stay out, so the merge keeps them.
+fn stored_base(loaded: &Value, stored: &Value) -> Value {
+    match (loaded, stored) {
+        (Value::Object(l), Value::Object(s)) => Value::Object(s.iter().filter_map(|(k, sv)| l.get(k).map(|lv| (k.clone(), stored_base(lv, sv)))).collect()),
+        _ => stored.clone(),
     }
 }
 
@@ -487,6 +508,8 @@ pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
     sync_tooltips(app, ctx);
     sync_animations(app, ctx);
     app.sync_recent();
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::recent_files::tick(app, ctx);
     if let Some(wait) = persist(app, ctx.input(|i| i.time)) {
         ctx.request_repaint_after(std::time::Duration::try_from_secs_f64(wait).unwrap_or_default());
     }
@@ -894,6 +917,75 @@ pub fn shortcut_text(key: egui::Key, m: egui::Modifiers) -> Option<String> {
 pub fn is_modifier_key(key: egui::Key) -> bool {
     use egui::Key::*;
     matches!(key, ShiftLeft | ShiftRight | ControlLeft | ControlRight | AltLeft | AltRight | SuperLeft | SuperRight)
+}
+
+/// Modifier bits a physical modifier-key press contributes when egui leaves them out of
+/// [`Modifiers`] on the key event (#7190).
+fn modifier_key_modifiers(key: egui::Key) -> egui::Modifiers {
+    use egui::Key::*;
+    match key {
+        ShiftLeft | ShiftRight => egui::Modifiers::SHIFT,
+        ControlLeft | ControlRight => egui::Modifiers::CTRL,
+        AltLeft | AltRight => egui::Modifiers::ALT,
+        SuperLeft | SuperRight => egui::Modifiers::COMMAND,
+        _ => egui::Modifiers::NONE,
+    }
+}
+
+fn capture_mods_field(v: Option<&Value>) -> egui::Modifiers {
+    let o = v.and_then(Value::as_object);
+    egui::Modifiers {
+        shift: o.and_then(|o| o.get("shift")).and_then(Value::as_bool).unwrap_or(false),
+        ctrl: o.and_then(|o| o.get("ctrl")).and_then(Value::as_bool).unwrap_or(false),
+        alt: o.and_then(|o| o.get("alt")).and_then(Value::as_bool).unwrap_or(false),
+        command: o.and_then(|o| o.get("command")).and_then(Value::as_bool).unwrap_or(false),
+        mac_cmd: o.and_then(|o| o.get("mac_cmd")).and_then(Value::as_bool).unwrap_or(false),
+    }
+}
+
+fn capture_mods_json(m: egui::Modifiers) -> Value {
+    json!({
+        "shift": m.shift,
+        "ctrl": m.ctrl,
+        "alt": m.alt,
+        "command": m.command,
+        "mac_cmd": m.mac_cmd,
+    })
+}
+
+/// While capture is active: refresh held modifiers (including across frames via dialog
+/// `captureMods`) and, if a non-modifier key was pressed this frame, return it with the
+/// modifiers held with it.
+///
+/// #7190 root cause: capture used to [`find_map`](Iterator::find_map) the first non-modifier
+/// [`Event::Key`] and pass only that event's `modifiers` into [`shortcut_text`]. On Linux and
+/// Windows, winit/egui often reports `ShiftLeft`/`ShiftRight` (and sometimes the letter key) with
+/// [`Modifiers::NONE`], and the modifier down and the letter down often land in separate UI
+/// frames. Shift was then missing from the stored binding (`F6` instead of `Shift+F6`). Like #292
+/// for `ControlLeft`, we walk the frame's events, OR in [`modifier_key_modifiers`] for modifier
+/// keys, and persist accumulated modifiers in `captureMods` until capture ends.
+pub(crate) fn capture_key_press(capture_mods: egui::Modifiers, i: &egui::InputState) -> (egui::Modifiers, Option<(egui::Key, egui::Modifiers)>) {
+    let mut mods = capture_mods | i.modifiers;
+    let mut pressed = None;
+    for e in &i.events {
+        if let egui::Event::ModifiersChanged(m) = e {
+            mods = *m;
+        }
+        if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
+            if is_modifier_key(*key) {
+                mods = *modifiers | modifier_key_modifiers(*key);
+                continue;
+            }
+            pressed = Some((*key, mods | *modifiers));
+            break;
+        }
+        if let egui::Event::Key { key, pressed: false, modifiers, .. } = e
+            && is_modifier_key(*key)
+        {
+            mods = *modifiers;
+        }
+    }
+    (mods, pressed)
 }
 
 // ------------------------------------------------------------------ menu routing
@@ -1875,14 +1967,11 @@ fn shortcuts_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String
         }
         p.alternates(id, main)
     };
+    let mut capture_mods = capture_mods_field(f.get("captureMods"));
     // Key capture for the selected command: its main key, or (Add Shortcut) one more key.
     if capture && tab == 0 && !selected.is_empty() {
-        let pressed = ui.input(|i| {
-            i.events.iter().find_map(|e| match e {
-                egui::Event::Key { key, pressed: true, modifiers, .. } if !is_modifier_key(*key) => Some((*key, *modifiers)),
-                _ => None,
-            })
-        });
+        let (next_mods, pressed) = ui.input(|i| capture_key_press(capture_mods, i));
+        capture_mods = next_mods;
         if let Some((key, m)) = pressed {
             ui.input_mut(|i| {
                 i.consume_key(m, key);
@@ -2162,6 +2251,11 @@ fn shortcuts_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String
     f.insert("colors".into(), json!(colors));
     f.insert("selected".into(), json!(selected));
     f.insert("capture".into(), json!(capture));
+    if capture {
+        f.insert("captureMods".into(), capture_mods_json(capture_mods));
+    } else {
+        f.remove("captureMods");
+    }
     f.insert("message".into(), json!(message));
     f.insert("messageWarning".into(), json!(message_warning));
 }
@@ -3196,6 +3290,33 @@ mod tests {
     }
 
     #[test]
+    fn an_old_files_shift_tool_switch_migration_is_saved_with_the_new_version() {
+        // #5647: a file before version 2 loads with Use Shift Key for Tool Switch on. Saving
+        // writes that and the current version, so turning it off later isn't taken for the old
+        // default on the next launch.
+        let ctx = egui::Context::default();
+        for saved in [
+            json!({"version": 1, "tools": {"useShiftKeyForToolSwitch": false}, "futureSection": {"kept": true}}),
+            json!({"tools": {"useShiftKeyForToolSwitch": false}, "futureSection": {"kept": true}}),
+        ] {
+            let (mut app, store) = app_with_saved(Some(saved.to_string()));
+            tick(&mut app, &ctx);
+            assert!(app.session.prefs().tools.use_shift_key_for_tool_switch, "{saved}");
+            app.run("prefs.set", json!({"values": {"performance.historyStates": 12}})).unwrap();
+            tick(&mut app, &ctx);
+            let v = stored(&store);
+            assert_eq!(v["version"], json!(prefs::PREFS_VERSION), "{saved}");
+            assert_eq!(v["tools"]["useShiftKeyForToolSwitch"], true, "{saved}");
+            assert_eq!(v["futureSection"]["kept"], true, "keys this version doesn't know survive");
+            app.run("prefs.set", json!({"values": {"tools.useShiftKeyForToolSwitch": false}})).unwrap();
+            tick(&mut app, &ctx);
+            let (mut next, _) = app_with_saved(store.lock().unwrap().clone());
+            tick(&mut next, &ctx);
+            assert!(!next.session.prefs().tools.use_shift_key_for_tool_switch, "{saved}: turned off, it stays off");
+        }
+    }
+
+    #[test]
     fn merge_keeps_changes_made_elsewhere() {
         let base = json!({"a": {"x": 1, "y": 1}, "list": [1], "gone": 1, "kept": 1});
         // Here: a.x changed, `gone` removed, `new` added.
@@ -3371,35 +3492,57 @@ mod tests {
 
     #[test]
     fn recent_files_survive_a_restart_and_honour_the_count() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let dir = std::env::temp_dir().join(format!(
+            "photocraft-recent-prefs-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        #[cfg(not(target_arch = "wasm32"))]
+        std::fs::create_dir(&dir).unwrap();
+        #[cfg(not(target_arch = "wasm32"))]
+        let path = |name: &str| dir.join(name).to_string_lossy().to_string();
+        #[cfg(target_arch = "wasm32")]
+        let path = |name: &str| format!("/work/{name}");
+        #[cfg(not(target_arch = "wasm32"))]
+        for name in ["a.psd", "b.png", "c.tif", "d.tif", "x.psd"] {
+            std::fs::write(path(name), []).unwrap();
+        }
         let (mut app, store) = app_with_store();
         let ctx = egui::Context::default();
         tick(&mut app, &ctx);
-        app.push_recent("/work/a.psd");
-        app.push_recent("/work/b.png");
+        app.push_recent(&path("a.psd"));
+        app.push_recent(&path("b.png"));
         tick(&mut app, &ctx);
         let saved = store.lock().unwrap().clone().unwrap();
         // A new app instance (a restart) gets the list back, newest first.
         let (mut app2, _) = app_with_saved(Some(saved));
         tick(&mut app2, &ctx);
-        assert_eq!(app2.ui.recent_files, vec!["/work/b.png".to_string(), "/work/a.psd".to_string()]);
+        assert_eq!(app2.ui.recent_files, vec![path("b.png"), path("a.psd")]);
         // Lowering "Recent File List Contains" shortens the menu at once; 0 turns it off.
         app2.run("prefs.set", json!({"values": {"fileHandling.recentFileCount": 1}})).unwrap();
         tick(&mut app2, &ctx);
-        assert_eq!(app2.ui.recent_files, vec!["/work/b.png".to_string()]);
-        app2.push_recent("/work/c.tif");
-        assert_eq!(app2.session.prefs().file_handling.recent_files, vec!["/work/c.tif".to_string()]);
+        assert_eq!(app2.ui.recent_files, vec![path("b.png")]);
+        app2.push_recent(&path("c.tif"));
+        assert_eq!(app2.session.prefs().file_handling.recent_files, vec![path("c.tif")]);
         app2.run("prefs.set", json!({"values": {"fileHandling.recentFileCount": 0}})).unwrap();
         tick(&mut app2, &ctx);
-        app2.push_recent("/work/d.tif");
+        app2.push_recent(&path("d.tif"));
         assert!(app2.ui.recent_files.is_empty());
         // Clearing the list in the Preferences dialog (or by an agent) reaches the menu.
-        app2.run("prefs.set", json!({"values": {"fileHandling.recentFileCount": 20, "fileHandling.recentFiles": ["/x.psd"]}})).unwrap();
+        app2.run("prefs.set", json!({"values": {"fileHandling.recentFileCount": 20, "fileHandling.recentFiles": [path("x.psd")]}})).unwrap();
         tick(&mut app2, &ctx);
-        assert_eq!(app2.ui.recent_files, vec!["/x.psd".to_string()]);
+        assert_eq!(app2.ui.recent_files, vec![path("x.psd")]);
         // A hostile count from a hand-edited preferences file is capped, not trusted.
         app2.run("prefs.set", json!({"values": {"fileHandling.recentFileCount": 100}})).unwrap();
         app2.session.prefs.edit(|p| p.file_handling.recent_file_count = u32::MAX);
         assert_eq!(app2.recent_cap(), 100);
+        #[cfg(not(target_arch = "wasm32"))]
+        for name in ["a.psd", "b.png", "c.tif", "d.tif", "x.psd"] {
+            std::fs::remove_file(path(name)).unwrap();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]

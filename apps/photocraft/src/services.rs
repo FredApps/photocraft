@@ -20,9 +20,9 @@ mod recovery_tests;
 /// Photoshop brushes (.abr), gradients (.grd), swatches (.aco, .ase) and keyboard shortcut sets
 /// (.kys), which go to the preset libraries and Edit › Keyboard Shortcuts.
 const OPEN_EXTS: &[&str] = &[
-    "pcraft", "pdn", "ora", "kra", "krz", "psd", "psb", "psdt", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "ico", "qoi", "exr", "hdr",
-    "pbm", "pgm", "ppm", "pam", "pfm", "pcx", "dds", "xpm", "fits", "fit", "fts", "dpx", "cin", "heic", "heif", "hif", "dng", "cr2", "cr3", "nef", "nrw",
-    "arw", "pef", "orf", "rw2", "raf", "abr", "grd", "svg", "svgz", "aco", "ase", "kys", "af", "afdesign", "afphoto", "afpub",
+    "pcraft", "pdn", "ora", "xcf", "xcfgz", "gz", "kra", "krz", "psd", "psb", "psdt", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "ico",
+    "qoi", "exr", "hdr", "pbm", "pgm", "ppm", "pam", "pfm", "pcx", "dds", "xpm", "fits", "fit", "fts", "dpx", "cin", "heic", "heif", "hif", "dng", "cr2",
+    "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf", "abr", "grd", "svg", "svgz", "aco", "ase", "kys", "af", "afdesign", "afphoto", "afpub",
 ];
 const SVG_EXTS: &[&str] = &["svg", "svgz"];
 
@@ -45,6 +45,7 @@ const OPEN_FILTERS: &[(&str, &[&str])] = &[
     ("Photoshop", &["psd", "psb", "psdt"]),
     ("Affinity", &["af", "afdesign", "afphoto", "afpub"]),
     ("Krita", &["kra", "krz"]),
+    ("GIMP", &["xcf", "xcfgz", "gz"]),
     ("OpenRaster", &["ora"]),
     ("Paint.NET", &["pdn"]),
     ("SVG", SVG_EXTS),
@@ -89,6 +90,7 @@ const SAVE_FILTERS: &[(&str, &[&str])] = &[
     ("OpenRaster", &["ora"]),
     ("PNG", &["png"]),
     ("JPEG", &["jpg"]),
+    ("JPEG XL", &["jxl"]),
     ("WebP", &["webp"]),
     ("TIFF", &["tif"]),
     ("Targa", &["tga"]),
@@ -386,12 +388,13 @@ fn with_store<R>(store: &SharedRecovery, f: impl FnOnce(&mut RecoveryStore) -> R
 fn recovery_services(dir: Option<PathBuf>) -> Services {
     let recover_dir = dir.clone();
     let store: SharedRecovery = Rc::new(RefCell::new(dir.map(RecoveryStore::new)));
-    let (s1, s2, s4) = (store.clone(), store.clone(), store.clone());
+    let (s1, s2, s4, s5) = (store.clone(), store.clone(), store.clone(), store.clone());
     Services {
         autosave: Some(Box::new(move |doc: &Arc<Document>, revision: u64, path: Option<&str>| {
             with_store(&s1, |s| s.autosave_checked(doc, revision, path.map(str::to_string)))?
         })),
         autosave_results: Some(Box::new(move || with_store(&s4, |s| s.take_completed()).unwrap_or_default())),
+        flush_autosaves: Some(Box::new(move || with_store(&s5, RecoveryStore::flush).unwrap_or_default())),
         discard_autosave: Some(Box::new(move |id: u64| {
             let _ = with_store(&s2, |s| s.discard(id));
         })),

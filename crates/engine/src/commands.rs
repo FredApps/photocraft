@@ -528,7 +528,7 @@ fn build() -> Vec<CommandSpec> {
             "New…",
             ["File"],
             Some("Cmd+N"),
-            r##"{"width":1..300000=1920,"height":1..300000=1080 (pixel counts are rounded),"mode":"rgb|gray|grayscale|cmyk|lab"="rgb","depth":8|16|32=8,"background":"white|black|backgroundColor|transparent|#rrggbb"="white","backgroundColor":[r,g,b]? (0..1; defaults to toolbox colour),"resolution":1..30000=72 (ppi),"name":str}"##,
+            r##"{"width":1..300000=1920,"height":1..300000=1080 (pixel counts are rounded),"mode":"rgb|gray|grayscale|cmyk|lab"="rgb","depth":8|16|32=8,"background":"white|black|backgroundColor|transparent|#rrggbb"="white","backgroundColor":[r,g,b]? (0..1; defaults to toolbox colour),"resolution":1..30000=72 (ppi),"name":str,"profile":"working"|built-in id|path to an .icc file="working" (the colour profile it is tagged with; it must suit the mode)}"##,
             always,
             |s, p| {
                 use crate::document_preset_cmds::{MAX_DIMENSION, MAX_RESOLUTION, background_color, color_mode, sample_type};
@@ -564,6 +564,18 @@ fn build() -> Vec<CommandSpec> {
                     }
                 };
                 doc.resolution_dpi = res;
+                // Photoshop's New Document › Color Profile: tag the document with another profile
+                // than the working space (#321). Checked before the document opens.
+                if let Some(spec) = p.get("profile").and_then(Value::as_str).filter(|spec| !matches!(*spec, "working" | "none")) {
+                    let prof = s.color.resolve(spec, Some(&doc), None)?;
+                    if prof.color_space != crate::color_cmds::mode_space(doc.mode) {
+                        return Err(EngineError::BadParams {
+                            cmd: "file.new".into(),
+                            msg: format!("profile `{}` is {:?}; the document is {:?}", prof.description, prof.color_space, doc.mode),
+                        });
+                    }
+                    doc.icc_profile = Some(prof.to_bytes());
+                }
                 let i = s.add_document(doc, None);
                 Ok(json!({ "document": i }))
             }
@@ -616,6 +628,10 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         cmd!("select.deselect", "Deselect", ["Select"], Some("Cmd+D"), "{}", has_selection, |s, _| {
+            // Nothing selected: nothing to do and no history step, as in Photoshop (#6744).
+            if s.active().is_none_or(|d| d.doc.selection.is_none()) {
+                return Ok(Value::Null);
+            }
             s.edit("Deselect", |doc, _| {
                 doc.selection = None;
                 Ok(())
@@ -1135,7 +1151,10 @@ fn build() -> Vec<CommandSpec> {
         cmd!("image.imageRotation.90ccw", "90° Counter Clockwise", ["Image", "Image Rotation"], None, "{}", has_doc, |s, _| {
             turn(s, "Rotate Canvas", crate::canvas_geom::Turn::Ccw90)
         }),
-        cmd!("image.adjustments.desaturate", "Desaturate", ["Image", "Adjustments"], Some("Cmd+Shift+U"), "{}", has_pixel_layer, |s, _| {
+        cmd!("image.adjustments.desaturate", "Desaturate", ["Image", "Adjustments"], Some("Cmd+Shift+U"), "{}", crate::adjust_cmds::has_adjustable, |s, p| {
+            if crate::adjust_cmds::adjust_as_smart_filter(s, "desaturate", "Desaturate", p)? {
+                return Ok(Value::Null);
+            }
             destructive_adjust(
                 s,
                 "Desaturate",
@@ -1146,7 +1165,7 @@ fn build() -> Vec<CommandSpec> {
                     colorize: false,
                     ranges: photocraft_doc::adjust::HueRange::defaults(),
                 },
-                &Value::Null,
+                p,
             )
         }),
         // Paint
@@ -1438,6 +1457,8 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::filters::specs());
     v.extend(crate::filters_ext::specs());
     v.extend(crate::color_to_alpha_cmds::specs());
+    v.extend(crate::frequency_separation_cmds::specs());
+    v.extend(crate::cryptomatte_cmds::specs());
     v.extend(crate::gallery_cmds::specs());
     v.extend(crate::gradient_fill_cmds::specs());
     v.extend(crate::solid_fill_cmds::specs());

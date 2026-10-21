@@ -28,7 +28,7 @@ XL are missing (gap G10). Remaining: 300–500 h including PSD fidelity.
 | JPEG | R/W | yes | yes | 8-bit Gray/RGB/CMYK, ICC/EXIF/XMP; Save keeps the opened file's quality (estimated from its quantisation tables, #2399); no JPEG Options dialog (quality 0–12, baseline/progressive) (FILE-215-19) |
 | PNG | R/W | yes | yes | 8/16-bit, ICC/text; APNG first frame only; alpha channels on open (#2225); palette PNGs open in Indexed Color mode with their transparent entry (#4804); Save keeps a stereo PNG's `sTER` pairing (#6063) |
 | GIF | R/W | yes | yes | File › Open keeps the first frame; New Video Layer from File and Video Frames to Layers take every frame, with the timeline rate from the delays (#572). Per-frame delays and keeping the frames in `.pcraft` are not done |
-| BMP | R/W | yes | yes | 8-bit; palette BMPs open in Indexed Color mode |
+| BMP | R/W | yes | yes | 8-bit; palette BMPs open in Indexed Color mode and Indexed Color documents save as palette BMPs (no transparency) |
 | WebP | R/W | yes | yes | Lossless and our own lossy VP8 encoder; ICC/EXIF/XMP; Save keeps an opened file lossy (at its quality) or lossless (#2399) |
 | AVIF | R/W | no (#463) | optional feature, off by default | |
 | JPEG XL | R/W | inside DNG only | no | |
@@ -52,7 +52,7 @@ XL are missing (gap G10). Remaining: 300–500 h including PSD fidelity.
 | MPO / JPS (stereo) | R/W | no | no | |
 | PICT | R | no | no | Legacy |
 | Scitex CT | R/W | no | no | Legacy |
-| Photoshop Raw (.raw) | R/W | no | no | |
+| Photoshop Raw (.raw) | R/W | partial | no | Retained-header 8/16-bit gray/RGB/RGBA opens; headerless streams and write still need File › Open / export options |
 | Camera raw (via Camera Raw 18.7) | R | partial | – | See below |
 
 ## Camera raw
@@ -153,6 +153,7 @@ remaining gaps in #1606 stay tracked with per-sample corpus ceilings.
 | 2026-10-15 | minor | PSD smart filters: Offset (`Ofst`: `Hrzn`/`Vrtc` long, `Fl  ` `FlMd` Wrap/Background/Repeat) and Custom (`Cstm`: `Scl `, `Ofst` long, 25-long `Mtrx`) map both ways in `filterFX`, matching descriptors measured in Photoshop (FILE-215-2, #6304) |
 | 2026-10-15 | minor | PSD smart filters: Mezzotint (`Mztn`, `MztT` enum, all 10 types) and Color Halftone (`ClrH`, `Rds `/`Ang1`–`Ang4` longs) open as editable filters and save in Photoshop's shape, measured in Photoshop (FILE-215-2); Mezzotint's PhotoCraft-only seed is not saved |
 | 2026-10-15 | minor | PNG: a stereo PNG's `sTER` pairing (PNG Extensions 1.4.0 §3.6) is read on open and written back on save, so the file still says it is a stereo pair (#6063) |
+| 2026-10-15 | minor | Indexed Color documents save as 8-bit palette BMPs with their colour table instead of 24-bit RGB; a palette BMP opens with its declared number of colours, not 256 |
 | 2026-10-15 | minor | PSD guides: image resource 1092 (guides v2) gives guides their own colours on import; 1092 and 1097 (guide GUIDs) are written back only while they still describe the document's guides, so an edit no longer leaves Photoshop a stale second guide list (#5966) |
 | 2026-10-14 | minor | PSD smart filter masks: Photoshop stores a smart object's filtered pixels without its filter mask and mixes the unfiltered ones (`FEid`) back in; import now mixes them and export writes them that way, so sf-filter-mask-hard, -gradient and sf-stack-blend-and-mask pass; Photoshop-oracle floor 185 → 188 of 258 |
 | 2026-10-13 | minor | Lossy DNG (compression 34892) decodes: 8-bit baseline JPEG tiles and strips, CFA and LinearRaw, partial edge tiles; the stored values take the normal levels and LinearizationTable (FILE-215-11, lossy DNG part) |

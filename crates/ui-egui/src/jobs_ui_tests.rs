@@ -307,9 +307,22 @@ fn psd_bytes() -> Vec<u8> {
 
 #[test]
 fn files_open_in_the_background_with_a_tab_and_cancel_closes_it() {
-    let mut h = app_harness();
+    let dir = std::env::temp_dir().join(format!(
+        "photocraft-jobs-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("bg.psd");
+    let path2 = dir.join("bg2.psd");
     let bytes = psd_bytes();
-    h.state_mut().open_file("/tmp/photocraft-test/bg.psd", &bytes).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    std::fs::write(&path2, &bytes).unwrap();
+    let path_s = path.to_str().unwrap().to_owned();
+    let path2_s = path2.to_str().unwrap().to_owned();
+
+    let mut h = app_harness();
+    h.state_mut().open_file(&path_s, &bytes).unwrap();
     // The tab is there before the document.
     assert_eq!(h.state().jobs.opens.len(), 1);
     assert_eq!(h.state().session.documents().len(), 1);
@@ -320,17 +333,20 @@ fn files_open_in_the_background_with_a_tab_and_cancel_closes_it() {
     h.run_steps(2);
     let st = h.state().session.active().unwrap();
     assert_eq!(st.doc.size.width, 64);
-    assert_eq!(st.path.as_deref(), Some("/tmp/photocraft-test/bg.psd"));
-    assert_eq!(h.state().ui.recent_files.first().map(String::as_str), Some("/tmp/photocraft-test/bg.psd"));
+    assert_eq!(st.path.as_deref(), Some(path_s.as_str()));
+    assert_eq!(h.state().ui.recent_files.first().map(String::as_str), Some(path_s.as_str()));
 
     // Cancel: the half-open tab closes, no document is added.
-    h.state_mut().open_file("/tmp/photocraft-test/bg2.psd", &bytes).unwrap();
+    h.state_mut().open_file(&path2_s, &bytes).unwrap();
     let job = h.state().jobs.opens[0].job;
     crate::jobs_ui::cancel(h.state_mut(), job);
     h.run_steps(3);
     assert!(h.state().jobs.opens.is_empty());
     assert_eq!(h.state().session.documents().len(), 2);
     assert!(h.state().jobs.focus.is_none());
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&path2);
+    let _ = std::fs::remove_dir(&dir);
 }
 
 /// #2423: a long file name used to wrap the card's title and push the percentage and Cancel
@@ -361,8 +377,19 @@ fn the_opening_card_keeps_a_long_name_and_cancel_inside() {
 
 #[test]
 fn templates_open_untitled_in_the_background() {
+    let dir = std::env::temp_dir().join(format!(
+        "photocraft-jobs-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("card.psdt");
+    let bytes = psd_bytes();
+    std::fs::write(&path, &bytes).unwrap();
+    let path_s = path.to_str().unwrap().to_owned();
+
     let mut h = app_harness();
-    h.state_mut().open_file("/tmp/photocraft-test/card.psdt", &psd_bytes()).unwrap();
+    h.state_mut().open_file(&path_s, &bytes).unwrap();
     assert_eq!(h.state().jobs.opens[0].name, "Untitled-1");
     let t = Instant::now();
     while !h.state().jobs.opens.is_empty() && t.elapsed() < Duration::from_secs(30) {
@@ -371,7 +398,9 @@ fn templates_open_untitled_in_the_background() {
     h.run_steps(2);
     let st = h.state().session.active().unwrap();
     assert_eq!((st.doc.name.as_str(), st.path.as_deref()), ("Untitled-1", None));
-    assert_eq!(h.state().ui.recent_files.first().map(String::as_str), Some("/tmp/photocraft-test/card.psdt"));
+    assert_eq!(h.state().ui.recent_files.first().map(String::as_str), Some(path_s.as_str()));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir(&dir);
 }
 
 /// Gates for a fake save: it encodes until `encode` opens and writes until `write` opens
@@ -866,6 +895,60 @@ fn esc_cancels_a_background_free_transform_commit() {
     assert_eq!((layer_count(app), st.history.past_len()), (layers, steps));
     assert!(!st.history.can_redo());
     assert_eq!(st.doc.layers.len(), before.layers.len());
+}
+
+/// Warp the active layer into an arc, then ↩.
+fn warp_and_commit(h: &mut Harness<'static, PhotocraftApp>) {
+    let ctx = h.ctx.clone();
+    let app = h.state_mut();
+    crate::transform_tool::begin(app, &ctx).unwrap();
+    let t = app.ui.transform.as_mut().unwrap();
+    t.warp = Some(photocraft_geom::warp::Warp::preset(photocraft_geom::warp::WarpStyle::Arc, 40.0, t.rect));
+    crate::transform_tool::commit(app);
+}
+
+#[test]
+fn a_warp_commit_runs_in_the_background_and_keeps_its_preview() {
+    let mut h = app_harness();
+    let steps = h.state().session.active().unwrap().history.past_len();
+    warp_and_commit(&mut h);
+    let app = h.state();
+    let job = crate::transform_tool::committing(app).expect("the commit runs as a job");
+    assert!(app.session.job(job).is_some_and(|j| j.label == "Warp"));
+    assert!(app.ui.transform.is_some() && app.transform_preview.is_some());
+    assert_eq!(h.state_mut().run("edit.undo", json!({})).err().as_deref(), Some("Warp is still being applied"));
+    let t = Instant::now();
+    while h.state().session.has_jobs() && t.elapsed() < Duration::from_secs(10) {
+        h.step();
+    }
+    h.run_steps(2);
+    let app = h.state();
+    assert!(app.ui.transform.is_none() && app.transform_preview.is_none(), "the session ends with the job");
+    let st = app.session.active().unwrap();
+    assert_eq!(st.history.past_len(), steps + 1);
+    assert_eq!(st.history.undo_label(), Some("Warp"));
+    // The arc bulges the layer past its old edges.
+    let b = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().content_bounds();
+    assert_ne!(b, photocraft_geom::Rect::new(0, 0, 320, 240), "the layer was warped");
+}
+
+#[test]
+fn esc_cancels_a_background_warp_commit() {
+    let mut h = app_harness();
+    let steps = h.state().session.active().unwrap().history.past_len();
+    let before = h.state().session.active().unwrap().doc.clone();
+    warp_and_commit(&mut h);
+    let job = crate::transform_tool::committing(h.state()).expect("the commit runs as a job");
+    crate::transform_tool::cancel(h.state_mut());
+    h.run_steps(3);
+    let app = h.state();
+    assert!(app.session.job(job).is_none());
+    assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
+    let st = app.session.active().unwrap();
+    assert_eq!(st.history.past_len(), steps);
+    let id = st.active_layer.unwrap();
+    let px = |d: &photocraft_doc::Document| d.layer(id).unwrap().surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 320, 240));
+    assert_eq!(px(&st.doc), px(&before), "the layer is untouched");
 }
 
 /// #4559: a background open (the desktop app's) also warns, when its document arrives, about

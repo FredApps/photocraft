@@ -795,6 +795,22 @@
 	Split Warp Vertically	Bagi Warp Vertikal
 	Statistics…	Statistik…
 	Refine Strokes	Goresan penyempurnaan
+# Counted status and panel messages
+@plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	{n} swatch diekspor ke {file}
+@plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	{n} swatch diimpor dari {file}
+@plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	{n} kuas diimpor dari {group}
+@plural	Played {n} step|Played {n} steps	{n} langkah diputar
+@plural	{n} step|{n} steps	{n} langkah
+@plural	Saved for Web: {n} file|Saved for Web: {n} files	Disimpan untuk Web: {n} file
+@plural	Updated {n} linked smart object changed on disk|Updated {n} linked smart objects changed on disk	{n} Smart Object tertaut yang berubah di disk telah diperbarui
+@plural	{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.|{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.	{n} layer yang direkam oleh layer comp ini telah dihapus. Perbarui layer comp, atau hapus peringatannya.
+@plural	{n} plane|{n} planes	{n} bidang
+@plural	{n} preset|{n} presets	{n} preset
+@plural	{n} sample point removed|{n} sample points removed	{n} titik sampel dihapus
+@plural	{n} slice|{n} slices	{n} slice
+@plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (+{n} peringatan preset kuas lainnya)
+@plural	{what} with {n} warning|{what} with {n} warnings	{what} dengan {n} peringatan
+
 @plural	{n} item|{n} items	{n} item
 	Auto	Otomatis
 	(print to the printer)	(cetak ke printer)
@@ -1074,7 +1090,7 @@
 	Done	Selesai
 	Dots	Titik
 	Drag a rectangle around the object	Seret persegi panjang di sekeliling objek
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Seret pada gambar untuk menambah batasan; Shift untuk horizontal/vertikal; klik kanan untuk menghapus.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Seret pada gambar untuk menambah batasan; Shift untuk horizontal/vertikal; klik kanan pada batasan untuk mengubah atau menghapusnya.
 	Drag to move the active shape's path or the Work Path	Seret untuk memindah path bentuk aktif atau Work Path
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Klik: pilih titik jangkar · Seret: pindahkan titik, gagang, atau segmen · {shift}-klik: tambah · {alt}-klik: seluruh subpath
 	Draw with the Pen tool (P) or make a work path from a selection.	Gambar dengan alat Pen (P) atau buat work path dari seleksi.
@@ -2039,6 +2055,8 @@
 	Collapse	Ciutkan
 	Collapse All Groups	Ciutkan Semua Grup
 	Collapse Panel Group	Ciutkan Grup Panel
+	Collapse to Icons	Ciutkan ke Ikon
+	Expand Panels	Bentangkan Panel
 	Collapse group  ({key}-click: all groups)	Ciutkan grup  ({key}-klik: semua grup)
 	Create new brush from the current settings	Buat kuas baru dari pengaturan saat ini
 	Create new brush from these settings	Buat kuas baru dari pengaturan ini
@@ -2842,6 +2860,7 @@ cameraRaw	Blending	Pembauran
 	Set White Point	Atur Titik Putih
 	Unavailable in this color mode	Tidak tersedia dalam mode warna ini
 	Selection Preview:	Pratinjau Seleksi:
+	Cryptomatte Selection	Seleksi Cryptomatte
 	Black Matte	Latar Hitam
 	White Matte	Latar Putih
 
@@ -2895,6 +2914,7 @@ fontWeight	Italic	Miring
 	Out of gamut for printing: click for the nearest printable colour	Di luar gamut cetak: klik untuk warna cetak terdekat
 	Not a web colour: click for the nearest web colour	Bukan warna web: klik untuk warna web terdekat
 	Color to Alpha…	Warna ke Alpha…
+	Frequency Separation…	Pemisahan Frekuensi…
 	Transparency Threshold	Ambang transparansi
 	Opacity Threshold	Ambang opasitas
 	PhotoCraft — Screen Color Picker	PhotoCraft — Pemilih Warna Layar
@@ -3129,6 +3149,7 @@ curves	Smooth	Haluskan
 	Light Gray	Abu-abu Muda
 	Object Finder	Pencari Objek
 	No object found there — drag a rectangle around it	Tidak ada objek ditemukan di sana — seret persegi panjang di sekelilingnya
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Layer aktif tidak memiliki piksel di sini — aktifkan Sampel Semua Layer atau pilih layer yang berisi piksel
 	Remove after each stroke	Hapus setelah setiap goresan
 	Apply the removal ({key})	Terapkan penghapusan ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Goresan untuk dihapus: {n} (Enter menerapkan, Esc membatalkan)
@@ -3247,6 +3268,7 @@ curves	Smooth	Haluskan
 	GPU Memory Full	Memori GPU Penuh
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Layer membutuhkan {needed} memori GPU dan boleh memakai {budget}, sehingga suntingan yang menggambar ulang seluruh dokumen melakukannya di CPU. Klik untuk mengatur Memori GPU.
 	GPU memory budget: {budget}	Anggaran memori GPU: {budget}
+	Graphics memory: {size}	Memori grafis: {size}
 	This document's layers: {needed} of {budget} for layers	Layer dokumen ini: {needed} dari {budget} untuk layer
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Layer dokumen ini membutuhkan {needed} tetapi boleh memakai {budget}: penggambaran ulang seluruh dokumen memakai CPU
 	GPU Memory (MB, 0 = Automatic)	Memori GPU (MB, 0 = Otomatis)

@@ -13,7 +13,9 @@ pub(crate) fn modal_allows(app: &PhotocraftApp, id: &str) -> bool {
     if app.camera_raw.is_some() || crate::crop_ui::blocks(app, id) {
         return false;
     }
-    (app.ui.dialogs.is_empty() && app.discard.is_none()) || crate::shortcuts::NAV_COMMANDS.contains(&id)
+    (app.ui.dialogs.is_empty() && app.discard.is_none())
+        || crate::shortcuts::NAV_COMMANDS.contains(&id)
+        || matches!(id, "edit.copy" | "edit.cut" | "edit.paste" | "select.all")
 }
 
 /// Top-level menus in Photoshop order.
@@ -253,7 +255,15 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
                             crate::notices::post(app, title, lines, false, None);
                             app.save_as_with(None, choices)
                         }
-                        // A flat file asks for its name; confirming its own file records a
+                        // Its own flat file, while it still keeps the whole document (one plain
+                        // layer it can store): written back, as Photoshop's Save does (#5733),
+                        // asking first if another app changed it (#6596), then Targa or DDS
+                        // Options for those. Cancel in either writes nothing.
+                        Some((false, path, d)) if crate::saves_flat_in_place(&d.doc, &path) => {
+                            let doc = d.doc.id;
+                            crate::disk_change_prompt::intercept(app, doc, &path, false).unwrap_or_else(|| app.save_flat_in_place(path, choices))
+                        }
+                        // Any other flat file asks for its name; confirming its own file records a
                         // plain Save that writes the file an action is played on (#3531).
                         _ => app.save_dialog_flow(None, choices, true),
                     }
@@ -499,6 +509,26 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
             crate::type_tool::select_all(app);
             Ok(Value::Null)
         }
+        // While a modal dialog is open, clipboard and select all commands route to the focused
+        // text field in egui rather than executing against the background document (#5904).
+        "edit.cut" if !app.ui.dialogs.is_empty() || app.discard.is_some() => {
+            ctx.input_mut(|i| i.events.push(egui::Event::Cut));
+            Ok(Value::Null)
+        }
+        "edit.copy" if !app.ui.dialogs.is_empty() || app.discard.is_some() => {
+            ctx.input_mut(|i| i.events.push(egui::Event::Copy));
+            Ok(Value::Null)
+        }
+        "edit.paste" if !app.ui.dialogs.is_empty() || app.discard.is_some() => {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            Ok(Value::Null)
+        }
+        "select.all" if !app.ui.dialogs.is_empty() || app.discard.is_some() => {
+            ctx.input_mut(|i| {
+                i.events.push(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+            });
+            Ok(Value::Null)
+        }
         "edit.paste" if params.as_object().is_none_or(|o| o.is_empty()) => {
             // Photoshop: paste in place when the copied area is visible, else centred in the view;
             // images from other apps are always centred.
@@ -587,6 +617,12 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
         }
         "window.togglePanels" => {
             // Tab hides the Tools panel, the options bar and the dock; Tab again shows what it hid.
+            if app.ui.view.hides_chrome() {
+                // Full Screen Mode: Tab only shows or hides the chrome for now (#6760); the panels'
+                // own state, `hidden_by_tab` included, stays as it was before entering.
+                app.ui.panels.full_screen_chrome = !app.ui.panels.full_screen_chrome;
+                return Ok(Value::Null);
+            }
             let p = &mut app.ui.panels;
             match p.hidden_by_tab.take() {
                 Some([toolbar, options, dock]) if !(p.toolbar || p.options_bar || p.dock) => {
@@ -725,6 +761,8 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
         "view.rulers" | "view.show.grid" | "view.show.guides" | "view.snap" | "view.lockGuides" => true,
         "edit.cut" | "edit.copy" if app.ui.text_edit.is_some() => crate::type_tool::selected_range(app).is_some(),
         "edit.paste" | "select.all" if app.ui.text_edit.is_some() => true,
+        // While a dialog is open, clipboard commands are enabled for the dialog's fields (#5904).
+        "edit.cut" | "edit.copy" | "edit.paste" | "select.all" if !app.ui.dialogs.is_empty() || app.discard.is_some() => true,
         // An image copied in another app can only be seen by reading the OS clipboard, which happens
         // on an explicit paste: with a clipboard service these stay enabled. Paste and New from
         // Clipboard need no document (with none open, Paste makes one); Paste in Place does.
@@ -916,6 +954,7 @@ const PLACE_AFTER: &[(&str, &str)] = &[
     ("filter.render.relight", "filter.render.lightingEffects"),
     ("view.resetView", "view.flipHorizontal"),
     ("filter.other.colorToAlpha", "filter.other.offset"),
+    ("layer.frequencySeparation", "filter.other.colorToAlpha"),
 ];
 
 pub fn menu_items(app: &PhotocraftApp) -> Vec<MenuItem> {
@@ -1034,6 +1073,22 @@ pub fn menu_items(app: &PhotocraftApp) -> Vec<MenuItem> {
             color: None,
         });
         for (k, it) in recent.into_iter().enumerate() {
+            items.insert(after + 1 + k, it);
+        }
+    }
+    // Window › Workspace: saved workspaces follow the presets, checked while current.
+    let saved = crate::workspace_ui::saved_names(app);
+    if !saved.is_empty()
+        && let Some(after) = items.iter().position(|i| i.id == "window.workspace.motion")
+    {
+        let wp: Vec<String> = vec!["Window".into(), "Workspace".into()];
+        let separator = MenuItem { id: "---".into(), label: "---".into(), path: wp.clone(), shortcut: None, enabled: false, checked: None, color: None };
+        let entries = saved.into_iter().enumerate().map(|(i, name)| {
+            let id = format!("{}{i}", crate::workspace_ui::SAVED);
+            let checked = checked(app, &id);
+            MenuItem { id, label: name, path: wp.clone(), shortcut: None, enabled: true, checked, color: None }
+        });
+        for (k, it) in std::iter::once(separator).chain(entries).enumerate() {
             items.insert(after + 1 + k, it);
         }
     }
@@ -1600,6 +1655,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn modal_dialog_allows_clipboard_and_navigation_commands() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        assert!(modal_allows(&app, "edit.copy"));
+        assert!(modal_allows(&app, "image.canvasSize"));
+        app.ui.open_dialog(crate::state::DialogKind::NewDocument, Default::default());
+        assert!(!modal_allows(&app, "image.canvasSize"));
+        assert!(!modal_allows(&app, "layer.new"));
+        assert!(modal_allows(&app, "view.zoomIn"));
+        assert!(modal_allows(&app, "view.fitOnScreen"));
+        assert!(modal_allows(&app, "edit.copy"));
+        assert!(modal_allows(&app, "edit.cut"));
+        assert!(modal_allows(&app, "edit.paste"));
+        assert!(modal_allows(&app, "select.all"));
+    }
+
+    #[test]
+    fn modal_dialog_clipboard_commands_route_to_egui_and_keep_document_unchanged() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        let ctx = egui::Context::default();
+        app.run("file.new", json!({"width": 100, "height": 100, "background": "transparent"})).unwrap();
+        let rev_before = app.session.active().unwrap().revision;
+        let layers_before = app.session.active().unwrap().doc.layers.len();
+
+        // Open a modal dialog
+        app.ui.open_dialog(crate::state::DialogKind::NewDocument, Default::default());
+
+        // In menus::is_enabled(), clipboard commands are enabled for dialogs
+        assert!(is_enabled(&app, "edit.copy"));
+        assert!(is_enabled(&app, "edit.cut"));
+        assert!(is_enabled(&app, "edit.paste"));
+        assert!(is_enabled(&app, "select.all"));
+
+        // In menus::invoke(), clipboard commands route to egui without modifying the document
+        invoke(&mut app, &ctx, "edit.paste", json!({})).unwrap();
+        invoke(&mut app, &ctx, "edit.cut", json!({})).unwrap();
+        invoke(&mut app, &ctx, "edit.copy", json!({})).unwrap();
+        invoke(&mut app, &ctx, "select.all", json!({})).unwrap();
+
+        let active = app.session.active().unwrap();
+        assert_eq!(active.revision, rev_before, "document revision must remain unchanged");
+        assert_eq!(active.doc.layers.len(), layers_before, "layer count must remain unchanged");
+    }
+
+    #[test]
     fn sync_with_system_menu_keeps_saved_slots_and_its_checkmark_across_palettes() {
         use photocraft_engine::prefs::{AppearanceMode, DarkTheme, LightTheme};
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
@@ -1698,6 +1797,22 @@ mod tests {
         assert!(items[c2a].enabled, "the Background becomes a layer when the filter runs");
         let others: Vec<_> = items.iter().filter(|i| i.path.first().is_some_and(|p| p == "Filter") && i.path.len() == 2).map(|i| &i.path[1]).collect();
         assert!(!others.iter().any(|p| p.as_str() == "Other"), "no duplicate Other submenu: {others:?}");
+    }
+
+    /// Frequency Separation (#1714) is no Photoshop menu item either (it is a recorded action
+    /// there): it follows Color to Alpha in Filter › Other and asks for its radius.
+    #[test]
+    fn frequency_separation_sits_in_filter_other_after_color_to_alpha() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 32, "height": 32})).unwrap();
+        let items = menu_items(&app);
+        let at = |id: &str| items.iter().position(|i| i.id == id).unwrap_or_else(|| panic!("{id} missing"));
+        let (c2a, fs) = (at("filter.other.colorToAlpha"), at("layer.frequencySeparation"));
+        assert_eq!(fs, c2a + 1);
+        assert_eq!(items[fs].path, items[at("filter.other.highPass")].path);
+        assert_eq!(items[fs].label, "Frequency Separation…");
+        assert!(items[fs].enabled, "the Background is a pixel layer with pixels");
+        assert!(crate::filter_dialog::has_dialog("layer.frequencySeparation"));
     }
 
     #[test]

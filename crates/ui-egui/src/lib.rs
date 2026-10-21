@@ -19,6 +19,7 @@ pub mod adjust_dialog;
 pub mod adjust_editors;
 pub mod adjust_preview;
 pub mod adjust_ui;
+mod align_bar;
 mod alt_grab;
 pub mod analysis_ui;
 pub mod anchor_tools;
@@ -82,6 +83,7 @@ pub mod disk_change_prompt;
 pub mod distort_ui;
 pub mod doc_props_ui;
 pub mod dock;
+pub mod dock_icons;
 pub mod duplicate_layer_ui;
 pub mod edit_history;
 pub mod egui_fonts;
@@ -163,6 +165,7 @@ pub mod parity;
 pub mod patch_preview;
 pub(crate) mod pattern_fill_ui;
 pub mod pattern_preview;
+pub(crate) mod pencil_cursor;
 pub mod perspective_crop_ui;
 pub mod perspective_ui;
 pub mod pixel_grid;
@@ -178,6 +181,8 @@ pub mod proxy;
 pub mod puppet_ui;
 pub mod quick_pick;
 pub mod rasterize_prompt;
+#[cfg(not(target_arch = "wasm32"))]
+mod recent_files;
 pub mod retouch_ui;
 mod rgb_histogram;
 pub mod rotate_view;
@@ -189,6 +194,8 @@ pub mod select_mask_view;
 pub mod served_fonts;
 pub mod shape_dialog;
 pub(crate) mod shape_fill_ui;
+mod shape_options;
+mod shape_paint_ui;
 pub mod shape_stroke_ui;
 pub mod shortcut_dispatch;
 pub mod shortcuts;
@@ -224,6 +231,7 @@ pub mod tool_feedback;
 pub(crate) mod tool_memory;
 mod tool_reset;
 mod tool_shortcuts;
+pub mod touch_twins;
 pub mod transform_fx;
 pub mod transform_tex;
 pub mod transform_tool;
@@ -341,6 +349,42 @@ impl ExportSettings {
     }
 }
 
+/// Whether File › Save writes straight back to `path`, the flat file (JPEG, PNG, TIFF…) the
+/// document came from, as Photoshop's Save does (#5733): only while that file keeps everything,
+/// i.e. the document is one plain raster layer ([`plain_raster`]) with no extra channels, in RGB
+/// or Grayscale at a depth (and, for Grayscale, a gray layout) the format stores, and either the
+/// format keeps transparency or the layer is the Background. The file itself must have held only
+/// this one image (not an animation, a multi-page TIFF or a multi-size icon), and its encoder
+/// must not quantise (GIF's palette and on/off transparency); a JPEG is rewritten at its own
+/// quality (#4032). An embedded colour profile needs a format that keeps one. Anything else still
+/// goes through Save As, so the original is never overwritten with less than the document has.
+pub(crate) fn saves_flat_in_place(doc: &Document, path: &str) -> bool {
+    let Some(layer) = plain_raster(doc) else { return false };
+    let Some(format) = photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_codecs::from_extension(&e)) else {
+        return false;
+    };
+    let caps = format.caps();
+    // Transparency is kept where the format's plan writes alpha for this document: DPX has no
+    // gray + alpha, and float PNM (PFM) no alpha at all.
+    let keeps_alpha = caps.alpha
+        && !(format == photocraft_codecs::Format::Dpx && doc.mode == photocraft_doc::ColorMode::Grayscale)
+        && !(format == photocraft_codecs::Format::Pnm && doc.depth == photocraft_color::SampleType::F32);
+    !photocraft_engine::file_cmds::saves_in_place(path)
+        && doc.file_encoding.source_images.is_none()
+        && (!caps.lossy || format == photocraft_codecs::Format::Jpeg)
+        && (doc.mode != photocraft_doc::ColorMode::Grayscale || caps.layouts.iter().any(|l| l.is_gray()))
+        && caps.write
+        && caps.depths.contains(&match doc.depth {
+            photocraft_color::SampleType::U8 => photocraft_codecs::SampleType::U8,
+            photocraft_color::SampleType::U16 => photocraft_codecs::SampleType::U16,
+            photocraft_color::SampleType::F32 => photocraft_codecs::SampleType::F32,
+        })
+        && (keeps_alpha || doc.is_background(layer.id))
+        && (doc.icc_profile.is_none() || caps.icc)
+        && doc.channels.is_empty()
+        && matches!(doc.mode, photocraft_doc::ColorMode::Rgb | photocraft_doc::ColorMode::Grayscale)
+}
+
 /// The format answers a save takes instead of asking: the Targa bits per pixel and the DDS options
 /// (`"tgaBits"`, `"ddsCompression"`, `"ddsMipmaps"`). `None` asks in Save As and takes the
 /// default in automation saves, which never prompt.
@@ -373,7 +417,8 @@ impl FormatChoices {
 }
 
 /// The document's lone layer when it is a plain raster a flat file keeps: visible, at full
-/// opacity, in Normal mode, with no masks, effects or blending restrictions (#2234).
+/// opacity, in Normal mode, with no masks, effects, clipping, advanced blending, blending
+/// restrictions or video frames (#2234).
 pub(crate) fn plain_raster(doc: &Document) -> Option<&photocraft_doc::Layer> {
     match doc.layers.as_slice() {
         [layer]
@@ -387,7 +432,10 @@ pub(crate) fn plain_raster(doc: &Document) -> Option<&photocraft_doc::Layer> {
                 && layer.effects.psd_raw.is_none()
                 && matches!(layer.blend, photocraft_color::BlendMode::Normal | photocraft_color::BlendMode::PassThrough)
                 && photocraft_compose::channel_weights(layer, doc.mode).is_none()
-                && !photocraft_compose::blend_if_active(layer, doc.mode) =>
+                && !photocraft_compose::blend_if_active(layer, doc.mode)
+                && !layer.clipped
+                && layer.advanced.is_default()
+                && layer.video.is_none() =>
         {
             Some(layer)
         }
@@ -572,6 +620,10 @@ pub struct Services {
     pub autosave: Option<AutosaveFn>,
     /// None for services that report synchronous success through `autosave`.
     pub autosave_results: Option<AutosaveResultsFn>,
+    /// Finish every queued crash-recovery autosave and wait for it, with outcomes like
+    /// `autosave_results`. For a session that ends without asking: the window's graphics device
+    /// was lost (see `gpu_status::check_window`).
+    pub flush_autosaves: Option<AutosaveResultsFn>,
     pub discard_autosave: Option<DiscardAutosaveFn>,
     pub recover: Option<RecoverFn>,
     pub adopt_autosave: Option<AdoptAutosaveFn>,
@@ -773,6 +825,8 @@ pub struct PhotocraftApp {
     filter_preview_worker: filter_preview_worker::Worker,
     /// Full CPU canvas redraws running in the background, by document (#4024).
     pub(crate) redraws: std::collections::HashMap<photocraft_doc::DocId, background_redraw::Redraw>,
+    /// The last finished background redraws, for going back to a state drawn a moment ago (#6528).
+    pub(crate) kept: background_redraw::KeptComposites,
     /// Select › Color Range dialog preview (proxy document + mask / image textures).
     pub(crate) color_range: Option<color_range_ui::Preview>,
     /// Image › Adjustments dialog preview through a temporary clipped adjustment layer.
@@ -869,6 +923,14 @@ pub struct PhotocraftApp {
     /// GPU canvas renderer, when running on the wgpu backend (see [`Self::set_wgpu`]). Dropped
     /// for the rest of the session when the device is lost (see `gpu_status`).
     gpu: Option<gpu_canvas::GpuCanvas>,
+    /// The device the window itself draws with, and its health flag: the GPU canvas's, or one
+    /// watched for the CPU canvas (see `gpu_status::check_window`).
+    window_device: Option<(eframe::wgpu::Device, photocraft_gpu::DeviceHealth)>,
+    /// That device was lost: frames draw nothing and the app closes once its work is saved (#3438).
+    window_lost: bool,
+    /// When (in `egui::InputState::time`) to try saving unsaved work for recovery again after a
+    /// failed attempt; the app closes only once it succeeded.
+    window_recovery_retry: Option<f64>,
     /// Run once the first frames have rendered (see [`Self::on_started`]).
     started: Option<gpu_status::StartedHook>,
     /// Frame and canvas-upload timings (exposed via `ui.inspect`).
@@ -992,6 +1054,7 @@ impl PhotocraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             filter_preview_worker: Default::default(),
             redraws: Default::default(),
+            kept: Default::default(),
             color_range: None,
             adjust_preview: None,
             live_adjust_preview: None,
@@ -1036,6 +1099,9 @@ impl PhotocraftApp {
             doc_hist: None,
             hist_job: None,
             gpu: None,
+            window_device: None,
+            window_lost: false,
+            window_recovery_retry: None,
             started: None,
             perf: Default::default(),
             stroke_trace: stroke_trace::StrokeTrace::from_env(),
@@ -1088,10 +1154,12 @@ impl PhotocraftApp {
                 self.perf.gpu_info.canvas = "cpu".into();
                 self.perf.gpu_info.fallback = Some(detail.clone());
                 gpu_status::queue_fallback_notice(self, detail);
+                self.watch_window_device(&rs.device);
                 return;
             }
         };
         self.perf.gpu_info.canvas = "gpu".into();
+        self.window_device = Some((rs.device.clone(), gpu.health().clone()));
         self.gpu = Some(gpu);
         self.prefs_rt.gpu_style = None;
     }
@@ -1105,6 +1173,24 @@ impl PhotocraftApp {
     /// The GPU canvas's device health flag (tests inject faults through it).
     pub fn gpu_health(&self) -> Option<photocraft_gpu::DeviceHealth> {
         self.gpu.as_ref().map(|g| g.health().clone())
+    }
+
+    /// Watch the device the window draws with when the GPU canvas doesn't (the CPU canvas), so
+    /// its loss is handled like the GPU canvas's (see `gpu_status::check_window`).
+    pub fn watch_window_device(&mut self, device: &eframe::wgpu::Device) {
+        self.window_device = Some((device.clone(), photocraft_gpu::DeviceHealth::watch(device)));
+    }
+
+    /// Whether the window's graphics device was lost, so the app saves its documents for
+    /// recovery and closes once they are saved (#3438).
+    pub fn window_lost(&self) -> bool {
+        self.window_lost
+    }
+
+    /// Destroy the window's graphics device, as a driver reset does (`ui.gpu.simulateLoss`
+    /// with `destroy`, tests). Returns whether there was one.
+    pub fn destroy_window_device(&mut self) -> bool {
+        self.window_device.as_ref().map(|(device, _)| device.destroy()).is_some()
     }
 
     /// Run `hook` once the app has rendered its first frames (and a document opened at launch
@@ -1631,6 +1717,27 @@ impl PhotocraftApp {
         Ok(r)
     }
 
+    /// File › Save over the flat file the document came from, which still holds it
+    /// ([`saves_flat_in_place`]): an RGB Targa or a DDS texture asks its Targa or DDS Options
+    /// first, unless `choices` answer them; the answer writes the file and is recorded as a plain
+    /// `file.save` (#3531). Anything else is written straight back.
+    pub(crate) fn save_flat_in_place(&mut self, path: String, choices: FormatChoices) -> Result<Value, String> {
+        if self.save_options_open() {
+            return Err("Answer the TIFF, Targa or DDS Options before starting another save".into());
+        }
+        if choices.tga_bits.is_none() && targa_options_ui::wants_prompt(self, &path) {
+            let copy = self.saves_copy(&path, None)?;
+            targa_options_ui::park(self, path.clone(), copy, "file.save")?;
+            return Ok(serde_json::json!({"path": path, "warnings": []}));
+        }
+        if choices.dds.is_none() && dds_options_ui::wants_prompt(&path) {
+            let copy = self.saves_copy(&path, None)?;
+            dds_options_ui::park(self, path.clone(), copy, "file.save")?;
+            return Ok(serde_json::json!({"path": path, "warnings": []}));
+        }
+        self.save_in_place(path, choices)
+    }
+
     /// Writes the Save As and journals it as a `file.saveAs` step with its path (and TIFF,
     /// Targa or DDS answer), so an action being recorded keeps it (#2032).
     fn save_as_step(&mut self, path: String, tiff_layers: Option<bool>, choices: FormatChoices) -> Result<Value, String> {
@@ -1675,17 +1782,19 @@ impl PhotocraftApp {
         if id == "file.save" {
             // The file the action is played on: one that holds the whole document, or a flat
             // file a recorded Save confirmed in the dialog while the document is still a plain
-            // raster, so it is never flattened over (#3531, #3806). A flat file's recorded Targa
-            // or DDS answer stands in for the prompt.
+            // raster, so it is never flattened over (#3531, #3806), and only while that file held
+            // just this one image (#5733). A flat file's recorded Targa or DDS answer stands in
+            // for the prompt.
             let choices = FormatChoices::from_params(params, id)?;
             let st = self.session.active().ok_or("no document")?;
             let flat_own = |p: &str| {
                 !photocraft_engine::file_cmds::saves_in_place(p)
                     && plain_raster(&st.doc).is_some()
+                    && st.doc.file_encoding.source_images.is_none()
                     && photocraft_engine::file_cmds::extension(p).is_some_and(|e| photocraft_codecs::from_extension(&e).is_some_and(|f| f.caps().write))
             };
             let path = st.path.clone().filter(|p| photocraft_engine::file_cmds::holds_at(&st.doc, p) || flat_own(p)).ok_or(
-                "Save writes back only to the document's own PSD, PSB, .pcraft or OpenRaster file (OpenRaster only when it holds everything), or to its own flat file while the document is a single plain layer",
+                "Save writes back only to the document's own PSD, PSB, .pcraft or OpenRaster file (OpenRaster only when it holds everything), or to its own flat file while the document is a single plain layer and the file held only that image",
             )?;
             return self.save_in_place(path, choices);
         }
@@ -2024,6 +2133,8 @@ impl eframe::App for PhotocraftApp {
         if self.ui.text_edit.as_ref().is_some_and(|ed| !self.ui.tool.is_type() || ed.mask != self.ui.tool.is_type_mask()) {
             type_tool::commit(self);
         }
+        // So does selecting another layer or document by any route (#6483).
+        type_tool::end_if_left(self);
         if self.ui.pen.as_ref().is_some_and(|p| !p.drawn_with(self.ui.tool)) {
             vector_ui::pen_commit(self, false);
         }
@@ -2149,6 +2260,7 @@ impl eframe::App for PhotocraftApp {
                 }
             });
             self.automation_input = false;
+            gpu_status::check_window(self, &ctx);
             return;
         }
         if screen_picker::busy(&ctx) {
@@ -2159,19 +2271,24 @@ impl eframe::App for PhotocraftApp {
         // system title bar this is where the document name lives, as the in-app title is hidden.
         panels::sync_window_title(self, &ctx);
         let chrome = !self.ui.view.hides_chrome();
-        if chrome && self.ui.panels.menu_bar {
+        if chrome {
+            self.ui.panels.full_screen_chrome = false;
+        }
+        // In Full Screen Mode, Tab shows the menu bar, options bar, toolbar and dock (#6760).
+        let tabbed_in = !chrome && self.ui.panels.full_screen_chrome;
+        if (chrome || tabbed_in) && self.ui.panels.menu_bar {
             panels::title_bar(self, ui);
         }
-        if chrome && self.ui.panels.options_bar {
+        if (chrome && self.ui.panels.options_bar) || tabbed_in {
             panels::options_bar(self, ui);
         }
         if chrome && self.ui.panels.status_bar {
             panels::status_bar(self, ui);
         }
-        if chrome && self.ui.panels.toolbar {
+        if (chrome && self.ui.panels.toolbar) || tabbed_in {
             panels::toolbar(self, ui);
         }
-        if chrome && self.ui.panels.dock {
+        if (chrome && self.ui.panels.dock) || tabbed_in {
             panels::right_dock(self, ui);
         }
         let t = theme::Tokens::get(&ctx);
@@ -2266,6 +2383,8 @@ impl eframe::App for PhotocraftApp {
         jobs_ui::keep_polling(self, &ctx);
         // Menus and buttons in this frame may have asked for a file dialog.
         self.poll_file_dialog(&ctx, Some(frame));
+        // Last, after everything drawn this frame: a lost window device can't draw it (#3438).
+        gpu_status::check_window(self, &ctx);
     }
 }
 
@@ -2574,7 +2693,7 @@ impl PhotocraftApp {
         // egui's own ⌘+ / ⌘- / ⌘0 scale the whole interface; PhotoCraft zooms the canvas instead
         // (shortcuts.rs), like Photoshop.
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
-        // ⌘/Ctrl + wheel scrolls sideways, as in Photoshop; only a pinch zooms (wheel_nav.rs).
+        // ⌘/Ctrl + wheel zooms the canvas ×1.1 a notch; ⇧ + wheel pans sideways (wheel_nav.rs).
         wheel_nav::configure(ctx);
     }
 }
@@ -2925,6 +3044,8 @@ mod transform_fx_tests;
 
 #[cfg(test)]
 mod layer_props_ui_tests;
+#[cfg(test)]
+mod notice_text_tests;
 #[cfg(test)]
 mod transform_switch_tests;
 #[cfg(test)]

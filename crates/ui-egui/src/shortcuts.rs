@@ -38,9 +38,19 @@ pub fn parse(s: &str) -> Option<KeyboardShortcut> {
         ";" => Some(Key::Semicolon),
         "'" => Some(Key::Quote),
         "]" => Some(Key::CloseBracket),
-        name => Key::from_name(name),
+        name => key_from_name(name),
     }?;
     Some(KeyboardShortcut::new(mods, key))
+}
+
+/// [`Key::from_name`], ignoring case as a fallback: older builds saved `PageUp` as `Pageup`
+/// (and `ArrowLeft` as `Arrowleft`), which egui doesn't read, so those shortcuts never fired
+/// (#6827). egui's other spellings (`ArrowLeft` for `Left`, `NumpadEnter`) are matched in any
+/// case through the engine's spelling of them.
+pub fn key_from_name(name: &str) -> Option<Key> {
+    Key::from_name(name)
+        .or_else(|| Key::ALL.iter().copied().find(|k| k.name().eq_ignore_ascii_case(name)))
+        .or_else(|| photocraft_engine::prefs::normalize_shortcut(name).as_deref().and_then(Key::from_name))
 }
 
 /// Human-readable form for menus, tooltips and inline hints (`Cmd+Shift+N` → `⌘⇧N` on
@@ -195,18 +205,23 @@ fn new_layer_without_dialog(app: &mut PhotocraftApp, ctx: &egui::Context) -> boo
 }
 
 fn nav_keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
-    for id in NAV_COMMANDS {
-        let main = crate::menus::UI_COMMANDS.iter().find(|c| c.0 == id).and_then(|c| app.session.prefs().shortcut(id, c.3));
+    let Some(id) = nav_shortcut(app, ctx) else { return false };
+    if crate::menus::is_enabled(app, id) {
+        let _ = crate::menus::invoke(app, ctx, id, json!({}));
+    }
+    true
+}
+
+/// The [`NAV_COMMANDS`] entry whose shortcut (or an Edit › Keyboard Shortcuts override) was
+/// pressed this frame, with the key press consumed. A view with its own zoom, like Liquify's
+/// preview, steps it with the same keys (#7210).
+pub(crate) fn nav_shortcut(app: &PhotocraftApp, ctx: &egui::Context) -> Option<&'static str> {
+    NAV_COMMANDS.into_iter().find(|id| {
+        let main = crate::menus::UI_COMMANDS.iter().find(|c| c.0 == *id).and_then(|c| app.session.prefs().shortcut(id, c.3));
         let keys: Vec<KeyboardShortcut> =
             main.into_iter().map(str::to_string).chain(app.session.prefs().alternates(id, main)).filter_map(|k| parse(&k)).collect();
-        if keys.iter().any(|sc| consume(ctx, sc)) {
-            if crate::menus::is_enabled(app, id) {
-                let _ = crate::menus::invoke(app, ctx, id, json!({}));
-            }
-            return true;
-        }
-    }
-    false
+        keys.iter().any(|sc| consume(ctx, sc))
+    })
 }
 
 /// The key press a clipboard event stands for outside text fields, with `mods` held: Copy, Cut
@@ -220,6 +235,37 @@ fn clipboard_press(e: &egui::Event, mods: Modifiers, is_windows: bool) -> Option
         egui::Event::Cut => Some((Key::X, held)),
         egui::Event::Paste(_) => Some((Key::V, held)),
         _ => None,
+    }
+}
+
+/// Text is selected in a label (an error notice's message, say): dragged across, double- or
+/// triple-clicked or shift-clicked, as egui selects it. ⌘C then copies that text, as in a text
+/// field, rather than running Edit › Copy on the layer (#7807). A plain click on a label leaves an
+/// empty selection behind, which must not take ⌘C from the document. Read once a frame, from the
+/// frame before.
+fn label_text_selected(ctx: &egui::Context) -> bool {
+    let id = egui::Id::new("pc-label-text-selected");
+    let any = ctx.plugin_opt::<egui::text_selection::LabelSelectionState>().is_some_and(|p| p.lock().has_selection());
+    let (selects, pressed) = ctx.input(|i| {
+        let p = &i.pointer;
+        let selects = (p.primary_down() && p.is_decidedly_dragging())
+            || p.button_double_clicked(egui::PointerButton::Primary)
+            || p.button_triple_clicked(egui::PointerButton::Primary)
+            || (p.primary_pressed() && i.modifiers.shift);
+        (selects, p.primary_pressed())
+    });
+    let selected = any && (selects || (!pressed && ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false)));
+    ctx.data_mut(|d| d.insert_temp(id, selected));
+    selected
+}
+
+/// ⌘C, as egui-winit's `Event::Copy` or as a key press (the web, the Mac menu's key equivalent),
+/// without ⇧ (Copy Merged) or ⌥.
+fn plain_copy(e: &egui::Event, mods: Modifiers) -> bool {
+    match e {
+        egui::Event::Copy => !mods.shift && !mods.alt,
+        egui::Event::Key { key: Key::C, pressed: true, modifiers: m, .. } => m.command && !m.shift && !m.alt,
+        _ => false,
     }
 }
 
@@ -239,7 +285,11 @@ fn clipboard_press(e: &egui::Event, mods: Modifiers, is_windows: bool) -> Option
 ///
 /// Ctrl+Insert copies and Shift+Insert pastes: egui-winit maps them on Windows (a Shift+Insert
 /// release without a paste event pastes the image, like ⌘V), and we map them here on Linux.
+///
+/// With text selected in a label ([`label_text_selected`]) ⌘C copies the text; ⌘X and ⌘V stay
+/// the document's.
 pub fn clipboard_keys(ctx: &egui::Context, typing: bool, raw: &mut egui::RawInput) {
+    let text_selected = label_text_selected(ctx);
     let press = |key, modifiers| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
     if cfg!(target_os = "linux") {
         raw.events.retain_mut(|e| {
@@ -301,6 +351,10 @@ pub fn clipboard_keys(ctx: &egui::Context, typing: bool, raw: &mut egui::RawInpu
             if mods.command {
                 ctx.data_mut(|d| d.insert_temp(command_lately, true));
             }
+        }
+        if text_selected && plain_copy(&e, mods) {
+            out.push(egui::Event::Copy);
+            continue;
         }
         if let Some((key, held)) = clipboard_press(&e, mods, cfg!(target_os = "windows")) {
             if key == Key::V {
@@ -369,6 +423,7 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // However the tool was picked (toolbar, flyout, shortcut, automation), its group's key brings
     // it back later (#2608).
     app.ui.remember_group_tool();
+    crate::canvas::polygon_cancel_stale(app);
     // Camera Raw is modal like Photoshop's filter dialog: no application shortcut (Save, Undo,
     // tools) runs beneath it, and it handles its own keys (Y, U, O, S). Unlike the other dialogs
     // below it covers the canvas, so canvas zoom keys are blocked too.
@@ -562,6 +617,10 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if crate::guide_select::keys(app, ctx) {
         return;
     }
+    // A slice selected with Slice Select: ⌫/Delete deletes the slice, not the layer (#7862).
+    if crate::slice_ui::keys(app, ctx) {
+        return;
+    }
     // Space+F (⇧Space+F backwards) cycles the pasteboard colour, as in Photoshop: F while the
     // Hand key is held, before F's own Cycle Screen Mode.
     if !matches!(focus, Focus::Text) && app.ui.text_edit.is_none() && crate::hold_keys::reposition_held(app, ctx) {
@@ -643,6 +702,7 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if !untouched && pressed(Key::Escape) {
             app.ui.polygon.clear();
             app.ui.polygon_mode.clear();
+            app.ui.polygon_doc = None;
             crate::crop_ui::cancel(app);
             return;
         }
@@ -893,6 +953,25 @@ mod tests {
         assert_eq!(parse("Cmd+=").unwrap().logical_key, Key::Equals);
         assert_eq!(parse("F7").unwrap().logical_key, Key::F7);
         assert!(parse("Cmd+Nonsense").is_none());
+    }
+
+    #[test]
+    fn page_and_arrow_keys_recorded_in_the_editor_fire() {
+        // #6827: Shift+Page Up recorded in Edit › Keyboard Shortcuts was saved as `Shift+Pageup`,
+        // which never parsed, so the command (Flip Horizontal) never ran.
+        for (key, mods) in [(Key::PageUp, Modifiers::SHIFT), (Key::PageDown, Modifiers::COMMAND | Modifiers::SHIFT), (Key::ArrowLeft, Modifiers::ALT)] {
+            let text = crate::prefs_ui::shortcut_text(key, mods).unwrap();
+            let sc = parse(&text).unwrap_or_else(|| panic!("{text} must parse"));
+            assert_eq!(sc.logical_key, key, "{text}");
+            assert!(key_matches(&sc, key, mods), "{text}");
+        }
+        // Bindings saved by older builds still work.
+        assert_eq!(parse("Shift+Pageup").unwrap().logical_key, Key::PageUp);
+        assert_eq!(parse("Ctrl+Alt+Pagedown").unwrap().logical_key, Key::PageDown);
+        // egui's aliases whose name differs (`ArrowLeft` is `Left`), in any case.
+        let sc = parse("Alt+Arrowleft").unwrap();
+        assert_eq!((sc.logical_key, sc.modifiers), (Key::ArrowLeft, Modifiers::ALT));
+        assert_eq!(parse("Cmd+Numpadenter").unwrap().logical_key, Key::Enter);
     }
 
     #[test]

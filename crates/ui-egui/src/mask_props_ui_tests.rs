@@ -60,6 +60,9 @@ fn pixel_mask_properties_follow_target_for_raster_and_adjustment_in_both_themes(
 }
 
 fn drag(h: &mut Harness<'_, PhotocraftApp>, field: usize, fractions: &[f32]) {
+    // The floating Properties card now bounds its body with a scroll area.
+    h.query_all_by_role(egui::accesskit::Role::Slider).nth(field).unwrap().scroll_to_me();
+    h.run_steps(3);
     let r = h.query_all_by_role(egui::accesskit::Role::Slider).nth(field).unwrap().rect();
     let pos = |f: f32| pos2(r.left() + 7.0 + (r.width() - 14.0) * f, r.center().y);
     let start = pos(fractions[0]);

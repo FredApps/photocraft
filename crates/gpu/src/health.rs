@@ -53,6 +53,8 @@ struct Inner {
     faulted: AtomicBool,
     fault: Mutex<Option<Fault>>,
     errors: AtomicU64,
+    /// wgpu itself reported the device lost (see [`DeviceHealth::device_lost`]).
+    device_lost: AtomicBool,
 }
 
 /// Shared health flag of one wgpu device. Cheap to clone; every clone sees the same state.
@@ -84,6 +86,7 @@ impl DeviceHealth {
                 (_, false) => message,
             };
             log::error!("wgpu device lost ({reason:?}): {detail}");
+            lost.0.device_lost.store(true, Ordering::Release);
             lost.mark(Fault::Lost(detail));
         });
         let errors = health.clone();
@@ -96,11 +99,33 @@ impl DeviceHealth {
         self.0.errors.fetch_add(1, Ordering::Relaxed);
         let text = e.to_string();
         log::error!("uncaptured wgpu error: {text}");
-        // Errors about invalid or lost objects follow a device loss whose callback may not have
-        // run yet (it fires on the next poll).
-        let lower = text.to_ascii_lowercase();
-        let fault = if lower.contains("lost") || lower.contains("destroyed") { Fault::Lost(first_line(&text)) } else { Fault::Error(first_line(&text)) };
-        self.mark(fault);
+        self.mark(fault_of(&text));
+    }
+
+    /// Record an error an error scope caught.
+    ///
+    /// [`DeviceHealth::watch`]'s uncaptured-error handler never sees a scoped error, so without
+    /// this a watched device would keep being handed to a GPU that has already failed. Polls
+    /// first: a lost device is a [`Fault::Lost`], and its callback may not have run yet (it fires
+    /// on a poll, and `Device::poll` panics on a lost device).
+    ///
+    /// The poll is a single non-blocking check, never a fence wait. This runs on the UI thread
+    /// immediately after a failed frame, so `PollType::Wait` with no timeout would stall the app
+    /// until every in-flight submission drained (or forever, if the device is wedged). A
+    /// non-blocking poll loses nothing here: wgpu still reads the fence and fires the
+    /// device-lost callback for a lost device, it just never blocks waiting for one.
+    pub fn caught(&self, device: &wgpu::Device, error: &wgpu::Error) {
+        if !self.is_ok() {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll(device);
+        #[cfg(target_arch = "wasm32")]
+        let _ = device;
+        if !self.is_ok() {
+            return;
+        }
+        self.mark(fault_of(&error.to_string()));
     }
 
     /// Mark the device unusable. The first fault is kept; a later device loss upgrades an error.
@@ -134,6 +159,32 @@ impl DeviceHealth {
         self.0.errors.load(Ordering::Relaxed)
     }
 
+    /// Whether wgpu itself reported the device lost: its device-lost callback ran, or polling it
+    /// panicked. Unlike a fault recorded with [`mark`](Self::mark) (a simulated loss, or an
+    /// uncaptured error that names one), nothing drawn with the device reaches the screen any
+    /// more, the window's own frames included (#3438).
+    pub fn device_lost(&self) -> bool {
+        self.0.device_lost.load(Ordering::Acquire)
+    }
+
+    /// Non-blocking poll that runs even after a fault was recorded, so a device that is lost
+    /// later (a driver reset while the app sat idle or the PC slept) is noticed before the next
+    /// frame is drawn with it. Skipped once [`device_lost`](Self::device_lost).
+    pub fn probe(&self, device: &wgpu::Device) {
+        if self.device_lost() {
+            return;
+        }
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.poll(wgpu::PollType::Poll))).is_err() {
+            self.lost_by_poll();
+        }
+    }
+
+    /// `Device::poll` panicked: wgpu found the device lost.
+    fn lost_by_poll(&self) {
+        self.0.device_lost.store(true, Ordering::Release);
+        self.mark(Fault::Lost("the device stopped responding".into()));
+    }
+
     /// Block until `index` (or all submitted work) finished, unless the device is unusable.
     /// Returns whether the device is still healthy afterwards. `Device::poll` panics on a lost
     /// device, so a panic is caught and recorded as a loss (native only; the web has no blocking
@@ -147,7 +198,7 @@ impl DeviceHealth {
         match poll {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => log::warn!("wgpu poll: {e}"),
-            Err(_) => self.mark(Fault::Lost("the device stopped responding".into())),
+            Err(_) => self.lost_by_poll(),
         }
         self.is_ok()
     }
@@ -158,9 +209,17 @@ impl DeviceHealth {
             return;
         }
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.poll(wgpu::PollType::Poll))).is_err() {
-            self.mark(Fault::Lost("the device stopped responding".into()));
+            self.lost_by_poll();
         }
     }
+}
+
+/// The fault a wgpu error message stands for. Errors about invalid or lost objects follow a
+/// device loss whose callback may not have run yet (it fires on the next poll), so they count as
+/// a loss rather than as an error.
+fn fault_of(text: &str) -> Fault {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("lost") || lower.contains("destroyed") { Fault::Lost(first_line(text)) } else { Fault::Error(first_line(text)) }
 }
 
 fn first_line(s: &str) -> String {
@@ -190,6 +249,8 @@ mod tests {
         assert_eq!(h.fault(), Some(Fault::Lost("reset".into())));
         c.mark(Fault::Lost("later".into()));
         assert_eq!(h.fault().map(|f| f.to_string()).as_deref(), Some("GPU device lost: reset"));
+        // A recorded loss is not wgpu reporting the device lost (#3438).
+        assert!(!h.device_lost());
     }
 
     #[test]

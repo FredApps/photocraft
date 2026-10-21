@@ -1746,6 +1746,8 @@ layerLabel	Magenta	Bíbor
 	Clone source {n} ({key}-click with Clone Stamp to set)	Klónozási forrás: {n} (beállítás: {key}+kattintás a klónozó bélyegzővel)
 	Close Tab Group	Lapcsoport bezárása
 	Collapse Panel Group	Panelcsoport összecsukása
+	Collapse to Icons	Összecsukás ikonokká
+	Expand Panels	Panelek kibontása
 	Color & Swatches	Szín és színminták
 	Conform	Nyújtás
 	Create a new group	Új csoport létrehozása
@@ -2076,7 +2078,7 @@ navigator	Zoom	Nagyítás mértéke
 	Distortion	Torzítás
 	Dither	Árnyalatkeverés
 	Double Line	Kettős vonal
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Húzással kényszert adhatsz a képhez; Shift: vízszintes/függőleges; jobb kattintás: törlés.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Húzással kényszert adhatsz a képhez; Shift: vízszintes/függőleges; jobb kattintás egy kényszeren: módosítás vagy törlés.
 	Dry Brush	Száraz ecset
 	Dust & Scratches	Por és karcolások
 	Dynamic color sliders	Dinamikus színcsúszkák
@@ -2348,6 +2350,7 @@ navigator	Zoom	Nagyítás mértéke
 	Select:	Kijelölés:
 	Selection	Kijelölés
 	Selection Preview:	Kijelölés előnézete:
+	Cryptomatte Selection	Cryptomatte-kijelölés
 	Selections	Kijelölések
 	Selective Color	Szelektív szín
 	Sepia	Szépia
@@ -4045,6 +4048,7 @@ cameraRaw	Yellow	Sárga
 	Vanishing Point: click four corners to create a plane	Enyészpont: sík létrehozásához kattints a négy sarokra
 	Response curve	Válaszgörbe
 	Show home recent files	Legutóbbi fájlok megjelenítése a kezdőképernyőn
+	Frequency Separation…	Frekvenciaszétválasztás…
 	Clear Brush Controls	Ecsetvezérlők törlése
 	Reset All Locked Settings	Összes zárolt beállítás visszaállítása
 	Copy Texture to Other Tools	Textúra másolása más eszközökre
@@ -4072,6 +4076,7 @@ cameraRaw	Yellow	Sárga
 @plural	{n} action|{n} actions	{n} művelet
 	Object Finder	Objektumkereső
 	No object found there — drag a rectangle around it	Ott nem található objektum – húzz köré egy téglalapot
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Az aktív rétegnek itt nincsenek képpontjai – kapcsold be a Mintavétel minden rétegből beállítást, vagy válassz képpontokat tartalmazó réteget
 	Drag to pan · Scroll to zoom · Double-click to fit	Húzás: mozgatás · Görgetés: nagyítás · Dupla kattintás: igazítás
 	Gradient Preset Options	Színátmenet-előbeállítás beállításai
 	Import .GRD	.GRD importálása
@@ -4168,6 +4173,7 @@ cameraRaw	Yellow	Sárga
 	GPU Memory Full	GPU-memória megtelt
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	A rétegeknek {needed} GPU-memória kell, és {budget} foglalhatnak, ezért a teljes dokumentumot újrarajzoló szerkesztések a CPU-n futnak. Kattints a GPU-memória beállításához.
 	GPU memory budget: {budget}	GPU-memóriakeret: {budget}
+	Graphics memory: {size}	Grafikus memória: {size}
 	This document's layers: {needed} of {budget} for layers	A dokumentum rétegei: {needed} / {budget} a rétegeknek
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	A dokumentum rétegeinek {needed} kell, de {budget} foglalhatnak: a teljes dokumentum újrarajzolása a CPU-n fut
 	GPU Memory (MB, 0 = Automatic)	GPU-memória (MB, 0 = Automatikus)

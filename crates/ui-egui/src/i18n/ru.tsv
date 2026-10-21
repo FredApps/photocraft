@@ -1505,6 +1505,8 @@
 	Collapse	Свернуть
 	Expand	Развернуть
 	Collapse Panel Group	Свернуть группу панелей
+	Collapse to Icons	Свернуть в значки
+	Expand Panels	Развернуть панели
 	Expand Panel Group	Развернуть группу панелей
 	Close Tab Group	Закрыть группу вкладок
 
@@ -1583,7 +1585,7 @@
 	Click to restore the current colour	Щёлкните, чтобы восстановить текущий цвет
 	Click with the Note tool to add a note.	Щёлкните инструментом «Заметки», чтобы добавить заметку.
 	Drag a rectangle around the object	Обведите объект прямоугольником
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Перетащите по изображению, чтобы добавить ограничение; Shift — горизонталь/вертикаль; правый клик — удалить.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Перетащите по изображению, чтобы добавить ограничение; Shift — горизонталь/вертикаль; щелчок правой кнопкой по ограничению — изменить или удалить.
 	Drag the arrow to set the angle, the dots to set the roundness	Перетащите стрелку, чтобы задать угол, и точки — круглость
 	Create new pattern from the selection	Создать новый паттерн из выделения
 	Create new gradient	Создать новый градиент
@@ -2704,6 +2706,7 @@ cameraRaw	Roughness	Неровность
 	Set White Point	Задать точку белого
 	Unavailable in this color mode	Недоступно в этом цветовом режиме
 	Selection Preview:	Просмотр выделения:
+	Cryptomatte Selection	Выделение Cryptomatte
 	Black Matte	На чёрном фоне
 	White Matte	На белом фоне
 	Quick Mask	Быстрая маска
@@ -2760,6 +2763,7 @@ fontWeight	Italic	Курсив
 	Out of gamut for printing: click for the nearest printable colour	Вне цветового охвата печати: щёлкните, чтобы выбрать ближайший печатаемый цвет
 	Not a web colour: click for the nearest web colour	Не веб-цвет: щёлкните, чтобы выбрать ближайший веб-цвет
 	Color to Alpha…	Цвет в альфа-канал…
+	Frequency Separation…	Частотное разложение…
 	Transparency Threshold	Порог прозрачности
 	Opacity Threshold	Порог непрозрачности
 	PhotoCraft — Screen Color Picker	PhotoCraft — Пипетка цвета экрана
@@ -3087,6 +3091,7 @@ curves	Smooth	Сгладить
 	Light Gray	Светло-серый
 	Object Finder	Поиск объектов
 	No object found there — drag a rectangle around it	Объект не найден — обведите его прямоугольником
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	В активном слое здесь нет пикселей — включите «По всем слоям» или выберите слой с пикселями
 	Remove after each stroke	Удалять после каждого штриха
 	Apply the removal ({key})	Применить удаление ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Штрихов к удалению: {n} (Enter применяет, Esc отменяет)
@@ -3226,6 +3231,7 @@ curves	Smooth	Сгладить
 	GPU Memory Full	Память GPU заполнена
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Слоям нужно {needed} памяти GPU, а занимать они могут {budget}, поэтому правки, перерисовывающие весь документ, выполняются на CPU. Нажмите, чтобы задать «Память GPU».
 	GPU memory budget: {budget}	Бюджет памяти GPU: {budget}
+	Graphics memory: {size}	Видеопамять: {size}
 	This document's layers: {needed} of {budget} for layers	Слои этого документа: {needed} из {budget} для слоёв
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Слоям этого документа нужно {needed}, но занимать они могут {budget}: весь документ перерисовывается на CPU
 	GPU Memory (MB, 0 = Automatic)	Память GPU (МБ, 0 = автоматически)

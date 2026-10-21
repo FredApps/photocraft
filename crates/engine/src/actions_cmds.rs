@@ -22,6 +22,8 @@ use serde_json::{Value, json};
 use crate::commands::CommandSpec;
 use crate::{EngineError, Result, Session};
 
+mod json_file;
+
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
 }
@@ -98,6 +100,10 @@ pub struct ActionState {
     /// Bumped whenever `list` changes, so the preset store can skip unchanged writes.
     #[serde(skip)]
     pub rev: u64,
+    /// Bumped by each `actions.record`, so a background job knows whether the recording it was
+    /// started in is still the one running when its result lands.
+    #[serde(skip)]
+    pub take: u64,
 }
 
 impl ActionState {
@@ -112,7 +118,9 @@ pub fn replayable(id: &str) -> bool {
     // Again and Again on a Copy journal their concrete steps (`edit.transform`, after
     // `layer.duplicate` for the copy) and record those: the wrappers look up the last transform in
     // the journal, so they fail where no transform ran yet, e.g. an action played in a new session.
-    id == "actions.play"
+    // A Conditional is recorded with its predicate, not the branch it happened to play (or none),
+    // so playback evaluates the condition again on the current document (#7198, #7238).
+    matches!(id, "actions.play" | "actions.conditional")
         || (!id.starts_with("actions.")
             // Browse executes its steps through Session::execute, so those concrete
             // commands are already journaled. Recording the wrapper as well replays
@@ -126,6 +134,17 @@ pub fn replayable(id: &str) -> bool {
 /// instead.
 pub fn shell_save_command(id: &str) -> bool {
     matches!(id, "file.save" | "file.saveAs" | "file.saveACopy")
+}
+
+/// The failure for a played Save step whose document `target` (the one active when the step
+/// started) is no longer open: a Save Document script event closed it. Playback stops there, so
+/// the next step without a document, such as the Close half of an imported Close with Save: Yes,
+/// doesn't act on whichever document is active now (#7367).
+pub fn save_target_closed(s: &Session, id: &str, target: Option<photocraft_doc::DocId>) -> Option<String> {
+    let target = target.filter(|_| shell_save_command(id))?;
+    (!s.documents().iter().any(|d| d.doc.id == target)).then(|| {
+        "the document was closed during the save (by a Save Document script event); playback stopped so later steps don't act on another document".into()
+    })
 }
 
 /// View-only menu commands recorded by the desktop shell. Headless playback reports
@@ -287,6 +306,7 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
         s.actions.list.len() - 1
     };
     s.actions.recording = Some((s.journal.len(), idx));
+    s.actions.take = s.actions.take.wrapping_add(1);
     let name = s.actions.list.get(idx).map(|a| a.name.clone()).unwrap_or_default();
     Ok(json!({"action": name, "index": idx}))
 }
@@ -322,6 +342,12 @@ fn stop(s: &mut Session, _p: &Value) -> Result<Value> {
     Ok(json!({"action": action.name, "steps": action.steps.len()}))
 }
 
+/// A step Photoshop plays as a silent no-op although its menu item is greyed: Deselect with an
+/// open document and nothing selected (actions often start with it to clear any selection, #6744).
+fn noop_step(s: &Session, id: &str) -> bool {
+    id == "select.deselect" && s.active().is_some_and(|d| d.doc.selection.is_none())
+}
+
 fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<Value>) {
     let mut ran = 0u64;
     let mut failed = None;
@@ -331,6 +357,10 @@ fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<V
         {
             failed = Some(json!({"step": i, "id": id, "error": e.to_string()}));
             break;
+        }
+        if noop_step(s, id) {
+            ran += 1;
+            continue;
         }
         match s.execute(id, params.clone()) {
             Ok(value) => {
@@ -611,6 +641,26 @@ fn set_color(s: &mut Session, p: &Value) -> Result<Value> {
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
+            id: "actions.import",
+            label: "Load Actions…",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"data":str} → {imported, skipped, actions:[names]}. Append version 1 Actions JSON, retarget nested calls, and rename conflicts; unchanged reimports do nothing."##,
+            enabled: always,
+            run: json_file::import,
+            journal: false,
+        },
+        CommandSpec {
+            id: "actions.export",
+            label: "Save Actions…",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"path":str?} → {count, bytes, data?:JSON string, path?}. Export version 1 Actions JSON, preserving disabled steps, dialog toggles and sets."##,
+            enabled: always,
+            run: json_file::export,
+            journal: false,
+        },
+        CommandSpec {
             id: "actions.move",
             label: "Move Action or Step",
             menu: &[],
@@ -720,6 +770,27 @@ mod tests {
 
     fn pixel(s: &Session, layer: usize, x: i32, y: i32) -> Vec<f32> {
         s.active().unwrap().doc.layers[layer].surface().unwrap().pixel(x, y)
+    }
+
+    #[test]
+    fn deselect_with_nothing_selected_is_a_noop_in_playback() {
+        // #6744: imported actions often start with Deselect; with no selection Photoshop plays on.
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+        let before = s.active().unwrap().history.past_len();
+        // Outside playback the command stays disabled, like Photoshop's greyed menu item.
+        assert!(s.execute("select.deselect", json!({})).is_err());
+        assert!(s.active().unwrap().doc.selection.is_none());
+        assert_eq!(s.active().unwrap().history.past_len(), before, "rejection adds no history step");
+        let deselect = crate::commands::find("select.deselect").unwrap();
+        assert_eq!((deselect.run)(&mut s, &json!({})).unwrap(), Value::Null);
+        assert_eq!(s.active().unwrap().history.past_len(), before, "no history step");
+
+        let steps = vec![("select.deselect".to_string(), json!({})), ("layer.new.layer".to_string(), json!({"name": "A"}))];
+        s.actions.list.push(Action::new("Clear", steps));
+        let played = s.execute("actions.play", json!({"action": 0})).unwrap();
+        assert_eq!(played["ran"], 2, "{played}");
+        assert_eq!(s.active().unwrap().doc.layers.last().unwrap().name, "A");
     }
 
     #[test]

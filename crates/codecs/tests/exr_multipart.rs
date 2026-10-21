@@ -277,16 +277,25 @@ fn flat_decode_rejects_rgb_split_between_groups() {
 
 #[test]
 fn auto_pick_and_probe_skip_incoherent_rgb_parts() {
-    let bytes = write_image(vec![
-        layer_f32("split", Compression::ZIP1, &[("aaa.R", vec![9.0; 4]), ("bbb.G", vec![8.0; 4]), ("ccc.B", vec![7.0; 4])]),
-        layer_f32("luminance", Compression::ZIP1, &[("Y", vec![0.5; 16]), ("A", vec![0.75; 16])]),
-    ]);
-    let parts = exr_info(&bytes, &Limits::default()).unwrap();
-    assert_eq!(parts.iter().map(|part| part.color_rank()).collect::<Vec<_>>(), [0, 2]);
-    assert_eq!(probe_size(&bytes).unwrap(), (4, 4));
-    let img = decode(&bytes).unwrap();
-    assert_eq!((img.width(), img.height(), img.layout()), (4, 4, ChannelLayout::GrayA));
-    assert_eq!(img.to_f32_samples().unwrap(), [0.5, 0.75].repeat(16));
+    // The shared display canvas is independent of each part's data window. Test both an
+    // unclipped 4x4 canvas and the 2x2 canvas that clips the selected luminance part (#6271).
+    for edge in [2usize, 4] {
+        let layers = vec![
+            layer_f32("split", Compression::ZIP1, &[("aaa.R", vec![9.0; 4]), ("bbb.G", vec![8.0; 4]), ("ccc.B", vec![7.0; 4])]),
+            layer_f32("luminance", Compression::ZIP1, &[("Y", vec![0.5; 16]), ("A", vec![0.75; 16])]),
+        ];
+        let image = Image::from_layers(ImageAttributes::new(IntegerBounds::new((0, 0), (edge, edge))), layers);
+        let mut out = std::io::Cursor::new(Vec::new());
+        image.write().to_buffered(&mut out).expect("synthetic EXR writes");
+        let bytes = out.into_inner();
+        let parts = exr_info(&bytes, &Limits::default()).unwrap();
+        assert_eq!(parts.iter().map(|part| part.color_rank()).collect::<Vec<_>>(), [0, 2]);
+        assert_eq!((parts[1].width, parts[1].height), (4, 4), "selected part keeps its data-window size");
+        assert_eq!(probe_size(&bytes).unwrap(), (edge as u32, edge as u32));
+        let img = decode(&bytes).unwrap();
+        assert_eq!((img.width(), img.height(), img.layout()), (edge as u32, edge as u32, ChannelLayout::GrayA));
+        assert_eq!(img.to_f32_samples().unwrap(), [0.5, 0.75].repeat(edge * edge));
+    }
 }
 
 #[test]

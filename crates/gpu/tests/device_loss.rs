@@ -1,6 +1,7 @@
 //! The compositor on a lost device (#243): renders return `Unsupported` (so callers use the CPU
-//! compositor) instead of panicking with "Buffer 'pc_compose_uniforms' is invalid". Skips when no
-//! GPU adapter exists.
+//! compositor) instead of panicking with "Buffer 'pc_compose_uniforms' is invalid". Also covers a
+//! caught validation error on a watched device, which must fault the health flag so callers stop
+//! issuing GPU work. Skips when no GPU adapter exists.
 
 use photocraft_color::{Color, ColorMode, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent};
@@ -82,6 +83,28 @@ fn health_wait_on_a_destroyed_device_is_safe() {
     assert!(!health.wait(&device, None));
 }
 
+/// #3438: only wgpu reporting the device lost counts as a real loss. A fault recorded by hand (a
+/// simulated loss, or an uncaptured error that names one) leaves the device usable, and
+/// [`DeviceHealth::probe`] keeps polling it so a later real loss is still noticed.
+#[test]
+fn only_wgpu_reports_a_real_device_loss() {
+    let _lock = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some((_adapter, device, _queue)) = device() else { return };
+    let health = DeviceHealth::watch(&device);
+    health.probe(&device);
+    assert!(health.is_ok() && !health.device_lost());
+    health.mark(Fault::Lost("simulated".into()));
+    health.probe(&device);
+    assert!(!health.is_ok());
+    assert!(!health.device_lost(), "a recorded fault is not a real loss");
+    device.destroy();
+    health.probe(&device);
+    assert!(health.device_lost(), "a destroyed device is lost: {:?}", health.fault());
+    // Once lost, probing is a no-op rather than another caught panic.
+    health.probe(&device);
+    assert!(health.device_lost());
+}
+
 fn assert_unwatched_destroyed_device(encode_only: bool) {
     let _lock = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some((adapter, device, queue)) = device() else { return };
@@ -161,6 +184,34 @@ fn a_captured_render_error_preserves_the_device_for_a_later_render() {
     for (cpu, gpu) in expected.px[0].iter().zip(out[0]) {
         assert!((cpu - gpu).abs() <= 1.0 / 255.0, "the healthy GPU control differs: {cpu} vs {gpu}");
     }
+}
+
+#[test]
+fn a_watched_validation_error_faults_health_instead_of_panicking() {
+    let _lock = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some((adapter, device, queue)) = device() else { return };
+    let Ok(mut comp) = Compositor::try_new_with_format(&device, Compositor::preferred_acc_format(&adapter)) else { return };
+    let health = DeviceHealth::watch(&device);
+    comp.set_health(health.clone());
+    let d = doc();
+    assert!(health.is_ok(), "a fresh watched device starts healthy");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        comp.render(&device, &queue, &d, d.bounds(), |_, _| {
+            // A buffer past the device's valid limit is rejected synchronously, so the error
+            // reaches the compositor's error scope and never the uncaptured-error callback a
+            // watched device would otherwise record it with.
+            let _ = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("synthetic_invalid_buffer"),
+                size: device.limits().max_buffer_size + 1,
+                usage: wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        })
+    }));
+    assert!(result.is_ok(), "a caught validation error must return Err instead of reaching wgpu's panic handler");
+    assert!(result.unwrap().is_err(), "the invalid buffer must fail this render");
+    assert!(!health.is_ok(), "the caught error must fault the device's health so callers stop issuing GPU work");
+    assert!(health.fault().is_some(), "the fault must be reportable");
 }
 
 fn assert_recovery_after_invalid_encoder(encode_only: bool) {

@@ -818,6 +818,22 @@
 	Split Warp Vertically	垂直分割变形
 	Statistics…	统计…
 	Refine Strokes	调整描边
+# Counted status and panel messages
+@plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	已将 {n} 个色板导出到 {file}
+@plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	已从 {file} 导入 {n} 个色板
+@plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	已从 {group} 导入 {n} 个画笔
+@plural	Played {n} step|Played {n} steps	已播放 {n} 个步骤
+@plural	{n} step|{n} steps	{n} 个步骤
+@plural	Saved for Web: {n} file|Saved for Web: {n} files	已存储为 Web 所用格式：{n} 个文件
+@plural	Updated {n} linked smart object changed on disk|Updated {n} linked smart objects changed on disk	已更新 {n} 个在磁盘上更改过的链接智能对象
+@plural	{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.|{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.	此图层复合记录的 {n} 个图层已被删除。请更新图层复合，或清除警告。
+@plural	{n} plane|{n} planes	{n} 个平面
+@plural	{n} preset|{n} presets	{n} 个预设
+@plural	{n} sample point removed|{n} sample points removed	已移除 {n} 个取样点
+@plural	{n} slice|{n} slices	{n} 个切片
+@plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning}（另有 {n} 条画笔预设警告）
+@plural	{what} with {n} warning|{what} with {n} warnings	{what}，含 {n} 条警告
+
 @plural	{n} item|{n} items	{n} 项
 	Auto	自动
 	(print to the printer)	（输出到打印机）
@@ -1098,7 +1114,7 @@
 	Done	完成
 	Dots	点
 	Drag a rectangle around the object	围绕对象拖出矩形
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	在图像上拖动以添加约束；按 Shift 保持水平或垂直；右键单击删除。
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	在图像上拖动以添加约束；按 Shift 保持水平或垂直；右键单击约束可更改或删除。
 	Drag to move the active shape's path or the Work Path	拖动以移动当前形状的路径或工作路径
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	单击：选择锚点 · 拖动：移动锚点、手柄或线段 · {shift}-单击：添加 · {alt}-单击：整个子路径
 	Draw with the Pen tool (P) or make a work path from a selection.	使用钢笔工具（P）绘制，或从选区创建工作路径。
@@ -2090,6 +2106,8 @@
 	Collapse	折叠
 	Collapse All Groups	折叠所有组
 	Collapse Panel Group	折叠面板组
+	Collapse to Icons	折叠为图标
+	Expand Panels	展开面板
 	Collapse group  (⌥-click: all groups)	折叠组  (⌥-单击：所有组)
 	Create new brush from the current settings	根据当前设置创建新画笔
 	Create new brush from these settings	根据这些设置创建新画笔
@@ -2448,6 +2466,7 @@ cameraRaw	Blending	混合
 	Set White Point	设置白场
 	Unavailable in this color mode	此颜色模式下不可用
 	Selection Preview:	选区预览：
+	Cryptomatte Selection	Cryptomatte 选区
 	Black Matte	黑色背景
 	White Matte	白色背景
 
@@ -2504,6 +2523,7 @@ fontWeight	Italic	斜体
 	Out of gamut for printing: click for the nearest printable colour	超出打印色域：单击使用最接近的可打印颜色
 	Not a web colour: click for the nearest web colour	不是 Web 颜色：单击使用最接近的 Web 颜色
 	Color to Alpha…	颜色转为 Alpha…
+	Frequency Separation…	频率分离…
 	Transparency Threshold	透明度阈值
 	Opacity Threshold	不透明度阈值
 	PhotoCraft — Screen Color Picker	PhotoCraft — 屏幕取色器
@@ -2758,6 +2778,7 @@ curves	Smooth	平滑
 	Stop	停止
 	Object Finder	对象查找程序
 	No object found there — drag a rectangle around it	那里未找到对象 — 请在其周围拖动矩形
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	当前图层在此处没有像素 — 请打开“对所有图层采样”或选择有像素的图层
 	Remove after each stroke	每次描边后移除
 	Apply the removal ({key})	应用移除 ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	待移除的描边：{n}（Enter 应用，Esc 取消）
@@ -2872,6 +2893,7 @@ curves	Smooth	平滑
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} 由系统保留，无法指定。
 	Low-Latency Drawing (vsync off, applies at next launch)	低延迟绘画（关闭垂直同步，下次启动时生效）
 # Free Transform: a new layer while the box is open (#5859)
+	Reference point location	参考点位置
 	Free Transform is still being applied; try again when it has finished.	自由变换仍在应用中；请在完成后重试。
 	The transform couldn't be applied.	无法应用变换。
 # Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
@@ -2880,6 +2902,7 @@ curves	Smooth	平滑
 	GPU Memory Full	GPU 内存已满
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	图层需要 {needed} GPU 内存，但只能占用 {budget}，因此重绘整个文档的编辑会在 CPU 上进行。点击以设置 GPU 内存。
 	GPU memory budget: {budget}	GPU 内存预算：{budget}
+	Graphics memory: {size}	显存：{size}
 	This document's layers: {needed} of {budget} for layers	此文档的图层：图层可用 {budget} 中的 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	此文档的图层需要 {needed}，但只能占用 {budget}：整个文档的重绘使用 CPU
 	GPU Memory (MB, 0 = Automatic)	GPU 内存（MB，0 = 自动）

@@ -1089,7 +1089,7 @@
 	Done	Fatto
 	Dots	Punti
 	Drag a rectangle around the object	Trascina un rettangolo attorno all'oggetto
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Trascina sull'immagine per aggiungere un vincolo; Maiusc per orizz/vert; clic destro per eliminare.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Trascina sull'immagine per aggiungere un vincolo; Maiusc per orizz/vert; clic destro su un vincolo per modificarlo o eliminarlo.
 	Drag to move the active shape's path or the Work Path	Trascina per spostare il tracciato forma attiva o il Tracciato di lavoro
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Clic: seleziona punto · Trascina: sposta punto, maniglia o segmento · {shift}-clic: aggiungi · {alt}-clic: intero sottotracciato
 	Draw with the Pen tool (P) or make a work path from a selection.	Disegna con Penna (P) o crea un tracciato di lavoro da una selezione.
@@ -2074,6 +2074,8 @@
 	Collapse	Comprimi
 	Collapse All Groups	Comprimi tutti i gruppi
 	Collapse Panel Group	Comprimi gruppo pannelli
+	Collapse to Icons	Comprimi in icone
+	Expand Panels	Espandi pannelli
 	Collapse group  ({key}-click: all groups)	Comprimi gruppo ({key}-clic: tutti i gruppi)
 	Create new brush from the current settings	Crea nuovo pennello da impostazioni correnti
 	Create new brush from these settings	Crea nuovo pennello da queste impostazioni
@@ -2505,6 +2507,7 @@ cameraRaw	Amount	Quantità
 	Set White Point	Imposta punto bianco
 	Unavailable in this color mode	Non disponibile in questa modalità colore
 	Selection Preview:	Anteprima selezione:
+	Cryptomatte Selection	Selezione Cryptomatte
 	Black Matte	Sfondo nero
 	White Matte	Sfondo bianco
 
@@ -2560,6 +2563,7 @@ fontWeight	Italic	Corsivo
 	Out of gamut for printing: click for the nearest printable colour	Fuori gamma di stampa: fai clic per il colore stampabile più vicino
 	Not a web colour: click for the nearest web colour	Non è un colore web: fai clic per il colore web più vicino
 	Color to Alpha…	Colore ad alfa…
+	Frequency Separation…	Separazione delle frequenze…
 	Transparency Threshold	Soglia di trasparenza
 	Opacity Threshold	Soglia di opacità
 	PhotoCraft — Screen Color Picker	PhotoCraft — Selettore colore schermo
@@ -4101,6 +4105,7 @@ navigator	Zoom	Zoom
 	{shortcut} is already in use by {commands} and will be removed from it when you click OK.	{shortcut} è già usata da {commands} e verrà rimossa quando fai clic su OK.
 	Object Finder	Ricerca oggetti
 	No object found there — drag a rectangle around it	Nessun oggetto trovato lì: trascina un rettangolo intorno
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Il livello attivo non ha pixel qui: attiva Campiona tutti i livelli o seleziona un livello con pixel
 	Remove after each stroke	Rimuovi dopo ogni tratto
 	Apply the removal ({key})	Applica la rimozione ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Tratti da rimuovere: {n} (Invio applica, Esc annulla)
@@ -4373,6 +4378,7 @@ shape	Appearance	Aspetto
 	GPU Memory Full	Memoria GPU piena
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	I livelli richiedono {needed} di memoria GPU e possono occuparne {budget}, quindi le modifiche che ridisegnano tutto il documento lo fanno sulla CPU. Fai clic per impostare Memoria GPU.
 	GPU memory budget: {budget}	Budget di memoria GPU: {budget}
+	Graphics memory: {size}	Memoria grafica: {size}
 	This document's layers: {needed} of {budget} for layers	Livelli di questo documento: {needed} su {budget} per i livelli
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	I livelli di questo documento richiedono {needed} ma possono occupare {budget}: i ridisegni dell'intero documento usano la CPU
 	GPU Memory (MB, 0 = Automatic)	Memoria GPU (MB, 0 = Automatico)

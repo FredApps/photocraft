@@ -11,6 +11,7 @@ use egui::{CursorIcon, CustomCursorImage, Painter, Pos2, Stroke, Vec2, vec2};
 
 use crate::canvas::ViewXform;
 
+mod bucket;
 mod hand;
 mod zoom;
 
@@ -34,6 +35,9 @@ enum Shape {
     Zoom { out: bool },
     Outline { rings: Arc<[Vec<Vec2>]>, centre: bool },
 }
+
+/// The visible canvas crosshair used by the Gradient tool and other standard crosshair tools.
+const STANDARD_CROSSHAIR: Shape = Shape::Crosshair { length: 8.0, gap: 2.0 };
 
 #[derive(Clone)]
 struct Cached {
@@ -70,6 +74,11 @@ impl egui::plugin::Plugin for CursorLifecycle {
     }
 }
 
+/// The bucket artwork and its exact fill crosshair move as one native cursor or painted image.
+pub(crate) fn bucket(painter: &Painter, at: Pos2) -> Result<CursorIcon, String> {
+    bucket::show(painter, at)
+}
+
 pub(crate) fn circle(painter: &Painter, at: Pos2, radius: f32, centre: bool) -> CursorIcon {
     show(painter, at, Shape::Circle { radius, centre })
 }
@@ -78,8 +87,23 @@ pub(crate) fn crosshair(painter: &Painter, at: Pos2, length: f32, gap: f32) -> C
     show(painter, at, Shape::Crosshair { length, gap })
 }
 
+pub(crate) fn standard_crosshair(painter: &Painter, at: Pos2) -> CursorIcon {
+    show(painter, at, STANDARD_CROSSHAIR.clone())
+}
+
 pub(crate) fn outline(painter: &Painter, at: Pos2, rings: Vec<Vec<Vec2>>, centre: bool) -> CursorIcon {
     show(painter, at, Shape::Outline { rings: rings.into(), centre })
+}
+
+/// Paints [`circle`]'s ring around `at` instead of showing it as an OS cursor bitmap, which can
+/// only sit on the pointer.
+pub(crate) fn paint_circle(painter: &Painter, at: Pos2, radius: f32) {
+    paint(painter, at, &Shape::Circle { radius, centre: false });
+}
+
+/// Paints [`outline`]'s rings around `at`, as [`paint_circle`] paints a ring.
+pub(crate) fn paint_outline(painter: &Painter, at: Pos2, rings: Vec<Vec<Vec2>>) {
+    paint(painter, at, &Shape::Outline { rings: rings.into(), centre: false });
 }
 
 /// The Pen's pointer over the anchor a click would close the path on (#4596): the centre cross
@@ -150,6 +174,12 @@ fn hand_with(ctx: &egui::Context, closed: bool, bitmap: bool) -> CursorIcon {
         return CursorIcon::None;
     }
     if closed { CursorIcon::Grabbing } else { CursorIcon::Grab }
+}
+
+/// The bitmap [`hand`] hands Windows, for tests that check the Hand's pointer on every platform.
+#[cfg(test)]
+pub(crate) fn hand_bitmap(ctx: &egui::Context, closed: bool) -> Option<CustomCursorImage> {
+    rasterize(&Shape::Hand { closed }, native_scale(ctx))
 }
 
 /// The Zoom tool's pointer: a magnifier with a plus, or a minus when it zooms `out`. winit maps

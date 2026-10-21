@@ -182,6 +182,16 @@ pub fn color_from_desc(d: &Descriptor) -> Option<Color> {
             Color::rgb(g("Rd  ")? / 255.0, g("Grn ")? / 255.0, g("Bl  ")? / 255.0)
         }
     })
+    .map(|c| with_pc_alpha(c, d))
+}
+
+/// PSD colour descriptors have no alpha. PhotoCraft writes `pcAl` (0..1) so shape fill
+/// opacity round-trips (#6180). Photoshop ignores the key.
+fn with_pc_alpha(mut c: Color, d: &Descriptor) -> Color {
+    if let Some(a) = num(d.get("pcAl")) {
+        c.alpha = (a as f32).clamp(0.0, 1.0);
+    }
+    c
 }
 
 /// [`Color`] → descriptor in its own model.
@@ -202,6 +212,13 @@ pub fn color_to_desc(c: &Color) -> Descriptor {
             Descriptor::new("RGBC").with("Rd  ", d(rgb[0] * 255.0)).with("Grn ", d(rgb[1] * 255.0)).with("Bl  ", d(rgb[2] * 255.0))
         }
     }
+}
+
+/// Solid shape fills have no other alpha slot. Write `pcAl` only here so gradient stops
+/// keep using `Trns` alone (#6180).
+fn color_to_desc_with_pc_alpha(c: &Color) -> Descriptor {
+    let desc = color_to_desc(c);
+    if c.alpha.is_finite() && (c.alpha - 1.0).abs() > 1e-6 { desc.with("pcAl", Value::Double(f64::from(c.alpha.clamp(0.0, 1.0)))) } else { desc }
 }
 
 pub(crate) fn get_desc<'a>(d: &'a Descriptor, key: &str) -> Option<&'a Descriptor> {
@@ -499,7 +516,7 @@ pub fn write_fill(f: &Fill) -> ([u8; 4], Vec<u8>) {
 /// A fill as (block key, descriptor with class `null`).
 pub fn fill_to_desc(f: &Fill) -> ([u8; 4], Descriptor) {
     match f {
-        Fill::Solid(c) => (*b"SoCo", Descriptor::new("null").with("Clr ", Value::Descriptor(color_to_desc(c)))),
+        Fill::Solid(c) => (*b"SoCo", Descriptor::new("null").with("Clr ", Value::Descriptor(color_to_desc_with_pc_alpha(c)))),
         Fill::Gradient { stops, angle, scale, style, reverse, opacity_stops, midpoints, offset, dither, align } => {
             let prc = |v: f32| Value::UnitFloat { unit: *b"#Prc", value: f64::from(v * 100.0) };
             let mut d = Descriptor::new("null")
@@ -577,7 +594,30 @@ pub fn parse_placed_warp(key: &[u8; 4], data: &[u8]) -> Option<photocraft_geom::
     }
     let d = data.get(8..).and_then(parse_prefix_versioned)?;
     // A split (quilt) warp is stored under `quiltWarp`; `warp` then holds no usable mesh.
-    warp_of(get_desc(&d, "quiltWarp").or_else(|| get_desc(&d, "warp"))?).flatten()
+    let warp = warp_of(get_desc(&d, "quiltWarp").or_else(|| get_desc(&d, "warp"))?).flatten()?;
+    Some(match source_size(&d) {
+        Some(size) => over_source(warp, size),
+        None => warp,
+    })
+}
+
+/// The source size (`Sz  `) of a `SoLd` / `SoLE` descriptor; `None` when absent, empty or not
+/// finite.
+fn source_size(d: &Descriptor) -> Option<(f64, f64)> {
+    let sz = get_desc(d, "Sz  ")?;
+    let (w, h) = (num(sz.get("Wdth"))?, num(sz.get("Hght"))?);
+    (w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0).then_some((w, h))
+}
+
+/// A placed layer's custom warp as Photoshop draws it: the mesh spans the source rect
+/// `0..w × 0..h`, whatever box the file's `bounds` give (#8227). `bounds` only frames the
+/// control points; reading the source through it shifts the contents by its offset on a
+/// re-render. Other styles are built from their box and keep it.
+pub(crate) fn over_source(mut warp: photocraft_geom::warp::Warp, (w, h): (f64, f64)) -> photocraft_geom::warp::Warp {
+    if warp.style == photocraft_geom::warp::WarpStyle::Custom {
+        warp.bounds = [0.0, 0.0, w, h];
+    }
+    warp
 }
 
 /// A `warp` or `quiltWarp` descriptor (the `SoLd` key, or the whole descriptor after a `PlLd`
@@ -992,6 +1032,43 @@ mod tests {
     }
 
     #[test]
+    fn color_descriptor_keeps_photocraft_alpha() {
+        use photocraft_color::Color;
+        use photocraft_doc::Fill;
+        let c = Color::rgba(0.2, 0.4, 0.6, 0.25);
+        let (k, d) = super::fill_to_desc(&Fill::Solid(c));
+        let Fill::Solid(back) = super::fill_from_desc(&k, &d).unwrap() else { panic!("solid") };
+        assert!((back.alpha - 0.25).abs() < 1e-5);
+        assert!((back.to_rgb()[0] - 0.2).abs() < 1e-3);
+        let (k, d) = super::fill_to_desc(&Fill::Solid(Color::rgb(1.0, 0.0, 0.0)));
+        let Fill::Solid(opaque) = super::fill_from_desc(&k, &d).unwrap() else { panic!("solid") };
+        assert!((opaque.alpha - 1.0).abs() < 1e-6);
+        assert!(super::color_to_desc(&c).get("pcAl").is_none(), "generic colour descriptors have no pcAl");
+    }
+
+    #[test]
+    fn gradient_stop_alpha_round_trips_once() {
+        use photocraft_color::Color;
+        use photocraft_doc::Fill;
+        let fill = Fill::Gradient {
+            stops: vec![(0.0, Color::rgba(1.0, 0.0, 0.0, 0.5)), (1.0, Color::WHITE)],
+            angle: 90.0,
+            scale: 1.0,
+            style: photocraft_doc::GradientStyle::Linear,
+            reverse: false,
+            opacity_stops: vec![],
+            midpoints: vec![],
+            offset: (0.0, 0.0),
+            dither: false,
+            align: true,
+        };
+        let (k, d) = super::fill_to_desc(&fill);
+        let Fill::Gradient { stops, opacity_stops, .. } = super::fill_from_desc(&k, &d).unwrap() else { panic!("grad") };
+        assert!((stops[0].1.alpha - 1.0).abs() < 1e-4, "colour alpha lives in Trns, not the stop colour");
+        assert!(opacity_stops.iter().any(|(_, a)| (*a - 0.5).abs() < 1e-3), "{opacity_stops:?}");
+    }
+
+    #[test]
     fn blending_ranges_map_to_blend_if() {
         use photocraft_doc::{BlendIf, BlendRange};
         use photocraft_psd::layer::BlendingRanges;
@@ -1100,6 +1177,45 @@ mod tests {
         assert_eq!(w.style, WarpStyle::Custom);
         assert_eq!(w.mesh.as_ref().unwrap().points[15], [67.0, 30.0]);
         assert!(parse_placed_warp(b"PlLd", &[0; 20]).is_none());
+    }
+
+    /// #8227: a custom warp whose `bounds` sit off the source rect (Photoshop wrote -425, -675 to
+    /// 2425, 2175 over a 2850 × 2850 source) still spans the source: its corners land on the
+    /// mesh's corner points. Read through `bounds`, the contents started 15 % / 24 % into the
+    /// mesh, and a re-render showed them shifted with their far edges cut off.
+    #[test]
+    fn offset_custom_warp_bounds_still_span_the_source() {
+        use photocraft_psd::descriptor::ObjectArray;
+        let e = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
+        let px = |v: f64| Value::UnitFloat { unit: *b"#Pxl", value: v };
+        let bounds = Descriptor::new("Rctn").with("Top ", px(-675.0)).with("Left", px(-425.0)).with("Btom", px(2175.0)).with("Rght", px(2425.0));
+        // An identity grid over the bounds, bent: the inner points pulled, one corner moved.
+        let (mut xs, mut ys) = (Vec::new(), Vec::new());
+        for j in 0..4 {
+            for i in 0..4 {
+                let inner = (1..3).contains(&i) && (1..3).contains(&j);
+                xs.push(-425.0 + f64::from(i) * 950.0 + if inner { 180.0 } else { 0.0 } - if i == 0 && j == 0 { 258.2 } else { 0.0 });
+                ys.push(-675.0 + f64::from(j) * 950.0 - if inner { 120.0 } else { 0.0 } - if i == 0 && j == 0 { 237.6 } else { 0.0 });
+            }
+        }
+        let mesh = Descriptor::new("null")
+            .with("Hrzn", Value::UnitFloats { unit: *b"#Pxl", values: xs.clone() })
+            .with("Vrtc", Value::UnitFloats { unit: *b"#Pxl", values: ys.clone() });
+        let warp = Descriptor::new("warp").with("warpStyle", e("warpStyle", "warpCustom")).with("bounds", Value::Descriptor(bounds)).with(
+            "customEnvelopeWarp",
+            Value::Descriptor(Descriptor::new("customEnvelopeWarp").with("meshPoints", Value::ObjectArray(ObjectArray { prefix: 16, body: mesh }))),
+        );
+        let size = Descriptor::new("Pnt ").with("Wdth", Value::Double(2850.0)).with("Hght", Value::Double(2850.0));
+        let d = Descriptor::new("null").with("Sz  ", Value::Descriptor(size)).with("warp", Value::Descriptor(warp));
+        let mut sold = b"soLD".to_vec();
+        sold.extend_from_slice(&4u32.to_be_bytes());
+        sold.extend(VersionedDescriptor::new(d).to_bytes());
+        let w = parse_placed_warp(b"SoLd", &sold).expect("a custom warp");
+        assert_eq!(w.bounds, [0.0, 0.0, 2850.0, 2850.0]);
+        for (x, y, k) in [(0.0, 0.0, 0), (2850.0, 0.0, 3), (0.0, 2850.0, 12), (2850.0, 2850.0, 15)] {
+            let (u, v) = w.map(x, y);
+            assert!((u - xs[k]).abs() < 1e-9 && (v - ys[k]).abs() < 1e-9, "source ({x}, {y}) at ({u}, {v}), mesh corner ({}, {})", xs[k], ys[k]);
+        }
     }
 
     #[test]

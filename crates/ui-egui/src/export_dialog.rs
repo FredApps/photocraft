@@ -15,7 +15,7 @@ use crate::state::DialogKind;
 use crate::theme::Tokens;
 use crate::{ExportSettings, PhotocraftApp};
 
-const FORMATS: [(&str, &str); 6] = [("png", "PNG"), ("jpg", "JPG"), ("webp", "WebP"), ("tif", "TIFF"), ("tga", "TGA"), ("ico", "ICO")];
+const FORMATS: [(&str, &str); 7] = [("png", "PNG"), ("jpg", "JPG"), ("webp", "WebP"), ("tif", "TIFF"), ("tga", "TGA"), ("ico", "ICO"), ("jxl", "JPEG XL")];
 
 /// Preferences ▸ remembered dialog settings: Export As writes the settings it was used with
 /// last under its command id and seeds the next dialog from them, as Fill, Liquify and the
@@ -307,14 +307,14 @@ fn scaled_size(w: f64, h: f64, scale: f64) -> (f64, f64) {
 }
 
 /// Largest side Export As will ask Image Size for. The same cap `image.imageSize` enforces.
-const MAX_PX: f64 = 300_000.0;
+pub(crate) const MAX_PX: f64 = 300_000.0;
 
 /// Pixel size, percent scale and whether the two sides stay linked.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct ExportSize {
-    width: f64,
-    height: f64,
-    scale: f64,
+pub(crate) struct ExportSize {
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+    pub(crate) scale: f64,
 }
 
 fn finite_px(v: f64) -> Result<f64, String> {
@@ -325,7 +325,7 @@ fn finite_px(v: f64) -> Result<f64, String> {
 }
 
 /// Percent scale applied to both sides. `scale` is a percent in 1..=1000.
-fn resize_from_scale(src_w: f64, src_h: f64, scale: f64) -> Result<ExportSize, String> {
+pub(crate) fn resize_from_scale(src_w: f64, src_h: f64, scale: f64) -> Result<ExportSize, String> {
     if !scale.is_finite() || !(1.0..=1000.0).contains(&scale) {
         return Err("scale must be within 1..=1000 percent".into());
     }
@@ -337,7 +337,7 @@ fn resize_from_scale(src_w: f64, src_h: f64, scale: f64) -> Result<ExportSize, S
 }
 
 /// An edited side. With `lock`, the other side keeps the source aspect; otherwise it stays.
-fn resize_from_side(src_w: f64, src_h: f64, width: f64, height: f64, lock: bool, edited_width: bool) -> Result<ExportSize, String> {
+pub(crate) fn resize_from_side(src_w: f64, src_h: f64, width: f64, height: f64, lock: bool, edited_width: bool) -> Result<ExportSize, String> {
     let src_w = src_w.max(1.0);
     let src_h = src_h.max(1.0);
     let (width, height) = if edited_width {

@@ -1483,6 +1483,8 @@
 	Collapse	Згорнути
 	Expand	Розгорнути
 	Collapse Panel Group	Згорнути групу панелей
+	Collapse to Icons	Згорнути до піктограм
+	Expand Panels	Розгорнути панелі
 	Expand Panel Group	Розгорнути групу панелей
 	Close Tab Group	Закрити групу вкладок
 
@@ -1561,7 +1563,7 @@
 	Click to restore the current colour	Клацніть, щоб відновити поточний колір
 	Click with the Note tool to add a note.	Клацніть інструментом «Нотатка», щоб додати нотатку.
 	Drag a rectangle around the object	Намалюйте прямокутник навколо об'єкта
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Перетягніть на зображенні, щоб додати обмеження; Shift для горизонталі/вертикалі; праве клацання для видалення.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Перетягніть на зображенні, щоб додати обмеження; Shift для горизонталі/вертикалі; клацніть правою кнопкою на обмеженні, щоб змінити або видалити його.
 	Drag the arrow to set the angle, the dots to set the roundness	Перетягніть стрілку, щоб установити кут, а точки — округлість
 	Create new pattern from the selection	Створити новий візерунок із виділення
 	Create new gradient	Створити новий градієнт
@@ -3284,6 +3286,7 @@ cameraRaw	Masking	Маскування
 	Resolve Missing Fonts	Усунути відсутні шрифти
 	Focus Area	Область фокуса
 	Select and Mask	Виділити та маскувати
+	Cryptomatte Selection	Виділення Cryptomatte
 	Border	Межа
 	Contract	Стиснути
 	Filter Gallery	Галерея фільтрів
@@ -3581,6 +3584,7 @@ cameraRaw	Masking	Маскування
 	101 by 101 Average	Середнє 101 × 101
 	All Layers No Adjustments	Усі шари без коригувань
 	Color to Alpha…	Колір у прозорість…
+	Frequency Separation…	Частотне розкладання…
 	Current & Below No Adjustments	Поточний і нижчі без коригувань
 	Not a web colour: click for the nearest web colour	Колір поза вебпалітрою: клацніть, щоб вибрати найближчий колір із неї
 	Now drag the selection onto another area	Тепер перетягніть виділення на іншу ділянку
@@ -3836,6 +3840,7 @@ curves	Smooth	Згладити
 	Light Gray	Світло-сірий
 	Object Finder	Пошук об’єктів
 	No object found there — drag a rectangle around it	Там не знайдено об’єкта — обведіть його прямокутником
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	В активному шарі тут немає пікселів — увімкніть «Зразок з усіх шарів» або виберіть шар із пікселями
 	Remove after each stroke	Видаляти після кожного штриха
 	Apply the removal ({key})	Застосувати видалення ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Штрихів для видалення: {n} (Enter застосовує, Esc скасовує)
@@ -3951,6 +3956,7 @@ curves	Smooth	Згладити
 	GPU Memory Full	Пам'ять GPU заповнена
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Шарам потрібно {needed} пам'яті GPU, а займати вони можуть {budget}, тому зміни, що перемальовують увесь документ, виконуються на CPU. Натисніть, щоб задати «Пам'ять GPU».
 	GPU memory budget: {budget}	Бюджет пам'яті GPU: {budget}
+	Graphics memory: {size}	Відеопам'ять: {size}
 	This document's layers: {needed} of {budget} for layers	Шари цього документа: {needed} з {budget} для шарів
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Шарам цього документа потрібно {needed}, але займати вони можуть {budget}: увесь документ перемальовується на CPU
 	GPU Memory (MB, 0 = Automatic)	Пам'ять GPU (МБ, 0 = автоматично)

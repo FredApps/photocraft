@@ -13,6 +13,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod cicp;
 mod codecs;
 mod error;
 pub mod exif_color;
@@ -25,7 +26,7 @@ pub mod orientation;
 pub mod resolution;
 pub mod source_settings;
 pub mod web;
-
+pub use crate::cicp::Cicp;
 pub use crate::codecs::exr_cryptomatte::{cryptomatte_id, cryptomatte_key, cryptomatte_preview_color};
 pub use crate::codecs::gif_frames::{AnimationFrame, MAX_GIF_FRAMES};
 pub use crate::codecs::png::{PngPalette, encode_indexed as encode_png_indexed, palette as png_palette, stereo as png_stereo};
@@ -46,7 +47,7 @@ pub use crate::resolution::{exif_resolution, export_exif, export_xmp, photoshop_
 pub use crate::source_settings::{WebpEncoding, jpeg_quality, webp_encoding};
 pub use half::f16;
 
-use crate::codecs::{dds, dpx, exr, fits, heif, jpeg, pcx, png, pnm, tiff, via_image, webp, xpm};
+use crate::codecs::{dds, dpx, exr, fits, heif, jpeg, jxl, pcx, photoshop_raw, png, pnm, tiff, via_image, webp, xpm};
 
 /// Detect the format and decode with default [`Limits`].
 pub fn decode(bytes: &[u8]) -> Result<Image, CodecError> {
@@ -67,7 +68,7 @@ pub fn decode_as(format: Format, bytes: &[u8]) -> Result<Image, CodecError> {
 /// Decode as a specific format.
 pub fn decode_as_with(format: Format, bytes: &[u8], opts: &DecodeOptions) -> Result<Image, CodecError> {
     // HEIF without the `heif` feature: its decoder stub says what is missing from this build.
-    if !caps(format).read && format != Format::Heif {
+    if !caps(format).read && !matches!(format, Format::Heif | Format::Jxl) {
         return Err(CodecError::unsupported(format, "decoding is not available for this format"));
     }
     let l = &opts.limits;
@@ -83,8 +84,10 @@ pub fn decode_as_with(format: Format, bytes: &[u8], opts: &DecodeOptions) -> Res
         Format::Fits => fits::decode(bytes, l),
         Format::Dpx => dpx::decode(bytes, l),
         Format::Cineon => dpx::decode_cineon(bytes, l),
+        Format::PhotoshopRaw => photoshop_raw::decode(bytes, l),
         Format::OpenExr => exr::decode(bytes, l),
         Format::Heif => heif::decode(bytes, l, opts.keep_orientation),
+        Format::Jxl => Err(CodecError::unsupported(format, "JPEG XL reading is not yet available; export is supported")),
         Format::Gif | Format::Bmp | Format::Tga | Format::Ico | Format::Qoi | Format::Hdr | Format::Avif => via_image::decode(format, bytes, l),
     }?;
     // Without a resolution of the format's own (PNG pHYs, TIFF tags, JPEG's metadata), the
@@ -139,6 +142,12 @@ pub fn bmp_palette(bytes: &[u8]) -> Result<Option<Vec<[u8; 3]>>, CodecError> {
     via_image::bmp_palette(bytes)
 }
 
+/// Encodes `indices` (row-major, one byte per pixel) as an 8-bit palette BMP with the colour
+/// table `palette` (1 to 256 entries). Used for Indexed Color documents; BMP has no transparency.
+pub fn encode_bmp_indexed(width: u32, height: u32, indices: &[u8], palette: &[[u8; 3]]) -> Result<Vec<u8>, CodecError> {
+    via_image::encode_bmp_indexed(width, height, indices, palette)
+}
+
 /// Lists the pages (image directories) of a TIFF or BigTIFF file without decoding pixels: the
 /// main IFD chain and its SubIFDs, each with its size, kind (page, reduced-resolution copy or
 /// mask) and storage. [`TiffInfo::default_page`] is the page [`decode`] opens.
@@ -170,6 +179,18 @@ pub fn tiff_orientation(bytes: &[u8]) -> u16 {
 /// absent, malformed or out of range, or the page does not exist.
 pub fn tiff_page_orientation(bytes: &[u8], page: usize) -> u16 {
     tiff::orientation(bytes, Some(page))
+}
+
+/// The EXIF block (`Metadata::exif`) of a camera raw built on TIFF (NEF, ARW, CR2, DNG,
+/// Panasonic RW2), for the image developed from it: IFD0's descriptive tags (make, model,
+/// date…) and the Exif and GPS directories, as a TIFF opens with. Orientation is not part of
+/// it, nor the Exif directory's pixel dimensions (the sensor's or the preview's size). When those
+/// were all its Exif directory held, the block is IFD0's tags alone, so the camera's make and
+/// model are still kept. `None` when the file is not built on a classic TIFF stream or has none
+/// of these tags.
+pub fn raw_exif(bytes: &[u8]) -> Option<Vec<u8>> {
+    let dirs = crate::codecs::tiff_exif::read_raw(bytes).filter(|d| d.has_directories() || !d.ifd0.is_empty())?;
+    Some(crate::codecs::tiff_exif::block(&dirs))
 }
 
 /// The limits check and the orientation, shared by every decoder.
@@ -264,8 +285,10 @@ pub fn encode(image: &Image, format: Format, opts: &EncodeOptions) -> Result<Vec
         Format::Fits => fits::encode(image, plan, opts),
         Format::Dpx => dpx::encode(image, plan, opts),
         Format::Cineon => Err(CodecError::unsupported(format, "Cineon is import-only; save as DPX, TIFF or EXR instead")),
+        Format::PhotoshopRaw => Err(CodecError::unsupported(format, "Photoshop Raw export needs width, depth and header options; save as TIFF or PNG instead")),
         Format::OpenExr => exr::encode(image, plan, opts),
         Format::Heif => Err(CodecError::unsupported(format, "encoding is not available in this build")),
+        Format::Jxl => jxl::encode(image, plan),
         Format::Gif | Format::Bmp | Format::Tga | Format::Ico | Format::Qoi | Format::Hdr | Format::Avif => via_image::encode(format, image, plan, opts),
     }
 }

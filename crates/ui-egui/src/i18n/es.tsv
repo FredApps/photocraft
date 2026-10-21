@@ -1094,7 +1094,7 @@
 	Done	Hecho
 	Dots	Puntos
 	Drag a rectangle around the object	Arrastre un rectángulo alrededor del objeto
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Arrastre sobre la imagen para añadir una restricción; Mayús para horizontal/vertical; clic derecho para eliminar.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Arrastre sobre la imagen para añadir una restricción; Mayús para horizontal/vertical; clic derecho en una restricción para cambiarla o eliminarla.
 	Drag to move the active shape's path or the Work Path	Arrastre para mover el trazado de la forma activa o el trazado de trabajo
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Clic: seleccionar punto · Arrastrar: mover punto, manejador o segmento · {shift}-clic: añadir · {alt}-clic: subtrazado completo
 	Draw with the Pen tool (P) or make a work path from a selection.	Dibuje con la herramienta Pluma (P) o cree un trazado de trabajo a partir de una selección.
@@ -2080,6 +2080,8 @@
 	Collapse	Contraer
 	Collapse All Groups	Contraer todos los grupos
 	Collapse Panel Group	Contraer grupo de paneles
+	Collapse to Icons	Contraer a iconos
+	Expand Panels	Expandir paneles
 	Collapse group  ({key}-click: all groups)	Contraer grupo  ({key}-clic: todos los grupos)
 	Create new brush from the current settings	Crear un pincel nuevo con los ajustes actuales
 	Create new brush from these settings	Crear un pincel nuevo con estos ajustes
@@ -2560,6 +2562,7 @@ fontWeight	Italic	Cursiva
 	Out of gamut for printing: click for the nearest printable colour	Fuera de la gama de impresión: haga clic para el color imprimible más cercano
 	Not a web colour: click for the nearest web colour	No es un color web: haga clic para el color web más cercano
 	Color to Alpha…	Color a alfa…
+	Frequency Separation…	Separación de frecuencias…
 	Transparency Threshold	Umbral de transparencia
 	Opacity Threshold	Umbral de opacidad
 	PhotoCraft — Screen Color Picker	PhotoCraft — Selector de color de pantalla
@@ -2602,6 +2605,7 @@ fontWeight	Italic	Cursiva
 	Crop Shield color	Color del escudo de recorte
 	Color Picker (Crop Shield Color)	Selector de color (Color del escudo de recorte)
 	From Center	Desde el centro
+	Cryptomatte Selection	Selección Cryptomatte
 	Link radii	Vincular radios
 	Star Ratio:	Relación de la estrella:
 	Create Rectangle	Crear rectángulo
@@ -2823,6 +2827,7 @@ curves	Smooth	Suavizar
 	Light Gray	Gris claro
 	Object Finder	Buscador de objetos
 	No object found there — drag a rectangle around it	No se encontró ningún objeto ahí; arrastra un rectángulo a su alrededor
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	La capa activa no tiene píxeles aquí; activa Muestrear todas las capas o selecciona una capa con píxeles
 	Remove after each stroke	Eliminar después de cada trazo
 	Apply the removal ({key})	Aplicar la eliminación ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Trazos por eliminar: {n} (Intro aplica, Esc cancela)
@@ -4214,6 +4219,7 @@ navigator	Zoom	Zoom
 	GPU Memory Full	Memoria de GPU llena
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Las capas necesitan {needed} de memoria de GPU y pueden ocupar {budget}, así que las ediciones que redibujan todo el documento lo hacen en la CPU. Haga clic para ajustar Memoria de GPU.
 	GPU memory budget: {budget}	Presupuesto de memoria de GPU: {budget}
+	Graphics memory: {size}	Memoria gráfica: {size}
 	This document's layers: {needed} of {budget} for layers	Capas de este documento: {needed} de {budget} para capas
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Las capas de este documento necesitan {needed} pero pueden ocupar {budget}: los redibujados de todo el documento usan la CPU
 	GPU Memory (MB, 0 = Automatic)	Memoria de GPU (MB, 0 = Automático)

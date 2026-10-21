@@ -14,7 +14,7 @@
 //!   the page-only `blendIfChannel`; `channelNames`: the document's colour channels.
 
 use egui::{Color32, RichText, Sense, Stroke, StrokeKind, vec2};
-use photocraft_doc::effects::{FxPaint, GlowSource, StrokePosition};
+use photocraft_doc::effects::{FxPaint, GlowSource, GlowTechnique, StrokePosition};
 use photocraft_doc::{Effect, Layer};
 use serde_json::{Map, Value, json};
 
@@ -89,6 +89,7 @@ fn spec(kind: &str) -> &'static [(&'static str, &'static str, P)] {
     const TECHNIQUE: &[(&str, &str)] = &[("smooth", "Smooth"), ("chiselHard", "Chisel Hard"), ("chiselSoft", "Chisel Soft")];
     const DIR: &[(&str, &str)] = &[("up", "Up"), ("down", "Down")];
     const SRC: &[(&str, &str)] = &[("edge", "Edge"), ("center", "Center")];
+    const GLOW_TECHNIQUE: &[(&str, &str)] = &[("softer", "Softer"), ("precise", "Precise")];
     const CONTOUR: P = P::Contour(Some("antiAlias"));
     match kind {
         "dropShadow" => &[
@@ -116,24 +117,28 @@ fn spec(kind: &str) -> &'static [(&'static str, &'static str, P)] {
             ("contour", "Contour", CONTOUR),
             ("noise", "Noise", P::Slider(0.0, 100.0, "%")),
         ],
+        // Photoshop's order (#6698): Technique before the spread or choke, Range after the contour.
         "outerGlow" => &[
             ("blend", "Blend Mode", P::Blend),
             ("opacity", "Opacity", P::Slider(0.0, 100.0, "%")),
             ("color", "Color", P::Color),
+            ("technique", "Technique", P::Choice(GLOW_TECHNIQUE)),
             ("spread", "Spread", P::Slider(0.0, 100.0, "%")),
             ("size", "Size", P::Slider(0.0, 250.0, "px")),
-            ("range", "Range", P::Slider(1.0, 100.0, "%")),
             ("contour", "Contour", CONTOUR),
+            ("range", "Range", P::Slider(1.0, 100.0, "%")),
             ("noise", "Noise", P::Slider(0.0, 100.0, "%")),
         ],
         "innerGlow" => &[
             ("blend", "Blend Mode", P::Blend),
             ("opacity", "Opacity", P::Slider(0.0, 100.0, "%")),
             ("color", "Color", P::Color),
+            ("technique", "Technique", P::Choice(GLOW_TECHNIQUE)),
             ("source", "Source", P::Choice(SRC)),
             ("choke", "Choke", P::Slider(0.0, 100.0, "%")),
             ("size", "Size", P::Slider(0.0, 250.0, "px")),
             ("contour", "Contour", CONTOUR),
+            ("range", "Range", P::Slider(1.0, 100.0, "%")),
             ("noise", "Noise", P::Slider(0.0, 100.0, "%")),
         ],
         "stroke" => &[
@@ -243,6 +248,7 @@ fn values_of(e: &Effect, light: f32) -> Value {
             } else {
                 drop_keys(&mut v, &["color"]);
             }
+            set(&mut v, "technique", json!(if g.technique == GlowTechnique::Precise { "precise" } else { "softer" }));
             set(&mut v, if matches!(e, Effect::OuterGlow(_)) { "spread" } else { "choke" }, json!((g.spread * 100.0).round()));
             set(&mut v, "size", json!(g.size));
             set(&mut v, "range", json!((g.range * 100.0).round()));
@@ -282,28 +288,27 @@ fn values_of(e: &Effect, light: f32) -> Value {
         Effect::GradientOverlay { common, gradient: g, .. } => {
             set(&mut v, "blend", json!(common.blend.label()));
             set(&mut v, "opacity", json!((common.opacity * 100.0).round()));
-            // The From/To fields model a plain two-stop gradient; anything richer
-            // (more stops, transparency stops) is carried by the snapshot instead.
-            if g.stops.len() == 2 && g.opacity_stops.is_empty() {
-                set(&mut v, "from", json!(hex(&g.stops[0].1)));
-                set(&mut v, "to", json!(hex(&g.stops[1].1)));
-                set(&mut v, "reverse", json!(g.reverse));
-                set(
-                    &mut v,
-                    "style",
-                    json!(match g.style {
-                        photocraft_doc::effects::GradientStyle::Radial => "radial",
-                        photocraft_doc::effects::GradientStyle::Angle => "angle",
-                        photocraft_doc::effects::GradientStyle::Reflected => "reflected",
-                        photocraft_doc::effects::GradientStyle::Diamond => "diamond",
-                        photocraft_doc::effects::GradientStyle::Linear => "linear",
-                    }),
-                );
-                set(&mut v, "angle", json!(g.angle));
-                set(&mut v, "scale", json!((g.scale * 100.0).round()));
-            } else {
-                drop_keys(&mut v, &["from", "to", "reverse", "style", "angle", "scale"]);
+            // Endpoint colours and geometry always load into the dialog. A baked curve
+            // (classic interpolation, PSD import) keeps its interior stops in `fx`;
+            // `overlay_gradient` only retints the ends unless `method` is present.
+            if let (Some(first), Some(last)) = (g.stops.first(), g.stops.last()) {
+                set(&mut v, "from", json!(hex(&first.1)));
+                set(&mut v, "to", json!(hex(&last.1)));
             }
+            set(&mut v, "reverse", json!(g.reverse));
+            set(
+                &mut v,
+                "style",
+                json!(match g.style {
+                    photocraft_doc::effects::GradientStyle::Radial => "radial",
+                    photocraft_doc::effects::GradientStyle::Angle => "angle",
+                    photocraft_doc::effects::GradientStyle::Reflected => "reflected",
+                    photocraft_doc::effects::GradientStyle::Diamond => "diamond",
+                    photocraft_doc::effects::GradientStyle::Linear => "linear",
+                }),
+            );
+            set(&mut v, "angle", json!(g.angle));
+            set(&mut v, "scale", json!((g.scale * 100.0).round()));
         }
         Effect::PatternOverlay { common, name, id, scale, angle, link, phase } => {
             set(&mut v, "blend", json!(common.blend.label()));
@@ -1267,6 +1272,107 @@ fn blend_quad(v: Option<&Value>) -> [u8; 4] {
     q
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BlendDrag {
+    Pair { pair: usize, origin_v: u8 },
+    Split { handle: usize, origin: u8 },
+    Single(usize),
+}
+
+pub(crate) fn step_blend_drag(mode: &mut BlendDrag, q: &[u8; 4], target: u8, alt: bool) -> [u8; 4] {
+    let mut n = *q;
+    match *mode {
+        BlendDrag::Pair { pair, origin_v } => {
+            if alt {
+                if pair == 0 {
+                    if target >= origin_v {
+                        *mode = BlendDrag::Split { handle: 1, origin: origin_v };
+                        n[0] = origin_v;
+                        n[1] = target.clamp(origin_v, q[2]);
+                    } else {
+                        *mode = BlendDrag::Split { handle: 0, origin: origin_v };
+                        n[1] = origin_v;
+                        n[0] = target.clamp(0, origin_v);
+                    }
+                } else if target <= origin_v {
+                    *mode = BlendDrag::Split { handle: 2, origin: origin_v };
+                    n[3] = origin_v;
+                    n[2] = target.clamp(q[1], origin_v);
+                } else {
+                    *mode = BlendDrag::Split { handle: 3, origin: origin_v };
+                    n[2] = origin_v;
+                    n[3] = target.clamp(origin_v, 255);
+                }
+            } else {
+                let delta = i16::from(target) - i16::from(origin_v);
+                if pair == 0 {
+                    let v = (i16::from(origin_v) + delta).clamp(0, q[2] as i16) as u8;
+                    n[0] = v;
+                    n[1] = v;
+                } else {
+                    let v = (i16::from(origin_v) + delta).clamp(q[1] as i16, 255) as u8;
+                    n[2] = v;
+                    n[3] = v;
+                }
+            }
+        }
+        BlendDrag::Split { handle, origin } => match handle {
+            1 => {
+                if target >= origin {
+                    n[0] = origin;
+                    n[1] = target.clamp(origin, q[2]);
+                } else {
+                    *mode = BlendDrag::Split { handle: 0, origin };
+                    n[1] = origin;
+                    n[0] = target.clamp(0, origin);
+                }
+            }
+            0 => {
+                if target <= origin {
+                    n[1] = origin;
+                    n[0] = target.clamp(0, origin);
+                } else {
+                    *mode = BlendDrag::Split { handle: 1, origin };
+                    n[0] = origin;
+                    n[1] = target.clamp(origin, q[2]);
+                }
+            }
+            2 => {
+                if target <= origin {
+                    n[3] = origin;
+                    n[2] = target.clamp(q[1], origin);
+                } else {
+                    *mode = BlendDrag::Split { handle: 3, origin };
+                    n[2] = origin;
+                    n[3] = target.clamp(origin, 255);
+                }
+            }
+            3 => {
+                if target >= origin {
+                    n[2] = origin;
+                    n[3] = target.clamp(origin, 255);
+                } else {
+                    *mode = BlendDrag::Split { handle: 2, origin };
+                    n[3] = origin;
+                    n[2] = target.clamp(q[1], origin);
+                }
+            }
+            _ => {}
+        },
+        BlendDrag::Single(h) => match h {
+            0 => n[0] = target.clamp(0, n[1]),
+            1 => n[1] = target.clamp(n[0], n[2]),
+            2 => n[2] = target.clamp(n[1], n[3]),
+            3 => n[3] = target.clamp(n[2], 255),
+            _ => {}
+        },
+    }
+    for i in 1..4 {
+        n[i] = n[i].max(n[i - 1]);
+    }
+    n
+}
+
 /// A Blend If slider: a black-to-white ramp with a black and a white handle, each split in two
 /// halves by Alt-dragging (the layer fades between them). Returns whether `q` changed.
 fn blend_if_bar(ui: &mut egui::Ui, id: egui::Id, q: &mut [u8; 4]) -> bool {
@@ -1287,47 +1393,44 @@ fn blend_if_bar(ui: &mut egui::Ui, id: egui::Id, q: &mut [u8; 4]) -> bool {
     ui.painter().rect_stroke(ramp, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
     // Handles: triangles under the ramp; a split handle shows two half triangles.
     let mut changed = false;
-    let drag_key = id.with("handle");
+    let drag_key = id.with("blend_drag");
+    let alt = ui.input(|i| i.modifiers.alt);
     if resp.drag_started()
         && let Some(pos) = resp.interact_pointer_pos()
     {
-        let near = (0..4).min_by(|a, b| (x_of(q[*a]) - pos.x).abs().total_cmp(&(x_of(q[*b]) - pos.x).abs())).unwrap_or(0);
-        // Between two coinciding halves, pick by the side of the pointer.
-        let near = match near {
-            0 | 1 if q[0] == q[1] => usize::from(pos.x > x_of(q[0])),
-            2 | 3 if q[2] == q[3] => 2 + usize::from(pos.x > x_of(q[2])),
-            n => n,
+        let d_black = if q[0] == q[1] { (pos.x - x_of(q[0])).abs() } else { (pos.x - (x_of(q[0]) - 2.5)).abs().min((pos.x - (x_of(q[1]) + 2.5)).abs()) };
+        let d_white = if q[2] == q[3] { (pos.x - x_of(q[2])).abs() } else { (pos.x - (x_of(q[2]) - 2.5)).abs().min((pos.x - (x_of(q[3]) + 2.5)).abs()) };
+        let mode = if d_black <= d_white {
+            if q[0] == q[1] {
+                if alt {
+                    let h = if pos.x >= x_of(q[0]) { 1 } else { 0 };
+                    BlendDrag::Split { handle: h, origin: q[0] }
+                } else {
+                    BlendDrag::Pair { pair: 0, origin_v: q[0] }
+                }
+            } else {
+                let h = if (pos.x - x_of(q[0])).abs() <= (pos.x - x_of(q[1])).abs() { 0 } else { 1 };
+                BlendDrag::Single(h)
+            }
+        } else if q[2] == q[3] {
+            if alt {
+                let h = if pos.x <= x_of(q[2]) { 2 } else { 3 };
+                BlendDrag::Split { handle: h, origin: q[2] }
+            } else {
+                BlendDrag::Pair { pair: 2, origin_v: q[2] }
+            }
+        } else {
+            let h = if (pos.x - x_of(q[2])).abs() <= (pos.x - x_of(q[3])).abs() { 2 } else { 3 };
+            BlendDrag::Single(h)
         };
-        ui.data_mut(|d| d.insert_temp(drag_key, near));
+        ui.data_mut(|d| d.insert_temp(drag_key, mode));
     }
     if resp.dragged()
-        && let (Some(h), Some(pos)) = (ui.data(|d| d.get_temp::<usize>(drag_key)), resp.interact_pointer_pos())
-        && let Some(cur) = q.get(h).copied()
+        && let (Some(mut mode), Some(pos)) = (ui.data(|d| d.get_temp::<BlendDrag>(drag_key)), resp.interact_pointer_pos())
     {
         let target = v_of(pos.x);
-        let split = ui.input(|i| i.modifiers.alt);
-        let mut n = *q;
-        let pair = if h < 2 { 0 } else { 2 };
-        if split {
-            n[h] = target;
-        } else {
-            // Unsplit: the pair moves together, keeping its spread.
-            let delta = i16::from(target) - i16::from(cur);
-            for v in &mut n[pair..pair + 2] {
-                *v = (i16::from(*v) + delta).clamp(0, 255) as u8;
-            }
-        }
-        // Keep the order black low <= black high <= white low <= white high, pushing the others.
-        for i in 0..4 {
-            if i < h {
-                n[i] = n[i].min(n[h]);
-            } else if i > h {
-                n[i] = n[i].max(n[h]);
-            }
-        }
-        for i in 1..4 {
-            n[i] = n[i].max(n[i - 1]);
-        }
+        let n = step_blend_drag(&mut mode, q, target, alt);
+        ui.data_mut(|d| d.insert_temp(drag_key, mode));
         if n != *q {
             *q = n;
             changed = true;
@@ -1615,6 +1718,26 @@ mod tests {
     }
 
     #[test]
+    fn baked_gradient_overlay_keeps_endpoint_colours_on_reopen() {
+        let mut s = session();
+        s.execute("layer.layerStyle.gradientOverlay", json!({"from": "#ff0000", "to": "#0000ff", "method": "classic"})).unwrap();
+        let st = s.active().unwrap();
+        let id = st.active_layer.unwrap();
+        let layer = st.doc.layer(id).unwrap();
+        let Effect::GradientOverlay { gradient, .. } = &layer.effects.items[0] else { panic!() };
+        assert!(gradient.stops.len() > 2, "classic bakes intermediate stops");
+        let f = initial_fields(layer, Some("gradientOverlay"), st.doc.global_light.angle);
+        let params = &effects_of(&f)[0]["params"];
+        assert_eq!(params["from"], json!("#ff0000"));
+        assert_eq!(params["to"], json!("#0000ff"));
+        apply(&f, |cmd, p| s.execute(cmd, p).map_err(|e| e.to_string())).unwrap();
+        let Effect::GradientOverlay { gradient, .. } = &s.active().unwrap().doc.layer(id).unwrap().effects.items[0] else { panic!() };
+        assert!(gradient.stops.len() > 2);
+        assert_eq!(gradient.stops.first().unwrap().1, photocraft_color::Color::rgb(1.0, 0.0, 0.0));
+        assert_eq!(gradient.stops.last().unwrap().1, photocraft_color::Color::rgb(0.0, 0.0, 1.0));
+    }
+
+    #[test]
     fn gradient_strokes_survive_the_dialog() {
         let mut s = session();
         s.execute("layer.layerStyle.stroke", json!({"size": 4, "from": "#ff0000", "to": "#0000ff"})).unwrap();
@@ -1808,6 +1931,39 @@ mod tests {
     }
 
     #[test]
+    fn blend_if_alt_split_and_drag_behavior() {
+        // Case 1: Alt-drag on unsplit black handle [0, 0, 255, 255] splits the right half
+        let mut mode = BlendDrag::Pair { pair: 0, origin_v: 0 };
+        let q = [0, 0, 255, 255];
+        let q1 = step_blend_drag(&mut mode, &q, 45, true);
+        assert_eq!(q1, [0, 45, 255, 255], "Alt-drag right must split black triangle into [0, 45]");
+
+        // Case 2: Moving the split right half further to 70
+        let q2 = step_blend_drag(&mut mode, &q1, 70, false);
+        assert_eq!(q2, [0, 70, 255, 255]);
+
+        // Case 3: Dragging the split half back to 0 merges the handle
+        let q3 = step_blend_drag(&mut mode, &q2, 0, false);
+        assert_eq!(q3, [0, 0, 255, 255], "Dragging back to origin reunites the triangle");
+
+        // Case 4: Alt-drag on unsplit white handle [0, 0, 255, 255] splits the left half
+        let mut mode_w = BlendDrag::Pair { pair: 2, origin_v: 255 };
+        let qw1 = step_blend_drag(&mut mode_w, &q, 200, true);
+        assert_eq!(qw1, [0, 0, 200, 255], "Alt-drag left must split white triangle into [200, 255]");
+
+        // Case 5: Dragging without Alt moves both halves together
+        let mut mode_solid = BlendDrag::Pair { pair: 0, origin_v: 0 };
+        let qs1 = step_blend_drag(&mut mode_solid, &q, 35, false);
+        assert_eq!(qs1, [35, 35, 255, 255], "Drag without Alt moves solid handle together");
+
+        // Case 6: Clamping prevents black handle from crossing white handle
+        let q_close = [0, 100, 150, 255];
+        let mut mode_single = BlendDrag::Single(1);
+        let q_clamped = step_blend_drag(&mut mode_single, &q_close, 180, false);
+        assert_eq!(q_clamped, [0, 150, 150, 255], "Black max cannot exceed white min");
+    }
+
+    #[test]
     fn contour_picker_and_editor_edit_the_effect_curve() {
         let mut s = session();
         s.execute("layer.layerStyle.dropShadow", json!({})).unwrap();
@@ -1884,6 +2040,48 @@ mod tests {
         assert_eq!(glow["params"]["source"], json!("center"), "the dialog shows the effect's source");
         apply(&f, |cmd, p| s.execute(cmd, p).map_err(|e| e.to_string())).unwrap();
         assert_eq!(source(&s), Some(GlowSource::Center), "OK keeps the source");
+    }
+
+    /// #6698: Inner Glow lacked Photoshop's Technique and Range, Outer Glow its Technique. They
+    /// show in Photoshop's order, the dialog loads them, and OK keeps them.
+    #[test]
+    fn glows_show_and_keep_technique_and_range() {
+        let keys = |kind: &str| spec(kind).iter().map(|(k, _, _)| *k).collect::<Vec<_>>();
+        assert_eq!(keys("innerGlow"), ["blend", "opacity", "color", "technique", "source", "choke", "size", "contour", "range", "noise"]);
+        assert_eq!(keys("outerGlow"), ["blend", "opacity", "color", "technique", "spread", "size", "contour", "range", "noise"]);
+        let mut s = session();
+        s.execute("layer.layerStyle.innerGlow", json!({"technique": "precise", "range": 30})).unwrap();
+        s.execute("layer.layerStyle.outerGlow", json!({"technique": "precise"})).unwrap();
+        let glows = |s: &photocraft_engine::Session| {
+            let d = s.active().unwrap();
+            let id = d.active_layer.unwrap();
+            d.doc
+                .layer(id)
+                .unwrap()
+                .effects
+                .items
+                .iter()
+                .filter_map(|e| match e {
+                    Effect::InnerGlow(g) | Effect::OuterGlow(g) => Some((kind_of(e), g.technique, (g.range * 100.0).round())),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = [("outerGlow", GlowTechnique::Precise, 50.0), ("innerGlow", GlowTechnique::Precise, 30.0)];
+        let mut have = glows(&s);
+        have.sort_by_key(|g| g.0);
+        let mut want = expected.to_vec();
+        want.sort_by_key(|g| g.0);
+        assert_eq!(have, want);
+        let st = s.active().unwrap();
+        let id = st.active_layer.unwrap();
+        let f = initial_fields(st.doc.layer(id).unwrap(), None, st.doc.global_light.angle);
+        let inner = effects_of(&f).iter().find(|e| e["kind"] == json!("innerGlow")).unwrap().clone();
+        assert_eq!((&inner["params"]["technique"], &inner["params"]["range"]), (&json!("precise"), &json!(30.0)), "the dialog shows them");
+        apply(&f, |cmd, p| s.execute(cmd, p).map_err(|e| e.to_string())).unwrap();
+        let mut have = glows(&s);
+        have.sort_by_key(|g| g.0);
+        assert_eq!(have, want, "OK keeps them");
     }
 
     #[test]

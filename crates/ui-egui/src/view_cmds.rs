@@ -641,7 +641,10 @@ fn flag_param(p: &Value, cur: bool) -> bool {
 fn run(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, p: &Value) -> Result<Value, String> {
     if let Some((panel, tab)) = panel_tab(app, id) {
         let group = crate::dock::Group::from_key(panel);
-        let collapsed = group.is_some_and(|g| app.ui.dock.is_collapsed(g));
+        // On a column collapsed to icons a panel whose flyout is closed counts as collapsed (#4059).
+        let iconic =
+            |g: crate::dock::Group| app.ui.dock.iconic && app.ui.dock.flyout != Some(g) && (app.ui.theme.is_pro() || g != crate::dock::Group::Properties);
+        let collapsed = group.is_some_and(|g| app.ui.dock.is_collapsed(g) || iconic(g));
         let (vis, cur) = panel_state(app, panel);
         let requested = match p.get("show").or_else(|| p.get("on")) {
             None => None,
@@ -710,6 +713,8 @@ fn run(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, p: &Value) -> Res
             k
         };
         o.screen_mode = next.to_string();
+        // Tab's view of the chrome (#6760) lasts only while in Full Screen Mode.
+        app.ui.panels.full_screen_chrome = false;
         // Both full-screen modes take the whole display; the menu bar stays in the first.
         let (full_screen, maximized) = ctx.input(|i| (i.viewport().fullscreen.unwrap_or(false), i.viewport().maximized.unwrap_or(false)));
         let was_maximized = ctx.data(|d| d.get_temp::<bool>(was_maximized_id())).unwrap_or(false);

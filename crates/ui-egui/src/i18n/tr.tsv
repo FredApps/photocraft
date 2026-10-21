@@ -1052,7 +1052,7 @@
 	Done	Bitti
 	Dots	Noktalar
 	Drag a rectangle around the object	Nesnenin çevresine bir dikdörtgen sürükleyin
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Kısıtlama eklemek için resmin üzerine sürükleyin; Yatay/dikey için kaydırma; silmek için sağ tıklayın.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Kısıtlama eklemek için resmin üzerine sürükleyin; Yatay/dikey için kaydırma; değiştirmek veya silmek için bir kısıtlamaya sağ tıklayın.
 	Drag to move the active shape's path or the Work Path	Etkin şeklin yolunu veya Çalışma Yolunu taşımak için sürükleyin
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Tıklayın: çapayı seçin · Sürükleyin: çapayı, tutamacı veya parçayı taşıyın · {shift}-tıklayın: ekleyin · {alt}-tıklayın: alt yolun tamamı
 	Draw with the Pen tool (P) or make a work path from a selection.	Kalem aracıyla (P) çizim yapın veya seçimden bir çalışma yolu oluşturun.
@@ -2019,6 +2019,8 @@
 	Collapse	Daralt
 	Collapse All Groups	Tüm Grupları Daralt
 	Collapse Panel Group	Panel Grubunu Daralt
+	Collapse to Icons	Simgelere Daralt
+	Expand Panels	Panelleri Genişlet
 	Collapse group  ({key}-click: all groups)	Grubu daralt ({key}-tıklama: tüm gruplar)
 	Create new brush from the current settings	Mevcut ayarlardan yeni fırça oluştur
 	Create new brush from these settings	Bu ayarlardan yeni fırça oluşturun
@@ -3465,6 +3467,7 @@ cameraRaw	Color	Renk
 	Seed	tohum
 	Select Plane	Düzlem Seç
 	Select and Mask	Seç ve Maskele
+	Cryptomatte Selection	Cryptomatte Seçimi
 	Semi Bold	Yarı Kalın
 	Set Measurement Scale	Ölçüm Ölçeğini Ayarla
 	Shadows/Highlights	Gölgeler/Vurgular
@@ -3857,6 +3860,7 @@ cameraData	Lens	Lens
 	Response curve	Yanıt eğrisi
 	Show home recent files	Ana ekranda son dosyaları göster
 	Clear Brush Controls	Fırça Denetimlerini Temizle
+	Frequency Separation…	Frekans Ayırma…
 	Reset All Locked Settings	Tüm Kilitli Ayarları Sıfırla
 	Copy Texture to Other Tools	Dokuyu Diğer Araçlara Kopyala
 
@@ -3883,6 +3887,7 @@ cameraData	Lens	Lens
 @plural	{n} action|{n} actions	{n} eylem
 	Object Finder	Nesne Bulucu
 	No object found there — drag a rectangle around it	Orada nesne bulunamadı — çevresine bir dikdörtgen sürükleyin
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Etkin katmanda burada piksel yok — Tüm Katmanları Örnekle seçeneğini açın veya piksel içeren bir katman seçin
 	Drag to pan · Scroll to zoom · Double-click to fit	Kaydırmak için sürükleyin · Yakınlaştırmak için kaydırın · Sığdırmak için çift tıklayın
 	Gradient Preset Options	Gradyan Ön Ayarı Seçenekleri
 	Import .GRD	.GRD İçe Aktar
@@ -3979,6 +3984,7 @@ cameraData	Lens	Lens
 	GPU Memory Full	GPU Belleği Dolu
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Katmanların {needed} GPU belleğine ihtiyacı var ve en fazla {budget} kullanabilirler; bu yüzden tüm belgeyi yeniden çizen düzenlemeler bunu CPU'da yapar. GPU Belleği'ni ayarlamak için tıklayın.
 	GPU memory budget: {budget}	GPU bellek bütçesi: {budget}
+	Graphics memory: {size}	Grafik belleği: {size}
 	This document's layers: {needed} of {budget} for layers	Bu belgenin katmanları: katmanlar için {budget} içinden {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Bu belgenin katmanlarının {needed} belleğe ihtiyacı var ama en fazla {budget} kullanabilirler: tüm belgenin yeniden çizimi CPU'yu kullanır
 	GPU Memory (MB, 0 = Automatic)	GPU Belleği (MB, 0 = Otomatik)

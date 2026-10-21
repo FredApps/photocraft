@@ -1073,7 +1073,7 @@
 	Done	Gereed
 	Dots	Stippen
 	Drag a rectangle around the object	Sleep een rechthoek rond het object
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Sleep over de afbeelding om een beperking toe te voegen; Shift voor horizontaal/verticaal; rechtsklik om te verwijderen.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Sleep over de afbeelding om een beperking toe te voegen; Shift voor horizontaal/verticaal; rechtsklik op een beperking om deze te wijzigen of te verwijderen.
 	Drag to move the active shape's path or the Work Path	Sleep om het pad van de actieve vorm of het werkpad te verplaatsen
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Klik: ankerpunt selecteren · Slepen: ankerpunt, greep of segment verplaatsen · {shift}-klik: toevoegen · {alt}-klik: heel subpad
 	Draw with the Pen tool (P) or make a work path from a selection.	Teken met het pengereedschap (P) of maak een werkpad van een selectie.
@@ -2044,6 +2044,8 @@
 	Collapse	Samenvouwen
 	Collapse All Groups	Alle groepen samenvouwen
 	Collapse Panel Group	Paneelgroep samenvouwen
+	Collapse to Icons	Samenvouwen tot pictogrammen
+	Expand Panels	Panelen uitvouwen
 	Collapse group  ({key}-click: all groups)	Groep samenvouwen  ({key}-klik: alle groepen)
 	Create new brush from the current settings	Nieuw penseel maken van de huidige instellingen
 	Create new brush from these settings	Nieuw penseel maken van deze instellingen
@@ -3644,6 +3646,7 @@ cameraRaw	Whites	Witten
 	Rectangular Selection	Rechthoekige selectie
 	Reorder Layer	Laagvolgorde wijzigen
 	Select Layer	Laag selecteren
+	Cryptomatte Selection	Cryptomatte-selectie
 	Set Colors	Kleuren instellen
 	Switch Foreground and Background Colors	Voorgrond- en achtergrondkleur omwisselen
 	Target	Doel
@@ -3655,6 +3658,7 @@ cameraRaw	Whites	Witten
 	101 by 101 Average	Gemiddelde van 101 bij 101
 	All Layers No Adjustments	Alle lagen zonder aanpassingen
 	Color to Alpha…	Kleur naar alfa…
+	Frequency Separation…	Frequentiescheiding…
 	Current & Below No Adjustments	Huidige en onderliggende zonder aanpassingen
 	Now drag the selection onto another area	Sleep de selectie nu naar een ander gebied
 	Point Sample	Puntmonster
@@ -3897,6 +3901,7 @@ curves	Smooth	Vloeiend maken
 	Light Gray	Lichtgrijs
 	Object Finder	Objectzoeker
 	No object found there — drag a rectangle around it	Daar is geen object gevonden — sleep er een rechthoek omheen
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	De actieve laag heeft hier geen pixels — zet Alle lagen samplen aan of selecteer een laag met pixels
 	Remove after each stroke	Verwijderen na elke streek
 	Apply the removal ({key})	Verwijdering toepassen ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Streken om te verwijderen: {n} (Enter past toe, Esc annuleert)
@@ -4012,6 +4017,7 @@ curves	Smooth	Vloeiend maken
 	GPU Memory Full	GPU-geheugen vol
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	De lagen hebben {needed} GPU-geheugen nodig en mogen {budget} gebruiken, dus bewerkingen die het hele document opnieuw tekenen doen dat op de CPU. Klik om GPU-geheugen in te stellen.
 	GPU memory budget: {budget}	GPU-geheugenbudget: {budget}
+	Graphics memory: {size}	Grafisch geheugen: {size}
 	This document's layers: {needed} of {budget} for layers	Lagen van dit document: {needed} van {budget} voor lagen
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	De lagen van dit document hebben {needed} nodig maar mogen {budget} gebruiken: het hele document wordt op de CPU opnieuw getekend
 	GPU Memory (MB, 0 = Automatic)	GPU-geheugen (MB, 0 = Automatisch)

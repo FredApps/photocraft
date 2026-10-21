@@ -1535,6 +1535,8 @@
 	Close Tab Group	Κλείσιμο ομάδας καρτελών
 	Collapse All Groups	Σύμπτυξη όλων των ομάδων
 	Collapse Panel Group	Σύμπτυξη ομάδας πλαισίων
+	Collapse to Icons	Σύμπτυξη σε εικονίδια
+	Expand Panels	Ανάπτυξη πλαισίων
 	Create new brush from the current settings	Δημιουργία νέου πινέλου από τις τρέχουσες ρυθμίσεις
 	Create new brush from these settings	Δημιουργία νέου πινέλου από αυτές τις ρυθμίσεις
 	Update the current brush with these settings	Ενημέρωση του τρέχοντος πινέλου με αυτές τις ρυθμίσεις
@@ -2346,7 +2348,7 @@
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Σύρετε για λάσο ή κάντε κλικ για πολυγωνική επιλογή · {add} προσθήκη · {sub} αφαίρεση
 	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Σύρετε για περιοχή περικοπής · σύρετε στο εσωτερικό για μετακίνηση · από τα άκρα αλλάζει μέγεθος ({ratio} αναλογία, {centre} κέντρο) · Space για μετακίνηση κατά τη σχεδίαση · βέλη για μετακίνηση · X εναλλαγή προσανατολισμού · {commit} εφαρμογή · Esc ακύρωση
 	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Σύρετε γύρω από το κέντρο για να περιστρέψετε την προβολή  ·  Shift περιορίζει στις 15°
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Σύρετε πάνω στην εικόνα για προσθήκη περιορισμού· Shift για οριζόντιο/κατακόρυφο· δεξί κλικ για διαγραφή.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Σύρετε πάνω στην εικόνα για προσθήκη περιορισμού· Shift για οριζόντιο/κατακόρυφο· δεξί κλικ σε έναν περιορισμό για αλλαγή ή διαγραφή.
 	Drag or click polygon points · hold Alt during lasso for straight segments · {add} add · {sub} before drawing subtracts	Σύρετε ή κάντε κλικ για πολυγωνικά σημεία · κρατήστε Alt κατά το λάσο για ευθείες · {add} προσθήκη · {sub} αφαίρεση πριν από τη σχεδίαση
 	Drag to draw a gradient	Σύρετε για να σχεδιάσετε διαβάθμιση
 	Drag to move the active layer	Σύρετε για μετακίνηση του ενεργού επιπέδου
@@ -3457,6 +3459,7 @@ cameraRaw	Yellow	Κίτρινο
 	Replace Swatches…	Αντικατάσταση δειγμάτων χρωμάτων…
 	Reset Swatches	Επαναφορά δειγμάτων χρωμάτων
 	Selection Preview:	Προεπισκόπηση επιλογής:
+	Cryptomatte Selection	Επιλογή Cryptomatte
 	Set Black Point	Ορισμός μαύρου σημείου
 	Set Neutral Gray Point	Ορισμός σημείου ουδέτερου γκρι
 	Set White Point	Ορισμός λευκού σημείου
@@ -3592,6 +3595,7 @@ fontWeight	Thin	Πολύ λεπτά
 	Out of gamut for printing: click for the nearest printable colour	Εκτός γκάμας εκτύπωσης: κάντε κλικ για το πλησιέστερο εκτυπώσιμο χρώμα
 	Not a web colour: click for the nearest web colour	Δεν είναι χρώμα web: κάντε κλικ για το πλησιέστερο χρώμα web
 	Color to Alpha…	Χρώμα σε άλφα…
+	Frequency Separation…	Διαχωρισμός συχνοτήτων…
 	Transparency Threshold	Κατώφλι διαφάνειας
 	Opacity Threshold	Κατώφλι αδιαφάνειας
 	PhotoCraft — Screen Color Picker	PhotoCraft — Επιλογή χρώματος οθόνης
@@ -3835,6 +3839,7 @@ curves	Smooth	Εξομάλυνση
 	Light Gray	Ανοιχτό γκρι
 	Object Finder	Εύρεση αντικειμένων
 	No object found there — drag a rectangle around it	Δεν βρέθηκε αντικείμενο εκεί — σύρετε ένα ορθογώνιο γύρω του
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Το ενεργό επίπεδο δεν έχει εικονοστοιχεία εδώ — ενεργοποιήστε τη Δειγματοληψία όλων των επιπέδων ή επιλέξτε ένα επίπεδο με εικονοστοιχεία
 	Remove after each stroke	Αφαίρεση μετά από κάθε πινελιά
 	Apply the removal ({key})	Εφαρμογή της αφαίρεσης ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Πινελιές προς αφαίρεση: {n} (Enter εφαρμόζει, Esc ακυρώνει)
@@ -3952,6 +3957,7 @@ curves	Smooth	Εξομάλυνση
 	GPU Memory Full	Η μνήμη GPU είναι πλήρης
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Τα επίπεδα χρειάζονται {needed} μνήμης GPU και μπορούν να καταλάβουν {budget}, οπότε οι αλλαγές που ξανασχεδιάζουν όλο το έγγραφο το κάνουν στη CPU. Κάντε κλικ για να ορίσετε τη Μνήμη GPU.
 	GPU memory budget: {budget}	Όριο μνήμης GPU: {budget}
+	Graphics memory: {size}	Μνήμη γραφικών: {size}
 	This document's layers: {needed} of {budget} for layers	Επίπεδα αυτού του εγγράφου: {needed} από {budget} για επίπεδα
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Τα επίπεδα αυτού του εγγράφου χρειάζονται {needed} αλλά μπορούν να καταλάβουν {budget}: η επανασχεδίαση όλου του εγγράφου γίνεται στη CPU
 	GPU Memory (MB, 0 = Automatic)	Μνήμη GPU (MB, 0 = Αυτόματο)

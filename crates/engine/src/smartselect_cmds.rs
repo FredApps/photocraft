@@ -221,12 +221,20 @@ impl ObjectFinderCache {
 /// `area`, say so instead of quietly finding nothing (#5246; scripts often add an empty layer
 /// above the photo first).
 fn check_sampled_pixels(doc: &Document, layer: Option<LayerId>, all_layers: bool, area: Rect) -> Result<()> {
-    let Some(surf) = sampled_target(doc, layer, all_layers).and_then(|id| doc.layer(id)).and_then(Layer::surface) else { return Ok(()) };
-    if surf.content_bounds().intersect(&area).is_empty() {
-        let msg = if surf.content_bounds().is_empty() { "the active layer is empty" } else { "the active layer has no pixels in that area" };
-        return Err(bad("select.object", &format!("{msg}; set \"sampleAllLayers\": true or select a layer with pixels")));
+    match empty_sampled_area(doc, layer, all_layers, area) {
+        Some(msg) => Err(bad("select.object", &format!("{msg}; set \"sampleAllLayers\": true or select a layer with pixels"))),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// Why sampling `layer` (unless `all_layers`) can find nothing in `area`: the layer is empty, or has no pixels there.
+/// `None` = there is something to sample. The click path reports it as an error, the Object Finder hover as a hint.
+pub fn empty_sampled_area(doc: &Document, layer: Option<LayerId>, all_layers: bool, area: Rect) -> Option<&'static str> {
+    let surf = sampled_target(doc, layer, all_layers).and_then(|id| doc.layer(id)).and_then(Layer::surface)?;
+    if !surf.content_bounds().intersect(&area).is_empty() {
+        return None;
+    }
+    Some(if surf.content_bounds().is_empty() { "the active layer is empty" } else { "the active layer has no pixels in that area" })
 }
 
 /// `select.object` with `"point"`: the Object Finder's object under the point (cached).
@@ -294,7 +302,8 @@ impl SubjectCache {
 }
 
 fn select_subject(s: &mut Session, p: &Value) -> Result<Value> {
-    let all_layers = b(p, "sampleAllLayers", true);
+    // The selected layer's pixels; the composite only when no pixel layer is selected.
+    let all_layers = b(p, "sampleAllLayers", false);
     let d = s.active().ok_or(EngineError::NoDocument)?;
     // What `with_doc_sampler` samples: the active layer's pixels, else the composite.
     let target = d.active_layer.filter(|id| !all_layers && d.doc.layer(*id).and_then(Layer::surface).is_some());
@@ -516,7 +525,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "select.subject",
             "Subject",
             ["Select"],
-            r##"{"sampleAllLayers":bool=true,"mode":"replace|add|subtract|intersect"="replace"}"##,
+            r##"{"sampleAllLayers":bool=false,"mode":"replace|add|subtract|intersect"="replace"} (samples the selected layer; the composite when no pixel layer is selected)"##,
             has_doc,
             select_subject
         ),
@@ -778,6 +787,23 @@ mod tests {
         assert!(s.active().unwrap().doc.selection.is_none());
     }
 
+    /// Select Subject looks at the selected layer only; with no layer selected it looks at the
+    /// whole image.
+    #[test]
+    fn select_subject_samples_the_selected_layer_else_the_composite() {
+        let (mut s, inside) = disc(8);
+        // A layer above holding only a small square in the corner: the disc is not on it.
+        s.execute("layer.new.layer", json!({})).unwrap();
+        s.execute("paint.pencil", json!({"points": [[10, 10], [30, 10]], "size": 3, "color": "#000000"})).unwrap();
+        s.execute("select.subject", json!({})).unwrap();
+        assert!(cov(&s, 100, 80) < 0.5, "the disc on the layer below was selected");
+        s.execute("select.deselect", json!({})).unwrap();
+        // No layer selected: the whole image, so the disc is found.
+        s.execute("select.deselectLayers", json!({})).unwrap();
+        s.execute("select.subject", json!({})).unwrap();
+        assert!(sel_iou(&s, 200, 160, &inside) > 0.9);
+    }
+
     /// #2865: a repeat on unchanged pixels reuses the last mask (an identical selection, even
     /// after Deselect); sampling something else or a pixel edit computes it again.
     #[test]
@@ -795,8 +821,8 @@ mod tests {
         s.execute("select.subject", json!({})).unwrap();
         assert!(std::sync::Arc::ptr_eq(&mask, &cached(&s)), "the repeat recomputed the mask");
         assert_eq!(sel(&s), first);
-        // Another sampled target (the layer rather than the composite) is a miss.
-        s.execute("select.subject", json!({"sampleAllLayers": false})).unwrap();
+        // Another sampled target (the composite rather than the layer) is a miss.
+        s.execute("select.subject", json!({"sampleAllLayers": true})).unwrap();
         assert!(!std::sync::Arc::ptr_eq(&mask, &cached(&s)));
         // A pixel edit drops the entry; the next run recomputes it.
         s.edit("paint", |doc, _| {

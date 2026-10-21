@@ -470,15 +470,26 @@ fn alt_scroll_zooms_in_steps_around_the_pointer() {
     assert_eq!(zoom(&h), z2, "a plain scroll never zooms");
     assert!(h.state().ui.views[0].center[1] > c2[1], "a plain scroll pans");
 
-    // ⌘/Ctrl + scroll pans sideways (#635), on Windows (Ctrl) and macOS (⌘) alike.
+    // ⌘/Ctrl + scroll zooms around the pointer ×1.1 a notch (#5363), on Windows (Ctrl) and macOS (⌘).
     for m in [Modifiers { ctrl: true, command: true, ..Modifiers::NONE }, Modifiers { mac_cmd: true, command: true, ..Modifiers::NONE }] {
-        let c = h.state().ui.views[0].center;
-        wheel(&h, -1.0, m);
+        let (z, d) = (zoom(&h), doc_at(&h, p));
+        wheel(&h, 1.0, m);
+        h.run_steps(2);
+        let at_once = zoom(&h);
         h.run_steps(40);
-        let c1 = h.state().ui.views[0].center;
-        assert_eq!(zoom(&h), z2, "⌘/Ctrl-scroll never zooms");
-        assert!(c1[0] > c[0] && c1[1] == c[1], "⌘/Ctrl-scroll pans sideways: {c:?} -> {c1:?}");
+        let (z1, d1) = (zoom(&h), doc_at(&h, p));
+        assert!((z1 / z - 1.1).abs() < 1e-3, "one ⌘/Ctrl notch is ×1.1: {z} -> {z1}");
+        assert_eq!(at_once, z1, "the notch is applied the frame it arrives");
+        assert!((d1[0] - d[0]).abs() < 0.05 && (d1[1] - d[1]).abs() < 0.05, "centred on the pointer: {d:?} -> {d1:?}");
     }
+    let z2 = zoom(&h);
+    // ⇧ + scroll still pans sideways.
+    let c = h.state().ui.views[0].center;
+    wheel(&h, -1.0, Modifiers::SHIFT);
+    h.run_steps(40);
+    let c1 = h.state().ui.views[0].center;
+    assert_eq!(zoom(&h), z2, "⇧-scroll never zooms");
+    assert!(c1[0] > c[0] && c1[1] == c[1], "⇧-scroll pans sideways: {c:?} -> {c1:?}");
     // A pinch zooms around the pointer.
     h.event(egui::Event::Zoom(1.25));
     h.run_steps(2);
@@ -524,6 +535,7 @@ fn type_tool_alt_arrows_kern_the_pair() {
     let metric = photocraft_text::shared().lock().unwrap().pair_kerning(&text(&h), 72.0, 0).unwrap().round();
     h.state_mut().ui.text_edit = Some(crate::state::TextEdit {
         layer: id,
+        document: None,
         caret: 1,
         anchor: 1,
         session: "kern-test".into(),
@@ -574,6 +586,7 @@ fn type_tool_alt_arrows_kern_the_pair() {
 fn edit_type(h: &mut Harness<'static, PhotocraftApp>, layer: u64, anchor: usize, caret: usize) {
     h.state_mut().ui.text_edit = Some(crate::state::TextEdit {
         layer,
+        document: None,
         caret,
         anchor,
         session: "format-keys".into(),
@@ -792,6 +805,7 @@ fn type_tool_format_keys_survive_hostile_state() {
     for ed in [None, Some(1)] {
         app.ui.text_edit = ed.map(|layer| crate::state::TextEdit {
             layer,
+            document: None,
             caret: 4,
             anchor: 0,
             session: "x".into(),
@@ -855,20 +869,56 @@ fn eyedropper_and_alt_sampling_show_a_pipette() {
     assert_eq!(precise(&mut h), (egui::CursorIcon::Crosshair, desktop));
 }
 
-/// The Paint Bucket shows a bucket instead of the crosshair (#3968); Precise Other Cursors keeps
-/// the crosshair.
+/// The bucket and fill target share one pointer bitmap or one painted image, and Precise Other Cursors hides both.
 #[test]
 fn paint_bucket_shows_a_bucket_cursor() {
+    fn cursor_area_visible(h: &Harness<'static, PhotocraftApp>, id: &str) -> bool {
+        let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new(id));
+        h.ctx.memory(|memory| memory.areas().visible_layer_ids().contains(&layer))
+    }
+
     let mut h = harness();
     let p = h.state().last_canvas_rect.center();
     h.state_mut().ui.tool = crate::state::Tool::PaintBucket;
     h.hover_at(p);
     h.run_steps(2);
-    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "the bucket replaces the pointer");
+
+    let output = h.output();
+    if cfg!(not(target_arch = "wasm32")) {
+        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::Crosshair, "the bitmap keeps a visible fallback");
+        let cursor = output.platform_output.cursor_image.as_ref().expect("native root viewport uses the unified bucket bitmap");
+        let [hot_x, hot_y] = cursor.hotspot;
+        let hot_pixel = (usize::from(hot_y) * usize::from(cursor.size[0]) + usize::from(hot_x)) * 4 + 3;
+        assert_eq!(cursor.rgba[hot_pixel], 0, "the Gradient-style crosshair leaves its exact bitmap hotspot open");
+        let side = usize::from(cursor.size[0]);
+        assert!(
+            cursor.rgba.as_chunks::<4>().0.iter().enumerate().any(|(i, pixel)| {
+                let x = (i % side) as u16;
+                let y = (i / side) as u16;
+                pixel[3] > 200 && x + 2 < hot_x && y + 2 < hot_y
+            }),
+            "the bucket artwork is opaque above-left of the same hotspot"
+        );
+        assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "native cursor has no frame-painted icon overlay");
+        assert!(!cursor_area_visible(&h, "pc-tool-cursor"), "native cursor does not create a painted cursor Area");
+    } else {
+        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::None, "the painted image hides the OS arrow");
+        assert!(cursor_area_visible(&h, "pc-tool-cursor"), "scaled or web cursor uses one unified image Area");
+        assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "the old icon overlay is absent");
+    }
+    assert_eq!(h.ctx.pointer_latest_pos(), Some(p), "the click target stays at the cursor hotspot");
+
     h.state_mut().run("prefs.set", json!({"values": {"cursors.other": "precise"}})).unwrap();
-    h.hover_at(p);
     h.run_steps(2);
-    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Crosshair, "Precise keeps the crosshair");
+    let precise = h.output();
+    assert_eq!(precise.platform_output.cursor_icon, egui::CursorIcon::Crosshair);
+    assert_eq!(
+        precise.platform_output.cursor_image.is_some(),
+        cfg!(not(target_arch = "wasm32")),
+        "Precise uses its crosshair bitmap on native and the system cursor on web"
+    );
+    assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "Precise omits the bucket artwork");
+    assert!(!cursor_area_visible(&h, "pc-tool-cursor"), "Precise omits the painted bucket image");
 }
 
 /// The Hand tool, and Space held over another tool, show an open hand while hovering and a fist

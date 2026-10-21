@@ -1101,7 +1101,7 @@
 	Done	完成
 	Dots	點
 	Drag a rectangle around the object	在物件周圍拖曳出矩形
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	在影像上拖曳以新增限制線；按住 Shift 可限制水平/垂直；按右鍵可刪除。
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	在影像上拖曳以新增限制線；按住 Shift 可限制水平/垂直；在限制線上按右鍵可變更或刪除。
 	Drag to move the active shape's path or the Work Path	拖曳以移動作用中形狀的路徑或工作路徑
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	按一下：選取錨點 · 拖曳：移動錨點、把手或線段 · {shift}-按一下：增加 · {alt}-按一下：整個子路徑
 	Draw with the Pen tool (P) or make a work path from a selection.	使用筆型工具 (P) 繪製，或從選取範圍建立工作路徑。
@@ -2083,6 +2083,8 @@
 	Collapse	收合
 	Collapse All Groups	收合所有群組
 	Collapse Panel Group	收合面板群組
+	Collapse to Icons	收合為圖示
+	Expand Panels	展開面板
 	Collapse group  ({key}-click: all groups)	收合群組 ({key}+按一下：全部群組)
 	Create new brush from the current settings	以目前設定建立新筆刷
 	Create new brush from these settings	以這些設定建立新筆刷
@@ -2418,6 +2420,7 @@ cameraRaw	Blending	混合
 	Set White Point	設定白點
 	Unavailable in this color mode	此色彩模式無法使用
 	Selection Preview:	選取範圍預視：
+	Cryptomatte Selection	Cryptomatte 選取範圍
 	Black Matte	黑色背景
 	White Matte	白色背景
 
@@ -2474,6 +2477,7 @@ fontWeight	Italic	斜體
 	Out of gamut for printing: click for the nearest printable colour	超出列印色域：按一下以使用最接近的可列印顏色
 	Not a web colour: click for the nearest web colour	不是網頁顏色：按一下以使用最接近的網頁顏色
 	Color to Alpha…	顏色轉為 Alpha…
+	Frequency Separation…	頻率分離…
 	Transparency Threshold	透明度臨界值
 	Opacity Threshold	不透明度臨界值
 	PhotoCraft — Screen Color Picker	PhotoCraft — 螢幕取色器
@@ -2743,6 +2747,7 @@ curves	Smooth	平滑
 	Stop	停止
 	Object Finder	物件尋找器
 	No object found there — drag a rectangle around it	那裡找不到物件 — 請在其周圍拖曳矩形
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	作用中圖層在此處沒有像素 — 請開啟「取樣全部圖層」或選取有像素的圖層
 	Remove after each stroke	每次描邊後移除
 	Apply the removal ({key})	套用移除 ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	待移除的描邊：{n}（Enter 套用，Esc 取消）
@@ -2857,6 +2862,7 @@ curves	Smooth	平滑
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} 由系統保留，無法指定。
 	Low-Latency Drawing (vsync off, applies at next launch)	低延遲繪圖（關閉垂直同步，下次啟動時生效）
 # Free Transform: a new layer while the box is open (#5859)
+	Reference point location	參考點位置
 	Free Transform is still being applied; try again when it has finished.	任意變形仍在套用中；請在完成後再試一次。
 	The transform couldn't be applied.	無法套用變形。
 # Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
@@ -2865,6 +2871,7 @@ curves	Smooth	平滑
 	GPU Memory Full	GPU 記憶體已滿
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	圖層需要 {needed} GPU 記憶體，但只能佔用 {budget}，因此重繪整份文件的編輯會在 CPU 上進行。按一下以設定 GPU 記憶體。
 	GPU memory budget: {budget}	GPU 記憶體預算：{budget}
+	Graphics memory: {size}	顯示記憶體：{size}
 	This document's layers: {needed} of {budget} for layers	此文件的圖層：圖層可用 {budget} 中的 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	此文件的圖層需要 {needed}，但只能佔用 {budget}：整份文件的重繪使用 CPU
 	GPU Memory (MB, 0 = Automatic)	GPU 記憶體（MB，0 = 自動）

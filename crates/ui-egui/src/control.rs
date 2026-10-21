@@ -20,9 +20,11 @@
 //! - The synthetic input methods reject unknown fields, wrong types, unknown enum values and
 //!   out-of-range numbers before acting, naming the parameter (#2449)
 //! - `ui.resize {width, height}`: resize the main window
-//! - `ui.gpu.simulateLoss {error?}`: act as if the wgpu device was lost (or, with `error: true`,
-//!   reported an error): the app switches to the CPU renderer for the rest of the session, as on a
-//!   real loss. For testing the fallback; returns whether a GPU canvas was active
+//! - `ui.gpu.simulateLoss {error?, destroy?}`: act as if the wgpu device was lost (or, with
+//!   `error: true`, reported an error): the app switches to the CPU renderer for the rest of the
+//!   session, as on a real loss. For testing the fallback; returns whether a GPU canvas was active.
+//!   `destroy: true` destroys the window's real device instead, as a driver reset does: the app
+//!   saves its unsaved documents for recovery and closes (#3438); returns `destroyed`
 //! - `ui.screenshot {path?, focus?}`: capture the main window (PNG). Raises the window first (default)
 //!   because occluded macOS windows stop rendering
 //! - `ui.focus`: bring the main window to the front
@@ -424,18 +426,16 @@ fn dispatch(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) 
         "engine.execute" | "ui.menu.invoke" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
-            // A control-channel menu click must respect the same modal gate as the native menu.
-            // Camera Raw's documented `ui` requests operate its already-open dialog rather
-            // than click a menu. Only that continuation may pass its own modal gate.
-            // engine.execute is deliberately not subject to the UI's menu-click semantics.
+            // Both command entry points must respect open modal dialogs; Camera Raw's
+            // documented `ui` continuation acts on that dialog rather than the document.
             let camera_raw_continuation = id == "filter.cameraRaw"
                 && app.camera_raw.is_some()
                 && params.as_object().is_some_and(|fields| fields.len() == 1 && fields.get("ui").is_some_and(Value::is_object))
                 && app.ui.dialogs.is_empty()
                 && app.discard.is_none()
                 && !crate::crop_ui::blocks(app, id);
-            if req.method == "ui.menu.invoke" && !camera_raw_continuation && !crate::menus::modal_allows(app, id) {
-                return err("menu command is unavailable while a modal dialog is open");
+            if !camera_raw_continuation && !crate::menus::modal_allows(app, id) {
+                return err("command is unavailable while a modal dialog is open");
             }
             if let Some(authorize) = app.services.automation_command.as_ref()
                 && let Err(error) = authorize(id, &params)
@@ -1217,6 +1217,11 @@ fn dispatch(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) 
             ok(Value::Null)
         }
         "ui.gpu.simulateLoss" => {
+            if p.get("destroy").and_then(Value::as_bool).unwrap_or(false) {
+                let destroyed = app.destroy_window_device();
+                ctx.request_repaint();
+                return ok(json!({"destroyed": destroyed}));
+            }
             let error = p.get("error").and_then(Value::as_bool).unwrap_or(false);
             let fault = if error {
                 photocraft_gpu::Fault::Error("simulated error (ui.gpu.simulateLoss)".into())
@@ -1979,6 +1984,31 @@ mod tests {
     }
 
     #[test]
+    fn engine_execute_cannot_change_document_behind_adjustment_dialog() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        app.run("file.new", json!({"width": 60, "height": 40, "background": "#3366cc"})).unwrap();
+        let opened = call(&mut app, &ctx, "ui.menu.invoke", json!({"id": "image.adjustments.hueSaturation"}));
+        assert_eq!(opened["ok"], true, "{opened}");
+        let dialog = opened["result"]["dialog"].as_u64().unwrap();
+        let revision = app.session.active().unwrap().revision;
+        let fields = call(&mut app, &ctx, "ui.inspect", json!({}))["result"]["dialogs"][0]["fields"].clone();
+
+        for method in ["engine.execute", "ui.menu.invoke"] {
+            let blocked = call(&mut app, &ctx, method, json!({"command": "image.adjustments.invert"}));
+            assert_eq!(blocked["ok"], false, "{method}: {blocked}");
+            assert_eq!(app.session.active().unwrap().revision, revision, "{method} changed the document");
+            let snapshot = call(&mut app, &ctx, "ui.inspect", json!({}));
+            assert_eq!(snapshot["result"]["dialogs"][0]["id"], dialog);
+            assert_eq!(snapshot["result"]["dialogs"][0]["fields"], fields);
+        }
+
+        assert_eq!(call(&mut app, &ctx, "ui.dialog.cancel", json!({"dialog": dialog}))["ok"], true);
+        assert_eq!(call(&mut app, &ctx, "engine.execute", json!({"command": "image.adjustments.invert"}))["ok"], true);
+        assert!(app.session.active().unwrap().revision > revision);
+    }
+
+    #[test]
     fn ui_set_rejects_unknown_fields_before_changing_anything() {
         use crate::theme::ThemeKind;
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -2324,6 +2354,20 @@ mod tests {
         assert!(app.ui.color_panel.background);
         assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"background": "yes"}}))["ok"], false);
         assert!(app.ui.color_panel.background, "a bad value changes nothing");
+    }
+
+    #[test]
+    fn ui_set_color_panel_slider_mode() {
+        use crate::state::ColorPanelSliderMode;
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        assert_eq!(app.ui.color_panel.slider_mode, ColorPanelSliderMode::Hsb);
+        assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"slider_mode": "rgb"}}))["ok"], true);
+        assert_eq!(app.ui.color_panel.slider_mode, ColorPanelSliderMode::Rgb);
+        assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"slider_mode": "hsb"}}))["ok"], true);
+        assert_eq!(app.ui.color_panel.slider_mode, ColorPanelSliderMode::Hsb);
+        assert_eq!(call(&mut app, &ctx, "ui.set", json!({"colorPanel": {"slider_mode": "cmyk"}}))["ok"], false);
+        assert_eq!(app.ui.color_panel.slider_mode, ColorPanelSliderMode::Hsb);
     }
 
     #[test]

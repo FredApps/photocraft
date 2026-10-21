@@ -131,10 +131,15 @@ fn map_pixels(s: &mut Session, label: &str, p: &Value, f: impl FnOnce(Rect, &mut
     Ok(Value::Null)
 }
 
+/// The effective whole-pixel Stroke width, shared by execution and ATN export.
+pub(crate) fn stroke_width(p: &Value) -> usize {
+    // Whole pixels, rounded up, as in Photoshop (0.5 px strokes 1 px).
+    p.get("width").and_then(Value::as_f64).filter(|w| w.is_finite()).unwrap_or(1.0).clamp(1.0, 250.0).ceil() as usize
+}
+
 /// Edit › Stroke: a band along the selection edge (or the layer's opaque edge without a selection).
 fn stroke(s: &mut Session, p: &Value) -> Result<Value> {
-    // Whole pixels, rounded up, as in Photoshop (0.5 px strokes 1 px).
-    let width = p.get("width").and_then(Value::as_f64).filter(|w| w.is_finite()).unwrap_or(1.0).clamp(1.0, 250.0).ceil() as usize;
+    let width = stroke_width(p);
     let color = color_param("edit.stroke", p, "color", s.tools.foreground)?;
     // A colour picked as CMYK strokes a CMYK document with the picked inks (#4196).
     let picked = s.tools.picked_cmyk([color[0], color[1], color[2]]);
@@ -227,34 +232,48 @@ fn stroke(s: &mut Session, p: &Value) -> Result<Value> {
 /// Histogram equalization, like Photoshop's: one CDF over the R, G and B values of
 /// the selected pixels, applied to every channel.
 fn equalize(s: &mut Session, p: &Value) -> Result<Value> {
-    map_pixels(s, "Equalize", p, |_, px, cover| {
-        let mut hist = [0f64; 256];
-        for (p, &k) in px.iter().zip(cover) {
-            if k > 0.0 && p[3] > 0.0 {
-                for &v in &p[..3] {
-                    hist[(v.clamp(0.0, 1.0) * 255.0).round() as usize] += 1.0;
-                }
+    if crate::adjust_cmds::adjust_as_smart_filter(s, "equalize", "Equalize", p)? {
+        return Ok(Value::Null);
+    }
+    map_pixels(s, "Equalize", p, |_, px, cover| equalize_covered(px, cover))
+}
+
+/// Histogram equalization of opaque covered pixels. The smart-filter path equalizes the whole
+/// source; the filter mask is what limits it to a selection.
+pub(crate) fn equalize_rgba(px: &mut [[f32; 4]]) {
+    equalize_covered(px, &vec![1.0; px.len()]);
+}
+
+fn equalize_covered(px: &mut [[f32; 4]], cover: &[f32]) {
+    let mut hist = [0f64; 256];
+    for (p, &k) in px.iter().zip(cover) {
+        if k > 0.0 && p[3] > 0.0 {
+            for &v in &p[..3] {
+                hist[(v.clamp(0.0, 1.0) * 255.0).round() as usize] += 1.0;
             }
         }
-        let total: f64 = hist.iter().sum();
-        if total == 0.0 {
-            return;
+    }
+    let total: f64 = hist.iter().sum();
+    if total == 0.0 {
+        return;
+    }
+    let first = hist.iter().copied().find(|v| *v > 0.0).unwrap_or(0.0);
+    let mut lut = [0f32; 256];
+    let mut acc = 0.0;
+    for (i, h) in hist.iter().enumerate() {
+        acc += h;
+        lut[i] = if total > first { ((acc - first) / (total - first)).clamp(0.0, 1.0) as f32 } else { i as f32 / 255.0 };
+    }
+    // Same 256 bins as the histogram, at every depth (like Photoshop).
+    let map = |v: f32| lut[(v.clamp(0.0, 1.0) * 255.0).round() as usize];
+    for (p, &k) in px.iter_mut().zip(cover) {
+        if k <= 0.0 {
+            continue;
         }
-        let first = hist.iter().copied().find(|v| *v > 0.0).unwrap_or(0.0);
-        let mut lut = [0f32; 256];
-        let mut acc = 0.0;
-        for (i, h) in hist.iter().enumerate() {
-            acc += h;
-            lut[i] = if total > first { ((acc - first) / (total - first)).clamp(0.0, 1.0) as f32 } else { i as f32 / 255.0 };
+        for v in &mut p[..3] {
+            *v = map(*v);
         }
-        // Same 256 bins as the histogram, at every depth (like Photoshop).
-        let map = |v: f32| lut[(v.clamp(0.0, 1.0) * 255.0).round() as usize];
-        for p in px.iter_mut() {
-            for v in &mut p[..3] {
-                *v = map(*v);
-            }
-        }
-    })
+    }
 }
 
 /// Filter › Blur › Average: the selection (or layer) filled with its mean colour.
@@ -865,7 +884,7 @@ pub fn specs() -> Vec<CommandSpec> {
             })?;
             Ok(json!({"selected": true}))
         }),
-        spec!("image.adjustments.equalize", "Equalize", &["Image", "Adjustments"], None, "{}", has_pixels, equalize),
+        spec!("image.adjustments.equalize", "Equalize", &["Image", "Adjustments"], None, "{}", crate::adjust_cmds::has_adjustable, equalize),
         spec!("image.revealAll", "Reveal All", &["Image"], None, "{}", has_doc, |s, _| {
             let d = s.active().ok_or(EngineError::NoDocument)?;
             let all = reveal_all_bounds(&d.doc);

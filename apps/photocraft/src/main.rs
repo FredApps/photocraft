@@ -102,9 +102,7 @@ fn custom_titlebar(prefs_file: Option<&std::path::Path>) -> bool {
 /// different offset every launch (#419). A later launch restores the saved position instead
 /// (`main` turns `centered` off, #4826). Wayland compositors place windows themselves.
 fn native_options(custom_titlebar: bool) -> eframe::NativeOptions {
-    let viewport = egui::ViewportBuilder::default();
-    // Not inside a macOS app bundle: its Dock icon is the bundle's .icns (`app_icon`, #5849).
-    let viewport = if app_icon::sets_runtime_icon(std::env::current_exe().ok().as_deref()) { viewport.with_icon(app_icon::window_icon()) } else { viewport };
+    let viewport = egui::ViewportBuilder::default().with_icon(app_icon::viewport_icon(std::env::current_exe().ok().as_deref()));
     eframe::NativeOptions {
         viewport: viewport
             .with_app_id(APP_ID)
@@ -446,6 +444,8 @@ mod launch_args_tests {
 }
 
 fn main() -> eframe::Result {
+    // The git commit of a dev build's checkout, for `--version` and About (build.rs, #5247).
+    photocraft_engine::build_info::set_checkout(option_env!("PHOTOCRAFT_CHECKOUT_SHA"));
     // First, so the panic hook and every start-up warning are recorded (`logging`).
     let logger = logging::install();
     crash_guard::install_hook();
@@ -504,6 +504,43 @@ fn main() -> eframe::Result {
         version: _,
         errors: _,
     } = launch;
+
+    // Complete control setup before display/GPU initialization: a failed grant must exit 2,
+    // including an occupied port (#6428), rather than open a window without a control server.
+    let control = if let Some(port) = control_port {
+        let listener = match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(listener) => listener,
+            Err(error) => {
+                eprintln!("photocraft: control server failed to bind 127.0.0.1:{port}: {error}");
+                std::process::exit(2);
+            }
+        };
+        let (supplied, token_file) = photocraft_automation::security::token_inputs(control_token, control_token_file);
+        let token = match photocraft_automation::security::server_token(supplied.as_deref(), token_file.as_deref()) {
+            Ok(token) => token,
+            Err(e) => {
+                eprintln!("photocraft: cannot configure control authentication: {e}");
+                std::process::exit(2);
+            }
+        };
+        if let Some(path) = token_file {
+            eprintln!("photocraft: control token file: {}", path.display());
+        } else if supplied.is_none() {
+            eprintln!("photocraft: control token: {token}");
+        } else {
+            eprintln!("photocraft: using supplied control token");
+        }
+        let workspace = match photocraft_automation::AuthorizedWorkspace::new(automation_read_root.as_deref(), automation_write_root.as_deref()) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                eprintln!("photocraft: cannot configure automation workspace: {error}");
+                std::process::exit(2);
+            }
+        };
+        Some((listener, token, workspace))
+    } else {
+        None
+    };
 
     // The log file lives under the settings directory; opened after the arguments, so `--version`
     // and usage errors leave no file behind. Records logged until now are written to it first.
@@ -591,33 +628,6 @@ fn main() -> eframe::Result {
         std::process::exit(1);
     }
 
-    let control = if let Some(port) = control_port {
-        let (supplied, token_file) = photocraft_automation::security::token_inputs(control_token, control_token_file);
-        let token = match photocraft_automation::security::server_token(supplied.as_deref(), token_file.as_deref()) {
-            Ok(token) => token,
-            Err(e) => {
-                eprintln!("photocraft: cannot configure control authentication: {e}");
-                std::process::exit(2);
-            }
-        };
-        if let Some(path) = token_file {
-            eprintln!("photocraft: control token file: {}", path.display());
-        } else if supplied.is_none() {
-            eprintln!("photocraft: control token: {token}");
-        } else {
-            eprintln!("photocraft: using supplied control token");
-        }
-        let workspace = match photocraft_automation::AuthorizedWorkspace::new(automation_read_root.as_deref(), automation_write_root.as_deref()) {
-            Ok(workspace) => workspace,
-            Err(error) => {
-                eprintln!("photocraft: cannot configure automation workspace: {error}");
-                std::process::exit(2);
-            }
-        };
-        Some((port, token, workspace))
-    } else {
-        None
-    };
     // Finder / Dock / Open With deliver files as Apple events, not arguments; catch the one that
     // launched us as well as later ones. Lives until the event loop returns.
     #[cfg(target_os = "macos")]
@@ -803,8 +813,9 @@ fn main() -> eframe::Result {
                 {
                     app.set_wgpu(rs);
                 } else {
-                    // The window still draws with wgpu: record its errors instead of panicking.
-                    let _ = photocraft_ui_egui::gpu_canvas::DeviceHealth::watch(&rs.device);
+                    // The window still draws with wgpu: record its errors instead of panicking,
+                    // and notice when the device is lost (#3438).
+                    app.watch_window_device(&rs.device);
                 }
             }
             let fallback_reason = std::env::var("PHOTOCRAFT_GPU_STARTUP_FAILURE").ok().or_else(|| {
@@ -830,8 +841,8 @@ fn main() -> eframe::Result {
                     log::warn!("couldn't remember GPU backend {}: {e}", b.name());
                 }
             });
-            if let Some((port, token, _)) = control {
-                let rx = control_server::start(port, token, cc.egui_ctx.clone());
+            if let Some((listener, token, _)) = control {
+                let rx = control_server::start(listener, token, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }
             #[cfg(target_os = "macos")]

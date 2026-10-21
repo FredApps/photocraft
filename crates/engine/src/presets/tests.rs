@@ -775,14 +775,22 @@ fn a_damaged_preset_set_keeps_the_other_sets() {
     let mut s = Session::new();
     let settings = json!({"width": 1600, "height": 900, "resolution": 144});
     s.execute("document.presets.save", json!({"name": "Banner", "settings": settings})).unwrap();
+    let export = json!({
+        "format": "jpg", "quality": 70, "lossless": false, "transparency": false, "scale": 50, "width": 640, "height": 480,
+        "lockAspect": true, "sizing": "pixels", "metadata": "exif", "profile": "srgb", "embedProfile": false, "tgaBits": "24"
+    });
+    s.execute("file.export.presets.save", json!({"name": "Web JPEG", "settings": export})).unwrap();
     let saved = s.presets.to_json(&s);
-    for key in ["gradients", "gradient", "styles", "shapes", "pattern_groups", "custom_shapes", "layer_defaults", "swatches"] {
+    for key in ["gradients", "gradient", "styles", "shapes", "pattern_groups", "custom_shapes", "layer_defaults", "swatches", "export_presets"] {
         let mut blob = saved.clone();
         blob[key] = json!("not a preset set");
         let mut next = Session::new();
         next.load_presets_json(blob);
         assert_eq!(next.presets.documents, s.presets.documents, "damaged `{key}`");
         assert_eq!(next.presets.tool_presets.len(), Session::new().presets.tool_presets.len(), "damaged `{key}`");
+        if key != "export_presets" {
+            assert_eq!(next.presets.export_presets, s.presets.export_presets, "damaged `{key}`");
+        }
     }
     // Null sets keep their defaults, as before.
     let mut next = Session::new();
@@ -790,6 +798,47 @@ fn a_damaged_preset_set_keeps_the_other_sets() {
     assert_eq!(next.presets.tool_presets.len(), Session::new().presets.tool_presets.len());
     assert_eq!(next.presets.gradients.len(), Session::new().presets.gradients.len());
     assert_eq!(next.presets.documents, s.presets.documents);
+}
+
+/// #5602: one damaged preset set in the preferences file must not discard the saved New
+/// Document presets (or any other set) at the next launch.
+#[test]
+fn a_damaged_preset_set_keeps_the_other_sets_pr7109() {
+    let mut s = Session::new();
+    let settings = json!({"width": 1600, "height": 900, "resolution": 144});
+    s.execute("document.presets.save", json!({"name": "Banner", "settings": settings})).unwrap();
+    s.execute("file.export.presets.save", json!({"name": "Web", "settings": {"format": "jpg", "quality": 70}})).unwrap();
+    let saved = s.presets.to_json(&s);
+    for key in ["gradients", "gradient", "styles", "shapes", "pattern_groups", "recent_documents", "custom_shapes", "layer_defaults", "swatches"] {
+        let mut blob = saved.clone();
+        blob[key] = json!("not a preset set");
+        let mut next = Session::new();
+        next.load_presets_json(blob);
+        assert_eq!(next.presets.documents, s.presets.documents, "damaged `{key}`");
+        assert_eq!(next.presets.export_presets, s.presets.export_presets, "damaged `{key}`");
+        assert_eq!(next.presets.tool_presets.len(), Session::new().presets.tool_presets.len(), "damaged `{key}`");
+    }
+    let mut blob = saved.clone();
+    blob["export_presets"] = json!("not a preset set");
+    let mut next = Session::new();
+    next.load_presets_json(blob);
+    assert!(next.presets.export_presets.is_empty());
+    assert_eq!(next.presets.documents, s.presets.documents);
+    let mut blob = saved.clone();
+    blob["documents"] = json!("not a preset set");
+    let mut next = Session::new();
+    next.load_presets_json(blob);
+    assert!(next.presets.documents.is_empty());
+    assert_eq!(next.presets.export_presets, s.presets.export_presets);
+    // Null sets keep their defaults, as before.
+    let mut next = Session::new();
+    next.load_presets_json(
+        json!({"tool_presets": null, "gradients": null, "documents": saved["documents"].clone(), "export_presets": saved["export_presets"].clone()}),
+    );
+    assert_eq!(next.presets.tool_presets.len(), Session::new().presets.tool_presets.len());
+    assert_eq!(next.presets.gradients.len(), Session::new().presets.gradients.len());
+    assert_eq!(next.presets.documents, s.presets.documents);
+    assert_eq!(next.presets.export_presets, s.presets.export_presets);
 }
 
 // ------------------------------------------------------------------ export presets

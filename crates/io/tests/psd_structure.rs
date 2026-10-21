@@ -197,6 +197,32 @@ fn palette_and_duotone_modes_are_written_in_their_own_mode() {
 }
 
 #[test]
+fn a_duotone_made_in_photocraft_is_written_with_its_inks() {
+    use photocraft_doc::{Duotone, DuotoneInk};
+    let mut d = photocraft_doc::Document::with_background(
+        "d",
+        photocraft_doc::Size::new(4, 2),
+        photocraft_color::ColorMode::Grayscale,
+        photocraft_color::SampleType::U8,
+        photocraft_color::Color::rgba(0.5, 0.5, 0.5, 1.0),
+    );
+    d.mode = photocraft_color::ColorMode::Duotone;
+    d.duotone = Some(Duotone { inks: vec![DuotoneInk::new("Black", [0.0; 3]), DuotoneInk::new("Orange", [1.0, 0.5, 0.0])], psd_raw: None });
+    let out = export(&d, "x.psd", &ExportOptions::default()).unwrap();
+    assert!(out.warnings.iter().all(|w| !w.contains("written as")), "{:?}", out.warnings);
+    let f = PsdFile::from_bytes(&out.bytes).unwrap();
+    assert_eq!((f.header.color_mode, f.color_mode_data.len()), (ColorMode::Duotone, 524));
+    let (back, w) = psd_to_document(&f);
+    assert!(w.iter().all(|w| !w.contains("duotone")), "{w:?}");
+    let inks = &back.duotone.as_ref().unwrap().inks;
+    assert_eq!(inks.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["Black", "Orange"]);
+    assert!((inks[1].color[1] - 0.5).abs() < 1e-4, "{:?}", inks[1].color);
+    // Re-exported unedited, the block is the one read.
+    let again = PsdFile::from_bytes(&export(&back, "x.psd", &ExportOptions::default()).unwrap().bytes).unwrap();
+    assert_eq!(again.color_mode_data, f.color_mode_data);
+}
+
+#[test]
 fn indexed_psd_keeps_the_table_length_and_transparent_entry() {
     use photocraft_doc::ColorTable;
     let mut d = photocraft_doc::Document::with_background(
@@ -285,6 +311,33 @@ fn indexed_document_whose_only_entry_is_transparent_is_not_written_as_indexed() 
     let f = PsdFile::from_bytes(&out.bytes).unwrap();
     assert_eq!(f.header.color_mode, ColorMode::Rgb, "{:?}", out.warnings);
     assert_eq!(&f.composite_rgba8().unwrap().data[..4], &[255, 0, 0, 255]);
+}
+
+#[test]
+fn indexed_save_warns_whenever_flattening_loses_a_layer() {
+    // One plain visible pixel layer is the merged image: no warning. A single hidden, masked,
+    // half-opaque or type layer, or a second layer, is lost in the flat file, so the save says so.
+    let flat = |d: &photocraft_doc::Document| {
+        let out = export(d, "x.psd", &ExportOptions::default()).unwrap();
+        assert_eq!(PsdFile::from_bytes(&out.bytes).unwrap().header.color_mode, ColorMode::Indexed);
+        out.warnings.iter().any(|w| w.contains("written flattened"))
+    };
+    let plain = indexed_doc(photocraft_color::Color::rgba(1.0, 1.0, 1.0, 1.0), vec![[255, 255, 255], [0, 0, 0]], None);
+    assert!(!flat(&plain), "a single plain layer flattens losslessly");
+    let changes: [fn(&mut photocraft_doc::Layer); 4] = [
+        |l| l.visible = false,
+        |l| l.opacity = 0.5,
+        |l| l.mask = Some(photocraft_doc::LayerMask::hide_all()),
+        |l| l.content = LayerContent::Text(photocraft_doc::TextLayer::default()),
+    ];
+    for (i, change) in changes.iter().enumerate() {
+        let mut d = plain.clone();
+        change(&mut d.layers[0]);
+        assert!(flat(&d), "change {i} is lost when flattened, so the save warns");
+    }
+    let mut two = plain.clone();
+    two.layers.push(two.layers[0].clone());
+    assert!(flat(&two));
 }
 
 #[test]

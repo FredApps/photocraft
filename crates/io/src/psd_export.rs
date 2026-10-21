@@ -1558,13 +1558,14 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
         return file;
     }
     let fmt = doc.pixel_format();
-    // A Duotone keeps the inks it was imported with (their Color Mode Data is undocumented and
-    // kept verbatim) over its grey plate; Photoshop has no 32-bit Duotone.
-    let duotone_inks = doc
+    // A Duotone is written over its grey plate with its inks: the block it was imported with,
+    // verbatim, while the inks are unedited, else one made from them (`duotone_map`). Photoshop
+    // has no 32-bit Duotone.
+    let duotone_inks: Option<Vec<u8>> = doc
         .duotone
         .as_ref()
-        .and_then(|d| d.psd_raw.as_ref())
-        .filter(|_| doc.mode == ColorMode::Duotone && fmt.mode == ColorMode::Grayscale && fmt.sample != SampleType::F32);
+        .filter(|d| !d.inks.is_empty() && doc.mode == ColorMode::Duotone && fmt.mode == ColorMode::Grayscale && fmt.sample != SampleType::F32)
+        .map(|d| d.psd_raw.clone().unwrap_or_else(|| crate::duotone_map::write(d)));
     let sample = fmt.sample;
     let cc = fmt.mode.color_channels();
     let big = doc.size.width > 30_000 || doc.size.height > 30_000;
@@ -1863,7 +1864,7 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
     // 32-bit files carry Photoshop's HDR toning records as Color Mode Data; Photoshop will not
     // open a 32-bit file without them (#291).
     let color_mode_data = match duotone_inks {
-        Some(raw) => raw.to_vec(),
+        Some(raw) => raw,
         None => photocraft_psd::hdr::color_mode_data_for_depth(header.depth),
     };
     let file = PsdFile {
@@ -2078,6 +2079,42 @@ mod tests {
         let photocraft_doc::Adjustment::PhotoFilter { color: back, density, .. } = reread else { panic!("{reread:?}") };
         assert!(back.iter().zip(color).all(|(b, c)| (b - c).abs() <= 1.0 / 65535.0), "{back:?} vs {color:?}");
         assert_eq!(density, 0.5);
+    }
+
+    #[test]
+    fn light_adjustment_is_kept_verbatim_and_warned() {
+        // #6542: Photoshop 2026's Light layer is a `brit` block whose `CgEd` descriptor carries
+        // more than Brightness/Contrast. Synthetic block: the extra key names are placeholders.
+        use photocraft_psd::descriptor::{Descriptor, Value, VersionedDescriptor};
+        let brit = vec![0, 0, 0xff, 0xfe, 0, 127, 0, 0];
+        let d = Descriptor::new("null")
+            .with("Vrsn", Value::Integer(1))
+            .with("Brgh", Value::Integer(0))
+            .with("Cntr", Value::Integer(-2))
+            .with("Exps", Value::Double(-2.3))
+            .with("Hghl", Value::Integer(-64))
+            .with("useLegacy", Value::Boolean(false));
+        let cged = VersionedDescriptor::new(d).to_bytes();
+        let adjustment = crate::adjust_map::parse(b"brit", &brit, Some(&cged), crate::adjust_map::Channels::Rgb);
+        assert_eq!(adjustment, photocraft_doc::Adjustment::Unsupported { psd_key: "brit".into(), raw: brit.clone() });
+        let mut doc = Document::with_background("Light", photocraft_geom::Size::new(8, 8), ColorMode::Rgb, SampleType::U8, photocraft_doc::Color::WHITE);
+        let mut layer = Layer::new("Light 1", LayerContent::Adjustment(adjustment));
+        layer.psd_blocks = vec![(*b"brit", std::sync::Arc::new(brit.clone())), (*b"CgEd", std::sync::Arc::new(cged.clone()))];
+        doc.layers.push(layer);
+        let block = |file: &PsdFile, key: &[u8; 4]| {
+            let records = &file.layer_info.as_ref().unwrap().layers;
+            records.iter().flat_map(|r| r.blocks.iter()).find(|b| b.key == *key).map(|b| b.data.clone())
+        };
+        let file = PsdFile::from_bytes(&document_to_psd(&doc).to_bytes().unwrap()).unwrap();
+        let (restored, warnings) = crate::psd_import::psd_to_document(&file);
+        assert!(warnings.iter().any(|w| w.contains("\"Light 1\"") && w.contains("Light settings")), "{warnings:?}");
+        // Saved again unchanged, both blocks are written back byte for byte.
+        let again = PsdFile::from_bytes(&document_to_psd(&restored).to_bytes().unwrap()).unwrap();
+        assert_eq!(block(&again, b"brit").as_deref(), Some(&brit[..]));
+        assert_eq!(block(&again, b"CgEd").as_deref(), Some(&cged[..]));
+        // A plain Brightness/Contrast descriptor still reads as Brightness/Contrast.
+        let plain = crate::adjust_map::write(&photocraft_doc::Adjustment::BrightnessContrast { brightness: 5.0, contrast: -2.0, legacy: false });
+        assert!(!crate::adjust_map::is_extended_brit(Some(&plain[1].1)));
     }
 
     #[test]

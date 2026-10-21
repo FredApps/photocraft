@@ -546,6 +546,12 @@ fn camera_data_formats_like_photoshop_and_falls_back_to_xmp() {
     assert_eq!(info(Some(0.5), Some(5.6), None), json!({"exposure": "1/2 s", "fNumber": "f/5.6"}));
     assert_eq!(info(Some(0.4), None, None), json!({"exposure": "0.4 s"}));
     assert_eq!(info(Some(1.0 / 2000.0), None, None), json!({"exposure": "1/2000 s"}));
+    // Non-standard fractions round to the nearest 1/n instead of losing digits (#6958).
+    assert_eq!(info(Some(0.031714), None, None), json!({"exposure": "1/32 s"}));
+    assert_eq!(info(Some(0.0215), None, None), json!({"exposure": "1/47 s"}));
+    assert_eq!(info(Some(1.0 / 3.0), None, None), json!({"exposure": "1/3 s"}));
+    // Too far from any whole denominator: three significant digits, not two decimals.
+    assert_eq!(info(Some(0.2731), None, None), json!({"exposure": "0.273 s"}));
     assert_eq!(info(Some(0.0), Some(0.0), Some(0.0)), json!({}));
     // No EXIF block (a raw import, XMP-only files): Photoshop's exif:/tiff:/aux: properties.
     let xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -1457,4 +1463,22 @@ fn batch_naming_rejects_outputs_that_replace_inputs_before_processing() {
     assert!(error.to_string().contains("input"), "{error}");
     assert_eq!(std::fs::read(&first).unwrap(), before[0]);
     assert_eq!(std::fs::read(&second).unwrap(), before[1]);
+}
+
+#[test]
+fn exposure_text_near_one_second_is_not_one_over_one() {
+    assert_eq!(exposure_text(0.996).as_deref(), Some("1 s"));
+    assert_eq!(exposure_text(0.99).as_deref(), Some("0.99 s"));
+    assert_eq!(exposure_text(1.0 / 250.0).as_deref(), Some("1/250 s"));
+}
+/// A folder batch picks up GIMP's gzipped `.xcf.gz`, whose last extension alone (`gz`) says nothing.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn folder_listing_recognises_gzipped_xcf_by_its_double_extension() {
+    assert!(super::openable_name("/scans/page 01.xcf.gz"));
+    assert!(super::openable_name("C:\\scans\\PAGE.XCF.GZ"));
+    assert!(super::openable_name("page.xcfgz"));
+    assert!(super::openable_name("page.PNG"));
+    assert!(!super::openable_name("archive.tar.gz"));
+    assert!(!super::openable_name("notes.txt"));
 }

@@ -2018,6 +2018,7 @@ layers	Fill:	Độ tô:
 	Color Picker (Layer Style Color)	Ống hút màu (Màu kiểu lớp)
 	Color Picker (Text Color)	Ống hút màu (Màu chữ)
 	Color to Alpha…	Màu sang alpha…
+	Frequency Separation…	Tách tần số…
 	Corner radius	Bán kính góc
 	Create new shape from the current path	Tạo hình mới từ đường dẫn hiện tại
 	Create new style from the selected layer	Tạo kiểu mới từ lớp đã chọn
@@ -2133,6 +2134,8 @@ layers	Fill:	Độ tô:
 	Click to add a point, right-click to remove	Nhấp để thêm điểm, nhấp chuột phải để xóa
 	Close Tab Group	Đóng nhóm tab
 	Collapse Panel Group	Thu gọn nhóm bảng
+	Collapse to Icons	Thu gọn thành biểu tượng
+	Expand Panels	Mở rộng các bảng
 	Color Picker (Fill Color)	Ống hút màu (Màu tô)
 	Color Picker (Stroke Color)	Ống hút màu (Màu nét)
 	Contents:	Nội dung:
@@ -2255,7 +2258,7 @@ layers	Fill:	Độ tô:
 	Delete Timeline	Xóa dòng thời gian
 	Deselect All	Bỏ chọn tất cả
 	Display Text	Hiển thị văn bản
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Kéo trên ảnh để thêm ràng buộc; Shift cho ngang/dọc; nhấp chuột phải để xóa.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Kéo trên ảnh để thêm ràng buộc; Shift cho ngang/dọc; nhấp chuột phải vào ràng buộc để thay đổi hoặc xóa.
 	Export selected measurements (CSV)	Xuất các phép đo đã chọn (CSV)
 	Focal Length	Tiêu cự
 	Font Size:	Cỡ chữ:
@@ -3397,6 +3400,7 @@ cameraData	Lens	Ống kính
 	Select All Layers	Chọn tất cả lớp
 	Select Layer	Chọn lớp
 	Select and Mask	Chọn và Mặt nạ
+	Cryptomatte Selection	Vùng chọn Cryptomatte
 	Selected Areas	Vùng đã chọn
 	Semi Bold	Nửa đậm
 	Sepia	Nâu sepia
@@ -3599,6 +3603,7 @@ curves	Smooth	Làm mượt
 	Response curve	Đường cong phản hồi
 	Object Finder	Trình tìm đối tượng
 	No object found there — drag a rectangle around it	Không tìm thấy đối tượng ở đó — hãy kéo một hình chữ nhật quanh nó
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Lớp đang hoạt động không có điểm ảnh ở đây — hãy bật Lấy mẫu mọi lớp hoặc chọn một lớp có điểm ảnh
 	Remove after each stroke	Xóa sau mỗi nét vẽ
 	Apply the removal ({key})	Áp dụng việc xóa ({key})
 	Strokes to remove: {n} (Enter applies, Esc cancels)	Nét vẽ cần xóa: {n} (Enter áp dụng, Esc hủy)
@@ -3731,6 +3736,7 @@ curves	Smooth	Làm mượt
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} được hệ thống dành riêng và không thể gán.
 	Low-Latency Drawing (vsync off, applies at next launch)	Vẽ độ trễ thấp (tắt vsync, áp dụng ở lần khởi động sau)
 # Free Transform: a new layer while the box is open (#5859)
+	Reference point location	Vị trí điểm tham chiếu
 	Free Transform is still being applied; try again when it has finished.	Biến đổi tự do vẫn đang được áp dụng; hãy thử lại khi hoàn tất.
 	The transform couldn't be applied.	Không thể áp dụng phép biến đổi.
 # Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
@@ -3739,6 +3745,7 @@ curves	Smooth	Làm mượt
 	GPU Memory Full	Bộ nhớ GPU đầy
 	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Các lớp cần {needed} bộ nhớ GPU và chỉ được dùng {budget}, nên những chỉnh sửa vẽ lại toàn bộ tài liệu sẽ làm trên CPU. Nhấp để đặt Bộ nhớ GPU.
 	GPU memory budget: {budget}	Ngân sách bộ nhớ GPU: {budget}
+	Graphics memory: {size}	Bộ nhớ đồ họa: {size}
 	This document's layers: {needed} of {budget} for layers	Các lớp của tài liệu này: {needed} trên {budget} dành cho lớp
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Các lớp của tài liệu này cần {needed} nhưng chỉ được dùng {budget}: vẽ lại toàn bộ tài liệu dùng CPU
 	GPU Memory (MB, 0 = Automatic)	Bộ nhớ GPU (MB, 0 = Tự động)

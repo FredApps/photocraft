@@ -69,7 +69,7 @@ tablets against Photoshop side by side.
 | Behaviour | Status | Evidence |
 |---|---|---|
 | ⌃⌥-drag (macOS) / Alt+right-drag (Windows) resizes and changes hardness with a readout | done | TOOL-213-10 |
-| `[` `]` size, `⇧[` `⇧]` hardness, number keys opacity, ⇧+numbers flow | done | 2026-10-07 |
+| `[` `]` size, `⇧[` `⇧]` hardness, number keys opacity, ⇧+numbers flow (swapped when build-up is on) | done | 2026-10-07 |
 | ⌥-click samples a colour with painting tools; Eyedropper comparison ring | done | TOOL-213-9 |
 | ⇧-click draws a straight line from the last point | done | |
 | Hold `~` with the Brush or Pencil to erase with its brush: Clear mode while held (rebindable under Tools › Temporary) | done | `hold_keys.rs`, #3439 |
@@ -125,3 +125,4 @@ tablets against Photoshop side by side.
 | 2026-10-13 | minor | Shape Dynamics and Transfer minimum inputs follow their Control and retain their values while disabled (#3825, partial). No brush-feel estimate changed. |
 | 2026-10-13 | minor | Hue Jitter uses the same themed amount slider as other jitter controls (#3825, partial). No brush-feel estimate changed. |
 | 2026-10-13 | minor | Dragging a brush preset shows its cached tip thumbnail and name in the Brushes panel and preset picker (#4225, partial). No brush-feel estimate changed. |
+| 2026-10-15 | minor | The Brush Preset picker's cards start at the compact scale so the grid fits more brushes by default; the footer slider and the remembered scale are unchanged (#6107). No brush-feel estimate changed. |
