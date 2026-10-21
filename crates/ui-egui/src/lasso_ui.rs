@@ -159,15 +159,14 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers) -> bool 
     match ev {
         ToolEvent::Down { .. } => {
             if active(app) {
-                // A click on the first point, or on the last one again, closes the outline. Aiming
-                // at the first point is a grab; clicking the last one again is the same click
-                // repeated, so it has only to allow for a pixel of hand jitter. Sharing the grab
-                // radius made every segment shorter than it impossible to draw, because the click
-                // meant to place the next vertex closed the outline instead (#7629).
+                // A click on the first point, or on the last one again, closes the outline.
+                let reach = app.drag.as_ref().map_or(8.0 / app.point_zoom().max(0.01) as f64, |d| {
+                    crate::canvas::polygon_close_reach(d.points.iter().map(|q| [q[0], q[1]]), app.point_zoom())
+                });
                 let zoom = app.point_zoom().max(0.01) as f64;
                 let near = |q: [f64; 2], reach: f64| (q[0] - p[0]).hypot(q[1] - p[1]) < reach / zoom;
                 let again = |d: &Drag| d.points.last().is_some_and(|l| near([l[0], l[1]], SAME_POINT));
-                let close = app.drag.as_ref().is_some_and(|d| d.points.len() >= 3 && (near(d.start, 8.0) || again(d)));
+                let close = app.drag.as_ref().is_some_and(|d| d.points.len() >= 3 && (near(d.start, reach * zoom) || again(d)));
                 if close {
                     // A path closes on its start point (a selection outline always closes).
                     if let Some(d) = app.drag.as_mut().filter(|d| d.tool == Tool::FreeformPen && near(d.start, 8.0)) {
