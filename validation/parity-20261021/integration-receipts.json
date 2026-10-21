@@ -1,0 +1,3695 @@
+[
+  {
+    "pr": 8250,
+    "source_head": "000a480f917b32c09a8e80a31bd223e254841592",
+    "title": "fix(io): read a placed layer's custom warp over its source rect (#8227)",
+    "status": "INTEGRATED",
+    "before": "6a2d027ee2e7ca12afd248544ed2262b0fa078dd",
+    "after": "0086d94e5ca2e1fe41eddf46f9d38e84417a5620",
+    "changed_paths": [
+      "crates/geom/src/warp.rs",
+      "crates/io/src/blocks.rs",
+      "crates/io/src/smart_map.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8114,
+    "source_head": "ee19856487ba51effc9396354964184d67dd7354",
+    "title": "Layers panel: a click on the empty space below the layers deselects them (#8100)",
+    "status": "INTEGRATED",
+    "before": "0086d94e5ca2e1fe41eddf46f9d38e84417a5620",
+    "after": "113bbdf0d1065c4cb2bf88af04b4c5539b3c2ae5",
+    "changed_paths": [
+      "crates/ui-egui/src/layer_shortcut_tests.rs",
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8098,
+    "source_head": "3d7d62e349447a2078df23fdc7e5d42f1960e4ea",
+    "title": "PSD layer comps: an entry without enab inherits the previous visibility, as in Photoshop (#8093)",
+    "status": "INTEGRATED",
+    "before": "113bbdf0d1065c4cb2bf88af04b4c5539b3c2ae5",
+    "after": "a7273d1e2e54b50ceabbf09328a15e534d402492",
+    "changed_paths": [
+      "crates/io/src/comps_map.rs",
+      "crates/io/tests/comps_artboards.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8097,
+    "source_head": "ba10fa440401e6b947693bb7a9d6e264776f1aa0",
+    "title": "i18n(pt-br): translate 131 runtime labels that still showed in English",
+    "status": "INTEGRATED",
+    "before": "a7273d1e2e54b50ceabbf09328a15e534d402492",
+    "after": "4d361a180c87b653e7b3c4b5a83e8d195ed594a1",
+    "changed_paths": [
+      "crates/ui-egui/src/i18n/pt-br.tsv"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8096,
+    "source_head": "168701779cdd471b655a0b4376ce2c52ca2f6999",
+    "title": "CodeRabbit follow-ups for the #8095 batch",
+    "status": "INTEGRATED",
+    "before": "4d361a180c87b653e7b3c4b5a83e8d195ed594a1",
+    "after": "4aed3266153cd6580afb8409bc99aeb8276bf895",
+    "changed_paths": [
+      "crates/engine/src/preset_import_cmds.rs",
+      "crates/engine/src/type_cmds.rs",
+      "crates/io/src/palette_map.rs",
+      "crates/io/tests/psd_structure.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8074,
+    "source_head": "a0e538ccdd225cd264efe1a87e3cb22e571f5275",
+    "title": "Transform: remember selected interpolation (#8067)",
+    "status": "INTEGRATED",
+    "before": "4aed3266153cd6580afb8409bc99aeb8276bf895",
+    "after": "24cd8deeb92e314d282163c1625f7ba31cf7db4d",
+    "changed_paths": [
+      "crates/ui-egui/src/cam_transform.rs",
+      "crates/ui-egui/src/transform_tool.rs",
+      "crates/ui-egui/src/type_transform.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8053,
+    "source_head": "480c12304d5cacdfd8f7af210afad5d5905e7619",
+    "title": "Pencil: align 1 px click snapping with the line walker (#4895)",
+    "status": "INTEGRATED",
+    "before": "24cd8deeb92e314d282163c1625f7ba31cf7db4d",
+    "after": "88b4ddefac9e2b27b30b13cd303b49f3188afde2",
+    "changed_paths": [
+      "crates/paint/src/brush_tests.rs",
+      "crates/paint/src/dynamics.rs",
+      "crates/paint/src/render.rs",
+      "crates/ui-egui/src/pencil_tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8042,
+    "source_head": "3bd2274aa230e48bda2ab17f071a2879971e9655",
+    "title": "Codecs: Fix corrupted CMYK JPEG exports (#8008)",
+    "status": "INTEGRATED",
+    "before": "88b4ddefac9e2b27b30b13cd303b49f3188afde2",
+    "after": "8053dccc352dd208a00708e48691f7b520d0243b",
+    "changed_paths": [
+      "crates/codecs/src/codecs/jpeg.rs",
+      "crates/codecs/src/resolution.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8039,
+    "source_head": "5579cf5439856fed93f41a669a3fc9b56d5813cf",
+    "title": "Compose: Extend Softer outer glows past Size (#7899)",
+    "status": "INTEGRATED",
+    "before": "8053dccc352dd208a00708e48691f7b520d0243b",
+    "after": "509c1914e9afed667e314dc7ee37c60f054d8be9",
+    "changed_paths": [
+      "crates/compose/src/effects.rs",
+      "crates/gpu/src/compose.wgsl",
+      "crates/gpu/src/fx.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8035,
+    "source_head": "ec9b6b7ee55927f7180a2dac37227f40449f22e0",
+    "title": "CLI: reject ignored or conflicting mcp/serve launch options",
+    "status": "INTEGRATED",
+    "before": "509c1914e9afed667e314dc7ee37c60f054d8be9",
+    "after": "0f971604d9e30ab12ed9e788b7bb581ffad1d2b6",
+    "changed_paths": [
+      "apps/photocraft-cli/src/lib.rs",
+      "apps/photocraft-cli/tests/cli.rs",
+      "book/src/automation/cli.md",
+      "book/src/automation/mcp.md",
+      "docs/mcp.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8023,
+    "source_head": "b85b638e773b28feb9d0e06072575236e2b81afc",
+    "title": "Keep '#' inside quoted .cube TITLE when parsing",
+    "status": "INTEGRATED",
+    "before": "0f971604d9e30ab12ed9e788b7bb581ffad1d2b6",
+    "after": "9eca6edfd0daccb4f128a8db23faaf154684572c",
+    "changed_paths": [
+      "crates/cms/src/lutfile.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8021,
+    "source_head": "acc3420c6d5e88255790778f6e744c6cb9455fca",
+    "title": "Keep previous crop length when normalizing rounds to zero",
+    "status": "INTEGRATED",
+    "before": "9eca6edfd0daccb4f128a8db23faaf154684572c",
+    "after": "8b4c382fc7963828d3a73547ded3a6c580796640",
+    "changed_paths": [
+      "crates/ui-egui/src/crop_size.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8009,
+    "source_head": "d22b6ec7b4d86e4e86a964353ff631345e2635d0",
+    "title": "automation: edit.installedProfiles is no host-path command",
+    "status": "INTEGRATED",
+    "before": "8b4c382fc7963828d3a73547ded3a6c580796640",
+    "after": "12311c32e04fe736a98e50e76fb4e50d5abfb531",
+    "changed_paths": [
+      "crates/automation/src/workspace.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8005,
+    "source_head": "24970b162288e10dd0fd66ad210f53c664d1b5a4",
+    "title": "Open: a file without type never waits for the font scan (#7332)",
+    "status": "INTEGRATED",
+    "before": "12311c32e04fe736a98e50e76fb4e50d5abfb531",
+    "after": "a8517e2d9012bb4ed17267b312b261334c23cdd7",
+    "changed_paths": [
+      "crates/engine/src/jobs.rs",
+      "crates/engine/src/type_extra_cmds.rs",
+      "crates/engine/src/type_extra_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 8004,
+    "source_head": "960d927a37e3db23615830537e67fe732df0c5d1",
+    "title": "Windows on ARM: auto picks DirectX 12 for Qualcomm graphics (#7537)",
+    "status": "INTEGRATED",
+    "before": "a8517e2d9012bb4ed17267b312b261334c23cdd7",
+    "after": "4aa4b2ed5ad8f458337b6a1d49dbfc45e2bc0757",
+    "changed_paths": [
+      "apps/photocraft/src/gpu_startup.rs",
+      "docs/development.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7994,
+    "source_head": "bfcd6548c02f52d3fb2f5da5b467e2fa692eecc6",
+    "title": "Fix Paint Bucket target with Gradient-style crosshair",
+    "status": "INTEGRATED",
+    "before": "4aa4b2ed5ad8f458337b6a1d49dbfc45e2bc0757",
+    "after": "c9cc4bf9226f9c7c8601fe16986b7240ab0629ab",
+    "changed_paths": [
+      "crates/ui-egui/src/blend_preview.rs",
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/caps_lock_tests.rs",
+      "crates/ui-egui/src/icons.rs",
+      "crates/ui-egui/src/input_tests.rs",
+      "crates/ui-egui/src/tool_cursor.rs",
+      "crates/ui-egui/src/tool_cursor/bucket.rs",
+      "crates/ui-egui/src/tool_cursor/tests.rs",
+      "docs/ui-design.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7980,
+    "source_head": "67a9c53f26d4365620a600180cabd7b6e229b859",
+    "title": "perf(raster): tile content bounds compare rows in blocks (P32, #211)",
+    "status": "INTEGRATED",
+    "before": "c9cc4bf9226f9c7c8601fe16986b7240ab0629ab",
+    "after": "2b7e62cd3585c49aee007e52ef44cadd8191547c",
+    "changed_paths": [
+      "crates/raster/src/lib.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7976,
+    "source_head": "afeea2f643f015d8010b5b67b06ccb46cd5f55c1",
+    "title": "Decode numeric character references in File Info XMP text",
+    "status": "INTEGRATED",
+    "before": "2b7e62cd3585c49aee007e52ef44cadd8191547c",
+    "after": "de3a9345ab7c6b5025f4cf9663882dc4877ea919",
+    "changed_paths": [
+      "crates/engine/src/file_cmds.rs",
+      "crates/engine/tests/xmp_charref.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7968,
+    "source_head": "6d2c6cc0174c05ee19d00f28f645f81814f62a2c",
+    "title": "fix(atn): a Group Layers step keeps its explicit layer through .atn (#7236)",
+    "status": "INTEGRATED",
+    "before": "de3a9345ab7c6b5025f4cf9663882dc4877ea919",
+    "after": "0fd290b4258f13afaf0d3b5087e7a0504dc38f9e",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7966,
+    "source_head": "5f8b124efa4b325212026a76195bc9195a777493",
+    "title": "Slice Select gets its own icon: the Slice knife with a pointer (#7859)",
+    "status": "INTEGRATED",
+    "before": "0fd290b4258f13afaf0d3b5087e7a0504dc38f9e",
+    "after": "047445ceaa06add57c98098bc81c2bdeeb7c5b6c",
+    "changed_paths": [
+      "ATTRIBUTION.md",
+      "assets/icons/slice-select.svg",
+      "crates/ui-egui/src/icon_data.rs",
+      "crates/ui-egui/src/icons.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7963,
+    "source_head": "ff2db1b83b49d6837eb431e7c3c7a4d0dd06e560",
+    "title": "Fix File Info showing 1/1 s for exposures just under one second",
+    "status": "INTEGRATED",
+    "before": "047445ceaa06add57c98098bc81c2bdeeb7c5b6c",
+    "after": "371ea2f523a2021a766ebcedbdb161425705ac52",
+    "changed_paths": [
+      "crates/engine/src/file_cmds.rs",
+      "crates/engine/src/file_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7959,
+    "source_head": "52312331d818ffd6960de652d4c280a6e057957c",
+    "title": "Actions: Emboss saves to and loads from .atn as Photoshop's Embs step (#7946)",
+    "status": "INTEGRATED",
+    "before": "371ea2f523a2021a766ebcedbdb161425705ac52",
+    "after": "e094ed777183ac9d7bae584389b4318da6c2eeae",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7951,
+    "source_head": "9819df5002d1e0b5b413a6b537b49066672be035",
+    "title": "Note tool: a selected note shows its author and colour in the options bar (#7940)",
+    "status": "INTEGRATED",
+    "before": "e094ed777183ac9d7bae584389b4318da6c2eeae",
+    "after": "8a00cd990a5d4916f7272bfff5effa7d72b17c48",
+    "changed_paths": [
+      "crates/ui-egui/src/analysis_ui.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7947,
+    "source_head": "3af447a315e2ddc6363ebfeb62252748903f5b39",
+    "title": "Type: hovering a served font fetches it after a short rest, not as the pointer passes",
+    "status": "INTEGRATED",
+    "before": "8a00cd990a5d4916f7272bfff5effa7d72b17c48",
+    "after": "37e1914e482ebe575beac3aa50b16c3d6572ae1d",
+    "changed_paths": [
+      "crates/ui-egui/src/type_font_preview.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7932,
+    "source_head": "258e17b017ec6196a4874d79b0fbaed947bab9de",
+    "title": "Layers: the pointer over a thumbnail shows what \u2318-click loads, with the +/\u2212/\u00d7 badge (#7824)",
+    "status": "INTEGRATED",
+    "before": "37e1914e482ebe575beac3aa50b16c3d6572ae1d",
+    "conflict_paths": [
+      "crates/ui-egui/src/layer_shortcut_tests.rs"
+    ],
+    "output": "Auto-merging crates/ui-egui/src/layer_shortcut_tests.rs\nCONFLICT (content): Merge conflict in crates/ui-egui/src/layer_shortcut_tests.rs\nAuto-merging crates/ui-egui/src/panels.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "8775cf0e0131fb466e69573d14292c91821b43c3",
+    "after": "9479a44d957150ea81a5d6c5f493a9c0a9f638ed",
+    "changed_paths": [
+      "crates/ui-egui/src/layer_shortcut_tests.rs",
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/ui-egui/src/layer_shortcut_tests.rs",
+        "changed_functions": [
+          "command_over_a_thumbnail_shows_the_load_cursor"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7928,
+    "source_head": "4fea6ffda40a69f38ba992706747411a72c484b0",
+    "title": "Fixed Size marquee: Width and Height in any length unit (#7910)",
+    "status": "INTEGRATED",
+    "before": "37e1914e482ebe575beac3aa50b16c3d6572ae1d",
+    "after": "d63b08b634ccfe3136d7339206adc56522a79701",
+    "changed_paths": [
+      "crates/ui-egui/src/brush_panel_tests.rs",
+      "crates/ui-egui/src/panels.rs",
+      "crates/ui-egui/src/state.rs",
+      "crates/ui-egui/src/tool_reset.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7924,
+    "source_head": "d51202c5a459565afe4e3b7d563c09241c5cd19a",
+    "title": "Smart Blur: 3.5\u00d7 faster at radius 12 with identical output (#7921)",
+    "status": "INTEGRATED",
+    "before": "d63b08b634ccfe3136d7339206adc56522a79701",
+    "after": "0f8a8b8b3ff7a40e2371086857f19fd06a5a3dd2",
+    "changed_paths": [
+      "crates/algo/examples/bench_filters2.rs",
+      "crates/algo/src/blur2.rs",
+      "crates/algo/src/smart_blur_tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7922,
+    "source_head": "295901cf3fcb1cba76ca3ae017026a8fdcda67b4",
+    "title": "Create Rectangle and the other shape dialogs: right-click Width or Height to pick their unit (#7786)",
+    "status": "INTEGRATED",
+    "before": "0f8a8b8b3ff7a40e2371086857f19fd06a5a3dd2",
+    "after": "51eca0d143dc27c127d1099c737f6b50e19a00f1",
+    "changed_paths": [
+      "crates/ui-egui/src/shape_dialog.rs",
+      "crates/ui-egui/src/shape_dialog_tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7919,
+    "source_head": "4a3f3ba665a91b2934e9dd907655cdbd31cf1279",
+    "title": "Liquify: Alt-drag brush resize keeps the brush in place and no longer paints a dab (#7884)",
+    "status": "INTEGRATED",
+    "before": "51eca0d143dc27c127d1099c737f6b50e19a00f1",
+    "after": "cf7ba28486b54ea709f84f153d547690f126914f",
+    "changed_paths": [
+      "crates/ui-egui/src/liquify_ui.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7894,
+    "source_head": "aede66995d91ace98dfba8f159c841f0ef13fe84",
+    "title": "Slice Select: Delete deletes the selected slice, not the layer (#7862)",
+    "status": "INTEGRATED",
+    "before": "cf7ba28486b54ea709f84f153d547690f126914f",
+    "after": "ccbfba0854c17388d703828e2afd5721efd76cf1",
+    "changed_paths": [
+      "crates/ui-egui/src/shortcuts.rs",
+      "crates/ui-egui/src/slice_ui.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7870,
+    "source_head": "65879ba0fb6629f5c0800f040b62d12d4f3f2446",
+    "title": "Shortcuts: Ctrl+F4 closes the document beside Ctrl+W (Windows/Linux)",
+    "status": "INTEGRATED",
+    "before": "ccbfba0854c17388d703828e2afd5721efd76cf1",
+    "after": "190a4b5652147d783fe3ba477e6af847d6bb2fbf",
+    "changed_paths": [
+      "crates/engine/src/prefs.rs",
+      "crates/ui-egui/src/shortcut_dispatch/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7857,
+    "source_head": "194dcf3631ec81e481995b79060143931ae8ab27",
+    "title": "Replace Contents: contents of another size keep the placement's centre, as in Photoshop (#7844)",
+    "status": "INTEGRATED",
+    "before": "190a4b5652147d783fe3ba477e6af847d6bb2fbf",
+    "after": "eb10d0d704332bfc68f47490eb7d7ad9b75b60ff",
+    "changed_paths": [
+      "crates/engine/src/smart_cmds.rs",
+      "crates/engine/src/smart_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7853,
+    "source_head": "21a91764bc904217628c54f06c5792ab7fe28758",
+    "title": "Brush: with airbrush build-up on, number keys set Flow and Shift+number sets Opacity (#7785)",
+    "status": "INTEGRATED",
+    "before": "eb10d0d704332bfc68f47490eb7d7ad9b75b60ff",
+    "after": "97e5b609e611b52072ba1178dea0134112d13157",
+    "changed_paths": [
+      "crates/ui-egui/src/opacity_keys.rs",
+      "docs/brush-parity.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7846,
+    "source_head": "8591ca19046071c27b56561c997935dc6dc98611",
+    "title": "Scale layer-effect noise by coverage so it follows the glow",
+    "status": "INTEGRATED",
+    "before": "97e5b609e611b52072ba1178dea0134112d13157",
+    "after": "8d3141f2507edc179ae08515a00cc9eb3931a6c5",
+    "changed_paths": [
+      "crates/compose/src/effects.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7839,
+    "source_head": "f1a3e612680bbcbf314cdea75e197b9c9707eb5d",
+    "title": "Copy: text selected in an error notice is copied, not the layer (#7807)",
+    "status": "INTEGRATED",
+    "before": "8d3141f2507edc179ae08515a00cc9eb3931a6c5",
+    "after": "ac621a217ea60ea89485eee46040feed9853c4bb",
+    "changed_paths": [
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/notice_text_tests.rs",
+      "crates/ui-egui/src/shortcuts.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7838,
+    "source_head": "d11f2b6c846965824bdcb78a967026565261f82d",
+    "title": "Free Transform: a result may take what Memory Usage allows, not 2^30 px (#7807)",
+    "status": "INTEGRATED",
+    "before": "ac621a217ea60ea89485eee46040feed9853c4bb",
+    "after": "048615d2faba26eae8472504ced27bd0d41949d8",
+    "changed_paths": [
+      "crates/algo/src/transform.rs",
+      "crates/engine/src/prefs.rs",
+      "crates/engine/src/select_extra_cmds.rs",
+      "crates/engine/src/transform_cmds.rs",
+      "crates/engine/tests/transform_budget_unclamped.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7837,
+    "source_head": "818de14222cf6eef1f0bd7efc480eaa8de80b044",
+    "title": "Free Transform: a result over the pixel limit says so, not \"not enough memory\" (#7807)",
+    "status": "ALREADY_COVERED",
+    "integration_head": "048615d2faba26eae8472504ced27bd0d41949d8"
+  },
+  {
+    "pr": 7821,
+    "source_head": "2e845117b9b9d30e66f370adf3d6a00178f21d26",
+    "title": "feat(ui): search font input field sticky on scroll (#7792)",
+    "status": "INTEGRATED",
+    "before": "048615d2faba26eae8472504ced27bd0d41949d8",
+    "after": "43df231c812b66731d039c7d95a0986b5371ffbe",
+    "changed_paths": [
+      "crates/ui-egui/src/type_font_picker_tests.rs",
+      "crates/ui-egui/src/type_tool.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7791,
+    "source_head": "4d6d735ff9ea834dd373acb4edb874bd2db7ebaf",
+    "title": "Camera raw: a developed raw keeps its EXIF (RW2 included), so File Info shows its Camera Data (#6957)",
+    "status": "INTEGRATED",
+    "before": "43df231c812b66731d039c7d95a0986b5371ffbe",
+    "after": "8c4b5102ca1fc40a6e5f8151efa162d75a89d570",
+    "changed_paths": [
+      "crates/codecs/src/codecs/tiff_exif.rs",
+      "crates/codecs/src/codecs/tiff_ifd.rs",
+      "crates/codecs/src/lib.rs",
+      "crates/io/src/raw.rs",
+      "crates/io/tests/raw.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7784,
+    "source_head": "b287a884f4edc8d65d449f70b25716e995c21114",
+    "title": "Actions: a background filter's step is recorded only by the recording it started in (#7289)",
+    "status": "INTEGRATED",
+    "before": "8c4b5102ca1fc40a6e5f8151efa162d75a89d570",
+    "after": "1c42ece6fba8dbb8b1ea09a003b1afe49c7ddafc",
+    "changed_paths": [
+      "crates/engine/src/actions_cmds.rs",
+      "crates/engine/src/jobs.rs",
+      "crates/engine/src/jobs_tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7772,
+    "source_head": "566bccf6bbea0cc150ed0f8f0954cab112fab428",
+    "title": "Vanishing Point: perspective clone samples without allocating per pixel (#7491)",
+    "status": "INTEGRATED",
+    "before": "1c42ece6fba8dbb8b1ea09a003b1afe49c7ddafc",
+    "after": "b5bf6d762d6070977c5a4e0503efcdf240a471f2",
+    "changed_paths": [
+      "crates/algo/src/vanishing.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7769,
+    "source_head": "1f6dbf8415b33cb15e8ce4cc30b5acf5e6a449f4",
+    "title": "Lasso: a short straight segment places a vertex instead of closing the outline",
+    "status": "INTEGRATED",
+    "before": "b5bf6d762d6070977c5a4e0503efcdf240a471f2",
+    "after": "74356f14178ace5fcc06e53f9f80ef112b7c81a4",
+    "changed_paths": [
+      "crates/ui-egui/src/lasso_ui.rs",
+      "crates/ui-egui/src/polygon_lasso_tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7759,
+    "source_head": "e71fa3ab161b4a6485004f906a86eb32dca2f565",
+    "title": "Actions: a setting Photoshop's event cannot hold refuses the step",
+    "status": "INTEGRATED",
+    "before": "74356f14178ace5fcc06e53f9f80ef112b7c81a4",
+    "after": "a6600c1af300deed081d79c924b9af311d9df280",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7755,
+    "source_head": "7771c375359f7f1730e255d638642dee07df244f",
+    "title": "fix(actions): refuse lossy seeded Crystallize ATN export",
+    "status": "INTEGRATED",
+    "before": "a6600c1af300deed081d79c924b9af311d9df280",
+    "after": "904f8de323af69462c65d0a003b6ad93cc1f5272",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/tests/atn_crystallize_seed.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7751,
+    "source_head": "f30966569467231f34765998d136eb36ed6140f2",
+    "title": "Actions: a Selective Color step keeps the values of its scalar form",
+    "status": "INTEGRATED",
+    "before": "904f8de323af69462c65d0a003b6ad93cc1f5272",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function selective_to: overlapping function statements",
+    "before_resolution": "eb8fde86a8262a0b7e6c04eb73c0af478e5e7bab",
+    "after": "d9d3be9fd310194837b861c1d43b7660ee152aba",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ]
+  },
+  {
+    "pr": 7743,
+    "source_head": "fd6fc92015fd08560362b4b32844edf97722f292",
+    "title": "packaging: the portable zip holds the files, not a folder with the files in it",
+    "status": "INTEGRATED",
+    "before": "904f8de323af69462c65d0a003b6ad93cc1f5272",
+    "after": "b7ccd415800a0cb14930c9f588e32ab8a4c23298",
+    "changed_paths": [
+      "packaging/windows/package.ps1"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7742,
+    "source_head": "ab844f9cbcd1f1839ed7f286776331cb72e399aa",
+    "title": "Actions: a fractional setting an integer field cannot hold is refused, not rounded",
+    "status": "INTEGRATED",
+    "before": "b7ccd415800a0cb14930c9f588e32ab8a4c23298",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "non-function conflict in skeleton",
+    "before_resolution": "d9d3be9fd310194837b861c1d43b7660ee152aba",
+    "after": "6beb01730e4f26b6583b47bbd31d4c0248ad83d4",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ]
+  },
+  {
+    "pr": 7721,
+    "source_head": "9f5559e51511f60e53ff3c3ca666659b08297960",
+    "title": "fix(actions): refuse lossy fractional Crystallize ATN export",
+    "status": "INTEGRATED",
+    "before": "b7ccd415800a0cb14930c9f588e32ab8a4c23298",
+    "after": "9ae9d29bba867995ac5eb25fd01a83ff6cc91b85",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/tests/atn_crystallize_cell_size.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7708,
+    "source_head": "674bfb697be24ff56f52a6e283bf0cebf07e6ce9",
+    "title": "fix(actions): refuse lossy fractional Ripple ATN export",
+    "status": "INTEGRATED",
+    "before": "9ae9d29bba867995ac5eb25fd01a83ff6cc91b85",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "non-function conflict in skeleton",
+    "before_resolution": "6beb01730e4f26b6583b47bbd31d4c0248ad83d4",
+    "after": "c073e3caea36fb756b300a430b32e7c4fce1eb26",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/tests/atn_ripple_amount.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/engine/src/atn_cmds.rs"
+    ]
+  },
+  {
+    "pr": 7696,
+    "source_head": "0acb707fe1708147670b87259724f570196b9dec",
+    "title": "fix(actions): preserve effective Stroke width in ATN export",
+    "status": "INTEGRATED",
+    "before": "9ae9d29bba867995ac5eb25fd01a83ff6cc91b85",
+    "after": "29efa9dd2da4dde8b2b53289f1f2756888056519",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/extra_cmds.rs",
+      "crates/engine/tests/atn_stroke_width.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7681,
+    "source_head": "2d7ce731b5aa64c3f1b0335003e3bc373ede4fda",
+    "title": "fix(actions): preserve scalar Selective Color settings in ATN export",
+    "status": "INTEGRATED",
+    "before": "29efa9dd2da4dde8b2b53289f1f2756888056519",
+    "after": "5978a917defc4b03af09de32fcfa5c94c212d508",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/tests/atn_selective_color.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7661,
+    "source_head": "8f0a4842982c209a5e8735e197a26f078ebfe682",
+    "title": "Move tool: a selection lifts up to a pixel's own coverage (#7655)",
+    "status": "INTEGRATED",
+    "before": "5978a917defc4b03af09de32fcfa5c94c212d508",
+    "after": "b5e8dff82d4d77831566cdd734c9dfd8f4c99195",
+    "changed_paths": [
+      "crates/engine/src/float_cmds.rs",
+      "crates/engine/src/float_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7659,
+    "source_head": "3a0596e775fc4c69b8206b4bfb964cfbcd46b17b",
+    "title": "Transform a type layer with a missing font as its pixels (#7278)",
+    "status": "INTEGRATED",
+    "before": "b5e8dff82d4d77831566cdd734c9dfd8f4c99195",
+    "after": "6110149def7769b61c13874e09d84ac673d7a9ca",
+    "changed_paths": [
+      "crates/engine/src/transform_cmds.rs",
+      "crates/engine/src/type_cmds.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7656,
+    "source_head": "35c7065692e4d6e2bcab8dd3f321a3ab5ed77bd8",
+    "title": "Refuse .atn export of resolution-only Image Size without keepPrintSize",
+    "status": "INTEGRATED",
+    "before": "6110149def7769b61c13874e09d84ac673d7a9ca",
+    "after": "b57bfa52121100657b409082a84a69b753c34efe",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7653,
+    "source_head": "9f1083d31ed7cac99d48ebf94621ca67b78c81c4",
+    "title": "Move typed text with a drag from just outside it (#5956)",
+    "status": "INTEGRATED",
+    "before": "b57bfa52121100657b409082a84a69b753c34efe",
+    "after": "b7ace857d231dad171c1db9cf54c7ede56b8edd6",
+    "changed_paths": [
+      "crates/ui-egui/src/type_tool.rs",
+      "crates/ui-egui/src/type_tool_tests.rs",
+      "crates/ui-egui/src/type_transform.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7647,
+    "source_head": "b3224447a9d721c2210d8cea364266522b32f35b",
+    "title": "Carry on an open path from its end with the Pen (#6593)",
+    "status": "INTEGRATED",
+    "before": "b7ace857d231dad171c1db9cf54c7ede56b8edd6",
+    "after": "e9b70d5e523d490a51c1e4b7c83401e10ff046ee",
+    "changed_paths": [
+      "crates/ui-egui/src/pen_variants_tests.rs",
+      "crates/ui-egui/src/vector_ui.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7640,
+    "source_head": "d824505598e56a4e60014560db810d934a35a9f9",
+    "title": "Open the selection menu on a Quick Selection right-click (#7268)",
+    "status": "INTEGRATED",
+    "before": "e9b70d5e523d490a51c1e4b7c83401e10ff046ee",
+    "after": "94caebff3b41b6ebf908fbf7d2091065bf88b6d7",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas_menu_tests.rs",
+      "crates/ui-egui/src/canvas_tool_menu.rs",
+      "crates/ui-egui/src/paint_mouse.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7636,
+    "source_head": "e1a7065071a34fac439cb06a77ac3e3200b51836",
+    "title": "Show Technique and Range in the glow Layer Style pages (#6698)",
+    "status": "INTEGRATED",
+    "before": "94caebff3b41b6ebf908fbf7d2091065bf88b6d7",
+    "after": "fc0fc22d9c1f1e9e7c2cbff8d776520f372fcef2",
+    "changed_paths": [
+      "crates/engine/src/layer_style.rs",
+      "crates/ui-egui/src/layer_style.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7627,
+    "source_head": "ec0fc7cb0e1aae518e1ea572494e6b626852856d",
+    "title": "Actions: Minimum / Maximum with Preserve: Roundness is no longer exported as Squareness (#7233)",
+    "status": "INTEGRATED",
+    "before": "fc0fc22d9c1f1e9e7c2cbff8d776520f372fcef2",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "non-function conflict in skeleton",
+    "before_resolution": "c073e3caea36fb756b300a430b32e7c4fce1eb26",
+    "after": "72db80c64f04f0d7f0a3d4c067ce2a4bbd3c932d",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ]
+  },
+  {
+    "pr": 7626,
+    "source_head": "f2a487b08845e907d78368767f236fc478fb8ae4",
+    "title": "Flatpak: a second launch hands its files to the running PhotoCraft over a Unix socket (#1540)",
+    "status": "INTEGRATED",
+    "before": "fc0fc22d9c1f1e9e7c2cbff8d776520f372fcef2",
+    "after": "5b5334138c0ea397a481aaeed4839cb1ed567a7e",
+    "changed_paths": [
+      "apps/photocraft/src/single_instance.rs",
+      "docs/development.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7622,
+    "source_head": "a35e60f33591c8431d4f3e2b5a892d777d85de2d",
+    "title": "Show every blend mode in the open dropdown list (#7261)",
+    "status": "INTEGRATED",
+    "before": "5b5334138c0ea397a481aaeed4839cb1ed567a7e",
+    "after": "902cfedc49a7a161c2bc9e4757b1a661cb6ad326",
+    "changed_paths": [
+      "crates/ui-egui/src/blend_dropdown_wheel_tests.rs",
+      "crates/ui-egui/src/widgets.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7617,
+    "source_head": "64e7ed1583a4f616bc18aa6574dcabe5982d97e3",
+    "title": "Studio: the floating Properties card has the Adjustments tab (#7265)",
+    "status": "INTEGRATED",
+    "before": "902cfedc49a7a161c2bc9e4757b1a661cb6ad326",
+    "after": "cc7916df24225e7209c165603b07ab5d643898f7",
+    "changed_paths": [
+      "crates/ui-egui/src/dock.rs",
+      "crates/ui-egui/src/dock_tests.rs",
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7611,
+    "source_head": "8de2db8764139943b7edd0740ef491510dd89580",
+    "title": "Refuse strict ATN export of Select and Mask with brush strokes",
+    "status": "INTEGRATED",
+    "before": "cc7916df24225e7209c165603b07ab5d643898f7",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "non-function conflict in skeleton",
+    "before_resolution": "72db80c64f04f0d7f0a3d4c067ce2a4bbd3c932d",
+    "after": "6c0c72081b681bdaa7dd2f4cea31b159469baa3b",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ]
+  },
+  {
+    "pr": 7599,
+    "source_head": "1c29f87ed9eebf6993821bdba7ec15e0beb926da",
+    "title": "feat(engine): parameter schema types and display-string renderer",
+    "status": "INTEGRATED",
+    "before": "cc7916df24225e7209c165603b07ab5d643898f7",
+    "after": "ae506bc9388b5725367efc90991e72154e7b35bb",
+    "changed_paths": [
+      "crates/engine/src/lib.rs",
+      "crates/engine/src/param_schema.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7595,
+    "source_head": "dbdd8ff66e6cb5bf8d97e7f1a8d7fbc03418c204",
+    "title": "Toolbar: colour chips stay centred when the tools scroll (#7316)",
+    "status": "INTEGRATED",
+    "before": "ae506bc9388b5725367efc90991e72154e7b35bb",
+    "after": "497ca2c509b8a36016378d37d4e73e1c907d657b",
+    "changed_paths": [
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7593,
+    "source_head": "a9df7b787b1cee2fa9350a8539e85cbf82af0a0d",
+    "title": "Refuse .atn export of crops with output size or resolution",
+    "status": "INTEGRATED",
+    "before": "497ca2c509b8a36016378d37d4e73e1c907d657b",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "9479a44d957150ea81a5d6c5f493a9c0a9f638ed",
+    "after": "e8f9ff5dc7362f483f46de11ae7546c8eecc6114",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/atn_cmds/tests.rs",
+        "changed_functions": [
+          "crop_with_output_size_or_resolution_is_not_exported_as_plain_crop"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7591,
+    "source_head": "cf8fccf2f395bdae0761e636da676b25dbf3710d",
+    "title": "fix(atn): refuse strict export of canvas-bound selection modifies and placed pattern buckets",
+    "status": "INTEGRATED",
+    "before": "497ca2c509b8a36016378d37d4e73e1c907d657b",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "overlapping declarations",
+    "retry_before": "972fdb42164a48d0e39ad36543d9a88dcc9b9d4a",
+    "after": "eb8fde86a8262a0b7e6c04eb73c0af478e5e7bab",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/atn_cmds.rs",
+        "changed_functions": [
+          "fill_to",
+          "flag_set"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      },
+      {
+        "file": "crates/engine/src/atn_cmds/tests.rs",
+        "changed_functions": [
+          "canvas_bound_modify_and_placed_pattern_bucket_refuse_strict_export"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7590,
+    "source_head": "6a24011ab80164f3b531c40baf6a7c998f72376b",
+    "title": "fix(atn): keep a Transform Selection's interpolation; refuse what the transform descriptor can't carry",
+    "status": "INTEGRATED",
+    "before": "497ca2c509b8a36016378d37d4e73e1c907d657b",
+    "after": "9149ffa4214f1e82e2ebde32e10cdaade4ed4bfe",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7588,
+    "source_head": "b8f323a7c4f27e301c40bded2c208b25ad6168b3",
+    "title": "fix(atn): refuse strict export of options the descriptors can't carry",
+    "status": "INTEGRATED",
+    "before": "9149ffa4214f1e82e2ebde32e10cdaade4ed4bfe",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function fields_to: overlapping function statements",
+    "before_resolution": "6c0c72081b681bdaa7dd2f4cea31b159469baa3b",
+    "after": "f6e848db2db709f9aa0ad8da054657686b07164a",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ]
+  },
+  {
+    "pr": 7587,
+    "source_head": "d08a16507c1a02d82f77263412a274f6f0d3e87a",
+    "title": "Actions: stop when a Save step's document is closed by a Save Document script (#7367)",
+    "status": "INTEGRATED",
+    "before": "9149ffa4214f1e82e2ebde32e10cdaade4ed4bfe",
+    "after": "fc7b376929f339f8bc93aed5803b05971a7aa155",
+    "changed_paths": [
+      "crates/engine/src/actions_cmds.rs",
+      "crates/ui-egui/src/actions.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7585,
+    "source_head": "47f7c97a3b2a2ab12d6ef691ef0ac9fb68d35633",
+    "title": "Refuse strict .atn export of a mask/channel-targeted Free Transform",
+    "status": "INTEGRATED",
+    "before": "fc7b376929f339f8bc93aed5803b05971a7aa155",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "e8f9ff5dc7362f483f46de11ae7546c8eecc6114",
+    "after": "57dade3a48152196ed30a296511220f2386f47a4",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/atn_cmds/tests.rs",
+        "changed_functions": [
+          "transform_with_mask_or_channel_target_is_not_exported_as_layer_transform"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7583,
+    "source_head": "de3ad5da45ac29e2faccf68674376fc27389465b",
+    "title": "Record actions.conditional as one step with its predicate",
+    "status": "INTEGRATED",
+    "before": "fc7b376929f339f8bc93aed5803b05971a7aa155",
+    "after": "9a7a32b12737e121d8c6eb864c21b0e7825aa807",
+    "changed_paths": [
+      "crates/engine/src/actions_cmds.rs",
+      "crates/engine/src/actions_edit_cmds.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7580,
+    "source_head": "86b4c67adf6dcf26836803c8e1b2fc0c957ff5e3",
+    "title": "Preserve saved PCraft previews when manifest replacement fails",
+    "status": "INTEGRATED",
+    "before": "9a7a32b12737e121d8c6eb864c21b0e7825aa807",
+    "after": "d16734df38d7adcdca877f8b003b04e6a2f0a54e",
+    "changed_paths": [
+      "crates/format/src/store.rs",
+      "crates/format/tests/directory_symlinks.rs",
+      "crates/format/tests/roundtrip.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7576,
+    "source_head": "e4d4ab4205867683b1c20ae28253191b813579f0",
+    "title": "Presets: an Export As preset survives a damaged sibling set (test for #6906)",
+    "status": "INTEGRATED",
+    "before": "d16734df38d7adcdca877f8b003b04e6a2f0a54e",
+    "after": "5361a8cac25e5d165e1c39c823532bc5100ca193",
+    "changed_paths": [
+      "crates/engine/src/presets/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7572,
+    "source_head": "2a9a35f038408cd3f57c06c755db8aedee040ea7",
+    "title": "Menu bar: Alt held through a shortcut no longer takes the keyboard, so Enter reaches the dialog (#7481)",
+    "status": "INTEGRATED",
+    "before": "5361a8cac25e5d165e1c39c823532bc5100ca193",
+    "after": "ab13a2c0f201d26437c828818775e6b6f385873f",
+    "changed_paths": [
+      "crates/ui-egui/src/menu_keys.rs",
+      "crates/ui-egui/src/menu_keys_tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7571,
+    "source_head": "e371bc34e389cafe5c4debc71c246909e4ef0db4",
+    "title": "Refuse strict .atn export of Apply Image with a blending mask",
+    "status": "INTEGRATED",
+    "before": "ab13a2c0f201d26437c828818775e6b6f385873f",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "57dade3a48152196ed30a296511220f2386f47a4",
+    "after": "f5c46bb486b600c37047b77e61749a786316b9e0",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/atn_cmds/tests.rs",
+        "changed_functions": [
+          "apply_image_with_blending_mask_is_not_exported_without_its_mask"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7433,
+    "source_head": "19f6632b630322e7850453daf2d325c6c3474679",
+    "title": "Type: add the Warp Text button to the options bar",
+    "status": "INTEGRATED",
+    "before": "ab13a2c0f201d26437c828818775e6b6f385873f",
+    "conflict_paths": [
+      "ATTRIBUTION.md"
+    ],
+    "output": "Auto-merging ATTRIBUTION.md\nCONFLICT (content): Merge conflict in ATTRIBUTION.md\nAuto-merging contributors/people.toml\nAuto-merging crates/ui-egui/src/icon_data.rs\nAuto-merging crates/ui-egui/src/type_tool.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "manual non-Rust resolution: ATTRIBUTION.md",
+    "before_resolution": "f6e848db2db709f9aa0ad8da054657686b07164a",
+    "after": "f92d79c01c14f6aafe5b98823e8c8514ff1d8517",
+    "changed_paths": [
+      "ATTRIBUTION.md",
+      "assets/icons/warp-text.svg",
+      "contributors/people.toml",
+      "crates/ui-egui/src/icon_data.rs",
+      "crates/ui-egui/src/type_tool.rs",
+      "crates/ui-egui/src/warp_text_dialog_tests.rs"
+    ],
+    "manual_resolution_files": [
+      "ATTRIBUTION.md"
+    ]
+  },
+  {
+    "pr": 7397,
+    "source_head": "da307f8f17677d5a93d319e27fd7dc7c1402a62f",
+    "title": "Auto-Blend Layers: turn the Background into a layer before masking it",
+    "status": "INTEGRATED",
+    "before": "ab13a2c0f201d26437c828818775e6b6f385873f",
+    "after": "4dea0efce4aa47447e17e88f836aacaa46d5beb5",
+    "changed_paths": [
+      "crates/engine/src/align_cmds.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7396,
+    "source_head": "133ea2b1ec531bd20615c05e404c3db45377dcd4",
+    "title": "Auto-Blend Layers: Seamless Tones and Colors turns on gain compensation",
+    "status": "INTEGRATED",
+    "before": "4dea0efce4aa47447e17e88f836aacaa46d5beb5",
+    "conflict_paths": [
+      "crates/engine/src/align_cmds.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/align_cmds.rs\nCONFLICT (content): Merge conflict in crates/engine/src/align_cmds.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "f5c46bb486b600c37047b77e61749a786316b9e0",
+    "after": "6be2277661d9dbe645b3efa70010acc552ba096d",
+    "changed_paths": [
+      "crates/engine/src/align_cmds.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/align_cmds.rs",
+        "changed_functions": [
+          "auto_blend_panorama_seamless_matches_exposure",
+          "auto_blend"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7395,
+    "source_head": "25634c17942209d50f802e1c62ee43ed1dce2ccf",
+    "title": "Auto-Blend Layers: mask and blend the whole layers, past the canvas too",
+    "status": "INTEGRATED",
+    "before": "4dea0efce4aa47447e17e88f836aacaa46d5beb5",
+    "conflict_paths": [
+      "crates/engine/src/align_cmds.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/align_cmds.rs\nCONFLICT (content): Merge conflict in crates/engine/src/align_cmds.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "6be2277661d9dbe645b3efa70010acc552ba096d",
+    "after": "58c6995b3469de578c23b66489799a13de253015",
+    "changed_paths": [
+      "crates/engine/src/align_cmds.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/align_cmds.rs",
+        "changed_functions": [
+          "auto_blend_budget_counts_layers_and_channels",
+          "auto_blend_panorama_masks_past_the_canvas",
+          "pixels",
+          "auto_blend",
+          "auto_blend_sparse_huge_bounds_keep_to_the_canvas",
+          "blend_bytes_per_pixel"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7389,
+    "source_head": "824f93a69fe4800599db859a54c95702e32e465c",
+    "title": "fix(atn): a preset-only Photo Filter step exports its resolved colour (#7235)",
+    "status": "INTEGRATED",
+    "before": "4dea0efce4aa47447e17e88f836aacaa46d5beb5",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "58c6995b3469de578c23b66489799a13de253015",
+    "after": "f016be9c67378e30467b77ac8a356d45f48238a4",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/atn_cmds/tests.rs",
+        "changed_functions": [
+          "photo_filter_round_trip",
+          "photo_filter_preset_only_step_keeps_its_resolved_color"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7385,
+    "source_head": "ccdf082c62da26ffea52cbea51e03ebc3195c877",
+    "title": "Content-Aware Fill workspace: an erased sampling area previews as an error, and a failed OK keeps it open (#7384)",
+    "status": "INTEGRATED",
+    "before": "4dea0efce4aa47447e17e88f836aacaa46d5beb5",
+    "after": "72aa89f0e0adddc9ade0c1e1862af0373ca95d98",
+    "changed_paths": [
+      "crates/ui-egui/src/caf_ui.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7353,
+    "source_head": "afc817d1fae968465bff78a557d0806c499fd292",
+    "title": "test(engine): make the define-brush mask allocation fail on its own (fail-after-one) (#212)",
+    "status": "INTEGRATED",
+    "before": "72aa89f0e0adddc9ade0c1e1862af0373ca95d98",
+    "after": "bdca8b4064fde22a18bbcbe8b2b77a72bb19ea24",
+    "changed_paths": [
+      "crates/engine/src/allocation.rs",
+      "crates/engine/src/brush_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7317,
+    "source_head": "1bd60ab6fb8375249baa9c3e245569051eb4a615",
+    "title": "Color panel: RGB slider mode (#7172)",
+    "status": "INTEGRATED",
+    "before": "bdca8b4064fde22a18bbcbe8b2b77a72bb19ea24",
+    "after": "d5b981c23e4b14b02d0f2a4c0cb1b9655b14f1e8",
+    "changed_paths": [
+      "crates/ui-egui/src/control.rs",
+      "crates/ui-egui/src/panels.rs",
+      "crates/ui-egui/src/state.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7305,
+    "source_head": "6607f24b95d2822274583f55b7fb8ac16f59ba45",
+    "title": "Codecs: read Photoshop Raw (.raw) with retained header",
+    "status": "INTEGRATED",
+    "before": "d5b981c23e4b14b02d0f2a4c0cb1b9655b14f1e8",
+    "after": "bc157db21c1cfb9e11710de0241f85d527e5901a",
+    "changed_paths": [
+      "crates/codecs/src/codecs/mod.rs",
+      "crates/codecs/src/codecs/photoshop_raw.rs",
+      "crates/codecs/src/format.rs",
+      "crates/codecs/src/lib.rs",
+      "crates/codecs/tests/photoshop_raw.rs",
+      "crates/io/src/flat.rs",
+      "docs/file-format-parity.md",
+      "docs/gaps.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7304,
+    "source_head": "416e546562058abf63b9924219bd27f1a566cf0f",
+    "title": "Freeform Pen: \u21e7 constrains freehand strokes to straight 45\u00b0 lines",
+    "status": "INTEGRATED",
+    "before": "bc157db21c1cfb9e11710de0241f85d527e5901a",
+    "after": "546b8bcab8a4f0a0013e9a6e4678cb1a82572cd5",
+    "changed_paths": [
+      "crates/ui-egui/src/lasso_ui.rs",
+      "crates/ui-egui/src/lasso_ui/tests.rs",
+      "crates/ui-egui/src/stroke_constraint.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7303,
+    "source_head": "cf8a79190d27ec0c2525546c838f5b91e9dbb05b",
+    "title": "Keyboard Shortcuts: Shift is recorded when capturing a shortcut",
+    "status": "INTEGRATED",
+    "before": "546b8bcab8a4f0a0013e9a6e4678cb1a82572cd5",
+    "after": "82e98b2759dcd09628fa24945d7e951fe79d9293",
+    "changed_paths": [
+      "crates/ui-egui/src/prefs_ui.rs",
+      "crates/ui-egui/src/shortcut_capture_tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7271,
+    "source_head": "a2372a9ce20523bc7b57e748fbc88caad88cc7e1",
+    "title": "macOS: keep the bundle's Dock icon after the window opens",
+    "status": "INTEGRATED",
+    "before": "82e98b2759dcd09628fa24945d7e951fe79d9293",
+    "after": "fccfb9acad360755f9ef05ad351b9d8705b1d16d",
+    "changed_paths": [
+      "apps/photocraft/src/app_icon.rs",
+      "apps/photocraft/src/main.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7270,
+    "source_head": "034788019edd0630359d992499baff83702bb571",
+    "title": "Brushes: folders with search matches can be collapsed while searching",
+    "status": "INTEGRATED",
+    "before": "fccfb9acad360755f9ef05ad351b9d8705b1d16d",
+    "after": "4194d11bb487c9fcd9813ba2097fc6cd149a32ad",
+    "changed_paths": [
+      "crates/ui-egui/src/brush_panel_tests.rs",
+      "crates/ui-egui/src/brushes_tab.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7262,
+    "source_head": "55dbbdf0604d8cff32a6f511d1f33edd61c54dcb",
+    "title": "fix(atn): reject numeric layer references in .atn export (#7248)",
+    "status": "INTEGRATED",
+    "before": "4194d11bb487c9fcd9813ba2097fc6cd149a32ad",
+    "conflict_paths": [
+      "crates/engine/src/jobs.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nAuto-merging crates/engine/src/jobs.rs\nCONFLICT (content): Merge conflict in crates/engine/src/jobs.rs\nAuto-merging crates/engine/src/layer_multi_cmds.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function transform_to: overlapping function statements",
+    "before_resolution": "32da8cf425f72fe597ae5d377e7abb153f0446d1",
+    "after": "9adab574ad2b2db694acd5086df18a71dc1e37f3",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs",
+      "crates/engine/src/jobs.rs",
+      "crates/engine/src/layer_multi_cmds.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/jobs.rs"
+    ]
+  },
+  {
+    "pr": 7260,
+    "source_head": "781a842d890ee13a8ae79ee5a7e258f69b941ee6",
+    "title": "test(io): SVG text-transform test can't pass without a font (#4806)",
+    "status": "INTEGRATED",
+    "before": "4194d11bb487c9fcd9813ba2097fc6cd149a32ad",
+    "after": "6d322cd0630dd71bab49f5d7cb0dc673d53a095e",
+    "changed_paths": [
+      "crates/io/src/svg.rs",
+      "crates/io/tests/svg.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7258,
+    "source_head": "121002e1b9891e41c3a6d11ae5c8a22a0ac3c48d",
+    "title": "fix(atn): reject off-center radial blur in .atn export (#7234)",
+    "status": "INTEGRATED",
+    "before": "6d322cd0630dd71bab49f5d7cb0dc673d53a095e",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "non-function conflict in skeleton",
+    "retry_before": "4a35e974c0f45d543a00e76366fe62fcdf1a7b39",
+    "after": "972fdb42164a48d0e39ad36543d9a88dcc9b9d4a",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/atn_cmds.rs",
+        "changed_functions": [
+          "radial_blur_to",
+          "radial_blur_from"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      },
+      {
+        "file": "crates/engine/src/atn_cmds/tests.rs",
+        "changed_functions": [
+          "radial_blur_off_center_strict_export_refuses_silent_recentering"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7249,
+    "source_head": "7145df8ded385ce253ca3f0c90866712f2bf2377",
+    "title": "fix(atn): reject non-replace select.rect modes in .atn export (#7194)",
+    "status": "INTEGRATED",
+    "before": "6d322cd0630dd71bab49f5d7cb0dc673d53a095e",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "f016be9c67378e30467b77ac8a356d45f48238a4",
+    "after": "cfae4549189d9b878251277e52ec2816790892d8",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/atn_cmds/tests.rs",
+        "changed_functions": [
+          "select_rect_mode_strict_export_rejects_unrepresentable_modes"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7237,
+    "source_head": "f5d346e28bbecc77bd1ccfa5f4e08157238766c6",
+    "title": "Camera Raw: vignette Midpoint 0 darkens only the corners",
+    "status": "INTEGRATED",
+    "before": "6d322cd0630dd71bab49f5d7cb0dc673d53a095e",
+    "after": "f1236a72fc961f12a0f323306d25e0e360f55560",
+    "changed_paths": [
+      "crates/algo/src/camera_raw.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7232,
+    "source_head": "fb47b479b187c935cba8b95c147b5751ed9edbdc",
+    "title": "fix(atn): export recorded layer.select with name parameter (#7185)",
+    "status": "INTEGRATED",
+    "before": "f1236a72fc961f12a0f323306d25e0e360f55560",
+    "conflict_paths": [
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/atn_cmds.rs\nAuto-merging crates/engine/src/atn_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/atn_cmds/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "cfae4549189d9b878251277e52ec2816790892d8",
+    "after": "6e5eee5fa822e5c001347caa35d13e957ff02590",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/atn_cmds/tests.rs",
+        "changed_functions": [
+          "recorded_layer_select_exports_to_atn"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7227,
+    "source_head": "cc3ca41c6d3f552bb8ce8cb5e5d58107c3f714be",
+    "title": "Liquify: zoom the preview with the zoom keys, a trackpad pinch and \u00d71.1 wheel notches (#7210)",
+    "status": "INTEGRATED",
+    "before": "f1236a72fc961f12a0f323306d25e0e360f55560",
+    "after": "ff7538b429be75309847068e08c63589a91fb126",
+    "changed_paths": [
+      "crates/ui-egui/src/liquify_ui.rs",
+      "crates/ui-egui/src/shortcuts.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7204,
+    "source_head": "00e4423fcca9ac0d9a117b229386d9665d307ce5",
+    "title": "Layer effects in Dissolve mode speckle, as in Photoshop (#6995)",
+    "status": "INTEGRATED",
+    "before": "ff7538b429be75309847068e08c63589a91fb126",
+    "after": "4ff51d75586891940a92d14c2ff38aa94b41e8e4",
+    "changed_paths": [
+      "crates/compose/src/effects.rs",
+      "crates/compose/src/tests.rs",
+      "crates/gpu/src/compose.wgsl",
+      "crates/gpu/src/plan.rs",
+      "crates/gpu/tests/parity.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7167,
+    "source_head": "3ee662093555182044d2e1f2bfa83ddd656a83ed",
+    "title": "fix(ui): right-click an Adaptive Wide Angle constraint for its orientation menu, as in Photoshop",
+    "status": "INTEGRATED",
+    "before": "4ff51d75586891940a92d14c2ff38aa94b41e8e4",
+    "after": "4a924a33f0c182b376af4cf6a1f2ad5b69f8f774",
+    "changed_paths": [
+      "crates/ui-egui/src/i18n/cs.tsv",
+      "crates/ui-egui/src/i18n/de.tsv",
+      "crates/ui-egui/src/i18n/el.tsv",
+      "crates/ui-egui/src/i18n/es.tsv",
+      "crates/ui-egui/src/i18n/fr.tsv",
+      "crates/ui-egui/src/i18n/hu.tsv",
+      "crates/ui-egui/src/i18n/id.tsv",
+      "crates/ui-egui/src/i18n/it.tsv",
+      "crates/ui-egui/src/i18n/ja.tsv",
+      "crates/ui-egui/src/i18n/ko.tsv",
+      "crates/ui-egui/src/i18n/nl.tsv",
+      "crates/ui-egui/src/i18n/pl.tsv",
+      "crates/ui-egui/src/i18n/pt-br.tsv",
+      "crates/ui-egui/src/i18n/ru.tsv",
+      "crates/ui-egui/src/i18n/sr.tsv",
+      "crates/ui-egui/src/i18n/tr.tsv",
+      "crates/ui-egui/src/i18n/uk.tsv",
+      "crates/ui-egui/src/i18n/vi.tsv",
+      "crates/ui-egui/src/i18n/zh-hans.tsv",
+      "crates/ui-egui/src/i18n/zh-hant.tsv",
+      "crates/ui-egui/src/wide_angle_ui.rs",
+      "docs/context-menu-parity.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7161,
+    "source_head": "773fc08763d1329ca4294d9c2e1b037f64fc3e38",
+    "title": "i18n(zh-hans): translate the 14 counted status messages missing from Simplified Chinese",
+    "status": "INTEGRATED",
+    "before": "4a924a33f0c182b376af4cf6a1f2ad5b69f8f774",
+    "after": "18c99f8052124f64cb6acb097c4d96fc34976070",
+    "changed_paths": [
+      "crates/ui-egui/src/i18n/mod.rs",
+      "crates/ui-egui/src/i18n/zh-hans.tsv"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7160,
+    "source_head": "322c61c7655872772929121fc3522b6a93d6e442",
+    "title": "i18n(ko): translate the 14 counted status messages missing from Korean",
+    "status": "INTEGRATED",
+    "before": "18c99f8052124f64cb6acb097c4d96fc34976070",
+    "conflict_paths": [
+      "crates/ui-egui/src/i18n/mod.rs"
+    ],
+    "output": "Auto-merging crates/ui-egui/src/i18n/ko.tsv\nAuto-merging crates/ui-egui/src/i18n/mod.rs\nCONFLICT (content): Merge conflict in crates/ui-egui/src/i18n/mod.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "6e5eee5fa822e5c001347caa35d13e957ff02590",
+    "after": "45029e2748ae94c1e8e713f54f7951700cb23067",
+    "changed_paths": [
+      "crates/ui-egui/src/i18n/ko.tsv",
+      "crates/ui-egui/src/i18n/mod.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/ui-egui/src/i18n/mod.rs",
+        "changed_functions": [
+          "korean_counted_messages_are_translated"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7159,
+    "source_head": "9461446919ffe3083b60e114346a7c4b6d85d9db",
+    "title": "i18n(id): translate the 14 counted status messages missing from Indonesian",
+    "status": "INTEGRATED",
+    "before": "18c99f8052124f64cb6acb097c4d96fc34976070",
+    "conflict_paths": [
+      "crates/ui-egui/src/i18n/mod.rs"
+    ],
+    "output": "Auto-merging crates/ui-egui/src/i18n/id.tsv\nAuto-merging crates/ui-egui/src/i18n/mod.rs\nCONFLICT (content): Merge conflict in crates/ui-egui/src/i18n/mod.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "45029e2748ae94c1e8e713f54f7951700cb23067",
+    "after": "dee3e062c1ab5c1f2d5f6e7a536301cb74e83c75",
+    "changed_paths": [
+      "crates/ui-egui/src/i18n/id.tsv",
+      "crates/ui-egui/src/i18n/mod.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/ui-egui/src/i18n/mod.rs",
+        "changed_functions": [
+          "indonesian_counted_messages_are_translated"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7153,
+    "source_head": "cfa5242098c408ee1c3477eb5b5fc060de235a7e",
+    "title": "Smart Filters: double-clicking a Liquify filter reopens it in the Liquify workspace",
+    "status": "INTEGRATED",
+    "before": "18c99f8052124f64cb6acb097c4d96fc34976070",
+    "after": "73bbf4dbef58d6802fbcfc45e36a59533622dbe8",
+    "changed_paths": [
+      "crates/ui-egui/src/distort_ui.rs",
+      "crates/ui-egui/src/liquify_ui.rs",
+      "crates/ui-egui/src/smart_ui.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7152,
+    "source_head": "b8727aff860775e6f1ee2c8063bf726a7c0fe60e",
+    "title": "Type: register craft fonts of every script, not only the Japanese ones",
+    "status": "INTEGRATED",
+    "before": "73bbf4dbef58d6802fbcfc45e36a59533622dbe8",
+    "after": "9e8c099dfa6998b14a81331b51227d0c2d61cb3a",
+    "changed_paths": [
+      "crates/text/src/craft_fonts.rs",
+      "crates/text/src/font_names_tests.rs",
+      "crates/text/src/fonts.rs",
+      "crates/text/src/lib.rs",
+      "crates/text/src/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7150,
+    "source_head": "d0b371f92aae6be74b98238de6a24c5c5e703722",
+    "title": "i18n(pl): translate the 14 counted status messages missing from Polish",
+    "status": "INTEGRATED",
+    "before": "9e8c099dfa6998b14a81331b51227d0c2d61cb3a",
+    "conflict_paths": [
+      "crates/ui-egui/src/i18n/mod.rs"
+    ],
+    "output": "Auto-merging crates/ui-egui/src/i18n/mod.rs\nCONFLICT (content): Merge conflict in crates/ui-egui/src/i18n/mod.rs\nAuto-merging crates/ui-egui/src/i18n/pl.tsv\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "dee3e062c1ab5c1f2d5f6e7a536301cb74e83c75",
+    "after": "aac0072b8aaa0af8d9392f00ea626ff9d4e7fde3",
+    "changed_paths": [
+      "crates/ui-egui/src/i18n/mod.rs",
+      "crates/ui-egui/src/i18n/pl.tsv"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/ui-egui/src/i18n/mod.rs",
+        "changed_functions": [
+          "polish_counted_messages_use_all_three_forms"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 7142,
+    "source_head": "c05d827fdea5ee0c96231b83936d4994fa25afbc",
+    "title": "perf(type): refresh type layers without cloning the document (#7092)",
+    "status": "INTEGRATED",
+    "before": "9e8c099dfa6998b14a81331b51227d0c2d61cb3a",
+    "after": "f3b13752c0f55c8c8991dffbd7c08f0dda65e460",
+    "changed_paths": [
+      "crates/engine/src/edit_menu_cmds.rs",
+      "crates/engine/src/type_cmds.rs",
+      "crates/engine/src/type_extra_cmds.rs",
+      "crates/engine/src/type_spell_cmds.rs",
+      "crates/engine/src/type_styles_cmds.rs",
+      "crates/engine/src/variables_cmds.rs",
+      "crates/engine/src/warp_cmds.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7109,
+    "source_head": "45e15036bf301db855cc036dc1fc1c1d8a3df547",
+    "title": "Presets: the damaged-set test also covers Export As presets",
+    "status": "INTEGRATED",
+    "before": "f3b13752c0f55c8c8991dffbd7c08f0dda65e460",
+    "conflict_paths": [
+      "crates/engine/src/presets/tests.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/presets/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/presets/tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function a_damaged_preset_set_keeps_the_other_sets: overlapping function statements",
+    "before_resolution": "f92d79c01c14f6aafe5b98823e8c8514ff1d8517",
+    "after": "7c3a4e3c320a48923bbc9bb4aa5bba617a621401",
+    "changed_paths": [
+      "crates/engine/src/presets/tests.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/engine/src/presets/tests.rs"
+    ]
+  },
+  {
+    "pr": 7072,
+    "source_head": "0c7c53355314b4de3bd27a9762c06489a8056d0f",
+    "title": "Layer Style: keep gradient overlay colours when reopening the dialog (#7031)",
+    "status": "INTEGRATED",
+    "before": "f3b13752c0f55c8c8991dffbd7c08f0dda65e460",
+    "after": "3be7a35094c12c700705d74eab1620d02c970068",
+    "changed_paths": [
+      "crates/ui-egui/src/layer_style.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7058,
+    "source_head": "a6d36d0879dfc9b1c8f04449fbb764235ec6ce95",
+    "title": "Crop: X with a ratio preset turns the frame instead of shrinking it (#7057)",
+    "status": "INTEGRATED",
+    "before": "3be7a35094c12c700705d74eab1620d02c970068",
+    "after": "26fd985094ebdbe853521892c882286b26baaa30",
+    "changed_paths": [
+      "crates/ui-egui/src/crop_ui.rs",
+      "crates/ui-egui/tests/crop_default_mode.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 7021,
+    "source_head": "52ad01f426910e1780ee9419c9cb1b4c80eeb035",
+    "title": "Eyedropper: a large sampling ring that reads on any colour (#6973)",
+    "status": "INTEGRATED",
+    "before": "26fd985094ebdbe853521892c882286b26baaa30",
+    "after": "75c3101f4c43af577b932eb5925c67a4f66e4bea",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/tests/eyedropper_ring.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6983,
+    "source_head": "2f674d67e056002a500514fb2fb1756c8f269def",
+    "title": "fix(engine): File Info exposure keeps its 1/n form (#6958)",
+    "status": "INTEGRATED",
+    "before": "75c3101f4c43af577b932eb5925c67a4f66e4bea",
+    "conflict_paths": [
+      "crates/engine/src/file_cmds.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/file_cmds.rs\nCONFLICT (content): Merge conflict in crates/engine/src/file_cmds.rs\nAuto-merging crates/engine/src/file_cmds/tests.rs\nAuto-merging crates/engine/src/presets/mod.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function exposure_text: overlapping function statements",
+    "before_resolution": "7c3a4e3c320a48923bbc9bb4aa5bba617a621401",
+    "after": "ba5901725d84052ed6f3fdc4b9c42f926968c096",
+    "changed_paths": [
+      "crates/engine/src/file_cmds.rs",
+      "crates/engine/src/file_cmds/tests.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/engine/src/file_cmds.rs"
+    ]
+  },
+  {
+    "pr": 6942,
+    "source_head": "f7e441244f31a9a38842a2584428f3090fbd5f3b",
+    "title": "Color Picker: update the colour on press, not on release (#6937)",
+    "status": "INTEGRATED",
+    "before": "75c3101f4c43af577b932eb5925c67a4f66e4bea",
+    "after": "fdb12b69e820fe9f2d974f64ee344ddda30bddb3",
+    "changed_paths": [
+      "crates/ui-egui/src/color_picker_ui.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6919,
+    "source_head": "f5161d9cb1f02b6c37e8787966ff646b76835c79",
+    "title": "Selections don't mark a document modified (#6865)",
+    "status": "INTEGRATED",
+    "before": "fdb12b69e820fe9f2d974f64ee344ddda30bddb3",
+    "after": "8122120823f2c841075aa7f268ce5fe9523128a1",
+    "changed_paths": [
+      "crates/engine/src/history_select_cmds.rs",
+      "crates/engine/src/layer_multi_cmds.rs",
+      "crates/engine/src/lib.rs",
+      "crates/engine/src/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6918,
+    "source_head": "92bb4c9e56442a05f585186fcb050f8b58282a8e",
+    "title": "fix(shortcuts): Page Up/Down and arrow-key shortcuts never fired (#6827)",
+    "status": "INTEGRATED",
+    "before": "8122120823f2c841075aa7f268ce5fe9523128a1",
+    "after": "7773c7d1678865178ebd85605faf3806c59e11c0",
+    "changed_paths": [
+      "crates/engine/src/prefs.rs",
+      "crates/engine/src/prefs/tests.rs",
+      "crates/ui-egui/src/native_menu.rs",
+      "crates/ui-egui/src/shortcuts.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6912,
+    "source_head": "5faf499d5c036661f4fe73018e2c05dd897559cc",
+    "title": "Shortcuts: custom bindings on PageUp/PageDown (and other multi-word keys) fire again (#6827)",
+    "status": "INTEGRATED",
+    "before": "7773c7d1678865178ebd85605faf3806c59e11c0",
+    "conflict_paths": [
+      "crates/engine/src/prefs.rs",
+      "crates/engine/src/prefs/tests.rs",
+      "crates/ui-egui/src/layer_shortcut_tests.rs",
+      "crates/ui-egui/src/shortcuts.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/prefs.rs\nCONFLICT (content): Merge conflict in crates/engine/src/prefs.rs\nAuto-merging crates/engine/src/prefs/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/prefs/tests.rs\nAuto-merging crates/ui-egui/src/layer_shortcut_tests.rs\nCONFLICT (content): Merge conflict in crates/ui-egui/src/layer_shortcut_tests.rs\nAuto-merging crates/ui-egui/src/shortcuts.rs\nCONFLICT (content): Merge conflict in crates/ui-egui/src/shortcuts.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function capitalize: overlapping function statements",
+    "before_resolution": "ba5901725d84052ed6f3fdc4b9c42f926968c096",
+    "after": "a581f15be07f1db49f00e4ad603a66e2c1ede232",
+    "changed_paths": [
+      "crates/engine/src/prefs.rs",
+      "crates/engine/src/prefs/tests.rs",
+      "crates/ui-egui/src/layer_shortcut_tests.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/engine/src/prefs.rs",
+      "crates/engine/src/prefs/tests.rs",
+      "crates/ui-egui/src/layer_shortcut_tests.rs",
+      "crates/ui-egui/src/shortcuts.rs"
+    ]
+  },
+  {
+    "pr": 6910,
+    "source_head": "643c9b7044fc6b6e88b389eb3b01d5202c0a563b",
+    "title": "Web: one press per tap, so menus open again on touch (#2095)",
+    "status": "INTEGRATED",
+    "before": "7773c7d1678865178ebd85605faf3806c59e11c0",
+    "after": "588a8b8f153d49d6d4473e4a82a43775dc8ff9b5",
+    "changed_paths": [
+      "apps/photocraft-web/src/web.rs",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/touch_twins.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6908,
+    "source_head": "be9cca9bd96491c97fecfcce46b71ed483b6de0c",
+    "title": "Background redraw: keep the last finished composites, so a solo's restore uploads instead of recompositing (part of #6528)",
+    "status": "INTEGRATED",
+    "before": "588a8b8f153d49d6d4473e4a82a43775dc8ff9b5",
+    "after": "56f3ba0dcb13aa48898ef485083781cc36efb31b",
+    "changed_paths": [
+      "crates/ui-egui/src/background_redraw.rs",
+      "crates/ui-egui/src/background_redraw_tests.rs",
+      "crates/ui-egui/src/lib.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6907,
+    "source_head": "1d3e94aa4c7c50069ce36c36d47bc3adac86ffee",
+    "title": "test(ui): a toolbar click with no prior hover picks the tool (part of #2603)",
+    "status": "INTEGRATED",
+    "before": "56f3ba0dcb13aa48898ef485083781cc36efb31b",
+    "after": "3d9743989b04ad9a42fc353724938831f0eb2de2",
+    "changed_paths": [
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6890,
+    "source_head": "09419f0db8876818a13ff742793875683b95bb95",
+    "title": "Remove missing files from Open Recent and Home (#6610)",
+    "status": "INTEGRATED",
+    "before": "3d9743989b04ad9a42fc353724938831f0eb2de2",
+    "after": "fbe81254834e0db2f6862c68b371250fbbedd50a",
+    "changed_paths": [
+      "crates/ui-egui/src/jobs_ui_tests.rs",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/prefs_ui.rs",
+      "crates/ui-egui/src/recent_files.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6881,
+    "source_head": "616ab9d56a00e47a0a1f79edf1de1f559d0283c2",
+    "title": "Actions: .atn Select Subject, Select and Mask, Color Range, clipping and layer masks, colours map to commands (part of #6745)",
+    "status": "INTEGRATED",
+    "before": "fbe81254834e0db2f6862c68b371250fbbedd50a",
+    "after": "e3b8b16e5ca27c44acbfefddc15bea82f3190fa8",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6873,
+    "source_head": "1069d30cb1f0ff682161ee11f4cc36b2d376d8f0",
+    "title": "HEIF: honour the nclx colour description; HLG/PQ HEICs open as linear BT.2020 32-bit (#6752)",
+    "status": "INTEGRATED",
+    "before": "e3b8b16e5ca27c44acbfefddc15bea82f3190fa8",
+    "after": "57200548b725af98680fc64c083a1bc94b2d7a51",
+    "changed_paths": [
+      "crates/cms/src/builtin.rs",
+      "crates/codecs/src/cicp.rs",
+      "crates/codecs/src/codecs/heif.rs",
+      "crates/codecs/src/image.rs",
+      "crates/codecs/src/lib.rs",
+      "crates/heif/src/lib.rs",
+      "crates/io/src/flat.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6868,
+    "source_head": "bb6bd84d8eb827867689ed85cc51d61a7018176a",
+    "title": "Keep shape fill and stroke alpha through PSD round-trip (#6180)",
+    "status": "INTEGRATED",
+    "before": "57200548b725af98680fc64c083a1bc94b2d7a51",
+    "after": "c71e4ada996ca9f9ca7d92d60b2ae5d47483e24b",
+    "changed_paths": [
+      "crates/io/src/blocks.rs",
+      "crates/io/src/vector_map.rs",
+      "crates/io/tests/vector.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6837,
+    "source_head": "10fc2a3839d532a62a10d4cb36e95395e54f0fbe",
+    "title": "Hue/Saturation: hue tracks and spectrum bars use full-strength sRGB hues, one shared hue_color (#6540)",
+    "status": "INTEGRATED",
+    "before": "c71e4ada996ca9f9ca7d92d60b2ae5d47483e24b",
+    "after": "1d82e00109d936bdeab4fcd96abd4cc5ad95c053",
+    "changed_paths": [
+      "crates/ui-egui/src/adjust_editors.rs",
+      "crates/ui-egui/src/camera_raw_ui.rs",
+      "crates/ui-egui/src/widgets.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6835,
+    "source_head": "4c730d3889cfe4499077aa21e6a64bde1dc2e1a5",
+    "title": "Object Finder: hovering with an empty active layer shows the status-bar hint (#6549)",
+    "status": "INTEGRATED",
+    "before": "1d82e00109d936bdeab4fcd96abd4cc5ad95c053",
+    "after": "0c9cbafc418372fd3118b69f5b31a5e70d67732b",
+    "changed_paths": [
+      "crates/engine/src/smartselect_cmds.rs",
+      "crates/ui-egui/src/i18n/cs.tsv",
+      "crates/ui-egui/src/i18n/de.tsv",
+      "crates/ui-egui/src/i18n/el.tsv",
+      "crates/ui-egui/src/i18n/es.tsv",
+      "crates/ui-egui/src/i18n/fr.tsv",
+      "crates/ui-egui/src/i18n/hu.tsv",
+      "crates/ui-egui/src/i18n/id.tsv",
+      "crates/ui-egui/src/i18n/it.tsv",
+      "crates/ui-egui/src/i18n/ja.tsv",
+      "crates/ui-egui/src/i18n/ko.tsv",
+      "crates/ui-egui/src/i18n/nl.tsv",
+      "crates/ui-egui/src/i18n/pl.tsv",
+      "crates/ui-egui/src/i18n/pt-br.tsv",
+      "crates/ui-egui/src/i18n/ru.tsv",
+      "crates/ui-egui/src/i18n/sr.tsv",
+      "crates/ui-egui/src/i18n/tr.tsv",
+      "crates/ui-egui/src/i18n/uk.tsv",
+      "crates/ui-egui/src/i18n/vi.tsv",
+      "crates/ui-egui/src/i18n/zh-hans.tsv",
+      "crates/ui-egui/src/i18n/zh-hant.tsv",
+      "crates/ui-egui/src/object_finder.rs",
+      "docs/ui-parity.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6833,
+    "source_head": "76f19e6e2e48193bd13105e3da3e891ed4610f32",
+    "title": "Title bar: only the primary button starts a window drag (#6729)",
+    "status": "INTEGRATED",
+    "before": "0c9cbafc418372fd3118b69f5b31a5e70d67732b",
+    "after": "af9bb28ac9d9c879b317ade702faec19cc76cc12",
+    "changed_paths": [
+      "crates/ui-egui/src/panels.rs",
+      "crates/ui-egui/src/titlebar.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6830,
+    "source_head": "ff5b1228c6d9bceb2efb2e74a33300a273d10dd5",
+    "title": "Tab in Full Screen Mode shows the menu bar and panels; leaving Full Screen restores them as before (#6760)",
+    "status": "INTEGRATED",
+    "before": "af9bb28ac9d9c879b317ade702faec19cc76cc12",
+    "after": "74f30b1b52ba8519f856b59752120398f7ce87a6",
+    "changed_paths": [
+      "crates/ui-egui/src/dock_tests.rs",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/menus.rs",
+      "crates/ui-egui/src/state.rs",
+      "crates/ui-egui/src/view_cmds.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6829,
+    "source_head": "6511eed63db71ebd37aa2d4106925918c24ad9ae",
+    "title": "Actions: Shift-click layer select in .atn imports as range select and exports back (#6784)",
+    "status": "INTEGRATED",
+    "before": "74f30b1b52ba8519f856b59752120398f7ce87a6",
+    "after": "f4756c08b26f1971a9c39e7ccfdab595626fa40e",
+    "changed_paths": [
+      "crates/engine/src/atn_cmds.rs",
+      "crates/engine/src/atn_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6826,
+    "source_head": "ac5b4cd56f002e4c664ea8612886fecebfae12e4",
+    "title": "Don't pan the canvas when a dialog's title bar is dragged (#6810)",
+    "status": "INTEGRATED",
+    "before": "f4756c08b26f1971a9c39e7ccfdab595626fa40e",
+    "after": "489394ce6606776d41acfdcc020c686a72ea6658",
+    "changed_paths": [
+      "crates/ui-egui/src/dialogs.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6815,
+    "source_head": "ae0823efe41d5be9793d4bfe3548c70c487106a7",
+    "title": "PSD: keep Photoshop 2026 Light adjustment layers verbatim and warn (#6542)",
+    "status": "INTEGRATED",
+    "before": "489394ce6606776d41acfdcc020c686a72ea6658",
+    "after": "1162a80c187e00864b0687d8c6c0ad4379568c1c",
+    "changed_paths": [
+      "crates/io/src/adjust_map.rs",
+      "crates/io/src/psd_export.rs",
+      "crates/io/src/psd_import.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6813,
+    "source_head": "d5d937ac3eb0217e61f0bc76c7a2f0389a0a9fc2",
+    "title": "A layer that doesn't fit in GPU memory no longer breaks GPU drawing: older pages are freed and the layer is retried",
+    "status": "INTEGRATED",
+    "before": "1162a80c187e00864b0687d8c6c0ad4379568c1c",
+    "after": "78ed2dc6b06bec26ea93c28137df1c0aeb63468b",
+    "changed_paths": [
+      "crates/gpu/src/lib.rs",
+      "crates/gpu/tests/parity.rs",
+      "crates/ui-egui/src/gpu_canvas.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6801,
+    "source_head": "0750751261545077b36707cbf691c6f8f152dc17",
+    "title": "Actions that start with Deselect play on when nothing is selected",
+    "status": "INTEGRATED",
+    "before": "78ed2dc6b06bec26ea93c28137df1c0aeb63468b",
+    "after": "a204ddfaab5a3686ad6923f34a2636b73eb85793",
+    "changed_paths": [
+      "crates/engine/src/actions_cmds.rs",
+      "crates/engine/src/commands.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6794,
+    "source_head": "33479efc0478deec6f6008741b956ad04079c21b",
+    "title": "feat(ui): System Info shows the graphics card's own memory",
+    "status": "INTEGRATED",
+    "before": "a204ddfaab5a3686ad6923f34a2636b73eb85793",
+    "after": "88ec4d38a3c946a3374a098b865970b62c99649f",
+    "changed_paths": [
+      "crates/ui-egui/src/gpu_canvas.rs",
+      "crates/ui-egui/src/i18n/cs.tsv",
+      "crates/ui-egui/src/i18n/de.tsv",
+      "crates/ui-egui/src/i18n/el.tsv",
+      "crates/ui-egui/src/i18n/es.tsv",
+      "crates/ui-egui/src/i18n/fr.tsv",
+      "crates/ui-egui/src/i18n/hu.tsv",
+      "crates/ui-egui/src/i18n/id.tsv",
+      "crates/ui-egui/src/i18n/it.tsv",
+      "crates/ui-egui/src/i18n/ja.tsv",
+      "crates/ui-egui/src/i18n/ko.tsv",
+      "crates/ui-egui/src/i18n/nl.tsv",
+      "crates/ui-egui/src/i18n/pl.tsv",
+      "crates/ui-egui/src/i18n/pt-br.tsv",
+      "crates/ui-egui/src/i18n/ru.tsv",
+      "crates/ui-egui/src/i18n/sr.tsv",
+      "crates/ui-egui/src/i18n/tr.tsv",
+      "crates/ui-egui/src/i18n/uk.tsv",
+      "crates/ui-egui/src/i18n/vi.tsv",
+      "crates/ui-egui/src/i18n/zh-hans.tsv",
+      "crates/ui-egui/src/i18n/zh-hant.tsv"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6734,
+    "source_head": "be98937e996e8a2f5be777d0deafd5186e82afc8",
+    "title": "Polygonal Lasso: the last corner of a small shape no longer closes it (#6578)",
+    "status": "INTEGRATED",
+    "current_head": "e36bfb030edb8780bb52d1e5849c171a0ca26296",
+    "before_resolution": "9adab574ad2b2db694acd5086df18a71dc1e37f3",
+    "after": "6c72e7c830165e7764a58bec9cb1cf72dc535573",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/lasso_ui.rs",
+      "crates/ui-egui/src/lasso_ui/tests.rs",
+      "crates/ui-egui/src/polygon_lasso_tests.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/lasso_ui.rs",
+      "crates/ui-egui/src/lasso_ui/tests.rs"
+    ]
+  },
+  {
+    "pr": 6651,
+    "source_head": "d19399576270538c23400a1f0fcebda9abdcefcc",
+    "title": "Add a curated pattern library: 38 CC0 photographic tiles",
+    "status": "INTEGRATED",
+    "before": "88ec4d38a3c946a3374a098b865970b62c99649f",
+    "conflict_paths": [
+      "ATTRIBUTION.md"
+    ],
+    "output": "Auto-merging ATTRIBUTION.md\nCONFLICT (content): Merge conflict in ATTRIBUTION.md\nAuto-merging crates/engine/src/pattern_cmds.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "manual non-Rust resolution: ATTRIBUTION.md",
+    "before_resolution": "a581f15be07f1db49f00e4ad603a66e2c1ede232",
+    "after": "b58daf12330b6b7ea14948c0054c2b143753aea3",
+    "changed_paths": [
+      "ATTRIBUTION.md",
+      "NOTICE",
+      "crates/engine/assets/patterns/Bark014.jpg",
+      "crates/engine/assets/patterns/Bricks058.jpg",
+      "crates/engine/assets/patterns/Bricks059.jpg",
+      "crates/engine/assets/patterns/Bricks066.jpg",
+      "crates/engine/assets/patterns/Bricks076A.jpg",
+      "crates/engine/assets/patterns/Bricks090.jpg",
+      "crates/engine/assets/patterns/Concrete023.jpg",
+      "crates/engine/assets/patterns/Concrete025.jpg",
+      "crates/engine/assets/patterns/Concrete046.jpg",
+      "crates/engine/assets/patterns/DiamondPlate009.jpg",
+      "crates/engine/assets/patterns/Fabric019.jpg",
+      "crates/engine/assets/patterns/Fabric045.jpg",
+      "crates/engine/assets/patterns/Fabric077.jpg",
+      "crates/engine/assets/patterns/Fabric085.jpg",
+      "crates/engine/assets/patterns/Grass005.jpg",
+      "crates/engine/assets/patterns/Ground003.jpg",
+      "crates/engine/assets/patterns/Ground013.jpg",
+      "crates/engine/assets/patterns/Ground037.jpg",
+      "crates/engine/assets/patterns/Ground041.jpg",
+      "crates/engine/assets/patterns/Ground062S.jpg",
+      "crates/engine/assets/patterns/Ground072.jpg",
+      "crates/engine/assets/patterns/Ground076.jpg",
+      "crates/engine/assets/patterns/Ground079L.jpg",
+      "crates/engine/assets/patterns/Ground079S.jpg",
+      "crates/engine/assets/patterns/LICENSE-cc0.txt",
+      "crates/engine/assets/patterns/Marble016.jpg",
+      "crates/engine/assets/patterns/Marble019.jpg",
+      "crates/engine/assets/patterns/Marble021.jpg",
+      "crates/engine/assets/patterns/Marble025.jpg",
+      "crates/engine/assets/patterns/Metal053C.jpg",
+      "crates/engine/assets/patterns/Metal061B.jpg",
+      "crates/engine/assets/patterns/Paper001.jpg",
+      "crates/engine/assets/patterns/Paper004.jpg",
+      "crates/engine/assets/patterns/Paper006.jpg",
+      "crates/engine/assets/patterns/Planks037A.jpg",
+      "crates/engine/assets/patterns/SOURCES.md",
+      "crates/engine/assets/patterns/ScatteredLeaves008.jpg",
+      "crates/engine/assets/patterns/ScatteredLeaves009.jpg",
+      "crates/engine/assets/patterns/Wood048.jpg",
+      "crates/engine/assets/patterns/Wood049.jpg",
+      "crates/engine/src/pattern_cmds.rs",
+      "crates/engine/src/presets/patterns.rs"
+    ],
+    "manual_resolution_files": [
+      "ATTRIBUTION.md"
+    ]
+  },
+  {
+    "pr": 6629,
+    "source_head": "289ad2bb3ed5d5cd6b47cf226cf2638aa600b86a",
+    "title": "Canvas overlays stay visible while panning (#6592)",
+    "status": "INTEGRATED",
+    "before": "88ec4d38a3c946a3374a098b865970b62c99649f",
+    "after": "7b1c2d1a9b2b1fbbbf2cb0f440b0312526d57591",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/hold_keys/tests.rs",
+      "crates/ui-egui/src/tool_cursor.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6510,
+    "source_head": "d53cbb6c9fd16da033d2cfd370d935538f96b9bc",
+    "title": "Automation: resolve configured root aliases for absolute paths (#6426)",
+    "status": "INTEGRATED",
+    "before": "7b1c2d1a9b2b1fbbbf2cb0f440b0312526d57591",
+    "after": "4cfba9e682b36aca222c4bfb1bda924c0bcc11b2",
+    "changed_paths": [
+      ".github/workflows/ci.yml",
+      "crates/automation/src/workspace.rs",
+      "docs/control-protocol.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6509,
+    "source_head": "20385b70439b1fe2d5986218483e3c04ee32de0b",
+    "title": "Type: commit the edit when another layer or document becomes active (#6483)",
+    "status": "INTEGRATED",
+    "before": "4cfba9e682b36aca222c4bfb1bda924c0bcc11b2",
+    "after": "7ca3977942b49af42ba2aae46c0b2ee2431fb614",
+    "changed_paths": [
+      "crates/engine/src/lib.rs",
+      "crates/engine/src/tests.rs",
+      "crates/ui-egui/src/hold_keys/tests.rs",
+      "crates/ui-egui/src/input_tests.rs",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/panels.rs",
+      "crates/ui-egui/src/spring_tools/tests.rs",
+      "crates/ui-egui/src/state.rs",
+      "crates/ui-egui/src/swatches_ui.rs",
+      "crates/ui-egui/src/type_commit_tests.rs",
+      "crates/ui-egui/src/type_font_picker_tests.rs",
+      "crates/ui-egui/src/type_tool.rs",
+      "crates/ui-egui/src/type_tool_tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6492,
+    "source_head": "657cfd503d4ce276df6b5e9f763cb3a5cf2deaeb",
+    "title": "Fail control startup promptly when its port is occupied",
+    "status": "INTEGRATED",
+    "before": "7ca3977942b49af42ba2aae46c0b2ee2431fb614",
+    "after": "2c4eddebde3576bbd88e89af03bdae2e3b30ca20",
+    "changed_paths": [
+      "apps/photocraft/src/control_server.rs",
+      "apps/photocraft/src/main.rs",
+      "apps/photocraft/tests/control_exit_code.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6481,
+    "source_head": "c8023bfed356148a2417f089f49bc50ec88f3316",
+    "title": "perf(hdr): Merge to HDR Pro and HDR Toning 3\u00d7 faster, bit for bit the same",
+    "status": "INTEGRATED",
+    "before": "2c4eddebde3576bbd88e89af03bdae2e3b30ca20",
+    "after": "c6cbdfe26afe45abd6b76874162d19e86180ce78",
+    "changed_paths": [
+      "crates/algo/src/fxutil.rs",
+      "crates/algo/src/hdr.rs",
+      "crates/algo/src/tone.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6472,
+    "source_head": "dfb84a686d9358348542979e002f943a06cb9e6e",
+    "title": "fix(ui): preserve shape stroke settings at zero width",
+    "status": "INTEGRATED",
+    "before": "c6cbdfe26afe45abd6b76874162d19e86180ce78",
+    "after": "d9af3d079ace6a94c5365178d460377d8cd6c107",
+    "changed_paths": [
+      "crates/ui-egui/src/vector_paint_tests.rs",
+      "crates/ui-egui/src/vector_ui.rs",
+      "docs/shape-strokes.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6468,
+    "source_head": "770e66c0223448f0f38f7c5bcde97b8574c05ef8",
+    "title": "fix(photocraft): `--control 0` logs the port actually bound (#6427)",
+    "status": "INTEGRATED",
+    "before": "d9af3d079ace6a94c5365178d460377d8cd6c107",
+    "conflict_paths": [
+      "apps/photocraft/src/control_server.rs"
+    ],
+    "output": "Auto-merging apps/photocraft/src/control_server.rs\nCONFLICT (content): Merge conflict in apps/photocraft/src/control_server.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function start: overlapping function statements",
+    "before_resolution": "b58daf12330b6b7ea14948c0054c2b143753aea3",
+    "after": "7436e9f9c861088fa6ba92bbb416bae8d60b6fd0",
+    "changed_paths": [
+      "apps/photocraft/src/control_server.rs"
+    ],
+    "manual_resolution_files": [
+      "apps/photocraft/src/control_server.rs"
+    ]
+  },
+  {
+    "pr": 6464,
+    "source_head": "abd3755d41d92906a18a1418ca10f55d9a9eb6ea",
+    "title": "Survive a lost window GPU device: draw nothing, save unsaved work for recovery, close (#3438, #1215)",
+    "status": "INTEGRATED",
+    "before": "d9af3d079ace6a94c5365178d460377d8cd6c107",
+    "after": "eaf68dbd7e479baab1e63690b274255b5317749b",
+    "changed_paths": [
+      "apps/photocraft/src/main.rs",
+      "apps/photocraft/src/services.rs",
+      "crates/format/src/autosave.rs",
+      "crates/format/tests/autosave.rs",
+      "crates/gpu/src/health.rs",
+      "crates/gpu/tests/device_loss.rs",
+      "crates/ui-egui/src/control.rs",
+      "crates/ui-egui/src/gpu_status.rs",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/tests/gpu_device_loss.rs",
+      "docs/control-protocol.md",
+      "docs/development.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6456,
+    "source_head": "6cef19e38a13d70c31b4f75453f68e683fc02f71",
+    "title": "perf(quantize): Indexed Color palette build 8\u00d7 faster, bit for bit the same",
+    "status": "INTEGRATED",
+    "before": "eaf68dbd7e479baab1e63690b274255b5317749b",
+    "after": "f183b3f96b3df81d9515f61d58a6efac0831ec95",
+    "changed_paths": [
+      "crates/algo/src/quantize.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6417,
+    "source_head": "8d5184b1db58f78cad904849df6e77084fd12a64",
+    "title": "Context menus: an overflowing menu shows \u25b2/\u25bc scroll arrows (#2091)",
+    "status": "INTEGRATED",
+    "before": "f183b3f96b3df81d9515f61d58a6efac0831ec95",
+    "after": "aae47cde32cf1054be6ad337fe8e8ad3576f2bf2",
+    "changed_paths": [
+      "crates/ui-egui/src/widgets.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6415,
+    "source_head": "562601eb476f492f7245945751cba47a57420a48",
+    "title": "Save for Web: Width, Height, Percent and Resample in Image Size, linked in proportion (#6388)",
+    "status": "INTEGRATED",
+    "before": "aae47cde32cf1054be6ad337fe8e8ad3576f2bf2",
+    "after": "b4b11c4a025ade3c92abd6da3b14633d1b3e0a28",
+    "changed_paths": [
+      "crates/ui-egui/src/export_dialog.rs",
+      "crates/ui-egui/src/file_ui.rs",
+      "crates/ui-egui/src/file_ui/web_preview.rs",
+      "docs/control-protocol.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6410,
+    "source_head": "7e7defd0fb2649061353d105155b58c635a22a40",
+    "title": "Artboards: layers outside the boards stay visible over the pasteboard (#5712)",
+    "status": "INTEGRATED",
+    "before": "b4b11c4a025ade3c92abd6da3b14633d1b3e0a28",
+    "after": "75df9010448b6af1f70b2cc28d7e220dfdd68eee",
+    "changed_paths": [
+      "crates/ui-egui/src/artboard_ui.rs",
+      "crates/ui-egui/src/canvas.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6402,
+    "source_head": "5fe57626a6c6d9ad8bba75148031cd13e6b86442",
+    "title": "CI: ready for a merge queue: merge_group trigger and one required `ci passed` check (#6400)",
+    "status": "INTEGRATED",
+    "before": "75df9010448b6af1f70b2cc28d7e220dfdd68eee",
+    "conflict_paths": [
+      ".github/workflows/ci.yml"
+    ],
+    "output": "Auto-merging .github/workflows/ci.yml\nCONFLICT (content): Merge conflict in .github/workflows/ci.yml\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "manual non-Rust resolution: .github/workflows/ci.yml",
+    "before_resolution": "7436e9f9c861088fa6ba92bbb416bae8d60b6fd0",
+    "after": "11ea801c1a05faa5100b1a20c677770b0efd8f4b",
+    "changed_paths": [
+      ".github/workflows/ci.yml"
+    ],
+    "manual_resolution_files": [
+      ".github/workflows/ci.yml"
+    ]
+  },
+  {
+    "pr": 6401,
+    "source_head": "1f374b6964e47ecc671742e026901803b35fa40a",
+    "title": "PSD smart filters: Sharpen, Dust & Scratches and Hue/Saturation stay editable (#6267)",
+    "status": "INTEGRATED",
+    "before": "75df9010448b6af1f70b2cc28d7e220dfdd68eee",
+    "after": "a60805d8d9cb79a21e8c5af6cf0c7d00c5aedcce",
+    "changed_paths": [
+      "crates/io/src/hue_sat_filter_map.rs",
+      "crates/io/src/smart_map.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6387,
+    "source_head": "8bfbbf816025942b74130adf16fb07265817b691",
+    "title": "Video Frames to Layers: every page of a multi-page TIFF (part of #6379)",
+    "status": "INTEGRATED",
+    "before": "a60805d8d9cb79a21e8c5af6cf0c7d00c5aedcce",
+    "after": "952906728ae2a05de77997a6fab84253791c0537",
+    "changed_paths": [
+      "crates/engine/src/video_cmds.rs",
+      "crates/engine/src/video_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6383,
+    "source_head": "74aadae69e3b3f5cd257bca1926acc1b1297b1a2",
+    "title": "Windows releases ship a symbols zip: the release build's PDBs for profilers (#688)",
+    "status": "INTEGRATED",
+    "before": "952906728ae2a05de77997a6fab84253791c0537",
+    "after": "a93809754809870ec020532e5506485f451abf8a",
+    "changed_paths": [
+      "docs/releasing.md",
+      "packaging/windows/package.ps1",
+      "packaging/windows/symbols.txt"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6380,
+    "source_head": "1d21c921f8bed94876f1e9289b0eb9566e5c5107",
+    "title": "Make brush cursors follow pen orientation and projection",
+    "status": "INTEGRATED",
+    "before": "a93809754809870ec020532e5506485f451abf8a",
+    "after": "dada22af06c37689ab4940b7b5d7b78423311118",
+    "changed_paths": [
+      "crates/ui-egui/src/brush_cursor.rs",
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/tool_cursor/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6363,
+    "source_head": "f343abda5d6278cd49c3d3d8a3436dd2c7c729a0",
+    "title": "New Document: Color Profile, the working space or another profile of the mode (#321)",
+    "status": "INTEGRATED",
+    "before": "dada22af06c37689ab4940b7b5d7b78423311118",
+    "after": "089dbf2d5695888f29fa1b3b3169d66fdef450e6",
+    "changed_paths": [
+      "crates/automation/src/workspace.rs",
+      "crates/engine/src/commands.rs",
+      "crates/engine/src/document_preset_cmds.rs",
+      "crates/engine/src/tests.rs",
+      "crates/ui-egui/src/new_doc_ui.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6307,
+    "source_head": "a5e7e6387d09908aa946ede188c60e61a247e4af",
+    "title": "fix(io): open DDS textures with their alpha as an Alpha 1 channel",
+    "status": "INTEGRATED",
+    "before": "089dbf2d5695888f29fa1b3b3169d66fdef450e6",
+    "after": "93adedee2bf76f93aa776721e3509d814d1478ce",
+    "changed_paths": [
+      "crates/io/src/flat.rs",
+      "crates/io/tests/flat.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6271,
+    "source_head": "15183e62884f10b9be3cc56fb27e6e6896070373",
+    "title": "EXR: stage flat data windows on the display canvas",
+    "status": "INTEGRATED",
+    "before": "93adedee2bf76f93aa776721e3509d814d1478ce",
+    "after": "489cf7f852936a66844f8bc835045e553a6bd4d3",
+    "changed_paths": [
+      "crates/codecs/src/codecs/exr.rs",
+      "crates/codecs/tests/exr_display_window.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6253,
+    "source_head": "802a1b179093d6926b6493497831b1b49b10f035",
+    "title": "fix(compose): interior effects see the backdrop through a Normal layer's fill",
+    "status": "INTEGRATED",
+    "before": "489cf7f852936a66844f8bc835045e553a6bd4d3",
+    "after": "4e6a3c866de1751e1a46caa48ffa638fa7139457",
+    "changed_paths": [
+      "crates/compose/src/advanced_tests.rs",
+      "crates/compose/src/effects.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6244,
+    "source_head": "08487cdd293c311e86c33f6009170d32f15eb6e6",
+    "title": "Preserve opaque edges when placing scaled Smart Objects",
+    "status": "INTEGRATED",
+    "before": "4e6a3c866de1751e1a46caa48ffa638fa7139457",
+    "after": "37e2cef85862970425032343977e542a859ea549",
+    "changed_paths": [
+      "crates/algo/src/transform.rs",
+      "crates/engine/src/file_cmds.rs",
+      "crates/engine/src/smart_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6243,
+    "source_head": "40b3bf9b6b9522838914264e3bae7a796e017add",
+    "title": "GPU: pin the keep-overlap ordering with a tile-growth regression test",
+    "status": "INTEGRATED",
+    "before": "37e2cef85862970425032343977e542a859ea549",
+    "after": "59cd888911f80dba95a6cb6f536e3cc2248d73c8",
+    "changed_paths": [
+      "crates/gpu/tests/parity.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6224,
+    "source_head": "59d42f39980317bd931290a55d0cf42b311eff2c",
+    "title": "Free Transform: a rotated sprite's soft edge keeps its colour instead of a light border",
+    "status": "INTEGRATED",
+    "before": "59cd888911f80dba95a6cb6f536e3cc2248d73c8",
+    "after": "2bdf080fab12d6d379e2db0b05bb65535f69d2c2",
+    "changed_paths": [
+      "crates/algo/src/transform.rs",
+      "crates/algo/src/warp.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6200,
+    "source_head": "3f9a76a4afa642f41e8fa4611909efcdbb755d55",
+    "title": "Make Crystallize 4x and Pointillize 3x faster on 24 MP layers",
+    "status": "INTEGRATED",
+    "before": "2bdf080fab12d6d379e2db0b05bb65535f69d2c2",
+    "after": "88203d3d4a2a7a8c41ffb19cf16c8606c765be6e",
+    "changed_paths": [
+      "crates/algo/examples/bench_pixelate.rs",
+      "crates/algo/src/lib.rs",
+      "crates/algo/src/pixelate.rs",
+      "crates/algo/src/pixelate/cells.rs",
+      "crates/algo/src/pixelate/tests.rs",
+      "crates/engine/examples/bench_cell_filters.rs",
+      "docs/pixelate-cell-performance.md",
+      "docs/pixelate-cell-timings.json"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6146,
+    "source_head": "ab16e0b4b7f9aa154f0f2bdda2d5cd8f56b470e2",
+    "title": "refactor: share hsb conversions between photocraft-color and the color picker",
+    "status": "INTEGRATED",
+    "before": "88203d3d4a2a7a8c41ffb19cf16c8606c765be6e",
+    "after": "77ac3fa366e2a38b1994295e3aaa7e68b8016f56",
+    "changed_paths": [
+      "crates/color/src/convert.rs",
+      "crates/ui-egui/src/color_picker_ui.rs",
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6128,
+    "source_head": "e119923054100a2bd0b7f7db9733c3852ce4472d",
+    "title": "Brush Preset picker: the cards start at the compact scale (#6107)",
+    "status": "INTEGRATED",
+    "before": "77ac3fa366e2a38b1994295e3aaa7e68b8016f56",
+    "after": "739011183394dbaaad08bda59d07868e237e5648",
+    "changed_paths": [
+      "crates/ui-egui/src/brush_picker.rs",
+      "crates/ui-egui/src/brushes_tab_tests.rs",
+      "crates/ui-egui/src/canvas_menu_tests.rs",
+      "docs/brush-parity.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6112,
+    "source_head": "de095be6cb18192e5fe548d989ceaf534b9b3de7",
+    "title": "fix(compose): stop effect noise from painting empty blur tails",
+    "status": "INTEGRATED",
+    "before": "739011183394dbaaad08bda59d07868e237e5648",
+    "after": "bbfda0e4237f2f4455a50ffec915aab6b65df3d8",
+    "changed_paths": [
+      "crates/compose/src/effects.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6083,
+    "source_head": "835259929469c647dd8cdd94800e8763721787ef",
+    "title": "New Guide Layout: format in ruler unit, support arbitrary units, and normalize on lost focus (#6082)",
+    "status": "INTEGRATED",
+    "before": "bbfda0e4237f2f4455a50ffec915aab6b65df3d8",
+    "after": "95c64e5117b6fb22108a4c382c572ddc490edef5",
+    "changed_paths": [
+      "crates/ui-egui/src/guide_layout_ui.rs",
+      "crates/ui-egui/src/guide_layout_ui/tests.rs",
+      "crates/ui-egui/src/view_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6026,
+    "source_head": "248ba660576f4896f69cbb6639353e2f1d295271",
+    "title": "Marquee: Fixed Size selects exactly the entered width and height (fixes #6015)",
+    "status": "INTEGRATED",
+    "before": "95c64e5117b6fb22108a4c382c572ddc490edef5",
+    "after": "fde4f770779aca5a4367b3612805cf5afe75c945",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/marquee_tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 6025,
+    "source_head": "2551f3ddab90f57a64a91b0bc7a707950726bf9a",
+    "title": "Rectangular Marquee: Style: Fixed Size selects exactly that many pixels (#6015)",
+    "status": "INTEGRATED",
+    "before": "fde4f770779aca5a4367b3612805cf5afe75c945",
+    "after": "b13ea1db835263bbbb6ac7fbfb396b85b5382547",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5940,
+    "source_head": "8be3269fe1bf3baaa6cf76fbabf4c16de9b25974",
+    "title": "History panel: scroll to the current state on document change (#5909)",
+    "status": "INTEGRATED",
+    "before": "b13ea1db835263bbbb6ac7fbfb396b85b5382547",
+    "after": "b37fdc4c80eae7b3a3f6e6636242b732ca6b1760",
+    "changed_paths": [
+      "crates/ui-egui/src/history_panel_select_tests.rs",
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5939,
+    "source_head": "7348e060b4be7204fb69b59079c3b9d808e9aad3",
+    "title": "fix(paint): scale blur sigma with brush size (#5892)",
+    "status": "INTEGRATED",
+    "before": "b37fdc4c80eae7b3a3f6e6636242b732ca6b1760",
+    "after": "8fddf1077721c6ee615e423d001f59af24e65bdd",
+    "changed_paths": [
+      "crates/engine/src/retouch_cmds.rs",
+      "crates/engine/src/retouch_cmds/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5938,
+    "source_head": "521a8993567d44e9d2b29f4d3ebe2d3d29dc5d36",
+    "title": "fix(ui): allow clipboard operations in modal dialogs and color picker (#5904)",
+    "status": "INTEGRATED",
+    "before": "8fddf1077721c6ee615e423d001f59af24e65bdd",
+    "after": "5a5a6343f5d187e6e6c6a71ea8e5080d3eb56482",
+    "changed_paths": [
+      "crates/ui-egui/src/color_picker_ui.rs",
+      "crates/ui-egui/src/menus.rs",
+      "crates/ui-egui/src/text_field_menu.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5937,
+    "source_head": "ac1bc012ef0965396ea2d4dbe68f07e943950d7e",
+    "title": "fix(compose): prevent outside stroke from bleeding into opaque character interior (#5861)",
+    "status": "INTEGRATED",
+    "before": "5a5a6343f5d187e6e6c6a71ea8e5080d3eb56482",
+    "conflict_paths": [
+      "crates/compose/src/effects.rs"
+    ],
+    "output": "Auto-merging crates/compose/src/effects.rs\nCONFLICT (content): Merge conflict in crates/compose/src/effects.rs\nAuto-merging crates/compose/src/stroke_tests.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function composite_with_effects_prepared: overlapping function statements",
+    "before_resolution": "11ea801c1a05faa5100b1a20c677770b0efd8f4b",
+    "after": "eb67b4dede387e590c003b2f02dd18f48dce0ac6",
+    "changed_paths": [
+      "crates/compose/src/effects.rs",
+      "crates/compose/src/stroke_tests.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/compose/src/effects.rs"
+    ]
+  },
+  {
+    "pr": 5928,
+    "source_head": "e81fa94f3f159a96cfa806acde9c2d45b702ba05",
+    "title": "BMP export: Indexed Color documents save as palette BMPs",
+    "status": "INTEGRATED",
+    "before": "5a5a6343f5d187e6e6c6a71ea8e5080d3eb56482",
+    "after": "a33d1de5966310b16ccb48bfb6282c6c32a56379",
+    "changed_paths": [
+      "crates/codecs/README.md",
+      "crates/codecs/src/codecs/via_image.rs",
+      "crates/codecs/src/lib.rs",
+      "crates/io/src/flat.rs",
+      "crates/io/tests/modes.rs",
+      "docs/file-format-parity.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5927,
+    "source_head": "b180cfd40df880fa99ef1dbfe32743bc6f4f13ba",
+    "title": "Fix Exposure value-field steps when decimals are set (#5914)",
+    "status": "INTEGRATED",
+    "before": "a33d1de5966310b16ccb48bfb6282c6c32a56379",
+    "after": "7e5c70a1ad8c6040ba06415ea0d01ad5c9ae1721",
+    "changed_paths": [
+      "crates/ui-egui/src/widgets.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5907,
+    "source_head": "5be2b29463ae6dee8fc8c0ab9a1e76e1e6c2df6d",
+    "title": "Text: apply anti-alias mode shaping when rasterizing type (#5902)",
+    "status": "INTEGRATED",
+    "before": "7e5c70a1ad8c6040ba06415ea0d01ad5c9ae1721",
+    "after": "9c47985278f730eff5254b34fb5b685e6731090e",
+    "changed_paths": [
+      "crates/text/src/render.rs",
+      "crates/text/src/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5891,
+    "source_head": "b6bdc90dc8213de2194283c32fdd9baaefbe2d80",
+    "title": "Panels: Collapse to Icons and Expand Panels for the dock column (#4059)",
+    "status": "INTEGRATED",
+    "before": "9c47985278f730eff5254b34fb5b685e6731090e",
+    "after": "5cf640f0d4d8a32cf5bf8ef29d1285362ba5d54f",
+    "changed_paths": [
+      "crates/ui-egui/src/dock.rs",
+      "crates/ui-egui/src/dock_icons.rs",
+      "crates/ui-egui/src/dock_icons_tests.rs",
+      "crates/ui-egui/src/i18n/cs.tsv",
+      "crates/ui-egui/src/i18n/de.tsv",
+      "crates/ui-egui/src/i18n/el.tsv",
+      "crates/ui-egui/src/i18n/es.tsv",
+      "crates/ui-egui/src/i18n/fr.tsv",
+      "crates/ui-egui/src/i18n/hu.tsv",
+      "crates/ui-egui/src/i18n/id.tsv",
+      "crates/ui-egui/src/i18n/it.tsv",
+      "crates/ui-egui/src/i18n/ja.tsv",
+      "crates/ui-egui/src/i18n/ko.tsv",
+      "crates/ui-egui/src/i18n/nl.tsv",
+      "crates/ui-egui/src/i18n/pl.tsv",
+      "crates/ui-egui/src/i18n/pt-br.tsv",
+      "crates/ui-egui/src/i18n/ru.tsv",
+      "crates/ui-egui/src/i18n/sr.tsv",
+      "crates/ui-egui/src/i18n/tr.tsv",
+      "crates/ui-egui/src/i18n/uk.tsv",
+      "crates/ui-egui/src/i18n/vi.tsv",
+      "crates/ui-egui/src/i18n/zh-hans.tsv",
+      "crates/ui-egui/src/i18n/zh-hant.tsv",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/panels.rs",
+      "crates/ui-egui/src/view_cmds.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5878,
+    "source_head": "76d7d27c5203e197ed03947a33eeea048ea935b5",
+    "title": "Preferences: old settings files take Shift-to-switch-tools on (#5647)",
+    "status": "INTEGRATED",
+    "before": "5cf640f0d4d8a32cf5bf8ef29d1285362ba5d54f",
+    "after": "44420a3b24f1ca38d74c0f7c9e457393e11f7f29",
+    "changed_paths": [
+      "crates/engine/src/prefs.rs",
+      "crates/engine/src/prefs/tests.rs",
+      "crates/ui-egui/src/prefs_ui.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5877,
+    "source_head": "d3f6b384ac647649762119f652999f9f8004b06c",
+    "title": "fix(format): ignore accidental ZIP directory signatures in comments",
+    "status": "INTEGRATED",
+    "before": "44420a3b24f1ca38d74c0f7c9e457393e11f7f29",
+    "after": "f9248d464e05b14766a1f633d37b664de326af24",
+    "changed_paths": [
+      "crates/format/src/zip.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5870,
+    "source_head": "f9de0a6abc78aa405b1ef46f5da6cba424106204",
+    "title": "fix(format): reject duplicate native layer identities",
+    "status": "INTEGRATED",
+    "before": "f9248d464e05b14766a1f633d37b664de326af24",
+    "after": "fab67479b0e95b91a81b472ed0842d1dc1dfb55e",
+    "changed_paths": [
+      "crates/format/src/convert.rs",
+      "crates/format/tests/layer_identities.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5865,
+    "source_head": "c8ed14dc52d68f7ee1c3aa385afaa27717587d65",
+    "title": "Save: a flat file that keeps the document is saved in place (#5733)",
+    "status": "INTEGRATED",
+    "before": "fab67479b0e95b91a81b472ed0842d1dc1dfb55e",
+    "conflict_paths": [
+      "crates/io/src/flat.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/file_cmds.rs\nAuto-merging crates/io/src/flat.rs\nCONFLICT (content): Merge conflict in crates/io/src/flat.rs\nAuto-merging crates/ui-egui/src/lib.rs\nAuto-merging crates/ui-egui/src/menus.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function import_flat: overlapping function statements",
+    "before_resolution": "eb67b4dede387e590c003b2f02dd18f48dce0ac6",
+    "after": "b7bfbde4095bcfb69af1c01399c3068b3d95f98a",
+    "changed_paths": [
+      "crates/doc/src/lib.rs",
+      "crates/engine/src/exr_cmds.rs",
+      "crates/engine/src/file_cmds.rs",
+      "crates/io/src/flat.rs",
+      "crates/io/tests/source_images.rs",
+      "crates/ui-egui/src/disk_change_prompt.rs",
+      "crates/ui-egui/src/file_dialog/tests.rs",
+      "crates/ui-egui/src/file_open/tests.rs",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/menus.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/io/src/flat.rs"
+    ]
+  },
+  {
+    "pr": 5855,
+    "source_head": "a81d472f5a6a697883b5f070bc81ebe4b6dfaeb6",
+    "title": "Displace: OK asks for the displacement map, as in Photoshop (#5806)",
+    "status": "INTEGRATED",
+    "before": "fab67479b0e95b91a81b472ed0842d1dc1dfb55e",
+    "after": "86778d06d466e186210a4e8b4759c56f2b5419a6",
+    "changed_paths": [
+      "crates/ui-egui/src/dialogs.rs",
+      "crates/ui-egui/src/filter_dialog.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5851,
+    "source_head": "3418e492dd448f902f915be3eaf1f9b6fa03a831",
+    "title": "Magic Wand: click on already-selected pixels deselects in Replace mode (#5775)",
+    "status": "INTEGRATED",
+    "before": "86778d06d466e186210a4e8b4759c56f2b5419a6",
+    "after": "ad098cad8efd456b4ad946f9fea98835f60d3ed9",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/marquee_tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5816,
+    "source_head": "3ae0678678c0653b6aeacda770130d7207f98e20",
+    "title": "Auto-Blend Layers: blend a layer the canvas crops to all-overlap (#5745)",
+    "status": "INTEGRATED",
+    "before": "ad098cad8efd456b4ad946f9fea98835f60d3ed9",
+    "conflict_paths": [
+      "crates/engine/src/align_cmds.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/align_cmds.rs\nCONFLICT (content): Merge conflict in crates/engine/src/align_cmds.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "aac0072b8aaa0af8d9392f00ea626ff9d4e7fde3",
+    "after": "c4eb44c102f1e998deb6f3dda8cfbd0f63daa061",
+    "changed_paths": [
+      "crates/algo/src/panorama.rs",
+      "crates/engine/src/align_cmds.rs"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/align_cmds.rs",
+        "changed_functions": [
+          "auto_blend_panorama_of_a_layer_the_canvas_crops_to_all_overlap"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 5729,
+    "source_head": "27466a8e5851b72eb47d82ae6d1b56525f2a7bdf",
+    "title": "Move tool: \u0394X/\u0394Y readout beside the pointer while dragging (#5727)",
+    "status": "INTEGRATED",
+    "before": "ad098cad8efd456b4ad946f9fea98835f60d3ed9",
+    "after": "d7f4032cad64fe2e632a4d9e6d12d1d2e85b1900",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/move_ui.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5631,
+    "source_head": "579e0f1d287c4b64798fbda9b1ca94225dc8d940",
+    "title": "Workspace: list saved workspaces in Window \u203a Workspace and the switcher (storytold/photocraft#5610)",
+    "status": "INTEGRATED",
+    "before": "d7f4032cad64fe2e632a4d9e6d12d1d2e85b1900",
+    "after": "595edc7ca43372ce25979d28913adbda64ad3201",
+    "changed_paths": [
+      "crates/ui-egui/src/menus.rs",
+      "crates/ui-egui/src/panels.rs",
+      "crates/ui-egui/src/workspace_ui.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5607,
+    "source_head": "dcc824d477da5795142b38ac419651e8e0ac75fb",
+    "title": "PSD: PSB foreign-order long-key blocks keep 8-byte length in little-endian TIFFs (#5599)",
+    "status": "INTEGRATED",
+    "before": "595edc7ca43372ce25979d28913adbda64ad3201",
+    "after": "d6f45eb11022bc10d522a17800af980582cc4e81",
+    "changed_paths": [
+      "crates/psd/src/tiff.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5590,
+    "source_head": "769cd2f725ce805ea82108d2b0a8e516d922b0de",
+    "title": "Warp: apply a large layer's warp in the background, with progress and Esc to cancel (#1015)",
+    "status": "INTEGRATED",
+    "before": "d6f45eb11022bc10d522a17800af980582cc4e81",
+    "after": "a311b167e4ed3c2a97071f678dede9ef0be5684d",
+    "changed_paths": [
+      "crates/algo/src/warp.rs",
+      "crates/engine/src/jobs_tests.rs",
+      "crates/engine/src/warp_cmds.rs",
+      "crates/ui-egui/src/jobs_ui_tests.rs",
+      "crates/ui-egui/src/transform_tool.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5581,
+    "source_head": "087e540c6baf0b5d9e4fdf3b2a59d9e6b0302721",
+    "title": "Layers: Group Layers creates the group collapsed (#5571)",
+    "status": "INTEGRATED",
+    "before": "a311b167e4ed3c2a97071f678dede9ef0be5684d",
+    "after": "d1570f99f57be1b1050bf1c7c42c8e67323360a0",
+    "changed_paths": [
+      "crates/engine/src/group_view_cmds.rs",
+      "crates/engine/src/layer_multi_cmds.rs",
+      "crates/engine/src/layer_nav_cmds.rs",
+      "crates/engine/tests/layer_range_panel_order.rs",
+      "crates/ui-egui/src/layer_filter_ui_tests.rs",
+      "crates/ui-egui/src/layer_row_ui/tests.rs",
+      "crates/ui-egui/src/layer_tree_ui/tests.rs",
+      "crates/ui-egui/src/shortcut_dispatch/tests.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5577,
+    "source_head": "7adba7b4bb2df7778f56ddf0bc5c2a1ddc65b476",
+    "title": "Make the Pencil cursor outline the pixels its dab fills",
+    "status": "INTEGRATED",
+    "before": "d1570f99f57be1b1050bf1c7c42c8e67323360a0",
+    "after": "73fe1c04b9462826f8d89f0649ab2d96504eb309",
+    "changed_paths": [
+      "crates/paint/src/outline.rs",
+      "crates/paint/src/render.rs",
+      "crates/ui-egui/src/brush_cursor.rs",
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/pencil_cursor.rs",
+      "crates/ui-egui/src/pencil_tests.rs",
+      "crates/ui-egui/src/tool_cursor.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5545,
+    "source_head": "31916eb9b0df9a6a43fc7c326426f31fd0e6b140",
+    "title": "Keep Free Transform preview colors consistent with the canvas",
+    "status": "INTEGRATED",
+    "before": "73fe1c04b9462826f8d89f0649ab2d96504eb309",
+    "after": "ce8683e746012cc3c6dcdbc73617c0c4ff5a1f02",
+    "changed_paths": [
+      "crates/ui-egui/src/transform_fx.rs",
+      "crates/ui-egui/src/transform_fx_tests.rs",
+      "crates/ui-egui/src/transform_tex.rs",
+      "crates/ui-egui/src/transform_tool.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5515,
+    "source_head": "375d4894a119b6cd5933d53e8fe7f506d2783392",
+    "title": "Selecting subject now automatically applies to selected layer, and us\u2026",
+    "status": "INTEGRATED",
+    "before": "ce8683e746012cc3c6dcdbc73617c0c4ff5a1f02",
+    "after": "a2f93a1c806f3fad17f17459fe07da0bb5e42b48",
+    "changed_paths": [
+      "crates/engine/src/smartselect_cmds.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5452,
+    "source_head": "d30683fb7f0240a935628423e1f586dd4a26bf8d",
+    "title": "UI: split shape options and gradient stop helpers into reusable pieces (no behaviour change)",
+    "status": "INTEGRATED",
+    "before": "a2f93a1c806f3fad17f17459fe07da0bb5e42b48",
+    "conflict_paths": [
+      "crates/ui-egui/src/vector_ui.rs"
+    ],
+    "output": "Auto-merging crates/ui-egui/src/canvas.rs\nAuto-merging crates/ui-egui/src/gradient_ui.rs\nAuto-merging crates/ui-egui/src/lib.rs\nAuto-merging crates/ui-egui/src/move_ui.rs\nAuto-merging crates/ui-egui/src/preset_panels.rs\nAuto-merging crates/ui-egui/src/vector_paint_tests.rs\nAuto-merging crates/ui-egui/src/vector_ui.rs\nCONFLICT (content): Merge conflict in crates/ui-egui/src/vector_ui.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function options_bar: overlapping function statements",
+    "before_resolution": "b7bfbde4095bcfb69af1c01399c3068b3d95f98a",
+    "after": "6a270046e364c362e4407e0f457e90e1cf548c23",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/gradient_ui.rs",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/move_ui.rs",
+      "crates/ui-egui/src/preset_panels.rs",
+      "crates/ui-egui/src/shape_options.rs",
+      "crates/ui-egui/src/shape_paint_ui.rs",
+      "crates/ui-egui/src/vector_paint_tests.rs",
+      "crates/ui-egui/src/vector_ui.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/ui-egui/src/vector_ui.rs"
+    ]
+  },
+  {
+    "pr": 5445,
+    "source_head": "6fabf6b7dfe8a987392e42e4c3cb541bebba14e8",
+    "title": "Restore Ctrl/Cmd + mouse-wheel zoom (#5363)",
+    "status": "INTEGRATED",
+    "before": "a2f93a1c806f3fad17f17459fe07da0bb5e42b48",
+    "after": "d2f8b3911a4d159c34ac4b81510dacc93db34ceb",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/input_tests.rs",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/wheel_nav.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5420,
+    "source_head": "e7e96c4b83b06adfbd4db2f5b19c94924539f880",
+    "title": "fix(format): report a failed directory flush after a save instead of ignoring it",
+    "status": "INTEGRATED",
+    "before": "d2f8b3911a4d159c34ac4b81510dacc93db34ceb",
+    "conflict_paths": [
+      "crates/format/src/store.rs"
+    ],
+    "output": "Auto-merging crates/format/src/atomic.rs\nAuto-merging crates/format/src/atomic/tests.rs\nAuto-merging crates/format/src/store.rs\nCONFLICT (content): Merge conflict in crates/format/src/store.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "ambiguous repeated function key new",
+    "before_resolution": "6a270046e364c362e4407e0f457e90e1cf548c23",
+    "after": "c45db3755733ba37af54ab77df8e19f7312e4d86",
+    "changed_paths": [
+      "crates/format/src/atomic.rs",
+      "crates/format/src/atomic/tests.rs",
+      "crates/format/src/store.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/format/src/store.rs"
+    ]
+  },
+  {
+    "pr": 5388,
+    "source_head": "bdb27a2fa9c0db845dcf8582526c6f35b77f2189",
+    "title": "docs: make contributor handoffs visible in PR descriptions",
+    "status": "INTEGRATED",
+    "before": "d2f8b3911a4d159c34ac4b81510dacc93db34ceb",
+    "after": "9cae6290db0e6b4c0dd2198c57e2f4d55d61a775",
+    "changed_paths": [
+      "AGENTS.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5370,
+    "source_head": "acb8dbdb4756e6c368c8756b4d38fd0f6381a48f",
+    "title": "fix(gpu): catch validation errors in watched compositor work",
+    "status": "INTEGRATED",
+    "before": "9cae6290db0e6b4c0dd2198c57e2f4d55d61a775",
+    "after": "768c5ba032d894d4193979a08ac4884c9d5a2192",
+    "changed_paths": [
+      "crates/gpu/src/health.rs",
+      "crates/gpu/src/lib.rs",
+      "crates/gpu/tests/device_loss.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5300,
+    "source_head": "9902522df628167b2b0afdc987ab9d929ad125db",
+    "title": "--version: name the commit of a dev build from git (#5247)",
+    "status": "INTEGRATED",
+    "before": "768c5ba032d894d4193979a08ac4884c9d5a2192",
+    "after": "23ca4377b554a17b55e624fab2d719799f901896",
+    "changed_paths": [
+      "apps/photocraft-cli/build.rs",
+      "apps/photocraft-cli/src/main.rs",
+      "apps/photocraft/build.rs",
+      "apps/photocraft/git_checkout.rs",
+      "apps/photocraft/src/main.rs",
+      "apps/photocraft/tests/git_checkout.rs",
+      "crates/engine/src/build_info.rs",
+      "docs/releasing.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5169,
+    "source_head": "10772341732bf1e4bce047755aa25c0765a20282",
+    "title": "fix(ui): show Paint Bucket first in the shared toolbar slot",
+    "status": "INTEGRATED",
+    "before": "23ca4377b554a17b55e624fab2d719799f901896",
+    "after": "9330c7403aadf4389ae95f3f1b528611fef20b83",
+    "changed_paths": [
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 5064,
+    "source_head": "5e57be89cf66338222408f92f5ab7b7e31f2c1aa",
+    "title": "docs(perf): how to measure one scenario and read its numbers",
+    "status": "INTEGRATED",
+    "before": "9330c7403aadf4389ae95f3f1b528611fef20b83",
+    "after": "4fa170632ffce42a05751e8fe96f2a9c0814aac5",
+    "changed_paths": [
+      "docs/development.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4993,
+    "source_head": "81964dc5ef77a71a2ae2a938958cf3ed77d90719",
+    "title": "Prevent control-channel engine commands from editing behind modal dialogs",
+    "status": "INTEGRATED",
+    "before": "4fa170632ffce42a05751e8fe96f2a9c0814aac5",
+    "after": "d84825aa7924d3da0898d69f86cc36d6e41d33f0",
+    "changed_paths": [
+      "crates/ui-egui/src/control.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4991,
+    "source_head": "b2fbdb1c2dafa11c2423f8260d49f3a8a28e097a",
+    "title": "Deselect layers when clicking the pasteboard with Move Auto-Select",
+    "status": "INTEGRATED",
+    "before": "d84825aa7924d3da0898d69f86cc36d6e41d33f0",
+    "after": "41cec2d8489ba795fdf53cac5e5820a7811c8ed9",
+    "changed_paths": [
+      "crates/ui-egui/src/move_box.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4935,
+    "source_head": "a75039792e05eb1839b0da2c628a8b73e95802a9",
+    "title": "PSD Duotone: read and write the ink block (names, colours, curves)",
+    "status": "INTEGRATED",
+    "before": "41cec2d8489ba795fdf53cac5e5820a7811c8ed9",
+    "after": "b27ab48c2ca0f8f18d0bf7dab87cd9ceb67e0bf7",
+    "changed_paths": [
+      "crates/io/src/duotone_map.rs",
+      "crates/io/src/lib.rs",
+      "crates/io/src/psd_export.rs",
+      "crates/io/src/psd_import.rs",
+      "crates/io/tests/psd_structure.rs",
+      "crates/io/tests/tiff_corpus.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4762,
+    "source_head": "7240a69db1a6e12e15734a9f38b864dc58bcd960",
+    "title": "fix(screen-picker): cancel queued requests without stale replies",
+    "status": "INTEGRATED",
+    "before": "b27ab48c2ca0f8f18d0bf7dab87cd9ceb67e0bf7",
+    "after": "57516590301f45eb80e5ef7eddce9b1152edcc5f",
+    "changed_paths": [
+      "crates/ui-egui/src/screen_picker.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4759,
+    "source_head": "f338b386d6ea429a0c5ec31cdd9632ba193a7d0d",
+    "title": "Record Desaturate, Equalize, and Replace Color as smart filters.",
+    "status": "INTEGRATED",
+    "before": "57516590301f45eb80e5ef7eddce9b1152edcc5f",
+    "after": "8d0f4272480867f2a4b3fba4c31dd35c5bc992ba",
+    "changed_paths": [
+      "crates/engine/src/adjust_cmds.rs",
+      "crates/engine/src/adjust_cmds/tests.rs",
+      "crates/engine/src/commands.rs",
+      "crates/engine/src/extra_cmds.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4743,
+    "source_head": "be660adbe97a8a772ad53cf8bb331ab553bdae70",
+    "title": "fix(ui): disable toolbar and tool options on the home screen",
+    "status": "INTEGRATED",
+    "before": "8d0f4272480867f2a4b3fba4c31dd35c5bc992ba",
+    "after": "30de78068882d170c3040700601ea34b6b1d0647",
+    "changed_paths": [
+      "crates/ui-egui/src/brush_panel_tests.rs",
+      "crates/ui-egui/src/options_hit_area_tests.rs",
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4742,
+    "source_head": "b7145b5a8afb85d0eef3922931d6749436966943",
+    "title": "fix(macos): bundle photocraft-cli and resolve it from droplet scripts",
+    "status": "INTEGRATED",
+    "before": "30de78068882d170c3040700601ea34b6b1d0647",
+    "after": "50e8ae3ee5c7016859e2e7abc496af7fb496caec",
+    "changed_paths": [
+      "crates/engine/src/automate_cmds.rs",
+      "crates/engine/src/automate_cmds/tests.rs",
+      "docs/releasing.md",
+      "packaging/macos/package.sh"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4585,
+    "source_head": "af2f5ad4b7a3d31fc109ae82b379fc84195cf1c7",
+    "title": "Prevent clipboard centering overflow and incorrect paste placement",
+    "status": "INTEGRATED",
+    "before": "50e8ae3ee5c7016859e2e7abc496af7fb496caec",
+    "after": "5309e3e8cb4884bf2fbe6a4c3a94f66abedd6394",
+    "changed_paths": [
+      "crates/engine/src/edit_cmds.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4547,
+    "source_head": "a08f7a2295488c2692f68902835a693322017b64",
+    "title": "fix(icons): PhotoCraft icon corner radius matches other Craft apps (#4478)",
+    "status": "INTEGRATED",
+    "before": "5309e3e8cb4884bf2fbe6a4c3a94f66abedd6394",
+    "after": "55aada39c8cf7d3eed4cf5f711c9a7d26f210dec",
+    "changed_paths": [
+      "apps/photocraft/src/app_icon.rs",
+      "assets/app-icon/README.md",
+      "assets/app-icon/hicolor/128x128/apps/ai.storyteller.photocraft.png",
+      "assets/app-icon/hicolor/16x16/apps/ai.storyteller.photocraft.png",
+      "assets/app-icon/hicolor/24x24/apps/ai.storyteller.photocraft.png",
+      "assets/app-icon/hicolor/256x256/apps/ai.storyteller.photocraft.png",
+      "assets/app-icon/hicolor/32x32/apps/ai.storyteller.photocraft.png",
+      "assets/app-icon/hicolor/48x48/apps/ai.storyteller.photocraft.png",
+      "assets/app-icon/hicolor/512x512/apps/ai.storyteller.photocraft.png",
+      "assets/app-icon/hicolor/64x64/apps/ai.storyteller.photocraft.png",
+      "assets/app-icon/photocraft.ico",
+      "packaging/icons.sh"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4546,
+    "source_head": "d83612458fbfd0f9ac018b2a8db1ca793f358a4c",
+    "title": "fix(ui): Move tool shows transform controls by default (#4402, #4497)",
+    "status": "INTEGRATED",
+    "before": "55aada39c8cf7d3eed4cf5f711c9a7d26f210dec",
+    "after": "78f066d2dc8e37d2c1651cb3de9fc5ad347b27cc",
+    "changed_paths": [
+      "crates/ui-egui/src/layer_transfer/tests.rs",
+      "crates/ui-egui/src/move_auto_select_tests.rs",
+      "crates/ui-egui/src/state.rs",
+      "crates/ui-egui/tests/layout_perf.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4305,
+    "source_head": "1b74873991dbb2e9803d228a969291f09c6f1032",
+    "title": "Filter > Other > Frequency Separation (#1714)",
+    "status": "INTEGRATED",
+    "before": "78f066d2dc8e37d2c1651cb3de9fc5ad347b27cc",
+    "after": "f4c5e886ffb49d67c8dda1fff7cdff1eb6f94bcc",
+    "changed_paths": [
+      "crates/engine/src/commands.rs",
+      "crates/engine/src/frequency_separation_cmds.rs",
+      "crates/engine/src/lib.rs",
+      "crates/ui-egui/src/filter_dialog.rs",
+      "crates/ui-egui/src/i18n/cs.tsv",
+      "crates/ui-egui/src/i18n/de.tsv",
+      "crates/ui-egui/src/i18n/el.tsv",
+      "crates/ui-egui/src/i18n/es.tsv",
+      "crates/ui-egui/src/i18n/fr.tsv",
+      "crates/ui-egui/src/i18n/hu.tsv",
+      "crates/ui-egui/src/i18n/id.tsv",
+      "crates/ui-egui/src/i18n/it.tsv",
+      "crates/ui-egui/src/i18n/ja.tsv",
+      "crates/ui-egui/src/i18n/ko.tsv",
+      "crates/ui-egui/src/i18n/nl.tsv",
+      "crates/ui-egui/src/i18n/pl.tsv",
+      "crates/ui-egui/src/i18n/pt-br.tsv",
+      "crates/ui-egui/src/i18n/ru.tsv",
+      "crates/ui-egui/src/i18n/sr.tsv",
+      "crates/ui-egui/src/i18n/tr.tsv",
+      "crates/ui-egui/src/i18n/uk.tsv",
+      "crates/ui-egui/src/i18n/vi.tsv",
+      "crates/ui-egui/src/i18n/zh-hans.tsv",
+      "crates/ui-egui/src/i18n/zh-hant.tsv",
+      "crates/ui-egui/src/menus.rs",
+      "docs/architecture.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 4219,
+    "source_head": "c99df31a13a45536590e15c14208ea10f1f671d1",
+    "title": "SVG import: set text in an installed font when the named ones are missing",
+    "status": "INTEGRATED",
+    "before": "f4c5e886ffb49d67c8dda1fff7cdff1eb6f94bcc",
+    "after": "4edc6e1580cad7beb2cd970d2d0ad8e1217e1881",
+    "changed_paths": [
+      "crates/io/src/svg.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 3938,
+    "source_head": "055681bf83c127405c044077a2b52a4e6bbd282d",
+    "title": "Security: pin and verify the Windows signing client (#2936)",
+    "status": "INTEGRATED",
+    "before": "4edc6e1580cad7beb2cd970d2d0ad8e1217e1881",
+    "after": "58f381dbde697744c8adb539aeacd8bda863f70a",
+    "changed_paths": [
+      "book/src/development/release-security.md",
+      "docs/releasing.md",
+      "packaging/windows/sign.ps1"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 3926,
+    "source_head": "fb99255513e7c8c347c77aac24c79d03b7f275a3",
+    "title": "feat(ui): Free Transform 3x3 reference point widget and projective homography pivot snapping",
+    "status": "INTEGRATED",
+    "before": "58f381dbde697744c8adb539aeacd8bda863f70a",
+    "after": "74dccab5beba3389336d2b55b50559e201865902",
+    "changed_paths": [
+      "crates/ui-egui/src/i18n/cs.tsv",
+      "crates/ui-egui/src/i18n/de.tsv",
+      "crates/ui-egui/src/i18n/ko.tsv",
+      "crates/ui-egui/src/i18n/vi.tsv",
+      "crates/ui-egui/src/i18n/zh-hans.tsv",
+      "crates/ui-egui/src/i18n/zh-hant.tsv",
+      "crates/ui-egui/src/transform_tool.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 3922,
+    "source_head": "b54bfc5205f773dbf60d565ebdc5b4fd68d9c14e",
+    "title": "fix(ui): make floating Properties available in Studio and Adwaita themes",
+    "status": "INTEGRATED",
+    "before": "74dccab5beba3389336d2b55b50559e201865902",
+    "conflict_paths": [
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "output": "Auto-merging crates/ui-egui/src/panels.rs\nCONFLICT (content): Merge conflict in crates/ui-egui/src/panels.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function properties_window: overlapping function statements",
+    "before_resolution": "c45db3755733ba37af54ab77df8e19f7312e4d86",
+    "after": "a44d514b1a959b411005a7e085093a919ca168a8",
+    "changed_paths": [
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/ui-egui/src/panels.rs"
+    ]
+  },
+  {
+    "pr": 3913,
+    "source_head": "606d0ce46d2ef312ec043db70c2d2dda49fbd50c",
+    "title": "fix(automation): exit idle MCP stdio servers when clients go quiet",
+    "status": "INTEGRATED",
+    "before": "74dccab5beba3389336d2b55b50559e201865902",
+    "after": "e23f5a64b5497c2e7b666da0add96b67501251fe",
+    "changed_paths": [
+      "crates/automation/src/server/transport.rs",
+      "docs/control-protocol.md"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 3874,
+    "source_head": "92488307722c3b840507827cac7ee9a88470fc8a",
+    "title": "fix(layer-style): support Blend If Alt-split handle feathering and throttle live preview",
+    "status": "INTEGRATED",
+    "before": "e23f5a64b5497c2e7b666da0add96b67501251fe",
+    "after": "79b2c464db62f6e57dbb5598fd0e913a4949523e",
+    "changed_paths": [
+      "crates/ui-egui/src/layer_style.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 3554,
+    "source_head": "dd21e325b515cbf67fd4a461ae5b3e1b195aa53d",
+    "title": "fix(packaging): launch bundled CLI directly from AppImage",
+    "status": "INTEGRATED",
+    "before": "79b2c464db62f6e57dbb5598fd0e913a4949523e",
+    "after": "a51588ecf1d45607879ad6ba60eb459925770d1a",
+    "changed_paths": [
+      ".github/workflows/packaging-lint.yml",
+      "README.md",
+      "docs/development.md",
+      "docs/releasing.md",
+      "packaging/linux/AppRun",
+      "packaging/linux/apprun-cli-test.sh"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 3532,
+    "source_head": "cd55b63b4f7f85e2ad461691323b7b49cf1d8255",
+    "title": "Move tool: show all six Align icons and an icon menu for Distribute (#3490)",
+    "status": "INTEGRATED",
+    "before": "a51588ecf1d45607879ad6ba60eb459925770d1a",
+    "conflict_paths": [
+      "ATTRIBUTION.md"
+    ],
+    "output": "Auto-merging ATTRIBUTION.md\nCONFLICT (content): Merge conflict in ATTRIBUTION.md\nAuto-merging crates/ui-egui/src/icon_data.rs\nAuto-merging crates/ui-egui/src/lib.rs\nAuto-merging crates/ui-egui/src/panels.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "manual non-Rust resolution: ATTRIBUTION.md",
+    "before_resolution": "a44d514b1a959b411005a7e085093a919ca168a8",
+    "after": "df2bbdedba5b29452937ef17b35655d68af863b6",
+    "changed_paths": [
+      "ATTRIBUTION.md",
+      "assets/icons/align-edge-bottom.svg",
+      "assets/icons/align-edge-hcenter.svg",
+      "assets/icons/align-edge-left.svg",
+      "assets/icons/align-edge-right.svg",
+      "assets/icons/align-edge-top.svg",
+      "assets/icons/align-edge-vcenter.svg",
+      "assets/icons/distribute-bottom.svg",
+      "assets/icons/distribute-hcenter.svg",
+      "assets/icons/distribute-horizontal.svg",
+      "assets/icons/distribute-left.svg",
+      "assets/icons/distribute-right.svg",
+      "assets/icons/distribute-top.svg",
+      "assets/icons/distribute-vcenter.svg",
+      "assets/icons/distribute-vertical.svg",
+      "crates/ui-egui/src/align_bar.rs",
+      "crates/ui-egui/src/icon_data.rs",
+      "crates/ui-egui/src/lib.rs",
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "manual_resolution_files": [
+      "ATTRIBUTION.md"
+    ]
+  },
+  {
+    "pr": 3520,
+    "source_head": "d36ec9a21e9c1ed70de2e0d185efd7e084644157",
+    "title": "fix(ui): restore square color chips in Studio Dark theme",
+    "status": "INTEGRATED",
+    "before": "a51588ecf1d45607879ad6ba60eb459925770d1a",
+    "after": "fb94f9eea9027432243502f559933e6c4e0b208c",
+    "changed_paths": [
+      "crates/ui-egui/src/theme.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 3387,
+    "source_head": "58b83f42a4b39cf56751be53ec8d227efee70f68",
+    "title": "feat(codecs): add lossless JPEG XL export for 8/16-bit images",
+    "status": "INTEGRATED",
+    "before": "fb94f9eea9027432243502f559933e6c4e0b208c",
+    "conflict_paths": [
+      "crates/codecs/src/lib.rs"
+    ],
+    "output": "Auto-merging Cargo.lock\nAuto-merging apps/photocraft/src/services.rs\nAuto-merging book/src/formats/raster-formats.md\nAuto-merging crates/codecs/README.md\nAuto-merging crates/codecs/src/codecs/mod.rs\nAuto-merging crates/codecs/src/format.rs\nAuto-merging crates/codecs/src/lib.rs\nCONFLICT (content): Merge conflict in crates/codecs/src/lib.rs\nAuto-merging crates/ui-egui/src/export_dialog.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "overlapping declarations",
+    "before_resolution": "df2bbdedba5b29452937ef17b35655d68af863b6",
+    "after": "446926f0c8eaf4021b98e35d045929bdb0df61be",
+    "changed_paths": [
+      "Cargo.lock",
+      "apps/photocraft/src/services.rs",
+      "book/src/formats/raster-formats.md",
+      "crates/codecs/Cargo.toml",
+      "crates/codecs/README.md",
+      "crates/codecs/src/codecs/jxl.rs",
+      "crates/codecs/src/codecs/mod.rs",
+      "crates/codecs/src/format.rs",
+      "crates/codecs/src/lib.rs",
+      "crates/codecs/tests/jxl_export.rs",
+      "crates/ui-egui/src/export_dialog.rs"
+    ],
+    "manual_resolution_files": [
+      "crates/codecs/src/lib.rs"
+    ]
+  },
+  {
+    "pr": 2945,
+    "source_head": "3a85e5a674375ec44ba7c77a41147c5183af24b2",
+    "title": "Open GIMP XCF files: layers, groups, masks, blend modes, channels and selection",
+    "status": "INTEGRATED",
+    "before": "fb94f9eea9027432243502f559933e6c4e0b208c",
+    "conflict_paths": [
+      "crates/engine/src/file_cmds/tests.rs"
+    ],
+    "output": "Auto-merging ATTRIBUTION.md\nAuto-merging README.md\nAuto-merging apps/photocraft-web/src/web.rs\nAuto-merging apps/photocraft/src/services.rs\nAuto-merging crates/engine/src/file_cmds.rs\nAuto-merging crates/engine/src/file_cmds/tests.rs\nCONFLICT (content): Merge conflict in crates/engine/src/file_cmds/tests.rs\nAuto-merging crates/io/src/lib.rs\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_before": "c4eb44c102f1e998deb6f3dda8cfbd0f63daa061",
+    "after": "4a35e974c0f45d543a00e76366fe62fcdf1a7b39",
+    "changed_paths": [
+      "ATTRIBUTION.md",
+      "README.md",
+      "apps/photocraft-web/src/web.rs",
+      "apps/photocraft/src/services.rs",
+      "crates/engine/src/file_cmds.rs",
+      "crates/engine/src/file_cmds/tests.rs",
+      "crates/io/src/lib.rs",
+      "crates/io/src/xcf.rs",
+      "crates/io/src/xcf/tests.rs",
+      "crates/io/tests/fixtures/xcf/channel.png",
+      "crates/io/tests/fixtures/xcf/channel.xcf",
+      "crates/io/tests/fixtures/xcf/float-linear.png",
+      "crates/io/tests/fixtures/xcf/float-linear.xcf",
+      "crates/io/tests/fixtures/xcf/gray16.png",
+      "crates/io/tests/fixtures/xcf/gray16.xcf",
+      "crates/io/tests/fixtures/xcf/groups-perceptual.png",
+      "crates/io/tests/fixtures/xcf/groups-perceptual.xcf",
+      "crates/io/tests/fixtures/xcf/groups.png",
+      "crates/io/tests/fixtures/xcf/groups.xcf",
+      "crates/io/tests/fixtures/xcf/indexed.png",
+      "crates/io/tests/fixtures/xcf/indexed.xcf",
+      "crates/io/tests/fixtures/xcf/layers-8bit-perceptual.png",
+      "crates/io/tests/fixtures/xcf/layers-8bit-perceptual.xcf",
+      "crates/io/tests/fixtures/xcf/layers-8bit.png",
+      "crates/io/tests/fixtures/xcf/layers-8bit.xcf",
+      "crates/io/tests/fixtures/xcf/legacy-modes-perceptual.png",
+      "crates/io/tests/fixtures/xcf/legacy-modes-perceptual.xcf",
+      "crates/io/tests/fixtures/xcf/legacy-modes.png",
+      "crates/io/tests/fixtures/xcf/legacy-modes.xcf",
+      "crates/io/tests/fixtures/xcf/mask-perceptual.png",
+      "crates/io/tests/fixtures/xcf/mask-perceptual.xcf",
+      "crates/io/tests/fixtures/xcf/mask.png",
+      "crates/io/tests/fixtures/xcf/mask.xcf",
+      "crates/io/tests/fixtures/xcf/text-perceptual.png",
+      "crates/io/tests/fixtures/xcf/text-perceptual.xcf",
+      "crates/io/tests/fixtures/xcf/text.png",
+      "crates/io/tests/fixtures/xcf/text.xcf",
+      "crates/io/tests/xcf.rs",
+      "docs/xcf.md",
+      "scripts/xcf_fixtures.py"
+    ],
+    "resolutions": [
+      {
+        "file": "crates/engine/src/file_cmds/tests.rs",
+        "changed_functions": [
+          "folder_listing_recognises_gzipped_xcf_by_its_double_extension"
+        ],
+        "method": "Three-way per-function merge; independent function insertions preserved; Rust syntax parsed."
+      }
+    ]
+  },
+  {
+    "pr": 2811,
+    "source_head": "0bc83d18bba12a99a10c75d97e1e8d3cb8bde62f",
+    "title": "select.cryptomatte: click an object, select its coverage",
+    "status": "INTEGRATED",
+    "before": "fb94f9eea9027432243502f559933e6c4e0b208c",
+    "conflict_paths": [
+      "crates/engine/src/commands.rs"
+    ],
+    "output": "Auto-merging crates/engine/src/commands.rs\nCONFLICT (content): Merge conflict in crates/engine/src/commands.rs\nAuto-merging crates/engine/src/lib.rs\nAuto-merging crates/ui-egui/src/i18n/cs.tsv\nAuto-merging crates/ui-egui/src/i18n/de.tsv\nAuto-merging crates/ui-egui/src/i18n/el.tsv\nAuto-merging crates/ui-egui/src/i18n/es.tsv\nAuto-merging crates/ui-egui/src/i18n/fr.tsv\nAuto-merging crates/ui-egui/src/i18n/hu.tsv\nAuto-merging crates/ui-egui/src/i18n/id.tsv\nAuto-merging crates/ui-egui/src/i18n/it.tsv\nAuto-merging crates/ui-egui/src/i18n/ja.tsv\nAuto-merging crates/ui-egui/src/i18n/ko.tsv\nAuto-merging crates/ui-egui/src/i18n/nl.tsv\nAuto-merging crates/ui-egui/src/i18n/pl.tsv\nAuto-merging crates/ui-egui/src/i18n/pt-br.tsv\nAuto-merging crates/ui-egui/src/i18n/ru.tsv\nAuto-merging crates/ui-egui/src/i18n/sr.tsv\nAuto-merging crates/ui-egui/src/i18n/tr.tsv\nAuto-merging crates/ui-egui/src/i18n/uk.tsv\nAuto-merging crates/ui-egui/src/i18n/vi.tsv\nAuto-merging crates/ui-egui/src/i18n/zh-hans.tsv\nAuto-merging crates/ui-egui/src/i18n/zh-hant.tsv\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+    "retry_reason": "function build: overlapping function statements",
+    "before_resolution": "446926f0c8eaf4021b98e35d045929bdb0df61be",
+    "after": "32da8cf425f72fe597ae5d377e7abb153f0446d1",
+    "changed_paths": [
+      "crates/engine/src/commands.rs",
+      "crates/engine/src/cryptomatte_cmds.rs",
+      "crates/engine/src/lib.rs",
+      "crates/ui-egui/src/i18n/cs.tsv",
+      "crates/ui-egui/src/i18n/de.tsv",
+      "crates/ui-egui/src/i18n/el.tsv",
+      "crates/ui-egui/src/i18n/es.tsv",
+      "crates/ui-egui/src/i18n/fr.tsv",
+      "crates/ui-egui/src/i18n/hu.tsv",
+      "crates/ui-egui/src/i18n/id.tsv",
+      "crates/ui-egui/src/i18n/it.tsv",
+      "crates/ui-egui/src/i18n/ja.tsv",
+      "crates/ui-egui/src/i18n/ko.tsv",
+      "crates/ui-egui/src/i18n/nl.tsv",
+      "crates/ui-egui/src/i18n/pl.tsv",
+      "crates/ui-egui/src/i18n/pt-br.tsv",
+      "crates/ui-egui/src/i18n/ru.tsv",
+      "crates/ui-egui/src/i18n/sr.tsv",
+      "crates/ui-egui/src/i18n/tr.tsv",
+      "crates/ui-egui/src/i18n/uk.tsv",
+      "crates/ui-egui/src/i18n/vi.tsv",
+      "crates/ui-egui/src/i18n/zh-hans.tsv",
+      "crates/ui-egui/src/i18n/zh-hant.tsv"
+    ],
+    "manual_resolution_files": [
+      "crates/engine/src/commands.rs"
+    ]
+  },
+  {
+    "pr": 2324,
+    "source_head": "fa5aac84c30c07491db357c66ee8a68d38f4d278",
+    "title": "feat(toolbar): select grouped tools using press-drag-release",
+    "status": "INTEGRATED",
+    "before": "fb94f9eea9027432243502f559933e6c4e0b208c",
+    "after": "1bc0706de313b33e49091f0473a67ed6fde37708",
+    "changed_paths": [
+      "crates/ui-egui/src/panels.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 2300,
+    "source_head": "ebf3777aec961d1815aa141d9987eaa645c2273f",
+    "title": "Scroll the viewport while outlining with Polygonal Lasso",
+    "status": "INTEGRATED",
+    "before": "1bc0706de313b33e49091f0473a67ed6fde37708",
+    "after": "3b742ff9b42648f3b4a9e153de54d78d23519fe9",
+    "changed_paths": [
+      "crates/ui-egui/src/canvas.rs",
+      "crates/ui-egui/src/polygon_lasso_tests.rs",
+      "crates/ui-egui/src/shortcuts.rs"
+    ],
+    "whitespace": ""
+  },
+  {
+    "pr": 1991,
+    "source_head": "202266b90613280e16ae285b53dd4e10d5f0c7ac",
+    "title": "feat(actions): import and export reusable Actions JSON files",
+    "status": "INTEGRATED",
+    "before": "3b742ff9b42648f3b4a9e153de54d78d23519fe9",
+    "after": "8775cf0e0131fb466e69573d14292c91821b43c3",
+    "changed_paths": [
+      "crates/automation/src/workspace.rs",
+      "crates/engine/src/actions_cmds.rs",
+      "crates/engine/src/actions_cmds/json_file.rs",
+      "crates/ui-egui/src/actions.rs"
+    ],
+    "whitespace": ""
+  }
+]

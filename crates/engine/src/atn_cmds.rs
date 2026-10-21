@@ -459,7 +459,7 @@ fn fields_to(p: &Value, fields: &[F], mut d: Descriptor) -> Option<Descriptor> {
                     return None;
                 }
                 long(n)
-            },
+            }
             Kind::ExactLong => {
                 let number = v.as_f64()?;
                 let integer = number as i32;
@@ -3509,7 +3509,22 @@ const EVENTS: &[Event] = &[
         },
         to: |id, p| if p.get("sampleAllLayers").is_some() { None } else { refine_edge_to(id, p) },
     },
-    Event { code: "", name: "smartBrushWorkspace", label: "Select and Mask", ids: &["select.refineEdge"], from: |d| fields_from("select.refineEdge", d, SMART_BRUSH), to: |_, p| { if p.get("refineStrokes").is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty())) { return None; } fields_to(p, SMART_BRUSH, desc("null")) } },
+    Event {
+        code: "",
+        name: "smartBrushWorkspace",
+        label: "Select and Mask",
+        ids: &["select.refineEdge"],
+        from: |d| match fields_from(d, SMART_BRUSH) {
+            Some(m) => step("select.refineEdge", Value::Object(m)),
+            None => Mapped::Unsupported { harmless: false },
+        },
+        to: |_, p| {
+            if !pixel_target(p) || p.get("refineStrokes").is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty())) {
+                return None;
+            }
+            fields_to(p, SMART_BRUSH, desc("null"))
+        },
+    },
     ev!("", "autoCutout", "Select Subject", "select.subject", &[F("sampleAllLayers", "sampleAllLayers", Kind::Bool)]),
     Event { code: "ClrR", name: "colorRange", label: "Color Range", ids: &["select.colorRange"], from: color_range_from, to: color_range_to },
     // Edit.

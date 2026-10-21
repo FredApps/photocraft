@@ -1,0 +1,27 @@
+{
+  "sources": [
+    {
+      "case": "G02",
+      "issue": "https://github.com/storytold/photocraft/issues/8227",
+      "zip": "https://github.com/user-attachments/files/33765756/repro.zip",
+      "grid": "https://github.com/user-attachments/assets/677841f0-888e-4b03-abe3-28dbc6807a11",
+      "warning": "Cached composite in attached repro.psd is already wrong. Re-render/save in Photoshop before using it as an oracle. Keep original download and hash. Inputs remain NOT_ACQUIRED until downloaded."
+    },
+    {
+      "case": "G03",
+      "issue": "https://github.com/storytold/photocraft/issues/8093",
+      "recipe": "Author the two minimal Photoshop layer-comp cases in the protocol or use the issue's published reproduction; record actual Photoshop build."
+    },
+    {
+      "case": "G04",
+      "issue": "https://github.com/storytold/photocraft/issues/7844",
+      "recipe": "Use original procedural red-200.png and blue-400x200.png."
+    },
+    {
+      "case": "G05",
+      "issue": "https://github.com/storytold/photocraft/issues/6542",
+      "recipe": "Author a Photoshop 2026 Light adjustment with the six recorded settings. Do not pretend a synthetic placeholder descriptor proves Photoshop compatibility."
+    }
+  ],
+  "status": "Protocol fixture sources; complex fixtures not yet authored or verified"
+}

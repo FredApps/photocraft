@@ -1495,7 +1495,8 @@ pub fn normalize_shortcut(s: &str) -> Option<String> {
 /// `PageUp` became `Pageup`, a name no key has, so a shortcut recorded on Page Up/Down or an
 /// arrow key never fired (#6827).
 const CAMEL_KEYS: [&str; 19] = [
-    "IntlBackslash", "PageUp",
+    "IntlBackslash",
+    "PageUp",
     "PageDown",
     "ArrowUp",
     "ArrowDown",

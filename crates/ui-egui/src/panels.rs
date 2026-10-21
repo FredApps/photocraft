@@ -3874,10 +3874,10 @@ pub fn properties_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             widgets::hairline(ui);
             ui.add_space(8.0);
             egui::ScrollArea::vertical().id_salt(("properties-card-scroll", doc_id, active_layer)).max_height(max_height - 38.0).show(ui, |ui| {
-            match indices.get(sel) {
-                Some(0) | None => properties_body(app, ui),
-                Some(_) => adjustments_grid(app, ui),
-            }
+                match indices.get(sel) {
+                    Some(0) | None => properties_body(app, ui),
+                    Some(_) => adjustments_grid(app, ui),
+                }
             });
         });
     });
