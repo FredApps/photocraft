@@ -216,10 +216,11 @@ fn class_ref(cls: &str) -> D {
 }
 
 /// The `null` reference for a command's `layer` param: by name, else the target layer.
-fn layer_ref(p: &Value) -> D {
+fn layer_ref(p: &Value) -> Option<D> {
     match p.get("layer") {
-        Some(Value::String(n)) => name_ref("Lyr ", n),
-        _ => target_ref("Lyr "),
+        None | Some(Value::Null) => Some(target_ref("Lyr ")),
+        Some(Value::String(n)) => Some(name_ref("Lyr ", n)),
+        _ => None,
     }
 }
 
@@ -1326,7 +1327,7 @@ fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
             if jstr(p, "document") != Some("new") {
                 return None;
             }
-            let mut d = desc("null").with("null", class_ref("Dcmn")).with("Usng", layer_ref(p));
+            let mut d = desc("null").with("null", class_ref("Dcmn")).with("Usng", layer_ref(p)?);
             if let Some(n) = jstr(p, "documentName") {
                 d = d.with("Nm  ", text(n));
             }
@@ -1598,7 +1599,7 @@ fn set_to(id: &str, p: &Value) -> Option<Descriptor> {
             if t.items.is_empty() {
                 return None;
             }
-            desc("null").with("null", layer_ref(p)).with("T   ", D::Descriptor(t))
+            desc("null").with("null", layer_ref(p)?).with("T   ", D::Descriptor(t))
         }
         "tools.setColors" => {
             let (key, hex) = match (jstr(p, "foreground"), jstr(p, "background")) {
@@ -1906,7 +1907,7 @@ fn transform_to(id: &str, p: &Value) -> Option<Descriptor> {
         // The `Trnf` descriptor has no field for a mask, Quick Mask or alpha channel target; a
         // layer reference would transform the layer's pixels instead.
         "edit.transform" if !pixel_target(p) => return None,
-        "edit.transform" => layer_ref(p),
+        "edit.transform" => layer_ref(p)?,
         "select.transformSelection" => D::Reference(vec![ReferenceItem::Property { class: class("Chnl"), key: code("fsel") }]),
         _ => return None,
     };
@@ -2096,7 +2097,7 @@ fn export_to(_: &str, p: &Value) -> Option<Descriptor> {
 fn delete_to(id: &str, p: &Value) -> Option<Descriptor> {
     Some(match id {
         "edit.clear" => desc("null"),
-        "layer.delete" => desc("null").with("null", layer_ref(p)),
+        "layer.delete" => desc("null").with("null", layer_ref(p)?),
         "layer.layerMask.delete" => desc("null").with("null", target_ref("Chnl")),
         _ => return None,
     })
@@ -2120,7 +2121,7 @@ fn visibility_from(d: &Descriptor, id: &str) -> Mapped {
 }
 
 fn visibility_to(_: &str, p: &Value) -> Option<Descriptor> {
-    Some(desc("null").with("null", D::List(vec![layer_ref(p)])))
+    Some(desc("null").with("null", D::List(vec![layer_ref(p)?])))
 }
 
 fn move_from(d: &Descriptor) -> Mapped {
@@ -2186,7 +2187,7 @@ fn move_to(id: &str, p: &Value) -> Option<Descriptor> {
         "layer.arrange.sendBackward" => ord("Prvs"),
         _ => return None,
     };
-    Some(desc("null").with("null", layer_ref(p)).with("T   ", t))
+    Some(desc("null").with("null", layer_ref(p)?).with("T   ", t))
 }
 
 fn duplicate_from(d: &Descriptor) -> Mapped {
@@ -2224,7 +2225,7 @@ fn duplicate_to(id: &str, p: &Value) -> Option<Descriptor> {
         return None;
     }
     let mut d = match id {
-        "layer.duplicate" => desc("null").with("null", layer_ref(p)),
+        "layer.duplicate" => desc("null").with("null", layer_ref(p)?),
         "image.duplicate" => {
             desc("null").with("null", D::Reference(vec![ReferenceItem::Enumerated { class: class("Dcmn"), type_id: Id::new("Ordn"), value: Id::new("Frst") }]))
         }
@@ -3767,8 +3768,12 @@ pub fn export(
                     skipped.push(Skipped { action: a.name.clone(), step: i, id: id.clone() });
                     continue;
                 }
+                let step_name = match params.get("layer") {
+                    Some(Value::Number(n)) => format!("`{id}` with numeric layer {n}"),
+                    _ => format!("`{id}`"),
+                };
                 return Err(format!(
-                    "step {} of `{}` (`{id}`) can't be written as a Photoshop step: it has no equivalent event, or a setting its event can't hold; pass \"skipUnsupported\": true to leave it out",
+                    "step {} of `{}` ({step_name}) has no Photoshop equivalent event or a setting its event cannot hold; pass \"skipUnsupported\": true to leave it out",
                     i + 1,
                     a.name
                 ));
