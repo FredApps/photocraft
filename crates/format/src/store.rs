@@ -935,7 +935,14 @@ impl PcraftWriter {
         // After commit, a locked leftover is only housekeeping, just like unused objects.
         for stale in [THUMB, COMPOSITE] {
             if !p.previews.iter().any(|(n, _)| *n == stale) {
-                let _ = remove_bundle_file(dir, &dir.join(stale), &gc);
+                let path = dir.join(stale);
+                if remove_bundle_file(dir, &path, &gc).is_ok()
+                    && let Some(parent) = path.parent()
+                {
+                    // Persist cleanup only after publication. A cleanup flush failure cannot
+                    // invalidate the already committed document.
+                    let _ = flush_bundle_dir(parent, &path);
+                }
             }
         }
         // The manifest is committed: the save has succeeded. Removing objects it no longer
@@ -1087,11 +1094,11 @@ fn a_retried_save_flushes_the_folder_of_a_reused_object() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// A stale composite preview's removal is flushed before the new manifest commits, so a crash
-/// can't bring it back beside that manifest.
+/// Omitted previews survive a failed manifest flush. After a successful commit, stale preview
+/// removal is flushed too; a cleanup flush failure never reports the committed save as failed.
 #[cfg(test)]
 #[test]
-fn a_removed_stale_composite_is_flushed_before_the_manifest() {
+fn a_removed_stale_composite_is_flushed_after_the_manifest() {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1102,17 +1109,28 @@ fn a_removed_stale_composite_is_flushed_before_the_manifest() {
     let mut w = PcraftWriter::new();
     w.save_dir(&doc, &dir, &SaveOptions { thumbnail: None, composite: Some(Rgba8Image::new(4, 3)) }).unwrap();
     assert!(dir.join(COMPOSITE).exists());
+    let previous_preview = std::fs::read(dir.join(COMPOSITE)).unwrap();
+    FAIL_DIR_FLUSH.with(|f| f.set(Some(MANIFEST)));
+    assert!(w.save_dir(&doc, &dir, &SaveOptions::default()).is_err());
+    assert_eq!(std::fs::read(dir.join(COMPOSITE)).unwrap(), previous_preview, "failed publication preserves the previous preview");
     FLUSHED.with(|f| f.borrow_mut().clear());
     w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap();
     assert!(!dir.join(COMPOSITE).exists());
     let flushed = FLUSHED.with(|f| f.borrow().clone());
     let composite = flushed.iter().position(|d| *d == dir.join("composite"));
     let manifest = flushed.iter().rposition(|d| *d == dir);
-    assert!(composite.is_some() && composite < manifest, "composite flushed before the manifest: {flushed:?}");
+    assert!(manifest.is_some() && composite.is_some() && manifest < composite, "composite cleanup flushed after the manifest: {flushed:?}");
     // With no stale composite to remove, its folder isn't flushed.
     FLUSHED.with(|f| f.borrow_mut().clear());
     w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap();
     assert!(FLUSHED.with(|f| f.borrow().iter().all(|d| *d != dir.join("composite"))));
+    // A post-commit cleanup flush failure is housekeeping, not a failed document save.
+    w.save_dir(&doc, &dir, &SaveOptions { thumbnail: None, composite: Some(Rgba8Image::new(4, 3)) }).unwrap();
+    FAIL_DIR_FLUSH.with(|f| f.set(Some("composite")));
+    w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap();
+    assert!(FAIL_DIR_FLUSH.with(|f| f.get().is_none()), "cleanup flush failure was exercised");
+    assert!(!dir.join(COMPOSITE).exists());
+    assert_eq!(crate::load_path(&dir).unwrap(), doc);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
