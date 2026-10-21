@@ -85,7 +85,7 @@ fn gaussian_blur_keeps_an_opaque_scaled_smart_object_opaque_to_its_edges() {
             opacity: 1.0,
             visible: true,
         });
-        let after = apply_smart_filters(&placed, &sm, s.active().unwrap().doc.bounds());
+        let after = apply_smart_filters(&placed, &sm, s.active().unwrap().doc.bounds()).unwrap();
         for (x, y) in corners {
             assert!(after.sample_channel(x, y, 3) >= 0.999, "{depth}-bit blurred alpha at ({x},{y})");
         }
