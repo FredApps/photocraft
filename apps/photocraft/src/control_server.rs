@@ -19,9 +19,7 @@ use serde_json::{Value, json};
 /// Start serving a listener already bound during startup, before a window is opened.
 pub fn start(listener: TcpListener, token: String, ctx: egui::Context) -> Receiver<ControlRequest> {
     let (tx, rx) = channel::<ControlRequest>();
-    if let Ok(address) = listener.local_addr() {
-        eprintln!("photocraft: control server listening on {address}");
-    }
+    eprintln!("photocraft: control server listening on {}", listening_addr(&listener, 0));
     std::thread::spawn(move || {
         let limiter = ConnectionLimiter::new(MAX_CONNECTIONS);
         let token = Arc::new(token);
@@ -41,6 +39,16 @@ pub fn start(listener: TcpListener, token: String, ctx: egui::Context) -> Receiv
         }
     });
     rx
+}
+
+/// The address `listener` is bound to: with `--control 0` the OS picks the port, and a client
+/// needs that one, not the requested 0 (#6427). Falls back to the requested port if the OS
+/// can't report it.
+fn listening_addr(listener: &TcpListener, requested_port: u16) -> String {
+    match listener.local_addr() {
+        Ok(addr) => addr.to_string(),
+        Err(_) => format!("127.0.0.1:{requested_port}"),
+    }
 }
 
 fn serve(stream: TcpStream, token: &str, tx: Sender<ControlRequest>, ctx: egui::Context) {
@@ -149,6 +157,16 @@ mod tests {
         let reply: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(reply["id"], 2);
         assert_eq!(reply["result"], "served");
+    }
+    /// #6427: with port 0 the log names the port the OS bound, which a client can connect to.
+    #[test]
+    fn port_zero_logs_the_bound_port() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let bound = listener.local_addr().unwrap();
+        assert_ne!(bound.port(), 0);
+        let logged = listening_addr(&listener, 0);
+        assert_eq!(logged, format!("127.0.0.1:{}", bound.port()));
+        TcpStream::connect(&logged).unwrap();
     }
 
     /// #4965: a connection that keeps sending without authenticating is closed at the deadline
