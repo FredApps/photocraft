@@ -1494,8 +1494,8 @@ pub fn normalize_shortcut(s: &str) -> Option<String> {
 /// Key names spelled with inner capitals (egui's `Key::name`), which Title case would break:
 /// `PageUp` became `Pageup`, a name no key has, so a shortcut recorded on Page Up/Down or an
 /// arrow key never fired (#6827).
-const CAMEL_KEYS: [&str; 18] = [
-    "PageUp",
+const CAMEL_KEYS: [&str; 19] = [
+    "IntlBackslash", "PageUp",
     "PageDown",
     "ArrowUp",
     "ArrowDown",
