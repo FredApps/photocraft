@@ -460,14 +460,7 @@ fn fields_to(p: &Value, fields: &[F], mut d: Descriptor) -> Option<Descriptor> {
                 }
                 long(n)
             }
-            Kind::ExactLong => {
-                let number = v.as_f64()?;
-                let integer = number as i32;
-                if f64::from(integer) != number {
-                    return None;
-                }
-                D::Integer(integer)
-            }
+            Kind::ExactLong => long_exact(v.as_f64()?)?,
             Kind::Dbl => D::Double(v.as_f64()?),
             Kind::Bool => D::Boolean(v.as_bool()?),
             Kind::Enum(ty, table) => enm(ty, lookup_back(table, v.as_str()?)?),
@@ -1296,7 +1289,7 @@ fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
         "layer.groupLayers" => {
             // An explicit source layer goes in by name like every other layer reference; a
             // step without one keeps the target-layer form (#7236).
-            desc("null").with("null", class_ref("layerSection")).with("From", layer_ref(p)).with("Usng", D::Descriptor(with_name("layerSection")))
+            desc("null").with("null", class_ref("layerSection")).with("From", layer_ref(p)?).with("Usng", D::Descriptor(with_name("layerSection")))
         }
         "layer.new.layerViaCopy" | "layer.new.layerViaCut" => {
             let mut d = desc("null").with("Nw  ", D::Descriptor(desc("Lyr "))).with("Usng", enm("ArSl", "Slct"));
@@ -3109,7 +3102,7 @@ fn clipping_from(d: &Descriptor, id: &str) -> Mapped {
 }
 
 fn clipping_to(_: &str, p: &Value) -> Option<Descriptor> {
-    Some(desc("null").with("null", layer_ref(p)))
+    Some(desc("null").with("null", layer_ref(p)?))
 }
 const RADIAL_BLUR_FIELDS: &[F] =
     &[F("Amnt", "amount", Kind::Long), F("BlrM", "method", Kind::Enum("BlrM", RADIAL_METHOD)), F("BlrQ", "quality", Kind::Enum("BlrQ", RADIAL_QUALITY))];

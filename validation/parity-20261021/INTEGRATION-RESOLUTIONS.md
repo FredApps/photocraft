@@ -1,0 +1,30 @@
+# Combined-build conflict decisions
+
+This is an integration record, not a test result. All 221 source heads remain in ancestry. Native CI and the Photoshop acceptance matrix must validate the combined behavior.
+
+| Candidates | Resolution and required evidence |
+|---|---|
+| 7751 / 7681 | Retain the shared Selective Color command parser, including relative/method precedence, scalar overrides and validation. Retain the additional scalar-form round-trip test. |
+| 7742 / 7708 / 7588 | Use one exact-integer descriptor kind for both Ripple amount and Crystallize cell size. Retain general integer range checks and fractional/default controls from both PRs. |
+| 7627 / 7759 | Retain the shared unsupported-setting guard for Minimum/Maximum Roundness, seeded Crystallize and off-centre Radial Blur. Add the independent Minimum/Maximum round-trip/refusal test. |
+| 7611 / 6881 | Preserve modern Select and Mask mappings while refusing unrepresentable Refine Edge Brush strokes in both legacy and modern events. Keep default/empty-stroke controls and sample-all-layers mapping. |
+| 7588 / 7968 / 7262 | Preserve named Group Layers targets rather than reverting to the selected-layer-only descriptor. The numeric-target refusal remains appropriate: numeric document IDs cannot be persisted as Photoshop layer references. Propagate fallible layer references in group/alignment mappings. |
+| 7262 / 7784 | Keep both pre-selection capture and recording ownership for asynchronous jobs. A later recording must not capture an earlier edit; recorded targets must use the selection that existed before dispatch. |
+| 7109 / 7576 | Keep both independently named damaged-preset tests, including export settings and recent-document coverage. Do not discard assertions to make the combined fixture pass. |
+| 6983 / 7963 | Retain the three-significant-digit subsecond exposure fallback and require reciprocal denominators of at least two, preserving the near-one-second fix. |
+| 6912 / 6918 | Retain the broader canonical key-name table and aliases, adding IntlBackslash. Keep both keyboard normalization/UI regressions. |
+| 6468 / 6492 | Preserve the pre-bound listener architecture and its authentication test. Use the actual bound address for port-zero diagnostics and retain the new connection test. |
+| 6402 | Preserve the merge-queue trigger and final CI aggregate gate; merge platform-selection documentation including filesystem automation. The native Windows unit and integration legs are required for this candidate. |
+| 5937 | Preserve the newer outside-stroke fill/coverage handling and Dissolve path; retain the additional tests from the overlapping stroke PR. |
+| 5865 | Preserve source frame/page counts while keeping both TGA and DDS alpha-to-channel handling. |
+| 5452 / 6472 | Extract the shape toolbar into its new module while carrying forward zero-width stroke state and gesture-scoped undo coalescing. Keep the shape/pen UI regressions. |
+| 5420 / 7580 | Flush reused object directories before committing the manifest. Keep stale-preview cleanup after manifest commit so a failed save leaves the previous document's previews intact. Retain durability and rollback tests. |
+| 3922 / 7617 | Preserve floating Properties/Adjustments tabs and drag/hide controls. Put the selected tab's body inside the bounded scrolling area. |
+| 7433 / 6651 / 3532 | Union original-icon attribution exclusions and retain ambientCG tile attribution/license. |
+| 3387 | Retain both JPEG XL and Photoshop RAW codec modules in the shared import list. |
+| 2811 | Register both Cryptomatte and frequency-separation command specifications. |
+| 6734 | Integrate the originally approved head `be98937e996e8a2f5be777d0deafd5186e82afc8`. Preserve stale-polygon cancellation and the separate last-point hand-jitter threshold while adopting the small-polygon first-point close reach. Later branch head `e36bfb030edb8780bb52d1e5849c171a0ca26296` is outside this approved snapshot. |
+
+Independent function/test insertions were merged with syntax-aware three-way text handling. When both PRs changed a self-contained test function, both versions were retained with distinct names. Rust sources were parsed and formatted without compiling or executing candidate code on the operator machine. Compilation and native tests run on GitHub-hosted runners.
+
+The six excluded candidates are 7318 (Photoshop keyboard shortcut divergence), 8012 (freeze interpolation shift), 8034 (insufficient Windows durability CI evidence), 7970 (unconditional native format version change), 3342 (editable type perspective behavior differing from Photoshop), and 8043 (fractional-edge 1:1 selection rounding can become 201 by 200). See the candidate review and integration plan for source evidence. These exclusions do not imply the baseline has already solved the underlying issues.
