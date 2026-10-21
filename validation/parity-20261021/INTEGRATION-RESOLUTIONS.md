@@ -11,7 +11,7 @@ This is an integration record, not a test result. All 221 source heads remain in
 | 7588 / 7968 / 7262 | Preserve named Group Layers targets rather than reverting to the selected-layer-only descriptor. The numeric-target refusal remains appropriate: numeric document IDs cannot be persisted as Photoshop layer references. Propagate fallible layer references in group/alignment mappings. |
 | 7262 / 7784 | Keep both pre-selection capture and recording ownership for asynchronous jobs. A later recording must not capture an earlier edit; recorded targets must use the selection that existed before dispatch. |
 | 7109 / 7576 | Keep both independently named damaged-preset tests, including export settings and recent-document coverage. Do not discard assertions to make the combined fixture pass. |
-| 6983 / 7963 | Retain the three-significant-digit subsecond exposure fallback and require reciprocal denominators of at least two, preserving the near-one-second fix. |
+| 6983 / 7963 | Retain the three-significant-digit fallback for shorter subsecond exposures and require reciprocal denominators of at least two. Values whose reciprocal rounds to one retain the two-decimal display: 0.996 becomes 1 s, while 0.99 remains 0.99 s. |
 | 6912 / 6918 | Retain the broader canonical key-name table and aliases, adding IntlBackslash. Keep both keyboard normalization/UI regressions. |
 | 6468 / 6492 | Preserve the pre-bound listener architecture and its authentication test. Use the actual bound address for port-zero diagnostics and retain the new connection test. |
 | 6402 | Preserve the merge-queue trigger and final CI aggregate gate; merge platform-selection documentation including filesystem automation. The native Windows unit and integration legs are required for this candidate. |
@@ -26,5 +26,15 @@ This is an integration record, not a test result. All 221 source heads remain in
 | 6734 | Integrate the originally approved head `be98937e996e8a2f5be777d0deafd5186e82afc8`. Preserve stale-polygon cancellation and the separate last-point hand-jitter threshold while adopting the small-polygon first-point close reach. Later branch head `e36bfb030edb8780bb52d1e5849c171a0ca26296` is outside this approved snapshot. |
 
 Independent function/test insertions were merged with syntax-aware three-way text handling. When both PRs changed a self-contained test function, both versions were retained with distinct names. Rust sources were parsed and formatted without compiling or executing candidate code on the operator machine. Compilation and native tests run on GitHub-hosted runners.
+
+The hosted combined runs also required these adaptations:
+
+- Count both new codecs in the fixed-size format registry (22 entries).
+- Propagate the filter API's error result in Frequency Separation, use the cached surface's format in text-transform memory checks, and use the shared HSB conversion in adjustment and angle widgets.
+- Update retained regression fixtures for per-tool Sample All Layers state, text-edit document ownership and fallible Smart Filter results without removing their behavioral assertions.
+- Give the EXR part-selection fixture explicit 4 by 4 and 2 by 2 display canvases. Both retain the selected part's 4 by 4 data window and color-rank assertions; the smaller display additionally proves clipping.
+- Price the missing-font transform refusal fixture against the new byte budget: an RGBA8 result of 1000002 by 10 pixels exceeds the 20 MiB test budget. Retain document, revision and history preservation assertions and require the current pre-allocation refusal message.
+- Run this fork's nextest jobs with `--no-fail-fast` to collect failures across the complete combined test set. Failed assertions still fail CI.
+- Give three HDR test helpers the same Linux x86-64 configuration as the recorded-libm-hash tests that consume them. The existing portable serial-reference/blur tests remain enabled; no Windows test is removed and no warning is suppressed. Linux recorded hashes do not establish Windows floating-point identity.
 
 The six excluded candidates are 7318 (Photoshop keyboard shortcut divergence), 8012 (freeze interpolation shift), 8034 (insufficient Windows durability CI evidence), 7970 (unconditional native format version change), 3342 (editable type perspective behavior differing from Photoshop), and 8043 (fractional-edge 1:1 selection rounding can become 201 by 200). See the candidate review and integration plan for source evidence. These exclusions do not imply the baseline has already solved the underlying issues.

@@ -34,7 +34,9 @@ env:
 # that lands while main's run is in progress waits for it, so every main state that gets a run is
 # checked to the end. (Cancelling here left main unverified whenever merges came close together.)
 concurrency:
-  group: ci-${{ github.ref }}
+  # Keep the first full-batch diagnostic alive while this fork validates its corrections.
+  # Later correction pushes still cancel one another; every test and failure gate is retained.
+  group: ci-${{ github.ref }}${{ github.repository == 'FredApps/photocraft' && github.event.pull_request.number == 12 && '-parity-corrections' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -270,7 +272,7 @@ jobs:
       # error for distributors who leave it out.
       - name: Test without heif
         if: matrix.variant == 'without heif'
-        run: cargo nextest run -p photocraft-heif -p photocraft-codecs -p photocraft-io --locked --profile ci
+        run: cargo nextest run --no-fail-fast -p photocraft-heif -p photocraft-codecs -p photocraft-io --locked --profile ci
 
       # The tests built with the optional craft-fonts input (crates/text/build.rs), so the Japanese
       # font tests that skip without it run. Keep the test job's exact `--workspace --features heif

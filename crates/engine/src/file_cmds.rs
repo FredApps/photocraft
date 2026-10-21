@@ -857,7 +857,9 @@ fn exposure_text(t: f64) -> Option<String> {
         if n >= 2.0 && (r - n).abs() <= n * 0.05 {
             return Some(format!("1/{n:.0} s"));
         }
-        return Some(format!("{} s", short_sig(t, 3)));
+        // Keep the near-one-second fix while preserving precision for shorter exposures.
+        let seconds = if n < 2.0 { short_num(t, 2) } else { short_sig(t, 3) };
+        return Some(format!("{seconds} s"));
     }
     Some(format!("{} s", short_num(t, 1)))
 }

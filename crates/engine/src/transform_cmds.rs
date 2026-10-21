@@ -930,10 +930,11 @@ mod tests {
         .unwrap();
         let st = s.active().unwrap();
         let (before, revision, steps) = (st.doc.clone(), st.revision, st.history.past_len());
-        let mut p = stretch(2e5);
+        // RGBA8 is priced in bytes: 1000002 x 10 x 4 exceeds the 20 MiB test budget.
+        let mut p = stretch(1e6);
         p["layer"] = json!(id.0);
         let err = s.execute("edit.transform", p).unwrap_err().to_string();
-        assert!(err.starts_with("not enough memory for transforming pixels") && err.ends_with("the document was not changed"), "{err}");
+        assert!(err.starts_with("too large to transform:") && err.contains("Memory Usage allows") && err.ends_with("the document was not changed"), "{err}");
         let st = s.active().unwrap();
         assert!(st.doc == before, "the document is untouched");
         assert_eq!((st.revision, st.history.past_len()), (revision, steps));
