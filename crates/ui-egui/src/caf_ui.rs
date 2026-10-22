@@ -667,13 +667,8 @@ fn commit_fill(app: &mut PhotocraftApp) -> Result<Value, String> {
     let r = apply(app)?;
     if r.get("pending").and_then(Value::as_bool) == Some(true) {
         let job = r.get("job").and_then(Value::as_u64).map(JobId).ok_or("background Content-Aware Fill returned no job id")?;
-        let pending = app
-            .distort
-            .caf
-            .as_mut()
-            .and_then(|w| w.pending_fill.as_mut())
-            .filter(|p| p.job == job)
-            .ok_or("Content-Aware Fill job is no longer pending")?;
+        let pending =
+            app.distort.caf.as_mut().and_then(|w| w.pending_fill.as_mut()).filter(|p| p.job == job).ok_or("Content-Aware Fill job is no longer pending")?;
         pending.close_on_success = true;
         Ok(json!({"committed": false, "pending": true, "job": job.0}))
     } else {
@@ -687,13 +682,7 @@ pub(crate) fn on_job_event(app: &mut PhotocraftApp, e: &JobEvent) {
     if e.command != CMD {
         return;
     }
-    let Some(pending) = app
-        .distort
-        .caf
-        .as_ref()
-        .and_then(|w| w.pending_fill)
-        .filter(|p| p.job == e.id)
-    else {
+    let Some(pending) = app.distort.caf.as_ref().and_then(|w| w.pending_fill).filter(|p| p.job == e.id) else {
         return;
     };
     let document = {
@@ -1358,7 +1347,9 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let (full, _) = ui.allocate_exact_size(screen.size(), Sense::hover());
         let painter = ui.painter().clone();
         painter.rect_filled(full, 0.0, t.chrome);
-        ui.set_enabled(!busy);
+        if busy {
+            ui.disable();
+        }
         // Title strip.
         let title = ERect::from_min_size(full.min, vec2(full.width(), 30.0));
         painter.rect_filled(title, 0.0, t.dock);
@@ -1950,7 +1941,13 @@ mod tests {
         let job = JobId(71);
         app.distort.caf.as_mut().unwrap().pending_fill = Some(PendingFill { job, close_on_success: true });
 
-        let mut event = JobEvent { id: JobId(70), command: CMD.into(), label: "Content-Aware Fill".into(), document: Some(document), outcome: JobOutcome::Done(Value::Null) };
+        let mut event = JobEvent {
+            id: JobId(70),
+            command: CMD.into(),
+            label: "Content-Aware Fill".into(),
+            document: Some(document),
+            outcome: JobOutcome::Done(Value::Null),
+        };
         on_job_event(&mut app, &event);
         assert_eq!(ws(&app).pending_fill.map(|p| p.job), Some(job), "a different job is ignored");
 
@@ -1990,13 +1987,8 @@ mod tests {
         app.distort.caf.as_mut().unwrap().pending_fill = Some(PendingFill { job, close_on_success: true });
         app.session.execute("file.new", json!({"width": 32, "height": 32, "depth": 8})).unwrap();
 
-        let event = JobEvent {
-            id: job,
-            command: CMD.into(),
-            label: "Content-Aware Fill".into(),
-            document: Some(document),
-            outcome: JobOutcome::Done(Value::Null),
-        };
+        let event =
+            JobEvent { id: job, command: CMD.into(), label: "Content-Aware Fill".into(), document: Some(document), outcome: JobOutcome::Done(Value::Null) };
         on_job_event(&mut app, &event);
         assert!(app.distort.caf.is_some(), "completion for the inactive document does not close another dialog");
         assert!(ws(&app).pending_fill.is_none());
