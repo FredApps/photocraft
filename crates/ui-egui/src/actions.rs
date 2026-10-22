@@ -1010,16 +1010,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn save_actions_reports_steps_it_cannot_export() {
-        // A recorded occurrence cannot be represented by an ATN layer name alone. The menu
-        // handler surfaces this strict export error instead of saving an incomplete action.
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        app.session.actions.list.push(Action::new("Select photo", vec![("layer.select".into(), json!({"name": "Photo", "occurrence": 0}))]));
-        let err = save_dialog(&mut app, None).unwrap_err();
-        assert!(err.contains("step 1") && err.contains("layer.select"), "{err}");
-    }
-
-    #[test]
     fn selected_layer_name_is_visible_during_recording_and_after_stop() {
         use egui_kittest::{Harness, kittest::Queryable};
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -1037,6 +1027,16 @@ mod tests {
         h.get_by_label("Select Layer (Background)");
         assert_eq!(step_label("layer.select", &json!({"layer":26})), "Select Layer (ID 26)");
         assert_eq!(step_label("layer.select", &json!({"layer":"Background"})), "Select Layer (Background)");
+    }
+
+    #[test]
+    fn save_actions_reports_steps_it_cannot_export() {
+        // A recorded occurrence cannot be represented by an ATN layer name alone. The menu
+        // handler surfaces this strict export error instead of saving an incomplete action.
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.actions.list.push(Action::new("Select photo", vec![("layer.select".into(), json!({"name": "Photo", "occurrence": 0}))]));
+        let err = save_dialog(&mut app, None).unwrap_err();
+        assert!(err.contains("step 1") && err.contains("layer.select"), "{err}");
     }
 
     #[test]
