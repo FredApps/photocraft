@@ -347,7 +347,7 @@ mod tests {
 
     /// A focused harness for the production layering: menu first, then the modal dialog.
     fn modal_harness(app: PhotocraftApp, size: egui::Vec2) -> Harness<'static, PhotocraftApp> {
-        let mut h = Harness::builder().with_size(size).build_ui_state(
+        let h = Harness::builder().with_size(size).build_ui_state(
             |ui, app: &mut PhotocraftApp| {
                 let ctx = ui.ctx().clone();
                 super::show(&ctx);
