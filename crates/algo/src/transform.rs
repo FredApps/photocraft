@@ -894,7 +894,7 @@ mod tests {
         assert!(out.sample_channel(200, 150, 3) > 0.99, "the rotated opaque interior remains covered");
         let bounds = warp_output_bounds(src_rect, &h).unwrap();
         let pixels = out.read_region(bounds);
-        assert!(pixels.chunks_exact(4).any(|p| p[3] > 0.0 && p[3] < 0.99), "the rotated outline retains antialiased coverage");
+        assert!(pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0.0 && p[3] < 0.99), "the rotated outline retains antialiased coverage");
         assert_eq!(out.sample_channel(bounds.x0, bounds.y0, 3), 0.0, "the bounding-box corner outside the rotated quad remains transparent");
     }
 
