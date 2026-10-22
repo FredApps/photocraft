@@ -1510,7 +1510,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 ui.label(egui::RichText::new(e.as_str()).color(t.danger).size(11.0));
             }
             if busy {
-                ui.label(tl!("Content-Aware Fill is processing…"));
+                ui.label(tl!("Working…"));
             }
         });
         // Footer, in Photoshop's order on every platform: reset all at the left, then OK, Apply,
