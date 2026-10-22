@@ -1930,7 +1930,8 @@ mod tests {
 
         cancel(&mut app);
         assert!(app.distort.caf.is_none());
-        assert!(app.session.job(job).is_some_and(|j| j.state == "cancelled"));
+        assert!(app.session.job(job).is_none(), "cancelled jobs leave the running set");
+        assert!(app.session.jobs_with_recent().iter().any(|j| j.id == job && j.state == "cancelled"));
     }
 
     #[test]

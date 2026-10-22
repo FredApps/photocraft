@@ -12,7 +12,7 @@ use photocraft_geom::Rect;
 use photocraft_raster::{Interrupt, Surface};
 use serde::{Deserialize, Serialize};
 
-use crate::resample::{Resample, resize_surface, resize_surface_in_canvas};
+use crate::resample::{Resample, resize_surface_in_canvas};
 
 /// 3×3 projective matrix, row-major: `[x', y', w'] = H · [x, y, 1]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -869,16 +869,7 @@ mod tests {
             )
             .unwrap();
             let out = warp_surface(&src, src_rect, &h, Interp::Bicubic).unwrap();
-            for (x, y) in [
-                (0, 0),
-                (dw / 2, 0),
-                (dw - 1, 0),
-                (0, dh / 2),
-                (dw - 1, dh / 2),
-                (0, dh - 1),
-                (dw / 2, dh - 1),
-                (dw - 1, dh - 1),
-            ] {
+            for (x, y) in [(0, 0), (dw / 2, 0), (dw - 1, 0), (0, dh / 2), (dw - 1, dh / 2), (0, dh - 1), (dw / 2, dh - 1), (dw - 1, dh - 1)] {
                 let alpha = out.sample_channel(x, y, 3);
                 assert_eq!(alpha, 1.0, "{sw}×{sh} → {dw}×{dh}: opaque source edge ({x},{y}) became transparent (alpha {alpha})");
             }
@@ -897,26 +888,14 @@ mod tests {
             let (x, y) = (x / 3.0 - cx, y / 3.0 - cy);
             [cx + k * (x - y), cy + k * (x + y)]
         };
-        let q = [
-            rotate(0.0, 0.0),
-            rotate(1200.0, 0.0),
-            rotate(1200.0, 900.0),
-            rotate(0.0, 900.0),
-        ];
+        let q = [rotate(0.0, 0.0), rotate(1200.0, 0.0), rotate(1200.0, 900.0), rotate(0.0, 900.0)];
         let h = Homography::rect_to_quad([0.0, 0.0, 1200.0, 900.0], q).unwrap();
         let out = warp_surface(&src, src_rect, &h, Interp::Bicubic).unwrap();
         assert!(out.sample_channel(200, 150, 3) > 0.99, "the rotated opaque interior remains covered");
         let bounds = warp_output_bounds(src_rect, &h).unwrap();
         let pixels = out.read_region(bounds);
-        assert!(
-            pixels.chunks_exact(4).any(|p| p[3] > 0.0 && p[3] < 0.99),
-            "the rotated outline retains antialiased coverage"
-        );
-        assert_eq!(
-            out.sample_channel(bounds.x0, bounds.y0, 3),
-            0.0,
-            "the bounding-box corner outside the rotated quad remains transparent"
-        );
+        assert!(pixels.chunks_exact(4).any(|p| p[3] > 0.0 && p[3] < 0.99), "the rotated outline retains antialiased coverage");
+        assert_eq!(out.sample_channel(bounds.x0, bounds.y0, 3), 0.0, "the bounding-box corner outside the rotated quad remains transparent");
     }
 
     #[test]
