@@ -1347,6 +1347,10 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let (full, _) = ui.allocate_exact_size(screen.size(), Sense::hover());
         let painter = ui.painter().clone();
         painter.rect_filled(full, 0.0, t.chrome);
+        // Create the footer while its parent is enabled. Children created after disable()
+        // inherit that state, which would make it impossible to cancel a pending fill.
+        let foot = ERect::from_min_size(pos2(full.right() - PANEL_W + 10.0, full.bottom() - 48.0), vec2(PANEL_W - 20.0, 32.0));
+        let mut fb = ui.new_child(egui::UiBuilder::new().max_rect(foot).layout(egui::Layout::right_to_left(egui::Align::Center)));
         if busy {
             ui.disable();
         }
@@ -1511,10 +1515,12 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         });
         // Footer, in Photoshop's order on every platform: reset all at the left, then OK, Apply,
         // Cancel against the right edge.
-        let foot = ERect::from_min_size(pos2(right.left() + 10.0, right.bottom() - 48.0), vec2(PANEL_W - 20.0, 32.0));
-        let mut fb = ui.new_child(egui::UiBuilder::new().max_rect(foot).layout(egui::Layout::right_to_left(egui::Align::Center)));
         if widgets::secondary_button(&mut fb, tl!("Cancel"), 70.0).clicked() {
             action = Some("cancel");
+        }
+        // Cancel remains available; actions that could replace the captured work do not.
+        if busy {
+            fb.disable();
         }
         if widgets::secondary_button(&mut fb, tl!("Apply"), 70.0).clicked() {
             action = Some("apply");
@@ -1932,6 +1938,34 @@ mod tests {
         assert!(app.distort.caf.is_none());
         assert!(app.session.job(job).is_none(), "cancelled jobs leave the running set");
         assert!(app.session.jobs_with_recent().iter().any(|j| j.id == job && j.state == "cancelled"));
+    }
+
+    #[test]
+    fn cancel_button_remains_clickable_during_a_pending_fill() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = app_with_selection();
+        app.background_jobs = true;
+        open(&mut app).unwrap();
+        let result = apply(&mut app).unwrap();
+        let job = JobId(result["job"].as_u64().unwrap());
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                let ctx = ui.ctx().clone();
+                if ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    show(app, &ctx);
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.run_steps(4);
+        assert_eq!(ws(h.state()).pending_fill.map(|p| p.job), Some(job));
+        // Exercise the actual footer interaction, not cancel() or the control endpoint.
+        h.get_by_label("Cancel").click();
+        h.run_steps(3);
+        assert!(h.state().distort.caf.is_none(), "the visible Cancel button closes the workspace while busy");
+        assert!(h.state().session.job(job).is_none());
+        assert!(h.state().session.jobs_with_recent().iter().any(|j| j.id == job && j.state == "cancelled"));
     }
 
     #[test]
