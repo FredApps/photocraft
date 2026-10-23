@@ -58,6 +58,9 @@ fn framed_by_selection(doc: &Document, bounds: Rect) -> Rect {
 
 /// A group moves all its descendants, so its frame must not clip raster children to the selection.
 pub(crate) fn whole_layer_bounds(doc: &Document, layer: &Layer) -> Rect {
+    if let Some(f) = &layer.frame {
+        return f.bounds();
+    }
     let content = match &layer.content {
         LayerContent::Group(g) => g.children.iter().map(|c| whole_layer_bounds(doc, c)).fold(Rect::EMPTY, |a, b| a.union(&b)),
         // A soft shape (Density below 100 % or a Feather) renders past its path, over the whole
@@ -423,6 +426,13 @@ fn apply_transform(
     // The masks (and so a fill's frame) move, but a fill layer's cached render isn't warped:
     // drop it, the fill re-renders from its model (as `transform_layer_geometry` does).
     l.fill_cache = None;
+    if let Some(f) = &mut l.frame {
+        let a = affine.ok_or_else(|| bad("a frame supports affine transforms; select its image for perspective transforms"))?;
+        f.transform = a.mul(&f.transform);
+        if !f.valid() {
+            return Err(bad("invalid frame transform"));
+        }
+    }
     match &mut l.content {
         LayerContent::Group(g) => {
             for c in g.children.iter_mut() {

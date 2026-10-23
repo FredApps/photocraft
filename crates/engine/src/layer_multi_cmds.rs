@@ -651,6 +651,7 @@ fn layer_pixels_equal(a: &Layer, b: &Layer) -> bool {
         clipped,
         mask,
         vector_mask,
+        frame,
         effects,
         label: _,
         content,
@@ -672,6 +673,7 @@ fn layer_pixels_equal(a: &Layer, b: &Layer) -> bool {
         && *clipped == b.clipped
         && masks_equal(mask, &b.mask)
         && *vector_mask == b.vector_mask
+        && *frame == b.frame
         && *effects == b.effects
         && *excluded_channels == b.excluded_channels
         && *blend_if == b.blend_if

@@ -1327,6 +1327,9 @@ pub(crate) const GPU_OUTPUT: u32 = u32::MAX;
 
 /// The document to render: the committed one, or a clone with the live adjustment preview applied.
 pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> (std::sync::Arc<Document>, u64) {
+    if let Some(shown) = crate::frame_tool::display_doc(app, idx) {
+        return shown;
+    }
     if let Some(shown) = crate::type_panels_ui::color_picker::display_doc(app, idx) {
         return shown;
     }
@@ -4346,6 +4349,15 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
                 }
             }
         }
+        // A Frame drag uses a temporary Free Transform for its image/both target. That owns
+        // the release, so the generic tool-click gate can be false even for a double click.
+        if tool == Tool::Frame
+            && response.contains_pointer()
+            && ctx.input(|i| i.pointer.button_double_clicked(PointerButton::Primary))
+            && let Some(p) = response.interact_pointer_pos().or_else(|| ctx.pointer_hover_pos())
+        {
+            crate::frame_tool::double_click(app, xf.to_doc(p));
+        }
         // Magnetic Lasso: between clicks the border follows the pointer with the button up.
         if tool == Tool::MagneticLasso && app.ui.magnetic.active() && !(buttons.started || buttons.dragged || buttons.stopped) && response.hovered() {
             let moves: Vec<Pos2> = ui.input(|i| i.events.iter().filter_map(|e| if let egui::Event::PointerMoved(p) = e { Some(*p) } else { None }).collect());
@@ -4480,6 +4492,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         crate::gradient_ui::draw_overlay(app, &painter, &xf);
         crate::slice_ui::draw_overlay(app, &painter, &xf);
         crate::frame_tool::draw_overlay(app, &painter, &xf);
+        crate::frame_tool::task_bar(app, ui, &xf);
         crate::artboard_tool::draw_overlay(app, &painter, &xf);
         // Tool cursors (Photoshop-style).
         let guide_hover = response.hover_pos().and_then(|p| {
@@ -4528,6 +4541,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             let mods = crate::workspace_ui::sticky_mods(app, ui.input(|i| i.modifiers));
             crate::type_transform::cursor(app, &ctx, &xf, p, mods)
         }) {
+            ui.ctx().set_cursor_icon(c);
+        } else if let Some(c) = response.hover_pos().filter(|_| tool == Tool::Frame).and_then(|p| crate::frame_tool::cursor(app, xf.to_doc(p))) {
             ui.ctx().set_cursor_icon(c);
         } else if let Some(c) = response.hover_pos().filter(|_| tool == Tool::Artboard).and_then(|p| crate::artboard_tool::cursor(app, &xf, xf.to_doc(p))) {
             ui.ctx().set_cursor_icon(c);
@@ -5778,6 +5793,10 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
     // can land outside the corner's grab area and turn a corner drag into a move of the whole box.
     let transform_ev = if matches!(raw, ToolEvent::Down { .. }) { raw } else { ev };
     if crate::transform_tool::pointer(app, transform_ev, mods) {
+        if matches!(transform_ev, ToolEvent::Up { .. }) && app.ui.frame_tool.auto_transform {
+            app.ui.frame_tool.auto_transform = false;
+            crate::transform_tool::commit(app);
+        }
         return;
     }
     if crate::distort_ui::pointer(app, ev, mods) {

@@ -275,6 +275,12 @@ impl Ctx<'_> {
     }
 
     fn apply_common(&mut self, l: &mut Layer, rec: &LayerRecord, blend_override: Option<photocraft_psd::BlendMode>) {
+        if l.is_group()
+            && let Some(data) = rec.block(b"pcFr").filter(|b| b.data.len() <= 8 << 20)
+        {
+            let end = data.data.iter().rposition(|b| *b != 0).map_or(0, |n| n.saturating_add(1));
+            l.frame = data.data.get(..end).and_then(|bytes| serde_json::from_slice::<photocraft_doc::Frame>(bytes).ok()).filter(photocraft_doc::Frame::valid);
+        }
         l.visible = rec.is_visible();
         l.opacity = f32::from(rec.opacity) / 255.0;
         l.fill_opacity = f32::from(rec.fill_opacity()) / 255.0;
@@ -581,6 +587,17 @@ impl Ctx<'_> {
                     l.psd_blocks = preserved_blocks(rec);
                     self.apply_common(&mut l, rec, sd.and_then(|s| s.blend_mode));
                     self.apply_vector_mask(&mut l, rec);
+                    if l.frame.is_some() {
+                        let clip =
+                            l.children().and_then(|children| children.first()).filter(|child| child.psd_blocks.iter().any(|(k, _)| k == b"pcFc")).cloned();
+                        if let Some(mut clip) = clip {
+                            if let (Some(target), Some(children)) = (l.children_mut(), clip.children_mut()) {
+                                *target = std::mem::take(children);
+                            }
+                            l.mask = clip.mask;
+                            l.vector_mask = clip.vector_mask;
+                        }
+                    }
                     l
                 }
             })
