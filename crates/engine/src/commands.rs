@@ -74,7 +74,10 @@ pub(crate) fn paint_surface<'a>(doc: &'a mut Document, id: LayerId, p: &Value) -
     }
     let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
     if is_mask_target(p) {
-        l.mask.as_mut().map(|m| &mut m.surface).ok_or_else(|| EngineError::Other("layer has no mask".into()))
+        if l.mask.as_ref().and_then(|m| m.paint.as_ref()).and_then(|s| s.layers.get(s.active)).is_some_and(|p| !p.visible) {
+            return Err(EngineError::Other("Selected mask Paint layer is hidden".into()));
+        }
+        l.mask.as_mut().map(|m| m.paint_surface_mut()).ok_or_else(|| EngineError::Other("layer has no mask".into()))
     } else {
         l.surface_mut().ok_or_else(|| EngineError::Other("not a pixel layer".into()))
     }
@@ -1605,6 +1608,8 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::plugin_cmds::specs());
     #[cfg(feature = "uv-workbench")]
     v.extend(crate::uv_cmds::specs());
+    #[cfg(feature = "uv-workbench")]
+    v.extend(crate::uv_mask_paint_cmds::specs());
     #[cfg(feature = "uv-workbench")]
     v.extend(crate::uv_wrap_cmds::specs());
     #[cfg(feature = "uv-workbench")]

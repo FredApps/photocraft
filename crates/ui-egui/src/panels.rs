@@ -2861,6 +2861,8 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let row = RowSel { selected: selection.contains(&l.id), primary: active == Some(l.id), multi: selection.len() > 1 };
                 let top = ui.cursor().top();
                 drawn.push((l.id, layer_row(app, &ctx, ui, &doc, l, depth, row, &mut actions)));
+                #[cfg(feature = "uv-workbench")]
+                crate::uv_mask_paint::rows(app, ui, l, &mut actions);
                 if reveal == Some(l.id) {
                     crate::layer_reveal::scroll_to_row(ui, top);
                 }
@@ -3485,18 +3487,24 @@ fn layer_row(
             actions.push((photocraft_engine::mask_view_cmds::ID.into(), json!({"layer": l.id.0, "mode": "off"})));
         }
         let content_less = matches!(l.content, LayerContent::Adjustment(_) | LayerContent::Fill(_));
+        let content_click = on_thumb || !row.primary;
+        #[cfg(feature = "uv-workbench")]
+        let content_click = content_click || app.ui.workspace == "3D";
+        let mask_by_row = content_less && l.mask.is_some() && !on_thumb;
+        #[cfg(feature = "uv-workbench")]
+        let mask_by_row = mask_by_row && app.ui.workspace != "3D";
         if on_vector {
             // The vector mask thumbnail targets the vector mask: the path tools edit it and the
             // Paths panel selects the layer's path.
             app.ui.selected_path = Some("layer".into());
             actions.push(("ui.vectorMaskTarget".into(), json!(true)));
-        } else if on_mask || (content_less && l.mask.is_some() && !on_thumb) {
+        } else if on_mask || mask_by_row {
             if on_mask {
                 // The mask thumbnail also switches Properties to the mask (#3369).
                 app.ui.properties_layer = None;
             }
             actions.push(("ui.maskTarget".into(), json!(true)));
-        } else if on_thumb || !row.primary {
+        } else if content_click {
             actions.push(("ui.maskTarget".into(), json!(false)));
         }
         // ⌥-click the layer thumbnail: fit the layer on screen, as Photoshop does.

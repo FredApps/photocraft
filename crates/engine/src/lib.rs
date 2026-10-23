@@ -138,6 +138,8 @@ pub mod uv_asset_cmds;
 #[cfg(feature = "uv-workbench")]
 pub mod uv_cmds;
 #[cfg(feature = "uv-workbench")]
+pub mod uv_mask_paint_cmds;
+#[cfg(feature = "uv-workbench")]
 mod uv_reload_cmds;
 #[cfg(feature = "uv-workbench")]
 mod uv_texture_save_cmds;
@@ -865,6 +867,14 @@ impl Session {
         let mut doc = (*before).clone();
         let mut active = st.active_layer;
         let r = f(&mut doc, &mut active)?;
+        // Experimental brush stacks keep the ordinary mask as the render/export cache.
+        let mask_ids: Vec<_> = doc.walk().iter().filter_map(|(_, _, l)| l.mask.as_ref().filter(|m| m.paint.is_some()).map(|_| l.id)).collect();
+        for id in mask_ids {
+            if let Some(mask) = doc.layer_mut(id).and_then(|l| l.mask.as_mut()) {
+                let old = before.layer(id).and_then(|l| l.mask.as_ref()).and_then(|m| m.paint.as_ref());
+                photocraft_compose::mask_paint::refresh_changes(mask, old);
+            }
+        }
         if let (Some(k), Some(id)) = (restrict, active) {
             channel_cmds::restrict_to_color(&before, &mut doc, id, k);
         }

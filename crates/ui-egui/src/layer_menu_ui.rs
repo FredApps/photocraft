@@ -163,6 +163,16 @@ pub fn show(app: &crate::PhotocraftApp, ui: &mut egui::Ui, l: &Layer, on_set: bo
 /// selects first like the row menu.
 pub fn show_mask(app: &crate::PhotocraftApp, ui: &mut egui::Ui, l: &Layer, actions: &mut Vec<(String, Value)>) {
     let Some(mask) = &l.mask else { return };
+    #[cfg(feature = "uv-workbench")]
+    if app.ui.workspace == "3D" && app.session.uv.scene.is_some() {
+        if ui.button(tl!("Add Paint layer")).clicked() {
+            actions.push(("layer.select".into(), json!({"layer":l.id.0})));
+            actions.push(("uv.maskPaint.add".into(), json!({"layer":l.id.0})));
+            actions.push(("ui.maskTarget".into(), json!(true)));
+            ui.close();
+        }
+        ui.separator();
+    }
     crate::widgets::menu_scroll(ui, |ui| {
         ui.set_min_width(220.0);
         let edits = vec![

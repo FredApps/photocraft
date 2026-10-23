@@ -254,7 +254,16 @@ fn damage_json(s: &mut Session, dmg: Rect) -> Value {
 pub(crate) fn stroke_target(s: &Session, p: &Value, brush: BrushSettings) -> Result<(Option<photocraft_doc::LayerId>, BrushSettings, f32)> {
     let gray = is_mask_target(p) || crate::channel_cmds::is_channel_target(p);
     let id = if crate::channel_cmds::is_channel_target(p) { None } else { Some(layer_id(s, p)?) };
-    let brush = if gray && brush.erase { BrushSettings { erase: false, color: s.tools.background, ..brush } } else { brush };
+    let stack =
+        id.and_then(|id| s.active().and_then(|st| st.doc.layer(id))).and_then(|l| l.mask.as_ref()).is_some_and(|m| m.paint.is_some()) && is_mask_target(p);
+    let brush = if gray && brush.erase && !stack { BrushSettings { erase: false, color: s.tools.background, ..brush } } else { brush };
+    let mut brush = brush;
+    if stack {
+        let mut gray = [0.0];
+        photocraft_raster::from_rgba_into(&photocraft_color::PixelFormat::GRAY8, brush.color, &mut gray);
+        let value = gray.first().copied().unwrap_or(0.0);
+        brush.color = [value, value, value, brush.color[3]];
+    }
     Ok((id, brush, num(p, "zoom").unwrap_or(1.0)))
 }
 
@@ -621,6 +630,11 @@ impl LiveStroke {
                 dmg = dmg.union(&StrokeRenderer::composite_union_live(&mut renderers, &mut live, full, &self.pre, surf, self.sel.as_ref(), self.lock));
                 self.tail = old.union(&live.bounds());
                 self.union_live = Some((live, passes));
+                if let Some(id) = self.layer
+                    && let Some(mask) = std::sync::Arc::make_mut(&mut self.doc).layer_mut(id).and_then(|l| l.mask.as_mut())
+                {
+                    photocraft_compose::mask_paint::refresh(mask, Some(dmg));
+                }
                 return Ok(dmg);
             }
             let mut dmg = Rect::EMPTY;
@@ -635,6 +649,11 @@ impl LiveStroke {
             if let Some(mut tail) = self.renderer.tail_preview() {
                 self.tail = tail.composite(&self.pre, surf, self.sel.as_ref(), self.lock, false);
                 dmg = dmg.union(&self.tail);
+            }
+            if let Some(id) = self.layer
+                && let Some(mask) = std::sync::Arc::make_mut(&mut self.doc).layer_mut(id).and_then(|l| l.mask.as_mut())
+            {
+                photocraft_compose::mask_paint::refresh(mask, Some(dmg));
             }
             Ok(dmg)
         })

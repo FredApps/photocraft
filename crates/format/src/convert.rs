@@ -172,6 +172,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
                 linked: m.linked,
                 density: m.density,
                 feather: m.feather,
+                paint: mask_paint_m(m, sink),
             }),
             warp: s.warp.clone(),
             stack_mode: s.stack_mode,
@@ -193,6 +194,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             linked: m.linked,
             density: m.density,
             feather: m.feather,
+            paint: mask_paint_m(m, sink),
         }),
         vector_mask: l.vector_mask.clone(),
         effects: EffectsM {
@@ -367,6 +369,30 @@ impl Loader<'_> {
         Ok(s)
     }
 
+    fn mask_paint(&mut self, m: &MaskM) -> Result<Option<photocraft_doc::mask_paint::Stack>> {
+        let Some(s) = &m.paint else { return Ok(None) };
+        if s.layers.len() > 256 || s.active >= s.layers.len() {
+            return Err(crate::FormatError::Corrupt("invalid mask paint stack".into()));
+        }
+        let base = self.surface(&s.base)?;
+        if base.channels() != 1 {
+            return Err(FormatError::corrupt("mask paint base must be grayscale"));
+        }
+        let mut layers = Vec::new();
+        for p in &s.layers {
+            let surface = self.surface(&p.surface)?;
+            if surface.format().mode != photocraft_color::ColorMode::Rgb
+                || !surface.format().alpha
+                || !p.opacity.is_finite()
+                || !(0.0..=1.0).contains(&p.opacity)
+            {
+                return Err(crate::FormatError::Corrupt("invalid mask paint layer".into()));
+            }
+            layers.push(photocraft_doc::mask_paint::Paint { name: p.name.clone(), visible: p.visible, opacity: p.opacity, surface });
+        }
+        Ok(Some(photocraft_doc::mask_paint::Stack { base, layers, active: s.active }))
+    }
+
     fn opt_surface(&mut self, m: &Option<SurfaceM>) -> Result<Option<Surface>> {
         m.as_ref().map(|s| self.surface(s)).transpose()
     }
@@ -498,6 +524,7 @@ impl Loader<'_> {
                             linked: mm.linked,
                             density: mm.density,
                             feather: mm.feather,
+                            paint: self.mask_paint(mm)?,
                         }),
                         None => None,
                     },
@@ -508,9 +535,14 @@ impl Loader<'_> {
             }
         };
         let mask = match &m.mask {
-            Some(mm) => {
-                Some(LayerMask { surface: self.surface(&mm.surface)?, enabled: mm.enabled, linked: mm.linked, density: mm.density, feather: mm.feather })
-            }
+            Some(mm) => Some(LayerMask {
+                surface: self.surface(&mm.surface)?,
+                enabled: mm.enabled,
+                linked: mm.linked,
+                density: mm.density,
+                feather: mm.feather,
+                paint: self.mask_paint(mm)?,
+            }),
             None => None,
         };
         let fill_cache = match &m.fill_cache {
@@ -687,6 +719,18 @@ pub(crate) fn reserve_ids_through(max: u64) -> bool {
     }
     photocraft_doc::ensure_ids_above(max);
     true
+}
+
+fn mask_paint_m(m: &LayerMask, sink: &mut dyn Sink) -> Option<MaskPaintM> {
+    m.paint.as_ref().map(|s| MaskPaintM {
+        base: surface_m(&s.base, sink),
+        active: s.active,
+        layers: s
+            .layers
+            .iter()
+            .map(|p| MaskPaintLayerM { name: p.name.clone(), visible: p.visible, opacity: p.opacity, surface: surface_m(&p.surface, sink) })
+            .collect(),
+    })
 }
 
 #[cfg(test)]

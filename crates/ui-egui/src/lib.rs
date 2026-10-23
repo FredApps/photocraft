@@ -258,6 +258,8 @@ mod uv_lighting;
 #[cfg(feature = "uv-workbench")]
 mod uv_mask;
 #[cfg(feature = "uv-workbench")]
+mod uv_mask_paint;
+#[cfg(feature = "uv-workbench")]
 mod uv_mips;
 #[cfg(feature = "uv-workbench")]
 mod uv_paint;
