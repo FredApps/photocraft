@@ -2,6 +2,36 @@
 use photocraft_engine::Session;
 use serde_json::json;
 
+#[test]
+fn relative_model_filename_loads_material_and_discovered_textures() {
+    const CHILD: &str = "PHOTOCRAFT_TEST_RELATIVE_MODEL_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        for source in ["mesh.obj", "./mesh.obj"] {
+            let mut s = Session::new();
+            s.execute("uv.model.import", json!({"path":source})).unwrap();
+            let material = s.uv.scene.as_ref().unwrap().materials.iter().position(|m| m.name == "Painted").unwrap();
+            assert!(s.uv.bindings[material].is_some(), "MTL color texture missing for {source}");
+            assert!(s.uv.normal_bindings[material].is_some(), "Discovered normal texture missing for {source}");
+            assert_eq!(s.documents().len(), 2);
+        }
+        return;
+    }
+
+    // Set only the child's working directory: parallel tests must keep their own cwd.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("mesh.obj"), "mtllib mesh.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nusemtl Painted\nf 1/1 2/2 3/3\n").unwrap();
+    std::fs::write(dir.path().join("mesh.mtl"), "newmtl Painted\nmap_Kd checker.png\n").unwrap();
+    std::fs::write(dir.path().join("checker.png"), include_bytes!("../../uv/tests/fixtures/checker.png")).unwrap();
+    std::fs::write(dir.path().join("Painted_normal.png"), include_bytes!("../../uv/tests/fixtures/normal.png")).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "relative_model_filename_loads_material_and_discovered_textures", "--nocapture"])
+        .env(CHILD, "1")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Child test failed:\n{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+}
+
 fn file() -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
         "photocraft-reimport-{}-{}.obj",

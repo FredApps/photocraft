@@ -145,9 +145,14 @@ fn read(_path: &str) -> Result<Vec<u8>> {
 pub(crate) fn read_limited(path: &str, _limit: u64) -> Result<Vec<u8>> {
     read(path)
 }
+/// A bare model filename belongs to the current directory, not the empty path.
+fn model_directory(source: &str) -> &Path {
+    Path::new(source).parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."))
+}
+
 /// Resolve model-provided references only to regular files within the model directory.
 fn resolved(source: &str, name: &str) -> String {
-    let base = Path::new(source).parent().unwrap_or(Path::new("."));
+    let base = model_directory(source);
     let Ok(base) = base.canonicalize() else { return String::new() };
     let name = name.replace('\\', "/");
     let candidate = base.join(&name);
@@ -173,7 +178,7 @@ pub(super) fn load_scene(source: &str, uv_set: usize) -> Result<(Scene, Option<c
     #[cfg(not(target_arch = "wasm32"))]
     {
         let used: BTreeSet<_> = scene.triangles.iter().map(|t| t.material).collect();
-        let base = Path::new(source).parent().unwrap_or(Path::new("."));
+        let base = model_directory(source);
         let files: Vec<_> =
             std::fs::read_dir(base).into_iter().flatten().filter_map(std::result::Result::ok).take(4096).map(|e| e.path()).filter(|p| p.is_file()).collect();
         for (i, m) in scene.materials.iter_mut().enumerate().filter(|(i, _)| used.contains(i)) {
