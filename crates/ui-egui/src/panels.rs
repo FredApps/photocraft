@@ -974,15 +974,15 @@ fn options_bar_height(pro: bool, narrow: bool) -> f32 {
 
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     #[cfg(feature = "uv-workbench")]
-    if app.ui.uv_workbench.select_shells && app.session.uv.scene.is_some() {
+    if app.ui.workspace == "3D" && app.ui.uv_workbench.select_shells && app.session.uv.scene.is_some() {
         egui::Panel::top("options_bar").exact_size(36.0).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.menu_button("Выделение UV-шеллов · Защита швов", |ui| {
+                ui.menu_button(tl!("UV shell selection"), |ui| {
                     ui.set_max_width(360.0);
                     crate::uv_ui::shell_settings(app, ui);
                 });
                 ui.separator();
-                ui.weak("Щелчок — выбрать · Shift — добавить · Alt в 2D / Ctrl в 3D — вычесть");
+                ui.weak(tl!("Click to select · Shift to add · Alt in 2D / Ctrl in 3D to subtract"));
             });
         });
         return;

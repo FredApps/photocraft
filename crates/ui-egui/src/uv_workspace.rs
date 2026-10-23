@@ -542,6 +542,34 @@ mod tests {
         assert_eq!(tabs(&app), [(0, "Properties"), (1, "Adjustments")]);
     }
     #[test]
+    fn uv_shell_options_are_localized_and_hidden_outside_3d() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        for (language, label, hint) in [
+            ("en", "UV shell selection", "Click to select · Shift to add · Alt in 2D / Ctrl in 3D to subtract"),
+            ("ru", "Выделение UV-шеллов", "Щелчок — выбрать · Shift — добавить · Alt в 2D / Ctrl в 3D — вычесть"),
+        ] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+            app.session.uv.scene = Some(std::sync::Arc::new(photocraft_uv::Scene::default()));
+            app.ui.workspace = "3D".into();
+            app.ui.uv_workbench.select_shells = true;
+            let app = std::rc::Rc::new(std::cell::RefCell::new(app));
+            let state = app.clone();
+            let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 90.0)).build_ui(move |ui| {
+                crate::i18n::with_language(crate::i18n::Lang::from_pref(language), || {
+                    crate::panels::options_bar(&mut state.borrow_mut(), ui);
+                });
+            });
+            PhotocraftApp::setup_context(&h.ctx, Default::default());
+            h.run_steps(2);
+            assert!(h.query_by_label(label).is_some(), "{language}: shell settings");
+            assert!(h.query_by_label(hint).is_some(), "{language}: selection modifiers");
+            app.borrow_mut().ui.workspace = "Essentials".into();
+            h.run_steps(2);
+            assert!(h.query_by_label(label).is_none(), "{language}: ordinary tool options return");
+            assert!(h.query_by_label(hint).is_none(), "{language}: shell instructions stay in 3D");
+        }
+    }
+    #[test]
     fn uv_controls_follow_english_and_russian_interface_languages() {
         let _gpu = photocraft_testkit::gpu_lock();
         for (language, views, projection, shell) in
