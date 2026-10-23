@@ -14,7 +14,7 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     #[cfg(feature = "uv-workbench")]
     ("file.uv.import", "Import Model…", &["File", "3D Import"], None),
     #[cfg(feature = "uv-workbench")]
-    ("file.uv.reimport", "ReImport", &["File", "3D Import"], None),
+    ("file.uv.reimport", "Reimport", &["File", "3D Import"], None),
     #[cfg(feature = "uv-workbench")]
     ("file.uv.settings", "Import Settings…", &["File", "3D Import"], None),
     #[cfg(feature = "uv-workbench")]

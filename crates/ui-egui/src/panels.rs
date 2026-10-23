@@ -3966,7 +3966,7 @@ fn snapshot_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, selected: Option<u6
 /// Adjustments (`adjustments_grid`).
 pub fn properties_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     #[cfg(feature = "uv-workbench")]
-    if app.ui.dock_tabs.properties == 2 {
+    if app.ui.workspace == "3D" && matches!(app.ui.dock_tabs.properties, 2 | 3) {
         return;
     }
     if app.ui.docking.is_some() {

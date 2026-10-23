@@ -122,8 +122,17 @@ pub(crate) fn clone_preview_texture(
         (h.finish(), radius.to_bits(), at.map(f64::to_bits))
     });
     let key = format!(
-        "{:?}:{}:{:?}:{rect:?}:{map:?}:{}:{}:{}:{}:{}:{tip_key:?}",
-        st.doc.id, st.revision, st.active_layer, app.ui.tool_options.clone_sample, display_key, overlay.invert, overlay.blend, app.ui.view.pattern_preview
+        "{:?}:{}:{:?}:{rect:?}:{map:?}:{}:{}:{}:{}:{}:{tip_key:?}:{:?}:{:?}",
+        st.doc.id,
+        st.revision,
+        st.active_layer,
+        app.ui.tool_options.clone_sample,
+        display_key,
+        overlay.invert,
+        overlay.blend,
+        app.ui.view.pattern_preview,
+        overlay.clipped,
+        if overlay.clipped && tip_rings.is_none() { Some(at.map(f64::to_bits)) } else { None }
     );
     if app.clone_preview.as_ref().is_none_or(|c| c.key != key) {
         let Ok(mut buf) =

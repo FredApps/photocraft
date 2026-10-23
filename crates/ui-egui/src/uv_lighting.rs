@@ -228,7 +228,7 @@ pub(crate) fn panel(app: &mut PhotocraftApp, state: &mut crate::uv_ui::State, ui
         }
         let env = ensure(cache);
         let settings = &mut state.lighting;
-        ui.checkbox(&mut settings.pbr, "PBR · Roughness / Metallic");
+        ui.checkbox(&mut settings.pbr, tl!("PBR · Roughness / Metallic"));
         if cache.preview.is_none()
             && let Some(im) = env.specular.first()
         {
@@ -252,7 +252,7 @@ pub(crate) fn panel(app: &mut PhotocraftApp, state: &mut crate::uv_ui::State, ui
         ui.label(if cache.name.is_empty() { tl!("Studio environment") } else { &cache.name });
         let mut choose = false;
         ui.horizontal(|ui| {
-            choose = ui.button("HDR / EXR…").clicked();
+            choose = ui.button(tl!("HDR / EXR…")).clicked();
             if ui.button(tl!("Studio")).clicked() {
                 cache.environment = None;
                 cache.preview = None;
@@ -278,8 +278,8 @@ pub(crate) fn panel(app: &mut PhotocraftApp, state: &mut crate::uv_ui::State, ui
         }
         ui.add(egui::Slider::new(&mut settings.emissive, 0.0..=8.0).text(tl!("Emissive intensity")));
         egui::CollapsingHeader::new(tl!("Material defaults")).show(ui, |ui| {
-            ui.add(egui::Slider::new(&mut settings.roughness, 0.045..=1.0).text("Roughness"));
-            ui.add(egui::Slider::new(&mut settings.metallic, 0.0..=1.0).text("Metallic"));
+            ui.add(egui::Slider::new(&mut settings.roughness, 0.045..=1.0).text(tl!("Roughness")));
+            ui.add(egui::Slider::new(&mut settings.metallic, 0.0..=1.0).text(tl!("Metallic")));
         });
         if choose {
             use crate::file_dialog::{FileDialogAnswer, FileDialogRequest};

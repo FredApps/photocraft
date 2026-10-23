@@ -223,8 +223,8 @@ pub fn show_picker(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 #[cfg(feature = "uv-workbench")]
                 if picker_3d {
                     ui.horizontal(|ui| {
-                        ui.selectable_value(&mut wrap, false, "Paint UV").on_hover_text(tl!("Brush tip in UV space"));
-                        ui.selectable_value(&mut wrap, true, "Paint Wrap")
+                        ui.selectable_value(&mut wrap, false, tl!("Paint UV")).on_hover_text(tl!("Brush tip in UV space"));
+                        ui.selectable_value(&mut wrap, true, tl!("Paint Wrap"))
                             .on_hover_text(tl!("Wraps neighboring faces and UV seams. Brush, Pencil and Eraser; retouching uses Paint UV."));
                     });
                 }

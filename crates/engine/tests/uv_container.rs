@@ -134,3 +134,26 @@ fn parked_uv_shells_are_untouched_by_normal_deselect_and_reload_does_not_accumul
         assert!(!s.uv.has_unsaved_project(s.uv_documents()));
     }
 }
+
+#[test]
+fn restored_external_writeback_requires_explicit_rebinding() {
+    use serde_json::json;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("project");
+    std::fs::create_dir(&dir).unwrap();
+    let texture = root.path().join("map.png");
+    let project = dir.join("scene.pcuv");
+    let mut s = photocraft_engine::Session::new();
+    let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
+    s.execute("uv.model.import", json!({"path":model})).unwrap();
+    s.execute("uv.texture.create", json!({"width":8,"height":8})).unwrap();
+    s.active_mut().unwrap().saved_to(texture.to_string_lossy().into_owned());
+    s.execute("uv.project.save", json!({"path":project})).unwrap();
+    s.execute("uv.project.load", json!({"path":project})).unwrap();
+    s.execute("edit.fill", json!({"color":"#ff0000"})).unwrap();
+    assert_eq!(s.execute("file.uv.saveAllTextures", json!({})).unwrap()["saved"], 0);
+    assert!(!texture.exists());
+    s.execute("uv.texture.bind", json!({"material":0})).unwrap();
+    assert_eq!(s.execute("file.uv.saveAllTextures", json!({})).unwrap()["saved"], 1);
+    assert!(texture.is_file());
+}

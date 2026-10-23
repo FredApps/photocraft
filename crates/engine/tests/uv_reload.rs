@@ -51,7 +51,7 @@ fn project_retains_source_stamp_and_legacy_projects_can_establish_a_baseline() {
     let mut s = Session::new();
     s.execute("uv.model.import", json!({"path":path})).unwrap();
     s.execute("uv.project.save", json!({"path":project})).unwrap();
-    std::fs::write(&path, obj("A", "B", 3.0)).unwrap();
+    std::fs::write(&path, obj("A", "B", 3.125)).unwrap();
     let mut loaded = Session::new();
     loaded.execute("uv.project.load", json!({"path":project})).unwrap();
     assert_eq!(loaded.execute("uv.model.checkSource", json!({})).unwrap()["changed"], true);

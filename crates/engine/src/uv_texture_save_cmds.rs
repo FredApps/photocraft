@@ -16,6 +16,10 @@ fn save(s: &mut Session, _: &Value) -> Result<Value> {
     let mut warnings = Vec::new();
     for index in 0..s.documents().len() {
         let Some(st) = s.documents().get(index).filter(|st| bound.contains(&st.doc.id) && s.uv.needs_export(st)) else { continue };
+        if s.uv.blocked_exports.contains(&st.doc.id) {
+            errors.push("External texture destination restored from project: explicitly rebind the texture before exporting".into());
+            continue;
+        }
         let Some(path) = st.path.clone().filter(|p| !p.is_empty()) else {
             unsaved += 1;
             continue;

@@ -295,6 +295,19 @@ impl Renderer {
         }
     }
     pub fn new(rs: RenderState, health: photocraft_gpu::DeviceHealth) -> Result<Self, String> {
+        use std::future::Future;
+        let validation = rs.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let memory = rs.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::create(rs.clone(), health)));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        for pop in [memory.pop(), validation.pop()] {
+            if let std::task::Poll::Ready(Some(error)) = std::pin::pin!(pop).poll(&mut cx) {
+                return Err(format!("3D GPU setup failed: {error}"));
+            }
+        }
+        result.map_err(|_| "3D GPU setup panicked; using CPU preview".to_owned())?
+    }
+    fn create(rs: RenderState, health: photocraft_gpu::DeviceHealth) -> Result<Self, String> {
         if !crate::gpu_canvas::supports_f16_canvas(&rs.adapter) {
             return Err("GPU does not support filtered half-float normal-map mip targets".into());
         }

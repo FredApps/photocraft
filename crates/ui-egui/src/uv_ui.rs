@@ -2252,7 +2252,7 @@ mod tests {
         harness.step();
         harness.get_by_label("3D Import ⏵").click();
         harness.step();
-        harness.get_by_label("ReImport").click();
+        harness.get_by_label("Reimport").click();
         harness.step();
         harness.step();
         assert!(harness.state().uv_gpu_active());

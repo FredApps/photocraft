@@ -246,3 +246,9 @@ The separate `-EN.zip` distribution contains an English README and English insta
 Leaving the 3D workspace parks its documents and restores the ordinary workspace's own document bank. 3D maps do not appear in ordinary document tabs, Window menus or canvases; native document identity, layer history and each canvas transform survive switching back. UV overlays, selection input, navigation and floating 3D views are inactive outside the 3D workspace. Unsaved hidden 3D work is still checked on application exit. Replacing/reopening an active project releases its previous document bank after successful decoding.
 
 The native Channels/layer-mask display is projected onto affected 3D materials, including grayscale mask solo, rubylith overlays, live brush previews and undo. The GPU uses a per-material unlit mask display and bypasses opacity cutouts for it; other materials retain their normal lighting. This view does not overwrite source texture maps. Layer-mask display revisions are tracked as view changes, so changing mask visibility alone does not mark a map for export.
+
+### Imported asset paths and external writeback
+
+Model-provided texture and MTL references resolve only to regular files inside the model directory (including its subdirectories). Absolute exporter paths can relink to a matching local filename; paths and symlinks escaping the directory are not opened automatically. Missing maps can still be assigned explicitly through the texture picker.
+
+A loaded container preserves external texture paths and all embedded edits, but Export Textures refuses writeback outside the container directory until that document is explicitly rebound using the material controls. This trust is not inherited from container metadata. Explicitly opened textures remain supported.

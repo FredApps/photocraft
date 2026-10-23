@@ -5181,7 +5181,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-uv"
-version = "0.1.0"
+version = "0.14.0"
 dependencies = [
  "earcutr",
  "fbxcel",

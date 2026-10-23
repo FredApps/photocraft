@@ -11,14 +11,12 @@ use photocraft_uv::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, path::Path, sync::Arc};
 
 #[derive(Default)]
 pub struct UvState {
+    /// Restored external destinations require explicit rebinding before texture writeback.
+    pub(crate) blocked_exports: std::collections::HashSet<DocId>,
     /// Opaque, bounded view metadata; camera/UI types stay above the engine layer.
     pub project_view: Value,
     pub project_path: String,
@@ -124,6 +122,9 @@ const MAX_PROJECT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn read_limited(path: &str, limit: u64) -> Result<Vec<u8>> {
     use std::io::Read;
+    if !std::fs::metadata(path).map_err(|e| err(e.to_string()))?.is_file() {
+        return Err(err("UV input must be a regular file"));
+    }
     let file = std::fs::File::open(path).map_err(|e| err(format!("{path}: {e}")))?;
     let size = file.metadata().map_err(|e| err(e.to_string()))?.len();
     if size > limit {
@@ -144,23 +145,22 @@ fn read(_path: &str) -> Result<Vec<u8>> {
 pub(crate) fn read_limited(path: &str, _limit: u64) -> Result<Vec<u8>> {
     read(path)
 }
+/// Resolve model-provided references only to regular files within the model directory.
 fn resolved(source: &str, name: &str) -> String {
-    let name = name.replace('\\', "/");
-    let absolute = PathBuf::from(&name);
-    if absolute.is_file() {
-        return absolute.to_string_lossy().into_owned();
-    }
     let base = Path::new(source).parent().unwrap_or(Path::new("."));
-    let relative = base.join(&name);
-    if relative.is_file() {
-        return relative.to_string_lossy().into_owned();
+    let Ok(base) = base.canonicalize() else { return String::new() };
+    let name = name.replace('\\', "/");
+    let candidate = base.join(&name);
+    let nearby = base.join(Path::new(&name).file_name().unwrap_or_default());
+    for path in [candidate, nearby] {
+        if let Ok(path) = path.canonicalize()
+            && path.starts_with(&base)
+            && path.is_file()
+        {
+            return path.to_string_lossy().into_owned();
+        }
     }
-    let filename = Path::new(&name).file_name().unwrap_or_default();
-    let nearby = base.join(filename);
-    if nearby.is_file() {
-        return nearby.to_string_lossy().into_owned();
-    }
-    relative.to_string_lossy().into_owned()
+    String::new()
 }
 
 pub(super) fn load_scene(source: &str, uv_set: usize) -> Result<(Scene, Option<crate::uv_reload_cmds::SourceStamp>)> {
@@ -352,6 +352,7 @@ fn bindings(s: &Session) -> &[Option<DocId>] {
     s.uv.map_bindings(s.uv.current_channel())
 }
 fn bind(s: &mut Session, material: usize, id: DocId, kind: Channel) {
+    s.uv.blocked_exports.remove(&id);
     let count = s.uv.bindings.len();
     let target = match kind {
         Channel::Normal => &mut s.uv.normal_bindings,
@@ -956,6 +957,7 @@ fn project_load(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(err("Normal maps must use RGB mode"));
         }
     }
+    let mut blocked_exports = std::collections::HashSet::new();
     let mut restored = std::collections::BTreeMap::new();
     let mut exported_revisions = std::collections::HashMap::new();
     let mut saved_revisions = std::collections::HashMap::new();
@@ -971,7 +973,17 @@ fn project_load(s: &mut Session, p: &Value) -> Result<Value> {
                 // Legacy projects did not track external writeback. A linked embedded
                 // texture needs one writeback; saving .pcuv alone never wrote its map file.
                 let writeback = project.dirty_documents.as_ref().map_or(source.is_some(), |dirty| name.as_ref().is_some_and(|name| dirty.contains(name)));
+                let external = source.as_ref().is_some_and(|source| {
+                    !Path::new(source)
+                        .canonicalize()
+                        .ok()
+                        .zip(Path::new(path(p).unwrap_or("")).parent().and_then(|p| p.canonicalize().ok()))
+                        .is_some_and(|(file, base)| file.starts_with(base) && file.is_file())
+                });
                 let index = s.add_document(doc, source);
+                if external && let Some(st) = s.docs.get(index) {
+                    blocked_exports.insert(st.doc.id);
+                }
                 if let Some(st) = s.docs.get(index) {
                     exported_revisions.insert(st.doc.id, if writeback { 0 } else { st.revision });
                     saved_revisions.insert(st.doc.id, st.revision);
@@ -994,6 +1006,7 @@ fn project_load(s: &mut Session, p: &Value) -> Result<Value> {
         extra = tail;
     }
     s.uv = UvState {
+        blocked_exports,
         project_view: project.view,
         project_path: path(p)?.to_owned(),
         assets,
@@ -1093,4 +1106,23 @@ pub fn specs() -> Vec<CommandSpec> {
         spec("uv.project.save", "Save UV project", r#"{"path":string,"view":object?}"#, mesh, project_save),
         spec("uv.project.load", "Open UV project", r#"{"path":string}"#, crate::commands::always, project_load),
     ]
+}
+
+#[cfg(test)]
+mod asset_path_tests {
+    #[test]
+    fn model_references_cannot_escape_the_asset_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let assets = root.path().join("assets");
+        std::fs::create_dir(&assets).unwrap();
+        let model = assets.join("mesh.obj");
+        std::fs::write(&model, "").unwrap();
+        std::fs::write(assets.join("map.png"), "map").unwrap();
+        std::fs::write(root.path().join("outside.png"), "outside").unwrap();
+        let source = model.to_str().unwrap();
+        assert!(!super::resolved(source, "map.png").is_empty());
+        assert!(super::resolved(source, "../outside.png").is_empty());
+        assert!(super::resolved(source, root.path().join("outside.png").to_str().unwrap()).is_empty());
+        assert!(super::resolved(source, ".").is_empty());
+    }
 }

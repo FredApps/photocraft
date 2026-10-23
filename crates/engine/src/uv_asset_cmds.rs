@@ -69,17 +69,17 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
 }
 pub fn specs() -> Vec<CommandSpec> {
     [
-        ("uv.asset.import", "Import library image", import as fn(&mut Session, &Value) -> Result<Value>),
-        ("uv.asset.place", "Place library image", place),
-        ("uv.asset.remove", "Remove library image", remove),
+        ("uv.asset.import", "Import library image", r#"{"path":string}"#, import as fn(&mut Session, &Value) -> Result<Value>),
+        ("uv.asset.place", "Place library image", r#"{"asset":number}"#, place),
+        ("uv.asset.remove", "Remove library image", r#"{"asset":number}"#, remove),
     ]
     .into_iter()
-    .map(|(id, label, run)| CommandSpec {
+    .map(|(id, label, params, run)| CommandSpec {
         id,
         label,
         menu: &[],
         shortcut: None,
-        params: r#"{"path":string? ,"asset":number?}"#,
+        params,
         enabled: |s| if s.uv.scene.is_some() { Ok(()) } else { Err("Import a model first".into()) },
         run,
         journal: false,
