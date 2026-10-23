@@ -91,3 +91,33 @@ fn invalid_stack_edits_preserve_document() {
     s.execute("uv.maskPaint.modify", json!({"index":0,"visible":false})).unwrap();
     assert!(s.execute("paint.stroke", json!({"target":"mask","points":[[8,8]],"size":12})).is_err());
 }
+
+#[test]
+fn opacity_drag_is_one_undo_and_does_not_rewrite_untouched_mask_tiles() {
+    let mut s = fixture(16);
+    let id = s.active().unwrap().active_layer.unwrap();
+    s.edit("Dense base", |doc, _| {
+        doc.size = photocraft_geom::Size::new(1024, 1024);
+        let mask = doc.layer_mut(id).unwrap().mask.as_mut().unwrap();
+        mask.surface.write_region(photocraft_geom::Rect::from_xywh(0, 0, 1024, 1024), &vec![0.75; 1024 * 1024]);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("uv.maskPaint.add", json!({})).unwrap();
+    paint(&mut s, "#000000");
+    s.execute("uv.maskPaint.add", json!({"name":"Far Paint"})).unwrap();
+    s.execute("paint.stroke", json!({"target":"mask","points":[[800.5,800.5]],"size":12,"color":"#000000","brush":{"hardness":1.0}})).unwrap();
+    s.execute("uv.maskPaint.select", json!({"index":0})).unwrap();
+    let distant = photocraft_geom::TileCoord::new(3, 3);
+    let before = s.active().unwrap().doc.layer(id).unwrap().mask.as_ref().unwrap().surface.tile(distant).unwrap().clone();
+    let start = std::time::Instant::now();
+    for opacity in [0.9, 0.8, 0.7] {
+        s.execute("uv.maskPaint.modify", json!({"index":0,"opacity":opacity,"coalesce":"opacity-drag"})).unwrap();
+    }
+    println!("Three opacity updates on a dense 1K base: {:?}", start.elapsed());
+    assert!(!s.active().unwrap().last_damage.unwrap().contains(768, 768), "Opacity must not invalidate the distant viewport region");
+    let after = s.active().unwrap().doc.layer(id).unwrap().mask.as_ref().unwrap().surface.tile(distant).unwrap().clone();
+    assert!(std::sync::Arc::ptr_eq(&before, &after), "Opacity must preserve cache tiles outside Paint coverage");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(value(&s) < 0.01, "One undo restores opacity before the whole drag");
+}

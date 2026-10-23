@@ -2862,7 +2862,15 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let top = ui.cursor().top();
                 drawn.push((l.id, layer_row(app, &ctx, ui, &doc, l, depth, row, &mut actions)));
                 #[cfg(feature = "uv-workbench")]
-                crate::uv_mask_paint::rows(app, ui, l, &mut actions);
+                {
+                    let paint_top = ui.cursor().top();
+                    crate::uv_mask_paint::rows(app, ui, l, &mut actions);
+                    if ui.cursor().top() > paint_top
+                        && let Some((_, area)) = drawn.last_mut()
+                    {
+                        area.max.y = ui.cursor().top().max(area.max.y);
+                    }
+                }
                 if reveal == Some(l.id) {
                     crate::layer_reveal::scroll_to_row(ui, top);
                 }
@@ -3489,7 +3497,7 @@ fn layer_row(
         let content_less = matches!(l.content, LayerContent::Adjustment(_) | LayerContent::Fill(_));
         let content_click = on_thumb || !row.primary;
         #[cfg(feature = "uv-workbench")]
-        let content_click = content_click || app.ui.workspace == "3D";
+        let content_click = if app.ui.workspace == "3D" { on_thumb } else { content_click };
         let mask_by_row = content_less && l.mask.is_some() && !on_thumb;
         #[cfg(feature = "uv-workbench")]
         let mask_by_row = mask_by_row && app.ui.workspace != "3D";

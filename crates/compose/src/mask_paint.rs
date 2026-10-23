@@ -8,19 +8,26 @@ pub fn refresh_changes(mask: &mut LayerMask, old: Option<&Stack>) {
         refresh(mask, None);
         return;
     };
-    if stack.layers.len() != old.layers.len()
-        || stack.base != old.base
-        || stack
-            .layers
-            .iter()
-            .zip(&old.layers)
-            .any(|(a, b)| a.visible != b.visible || a.opacity != b.opacity || a.surface.default_pixel() != b.surface.default_pixel())
-    {
+    if stack.base != old.base || stack.layers.iter().chain(&old.layers).any(|p| p.surface.default_pixel().get(3).is_some_and(|a| *a != 0.0)) {
         refresh(mask, None);
+        return;
+    }
+    if stack.layers.len() != old.layers.len() {
+        let mut tiles = std::collections::BTreeSet::new();
+        for paint in stack.layers.iter().chain(&old.layers) {
+            tiles.extend(paint.surface.tiles().map(|(c, _)| *c));
+        }
+        for tile in tiles {
+            refresh(mask, Some(tile.rect()));
+        }
         return;
     }
     let mut changed = std::collections::BTreeSet::new();
     for (a, b) in stack.layers.iter().zip(&old.layers) {
+        if a.opacity != b.opacity || a.visible != b.visible {
+            changed.extend(a.surface.tiles().map(|(coord, _)| *coord));
+            changed.extend(b.surface.tiles().map(|(coord, _)| *coord));
+        }
         for (coord, tile) in a.surface.tiles() {
             if b.surface.tile(*coord).is_none_or(|prior| !std::sync::Arc::ptr_eq(prior, tile)) {
                 changed.insert(*coord);

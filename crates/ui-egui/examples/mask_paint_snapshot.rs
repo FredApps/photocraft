@@ -37,10 +37,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Mask Paint layer list did not expand".into());
     }
     h.render()?.save("D:/PhotoCraft-UV-build/Screenshots/mask-paint-expanded.png")?;
-    h.state_mut().ui.mask_target = false;
-    for _ in 0..4 {
+    fn click(h: &mut egui_kittest::Harness<'_, PhotocraftApp>, p: egui::Pos2) {
+        h.hover_at(p);
         h.step();
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            h.step();
+        }
+        h.run_steps(3);
     }
+    let paint = h.get_by_label("Paint 1").rect().center();
+    click(&mut h, paint);
+    if h.query_by_label("Paint 1").is_none() {
+        return Err("Paint row click collapsed mask layers".into());
+    }
+    let second = h.get_by_label("Paint 2").rect();
+    let icon = egui::pos2(second.left() - 16.0, second.center().y);
+    click(&mut h, icon);
+    if h.query_by_label("Paint 1").is_none() {
+        return Err("Paint icon click collapsed mask layers".into());
+    }
+    let row = photocraft_ui_egui::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.thumbnail.is_some()).ok_or("No layer thumbnail")?;
+    if let Some(name) = row.name {
+        click(&mut h, name.center());
+        if h.query_by_label("Paint 1").is_none() {
+            return Err("Main layer name click collapsed the Paint list".into());
+        }
+    }
+    click(&mut h, row.thumbnail.ok_or("No thumbnail")?.center());
     if h.query_by_label("Paint 1").is_some() {
         return Err("Mask Paint layer list did not collapse".into());
     }

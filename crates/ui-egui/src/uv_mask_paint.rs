@@ -21,10 +21,10 @@ pub(crate) fn rows(app: &PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, action
                     if eye_response.on_hover_text(tl!("Visibility")).clicked() {
                         actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"visible":!paint.visible})));
                     }
-                    let (brush, _) = ui.allocate_exact_size(egui::vec2(16.0, 20.0), egui::Sense::hover());
+                    let (brush, brush_response) = ui.allocate_exact_size(egui::vec2(16.0, 20.0), egui::Sense::click());
                     crate::icons::paint(ui, brush, "brush", 14.0, tokens.icon);
                     let name = ui.selectable_label(index == stack.active, &paint.name);
-                    if name.clicked() {
+                    if name.clicked() || brush_response.clicked() {
                         actions.push(("uv.maskPaint.select".into(), json!({"layer":layer.id.0,"index":index})));
                         actions.push(("ui.maskTarget".into(), json!(true)));
                     }
@@ -51,8 +51,15 @@ pub(crate) fn rows(app: &PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, action
                         }
                     });
                     let mut opacity = paint.opacity * 100.0;
-                    if ui.add(egui::DragValue::new(&mut opacity).range(0.0..=100.0).suffix("%").speed(0.5)).on_hover_text(tl!("Opacity")).changed() {
-                        actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"opacity":opacity/100.0})));
+                    let opacity_response=ui.add(egui::DragValue::new(&mut opacity).range(0.0..=100.0).suffix("%").speed(0.5)).on_hover_text(tl!("Opacity"));
+                    let gesture_id=ui.id().with("opacity-gesture");
+                    if opacity_response.drag_started() || opacity_response.gained_focus() {
+                        let pass=ui.ctx().cumulative_pass_nr();
+                        ui.ctx().data_mut(|d|d.insert_temp(gesture_id,pass));
+                    }
+                    if opacity_response.changed() {
+                        let gesture=ui.ctx().data(|d|d.get_temp::<u64>(gesture_id)).unwrap_or_else(||ui.ctx().cumulative_pass_nr());
+                        actions.push(("uv.maskPaint.modify".into(),json!({"layer":layer.id.0,"index":index,"opacity":opacity/100.0,"coalesce":format!("mask-opacity:{}:{index}:{gesture}",layer.id.0)})));
                     }
                 })
                 .response;

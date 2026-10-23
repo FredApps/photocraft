@@ -65,11 +65,23 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
     let visible = p.get("visible").map(|v| v.as_bool().ok_or_else(|| bad("Visibility must be boolean"))).transpose()?;
     let destination = p.get("to").map(|v| v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("Invalid destination"))).transpose()?;
     let remove = p.get("remove").and_then(Value::as_bool).unwrap_or(false);
-    s.edit("Edit mask Paint layer", |doc, _| {
+    let mut damage = photocraft_geom::Rect::EMPTY;
+    let result = s.edit("Edit mask Paint layer", |doc, _| {
+        let canvas = doc.bounds();
         let mask = doc.layer_mut(id).and_then(|l| l.mask.as_mut()).ok_or_else(|| bad("Layer has no mask"))?;
         let stack = mask.paint.as_mut().ok_or_else(|| bad("Mask has no Paint layers"))?;
         if destination.is_some_and(|to| to >= stack.layers.len()) {
             return Err(bad("Destination is out of range"));
+        }
+        if opacity.is_some() || visible.is_some() || remove || destination.is_some() {
+            let affected = if destination.is_some() { stack.layers.iter().collect::<Vec<_>>() } else { stack.layers.get(index).into_iter().collect() };
+            for paint in affected {
+                let bounds = if paint.surface.default_pixel().get(3).is_some_and(|a| *a != 0.0) { canvas } else { paint.surface.content_bounds() };
+                damage = damage.union(&bounds);
+            }
+            if !damage.is_empty() {
+                damage = damage.inflate((mask.feather.max(0.0) * 3.0).ceil().min(100_000.0) as i32).intersect(&canvas);
+            }
         }
         let paint = stack.layers.get_mut(index).ok_or_else(|| bad("Paint layer is out of range"))?;
         if let Some(value) = opacity {
@@ -98,12 +110,19 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                 selected
             };
         }
-        photocraft_compose::mask_paint::refresh(mask, None);
         if mask.paint.as_ref().is_some_and(|s| s.layers.is_empty()) {
+            // No other paint remains: restore the original mask without a full blend pass.
+            if let Some(stack) = &mask.paint {
+                mask.surface = stack.base.clone();
+            }
             mask.paint = None;
         }
         Ok(Value::Null)
-    })
+    })?;
+    if let Some(st) = s.active_mut() {
+        st.last_damage = Some(damage);
+    }
+    Ok(result)
 }
 pub fn specs() -> Vec<CommandSpec> {
     [
