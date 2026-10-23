@@ -392,7 +392,9 @@ fn preference_uses_ambient_filesystem(path: &str) -> bool {
 
 fn command_uses_ambient_path(id: &str, params: &Value) -> bool {
     match id {
-        "uv.model.import" | "uv.model.reimport" | "uv.model.checkSource" | "uv.texture.open" | "uv.project.save" | "uv.project.load" => true,
+        "uv.model.import" | "uv.model.reimport" | "uv.model.checkSource" | "uv.texture.open" | "uv.project.save" | "uv.project.load" | "uv.asset.import" => {
+            true
+        }
         "actions.load"
         | "brush.presets.importAbr"
         | "brush.presets.importImage"
@@ -841,6 +843,8 @@ mod tests {
             ("uv.texture.open", serde_json::json!({"path": "/outside/texture.png"})),
             ("uv.project.save", serde_json::json!({"path": "/outside/model.pcuv"})),
             ("uv.project.load", serde_json::json!({"path": "/outside/model.pcuv"})),
+            ("uv.asset.import", serde_json::json!({"path": "/outside/image.png"})),
+            ("file.uv.saveAllTextures", serde_json::json!({})),
             ("brush.presets.importAbr", serde_json::json!({"path": "/outside/set.abr"})),
             ("brush.presets.importImage", serde_json::json!({"path": "/outside/tip.png"})),
             ("gradient.presets.importGrd", serde_json::json!({"path": "/outside/set.grd"})),
