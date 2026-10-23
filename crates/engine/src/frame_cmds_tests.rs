@@ -357,3 +357,126 @@ fn new_layers_and_outside_placement_do_not_enter_a_frames_image_slot() {
     assert_eq!(doc.path_of(id).unwrap().len(), 1);
     assert_eq!(doc.layer(frame).unwrap().children().unwrap().len(), 1);
 }
+
+fn blue_png(w: u32, h: u32) -> Vec<u8> {
+    let mut image = Document::new("Image", photocraft_geom::Size::new(w, h), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8);
+    let mut l = Layer::raster("Photo", image.pixel_format());
+    l.surface_mut().unwrap().fill_rect(image.bounds(), &[0., 0., 1., 1.]);
+    image.layers.push(l);
+    photocraft_io::export(&image, "png", &Default::default()).unwrap().bytes
+}
+
+#[test]
+fn frame_placement_reports_document_bounds() {
+    let (mut s, _, _) = session();
+    s.execute("layer.new.frame", json!({"x":10,"y":10,"width":40,"height":30})).unwrap();
+    // 20×10 covers 40×30 at 3×: 60×30, centred on the frame, so 10 px overhangs each side.
+    let r = crate::file_cmds::place_bytes(&mut s, "blue.png", blue_png(20, 10), None, &json!({})).unwrap();
+    assert_eq!(r["bounds"], json!([0.0, 10.0, 60.0, 40.0]), "{r}");
+}
+
+#[test]
+fn placing_into_a_huge_frame_does_not_resample_to_the_frame_size() {
+    // Filling this frame scales the image to 300000×150000 px (45 Gpx). Placement used to
+    // bicubic-resize it to that size, and the smart object render warped it unclipped: either
+    // filled memory until the OS killed the process. The render now refuses it up front.
+    let (mut s, _, _) = session();
+    let id = LayerId(s.execute("layer.new.frame", json!({"x":0,"y":0,"width":200_000,"height":150_000})).unwrap()["layer"].as_u64().unwrap());
+    let before = s.active().unwrap().history.entries();
+    let err = crate::file_cmds::place_bytes(&mut s, "blue.png", blue_png(20, 10), None, &json!({})).unwrap_err();
+    assert!(err.to_string().contains("too large"), "{err}");
+    let st = s.active().unwrap();
+    assert_eq!(st.history.entries(), before, "a failed place leaves no history");
+    assert!(st.doc.layer(id).unwrap().children().unwrap().is_empty());
+}
+
+#[test]
+fn fitting_content_to_a_huge_frame_is_refused_before_rendering() {
+    let (mut s, image, _) = session();
+    let id = s.execute("layer.new.frame", json!({"x":0,"y":0,"width":40,"height":30,"layer":image.0})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.frame.set", json!({"layer":id,"transform":[200_000,0,0,150_000,0,0]})).unwrap();
+    let before = s.active().unwrap().history.entries();
+    let err = s.execute("layer.frame.fit", json!({"layer":id,"mode":"contentToFrame"})).unwrap_err();
+    assert!(err.to_string().contains("too large"), "{err}");
+    assert_eq!(s.active().unwrap().history.entries(), before);
+}
+
+#[test]
+fn converting_drops_the_layers_own_psd_content_blocks() {
+    let (mut s, _, _) = session();
+    let id = s.execute("shape.create", json!({"kind":"rectangle","rect":[10,15,40,30],"fill":"#123456"})).unwrap()["layer"].as_u64().unwrap();
+    s.edit("blocks", |doc, _| {
+        let l = doc.layer_mut(LayerId(id)).unwrap();
+        for k in [b"TySh", b"tySh", b"SoCo", b"vscg", b"vstk", b"lmfx", b"luni"] {
+            l.psd_blocks.push((*k, std::sync::Arc::new(vec![0; 4])));
+        }
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.frame.convert", json!({"layer":id})).unwrap();
+    let l = s.active().unwrap().doc.layer(LayerId(id)).unwrap();
+    let keys: Vec<_> = l.psd_blocks.iter().map(|(k, _)| k).collect();
+    assert_eq!(keys, [b"luni"], "only blocks unrelated to the shape survive");
+    assert!(l.fill_cache.is_none());
+}
+
+#[test]
+fn a_frames_image_cannot_be_framed_again() {
+    let (mut s, image, _) = session();
+    let first = LayerId(s.execute("layer.new.frame", json!({"x":0,"y":0,"width":40,"height":30,"layer":image.0})).unwrap()["layer"].as_u64().unwrap());
+    let before = s.active().unwrap().history.entries();
+    assert!(s.execute("layer.new.frame", json!({"x":20,"y":20,"width":40,"height":30,"layer":image.0})).is_err());
+    let st = s.active().unwrap();
+    assert_eq!(st.doc.layer(first).unwrap().children().unwrap()[0].id, image, "the image stays in its frame");
+    assert_eq!(st.history.entries(), before);
+}
+
+#[test]
+fn moving_a_frame_past_its_limits_keeps_a_plain_masked_group() {
+    // An invalid frame would make the saved file fail to load; the clip survives as the mask.
+    let (mut s, _, _) = session();
+    let id = LayerId(s.execute("layer.new.frame", json!({"x":10,"y":10,"width":40,"height":30})).unwrap()["layer"].as_u64().unwrap());
+    let doc = (*s.active().unwrap().doc).clone();
+    let mut l = doc.layer(id).unwrap().clone();
+    crate::vector_cmds::translate_vectors(&doc, &mut l, 700_000.0, 0.0);
+    assert!(l.frame.is_none());
+    assert!(l.vector_mask.is_some());
+    let mut l = doc.layer(id).unwrap().clone();
+    crate::canvas_geom::transform_layer_geometry(&mut l, &photocraft_geom::Affine::scale(10_000.0), true, 72.0);
+    assert!(l.frame.is_none());
+    assert!(l.vector_mask.is_some());
+}
+
+#[test]
+fn linked_layers_keep_their_links_beside_a_frame_in_psd() {
+    // The frame's extra PSD records ("Frame Image" group, divider, stroke) used to shift every
+    // later Link Layers entry onto the wrong record.
+    let (mut s, a, b) = session();
+    s.execute("layer.new.frame", json!({"x":0,"y":0,"width":20,"height":20,"layer":a.0,"stroke":{"color":"#ff0000","width":2}})).unwrap();
+    let doc = &mut (*s.active().unwrap().doc).clone();
+    let top = Layer::raster("C", doc.pixel_format());
+    let c = top.id;
+    doc.layers.push(top);
+    for id in [b, c] {
+        doc.layer_mut(id).unwrap().link_group = Some(5);
+    }
+    let bytes = photocraft_io::export(doc, "psd", &Default::default()).unwrap().bytes;
+    let restored = photocraft_io::import("psd", &bytes).unwrap().document;
+    let links: Vec<_> = restored.walk().iter().map(|(_, _, l)| (l.name.clone(), l.link_group)).filter(|(_, g)| g.is_some()).collect();
+    let names: Vec<_> = links.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["B", "C"], "{links:?}");
+    assert_eq!(links[0].1, links[1].1);
+}
+
+#[test]
+fn a_pcraft_with_unusable_frame_metadata_still_opens() {
+    let (mut s, _, _) = session();
+    let id = LayerId(s.execute("layer.new.frame", json!({"x":10,"y":10,"width":40,"height":30})).unwrap()["layer"].as_u64().unwrap());
+    let mut doc = (*s.active().unwrap().doc).clone();
+    doc.layer_mut(id).unwrap().frame.as_mut().unwrap().transform.m[4] = 900_000.0;
+    let bytes = photocraft_io::export(&doc, "pcraft", &Default::default()).unwrap().bytes;
+    let restored = photocraft_io::import("pcraft", &bytes).unwrap().document;
+    let l = restored.layer(id).unwrap();
+    assert!(l.frame.is_none());
+    assert!(l.vector_mask.is_some(), "the clip survives as the group's vector mask");
+}

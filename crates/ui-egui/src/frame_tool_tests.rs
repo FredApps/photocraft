@@ -410,3 +410,30 @@ fn hidden_frame_ancestors_hide_placeholders_and_handles() {
     output.textures_delta.clear();
     assert!(output.shapes.iter().all(|s| matches!(s.shape, egui::Shape::Noop)));
 }
+
+#[test]
+fn drawing_a_frame_with_another_frames_image_selected_leaves_that_image_in_place() {
+    let mut app = app();
+    let source = app
+        .session
+        .edit("Photo", |doc, active| {
+            let mut l = Layer::raster("Photo", doc.pixel_format());
+            l.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 200, 200), &[1., 0., 0., 1.]);
+            let id = l.id;
+            doc.layers.push(l);
+            *active = Some(id);
+            Ok(id)
+        })
+        .unwrap();
+    drag(&mut app, [20., 30.], [120., 110.]);
+    let first = selected(&app).unwrap().id;
+    double_click(&mut app, [65., 65.]);
+    assert_eq!(app.session.active().unwrap().active_layer, Some(source));
+    // Starts outside the first frame but overlaps the image's own bounds.
+    drag(&mut app, [150., 150.], [250., 250.]);
+    let doc = &app.session.active().unwrap().doc;
+    assert_eq!(photocraft_engine::frame_cmds::frame_of(doc, source), Some(first), "the image stays in its frame");
+    let second = selected(&app).unwrap();
+    assert_ne!(second.id, first);
+    assert!(second.children().unwrap().is_empty(), "the new frame is empty");
+}

@@ -758,11 +758,25 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
         _ => (cw / 2.0, ch / 2.0),
     };
     let (dx, dy) = ((center.0 - w * scale / 2.0).round(), (center.1 - h * scale / 2.0).round());
-    let mut px = flattened(&src, fmt);
-    if (scale - 1.0).abs() > 1e-9 {
-        px = resize_surface(&px, scale, scale, Resample::Bicubic);
-    }
-    let px = translate_surface(&px, dx as i32, dy as i32);
+    // A frame's image renders through its smart object below, which refuses a placement past the
+    // memory budget; resampling it to the frame's size first would allocate that surface twice.
+    let px = frame.is_none().then(|| {
+        let mut px = flattened(&src, fmt);
+        if (scale - 1.0).abs() > 1e-9 {
+            px = resize_surface(&px, scale, scale, Resample::Bicubic);
+        }
+        translate_surface(&px, dx as i32, dy as i32)
+    });
+    let placement = frame
+        .as_ref()
+        .map_or(Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, |(_, f)| f.transform.mul(&Affine { m: [scale / cw, 0.0, 0.0, scale / ch, dx / cw, dy / ch] }));
+    let corners = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| placement.apply(photocraft_geom::Point::new(x, y)));
+    let bounds = [
+        corners.iter().map(|q| q.x).fold(f64::INFINITY, f64::min),
+        corners.iter().map(|q| q.y).fold(f64::INFINITY, f64::min),
+        corners.iter().map(|q| q.x).fold(f64::NEG_INFINITY, f64::max),
+        corners.iter().map(|q| q.y).fold(f64::NEG_INFINITY, f64::max),
+    ];
     // Preferences ▸ General ▸ Always Create Smart Objects When Placing (on by default): off, an
     // embedded place lands as a plain pixel layer. A linked place is always a smart object.
     let smart = frame.is_some()
@@ -776,18 +790,19 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let label = if matches!(&source, SmartSource::Linked { .. }) { "Place Linked" } else { PLACE_EMBEDDED };
     let id = s.edit(label, |doc, active| {
         let layer = if smart {
-            let placement = frame.as_ref().map_or(Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, |(_, f)| {
-                f.transform.mul(&Affine { m: [scale / cw, 0.0, 0.0, scale / ch, dx / cw, dy / ch] })
-            });
-            let mut so = SmartObject::new(source, placement, Some(px));
+            let mut so = SmartObject::new(source, placement, px);
             // A vector source (SVG) renders at its placement scale instead of as a resampled raster.
             if (vector || frame.is_some())
                 && let Some(sharp) = crate::smart_cmds::render(doc, &so)?
             {
                 so.cache = Some(sharp);
             }
+            if so.cache.is_none() {
+                return Err(EngineError::Other(format!("{name}: the placed image could not be rendered")));
+            }
             Layer::new(layer_name, LayerContent::Smart(so))
         } else {
+            let px = px.ok_or_else(|| EngineError::Other(format!("{name}: a frame's image must be a smart object")))?;
             Layer::new(layer_name, LayerContent::Raster(px))
         };
         let id = layer.id;
@@ -800,9 +815,7 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
         }
         Ok(id)
     })?;
-    Ok(
-        json!({"layer": id.0, "frame": frame.as_ref().map(|(id,_)|id.0), "scale": scale * 100.0, "bounds": [dx, dy, dx + w * scale, dy + h * scale], "smartObject": smart}),
-    )
+    Ok(json!({"layer": id.0, "frame": frame.as_ref().map(|(id,_)|id.0), "scale": scale * 100.0, "bounds": bounds, "smartObject": smart}))
 }
 
 fn place(s: &mut Session, p: &Value, linked: bool) -> Result<Value> {

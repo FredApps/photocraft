@@ -101,6 +101,9 @@ fn new_frame(s: &mut Session, p: &Value) -> Result<Value> {
                 {
                     return Err(bad("a frame takes a pixel, type, shape or smart object layer other than the Background"));
                 }
+                if frame_of(doc, id).is_some() {
+                    return Err(bad("that layer is already a frame's image"));
+                }
                 let mut child = if matches!(l.content, LayerContent::Smart(_)) { l.clone() } else { crate::smart_cmds::layer_to_smart(doc, l)? };
                 child.id = id;
                 Some(child)
@@ -229,6 +232,9 @@ fn convert(s: &mut Session, p: &Value) -> Result<Value> {
         l.frame = Some(f);
         l.mask = None;
         l.effects = Default::default();
+        // The group would otherwise still carry the type or shape layer's PSD content blocks.
+        l.fill_cache = None;
+        l.psd_blocks.retain(|(k, _)| !crate::vector_cmds::SHAPE_BLOCKS.contains(&k) && !matches!(k, b"TySh" | b"tySh" | b"lmfx"));
         l.blend = BlendMode::Normal;
         refresh(l);
         *active = Some(id);

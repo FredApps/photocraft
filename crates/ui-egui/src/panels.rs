@@ -3520,6 +3520,15 @@ fn layer_row(
     // #2812) and a Smart Object thumbnail its contents, and a type thumbnail edits its text;
     // anywhere else on the row opens Layer Style (#350, #537).
     // The first click already made this the active layer.
+    // A frame row's thumbnails are handled above; its name still renames in place.
+    if resp.double_clicked()
+        && l.frame.is_some()
+        && name_rect.is_some_and(|n| resp.interact_pointer_pos().is_some_and(|p| Rect::from_x_y_ranges(n.x_range(), rect.y_range()).expand(2.0).contains(p)))
+        && let Some(done) = crate::layer_row_ui::start_rename(ctx, l.id.0, &l.name)
+    {
+        // One rename at a time: starting this one commits any other (#314).
+        actions.push(done);
+    }
     if resp.double_clicked() && l.frame.is_none() {
         let pos = resp.interact_pointer_pos();
         let on = |r: Rect| pos.is_some_and(|p| r.expand(2.0).contains(p));

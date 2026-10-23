@@ -448,9 +448,9 @@ impl Loader<'_> {
     /// One layer, given its already converted group children.
     #[inline(never)]
     fn layer_with(&mut self, m: &LayerM, children: Vec<Layer>) -> Result<Layer> {
-        if m.frame.as_ref().is_some_and(|f| !f.valid()) || (m.frame.is_some() && !matches!(m.content, ContentM::Group { .. })) {
-            return Err(FormatError::Corrupt("invalid frame geometry or container".into()));
-        }
+        // Unusable frame metadata is dropped rather than making the whole document unreadable;
+        // the group and its vector mask still load.
+        let frame = m.frame.clone().filter(|f| f.valid() && matches!(m.content, ContentM::Group { .. }));
         let content = match &m.content {
             ContentM::Raster { surface } => LayerContent::Raster(self.surface(surface)?),
             ContentM::Group { expanded, artboard, .. } => LayerContent::Group(Group { artboard: artboard.clone(), children, expanded: *expanded }),
@@ -536,7 +536,7 @@ impl Loader<'_> {
             clipped: m.clipped,
             mask,
             vector_mask: m.vector_mask.clone(),
-            frame: m.frame.clone(),
+            frame,
             effects: Effects {
                 enabled: m.effects.enabled,
                 items: m.effects.items.clone(),
