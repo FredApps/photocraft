@@ -2332,6 +2332,45 @@ fn as_text(src: Layer) -> Layer {
 static TEXT_GAMMA: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn prefix_invalidates_when_text_gamma_changes_without_document_edits() {
+    let _gamma = TEXT_GAMMA.lock().unwrap_or_else(|e| e.into_inner());
+    struct RestoreGamma(f32);
+    impl Drop for RestoreGamma {
+        fn drop(&mut self) {
+            photocraft_compose::psblend::set_text_gamma(self.0);
+        }
+    }
+    let _restore = RestoreGamma(photocraft_compose::psblend::text_gamma());
+    let Some(mut g) = gpu() else { return };
+    let mut uncached = Compositor::new(&g.device);
+    uncached.set_composite_cache_budget(0);
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let mut doc = Document::new("Text gamma context", Size::new(64, 48), ColorMode::Rgb, depth);
+        doc.layers.push(noise_layer("Backdrop", doc.pixel_format(), doc.bounds(), 1, 0.3));
+        doc.layers.push(as_text(noise_layer("Text", doc.pixel_format(), Rect::new(4, 3, 60, 45), 21, 0.0)));
+        doc.layers.push(Layer::new("Above cached text", LayerContent::Adjustment(Adjustment::Invert)));
+        let unchanged = doc.clone();
+        for gamma in [photocraft_compose::psblend::TEXT_GAMMA, 1.8, 1.0, photocraft_compose::psblend::TEXT_GAMMA] {
+            photocraft_compose::psblend::set_text_gamma(gamma);
+            for repeated in [false, true] {
+                let (actual, stats) = photocraft_gpu::render_to_vec_stats(&mut g.comp, &g.device, &g.queue, &doc, doc.bounds()).unwrap();
+                let expected = render_to_vec(&mut uncached, &g.device, &g.queue, &doc, doc.bounds()).unwrap();
+                assert!(actual == expected, "{depth:?} gamma{gamma}: cached pixels differ from zero-budget rendering");
+                let cpu = photocraft_compose::render(&doc, doc.bounds());
+                let (difference, pixel) = worst_diff(&cpu.px, &actual);
+                assert!(difference <= TOL, "{depth:?} gamma{gamma}: CPU difference {difference} at pixel{pixel}");
+                if repeated {
+                    assert!(stats.prefix_hits > 0, "unchanged gamma should retain useful text prefixes: {stats:?}");
+                } else {
+                    assert_eq!(stats.prefix_hits, 0, "changed render context must discard prior text pixels");
+                }
+                assert_eq!(doc, unchanged);
+            }
+        }
+    }
+}
+
+#[test]
 fn type_layers_blend_with_text_gamma() {
     let _gamma = TEXT_GAMMA.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut g) = gpu() else { return };

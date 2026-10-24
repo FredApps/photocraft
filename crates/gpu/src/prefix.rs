@@ -36,6 +36,9 @@ pub(crate) struct Chunk {
 
 pub(crate) struct Prefix {
     context: Option<Document>,
+    /// Native text compositing is process-wide, outside Document's stored data.
+    /// Equal layer snapshots may still render differently after Color Settings.
+    text_gamma_bits: u32,
     /// The root layers of the last prepared render, all of them: a chunk stays valid while every
     /// render since its capture left the layers below its checkpoint as they were.
     layers: Vec<Layer>,
@@ -54,6 +57,7 @@ impl Default for Prefix {
     fn default() -> Self {
         Self {
             context: None,
+            text_gamma_bits: 0,
             layers: Vec::new(),
             checkpoint: None,
             previous_checkpoints: Vec::new(),
@@ -90,6 +94,7 @@ fn capture_below(checkpoints: &[Checkpoint], previous: &[Checkpoint], changed: u
 impl Prefix {
     pub(crate) fn clear(&mut self) {
         self.context = None;
+        self.text_gamma_bits = 0;
         self.layers.clear();
         self.checkpoint = None;
         self.previous_checkpoints.clear();
@@ -143,7 +148,8 @@ impl Prefix {
         // Tile data is Arc-shared; shared Tile equality does not scan its pixel bytes.
         let mut context = doc.clone();
         let layers = std::mem::take(&mut context.layers);
-        let same_context = self.context.as_ref() == Some(&context);
+        let text_gamma_bits = photocraft_compose::psblend::text_gamma().to_bits();
+        let same_context = self.context.as_ref() == Some(&context) && self.text_gamma_bits == text_gamma_bits;
         // The lowest root layer this render changes since the last one (a layer added or removed
         // at the top changes from there on).
         let changed = self
@@ -178,6 +184,7 @@ impl Prefix {
         // Remember bottom-layer edits even when no useful prefix survives: otherwise every other
         // edit would populate and immediately discard the default checkpoint.
         self.context = Some(context);
+        self.text_gamma_bits = text_gamma_bits;
         self.layers = layers;
         self.checkpoint = checkpoint;
         self.previous_checkpoints.clear();
