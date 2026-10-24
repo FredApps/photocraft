@@ -1,7 +1,7 @@
 # GIMP XCF documents
 
 PhotoCraft imports GIMP's `.xcf` files (and `.xcf.gz`, `.xcf.bz2`, `.xcf.xz`) into native editable
-PhotoCraft document data. The source is read only; native edits and Save As remain available. File ›
+PhotoCraft document data. The source is read-only; native edits and Save As remain available. File ›
 Open, recent files, drops, the CLI (`convert`, `info`, `batch`) and automation (`doc.open`, MCP)
 use the same reader in `photocraft-io` (`crates/io/src/xcf.rs`). Plain and wrapped files are
 recognised by the inflated `gimp xcf ` signature, including under another extension. Concatenated
@@ -70,11 +70,11 @@ CLI `convert`, `info`, `run` and `batch` accept
 imports refuse ambiguous high-depth files rather than publish potentially wrong pixels. The
 public IO API exposes the same choice through `ImportOptions::historical_xcf_sample_order`.
 Genuine U16/F32 sources qualify selected little-endian cases across XCF7–11: Windows GIMP
-2.9.6 supplies versions7/8/9/11, and unmodified GIMP 2.9.5 development commit
+2.9.6 supplies versions 7/8/9/11, and unmodified GIMP 2.9.5 development commit
 [`0874703`](https://github.com/GNOME/gimp/commit/0874703e3b7f2d211816feccd745404ed8ec3d71)
-supplies version10. Every source was independently saved, reopened twice and checked against
+supplies version 10. Every source was independently saved, reopened twice and checked against
 its original formula and stored bytes. The v8 and v10 files use the writers' internal zlib
-compression; the U16 samples are asymmetric. Synthetic checks cover both orders across7–11.
+compression; the U16 samples are asymmetric. Synthetic checks cover both orders across 7–11.
 These isolated runtimes qualify historical development formats; they are not PhotoCraft
 dependencies, and stable-source coverage is separate. The publicly
 pinned corpus currently contains 14 XCF originals and their 14 rendered references. Expanded

@@ -501,10 +501,10 @@ target/release/examples/xcf_import_bench measure graph-u16-24mp target/graph-u16
 cargo test -p photocraft-ui-egui --example xcf_import_bench
 ```
 
-`measure` accepts 1–5 repetitions after one warmup (default5); use5 for the reported median.
+`measure` accepts 1–5 repetitions after one warmup (default 5); use 5 for the reported median.
 Run each case in a fresh process, sequentially on an otherwise quiet host. JSON preserves every
 sample, native depth, notices and conversion report. Import/preparation failures identify their
-stage; a failed warmup has no completed measured samples. Inputs are limited to512MiB with
+stage; a failed warmup has no completed measured samples. Inputs are limited to 512 MiB with
 fallible reads/allocation; this benchmark bound does not change the importer's product limits.
 
 | Case | Canvas and source | Generated SHA256 |
@@ -533,7 +533,7 @@ while(-not $child.HasExited){
     Start-Sleep -Milliseconds 20
 }
 $child.WaitForExit()
-[ordered]@{exit=$child.ExitCode;peakWorkingSetBytes=$peak;method='Windows lifetime PeakWorkingSet64 polled20ms'}|ConvertTo-Json
+[ordered]@{exit=$child.ExitCode;peakWorkingSetBytes=$peak;method='Windows lifetime PeakWorkingSet64 polled 20 ms'}|ConvertTo-Json
 ```
 
 Record runtime revision/build, input hash, host RAM/other activity and any host abort alongside

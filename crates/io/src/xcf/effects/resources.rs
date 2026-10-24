@@ -187,7 +187,7 @@ fn profile_lookup(mut mapping: NativeMapping, context: &MappingContext) -> Resul
     };
     let data = filter.params.get("data").and_then(serde_json::Value::as_str).ok_or("native resource lookup data missing")?;
     let table = photocraft_cms::lutfile::parse("native.cube", data.as_bytes()).map_err(|error| error.to_string())?;
-    mapping.notes.push("Literal and hue-control sRGB coordinates are translated through the actual native document ICC profile into an ordinary native Color Lookup. Native17-cube resampling, tetrahedral interpolation and bounded gamut/HDR rules apply; Gray results return to the native Gray profile rather than treating Gray samples as untagged RGB".into());
+    mapping.notes.push("Literal and hue-control sRGB coordinates are translated through the actual native document ICC profile into an ordinary native Color Lookup. Native 17-cube resampling, tetrahedral interpolation and bounded gamut/HDR rules apply; Gray results return to the native Gray profile rather than treating Gray samples as untagged RGB".into());
     super::color::native_lookup(context, "Native profiled color controls", mapping.notes, |rgb| {
         photocraft_compose::adjust::lut3d_sample(&table.data, table.size, rgb, true)
     })

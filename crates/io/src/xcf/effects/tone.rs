@@ -129,7 +129,7 @@ fn direct_levels(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<
         Ok(mapped("image.adjustments.levels",params,vec!["Source linear endpoint mapping uses native Levels with neutral gamma; native per-depth clamping, endpoint domain and document transfer may differ".into()]))
     } else {
         let values = sampled_level_record(record)?;
-        Ok(mapped("image.adjustments.curves",json!({"pencil":true,"points":values.iter().map(|v| f64::from(*v)*255.).collect::<Vec<_>>()}),vec!["Source interval outside the native Levels command's two-level endpoint constraint becomes an ordinary native pencil Curve sampled from PhotoCraft's existing Levels transfer. Endpoints are not moved. Native clipped0..1 curve domain,256-sample interpolation,minimum positive span and gamma toe apply; collapsed/reversed source input intervals follow this explicit native step policy rather than source extrapolation".into()]))
+        Ok(mapped("image.adjustments.curves",json!({"pencil":true,"points":values.iter().map(|v| f64::from(*v)*255.).collect::<Vec<_>>()}),vec!["Source interval outside the native Levels command's two-level endpoint constraint becomes an ordinary native pencil Curve sampled from PhotoCraft's existing Levels transfer. Endpoints are not moved. Native clipped 0..1 curve domain, 256-sample interpolation, minimum positive span and gamma toe apply; collapsed/reversed source input intervals follow this explicit native step policy rather than source extrapolation".into()]))
     }
 }
 
@@ -155,7 +155,7 @@ fn affine_levels([lo, hi, _, outlo, outhi]: [f64; 5], mode: photocraft_color::Co
     }
     let mut notes=vec!["Signed/HDR or reversed Levels endpoints become one ordinary editable native center-only Convolution gain/bias with color channels selected and owner alpha unchanged. Native F64 accumulation, storage-depth clipping/precision and native document-channel rules apply. This avoids the distinct native F32 Channel Mixer constant/percentage quantization law; no source range evaluator or source epsilon survives import".into()];
     if collapsed {
-        notes.push("Collapsed signed/HDR input uses PhotoCraft's native Levels minimum input span2/255 anchored at the stored low endpoint. Independent source observation establishes steep affine intent; its much higher source gain is explicitly superseded. Normalized collapsed Levels retain their existing native sampled-Curves policy".into());
+        notes.push("Collapsed signed/HDR input uses PhotoCraft's native Levels minimum input span 2/255 anchored at the stored low endpoint. Independent source observation establishes steep affine intent; its much higher source gain is explicitly superseded. Normalized collapsed Levels retain their existing native sampled-Curves policy".into());
     }
     Ok(mapped("filter.other.convolution", json!({"kernel":kernel,"scale":1.,"offset":offset,"channels":channels,"alphaWeighted":false,"edge":"repeat"}), notes))
 }
@@ -295,11 +295,11 @@ fn core_levels(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
         notes.push(format!("Source Levels policies: {}", source_policy.join(", ")));
     }
     if sampled {
-        notes.push("Native Levels command interval/gamma limits are represented by native pencil Curves sampled from PhotoCraft Levels channel transfers, preserving channel-then-master order. Native256-sample interpolation,clipped0..1 domain,gamma toe andminimum span apply; collapsed/reversed intervals follow native step policy. No source evaluator is retained".into());
+        notes.push("Native Levels command interval/gamma limits are represented by native pencil Curves sampled from PhotoCraft Levels channel transfers, preserving channel-then-master order. Native 256-sample interpolation, clipped 0..1 domain, gamma toe and minimum span apply; collapsed/reversed intervals follow native step policy. No source evaluator is retained".into());
     }
     if let Some(record) = records.get(4).filter(|record| **record != [0., 1., 1., 0., 1.]) {
         filters.push(native_filter("filter.other.alphaCurve", json!({"values":sampled_level_record(*record)?})));
-        notes.push("Source alpha Levels becomes an ordinary native Alpha Curve sampled from PhotoCraft's existing Levels transfer. Native256-sample coverage interpolation,clamping,gamma toe and minimum positive input span apply; all existing native color/HDR data remains unchanged by the alpha stage".into());
+        notes.push("Source alpha Levels becomes an ordinary native Alpha Curve sampled from PhotoCraft's existing Levels transfer. Native 256-sample coverage interpolation, clamping, gamma toe and minimum positive input span apply; all existing native color/HDR data remains unchanged by the alpha stage".into());
     }
     Ok(NativeMapping { filters, notes, ..Default::default() })
 }
@@ -583,7 +583,7 @@ mod tests {
                 ctx.mode = mode;
                 let native = map(&source, &ctx).unwrap().unwrap();
                 if lo == hi {
-                    assert!(native.notes.iter().any(|note| note.contains("minimum input span2/255")));
+                    assert!(native.notes.iter().any(|note| note.contains("minimum input span 2/255")));
                 }
                 assert_eq!(native.filters.len(), 1);
                 let filter = &native.filters[0];
