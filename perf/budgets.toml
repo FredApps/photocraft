@@ -174,7 +174,7 @@ issue = 209
 bench = "perf_scenarios"
 row = "paste 12 MP layer (repeat) + refresh"
 budget_ms = 20
-enforce = false  # over budget in the 2026-10-05 baseline
+enforce = true  # met in full Windows/RTX 4080 runs, 2026-10-25; retain the older baseline as historical evidence
 
 [[scenario]]
 id = "P12"
