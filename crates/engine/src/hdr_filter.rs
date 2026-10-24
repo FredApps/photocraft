@@ -13,6 +13,7 @@ pub(crate) fn params(p: &Value) -> Result<HdrToning> {
         match key.as_str() {
             "radius" | "strength" | "gamma" | "exposure" | "detail" | "shadow" | "highlight" | "vibrance" | "saturation" | "curve" => {}
             "layer" if value.as_u64().is_some() => {}
+            "coalesce" if value.is_string() => {}
             "target" if matches!(value.as_str(), Some("pixels" | "mask" | "quickMask")) => {}
             "target"
                 if value.as_object().is_some_and(|m| m.len() == 1 && m.get("channel").and_then(Value::as_u64).is_some_and(|v| usize::try_from(v).is_ok())) => {}
@@ -33,15 +34,15 @@ pub(crate) fn params(p: &Value) -> Result<HdrToning> {
     let curve = match p.get("curve") {
         None => Vec::new(),
         Some(v) => {
-            let a = v.as_array().filter(|a| a.len() <= 4096).ok_or_else(|| bad("curve must contain at most4096 [input,output] pairs in0..1"))?;
+            let a = v.as_array().filter(|a| a.len() <= 4096).ok_or_else(|| bad("curve must contain at most 4096 [input, output] pairs in 0..1"))?;
             let mut result = Vec::new();
             result.try_reserve_exact(a.len()).map_err(|_| bad("HDR curve allocation unavailable"))?;
             for point in a {
-                let pair = point.as_array().filter(|a| a.len() == 2).ok_or_else(|| bad("curve requires [input,output] pairs"))?;
+                let pair = point.as_array().filter(|a| a.len() == 2).ok_or_else(|| bad("curve requires [input, output] pairs"))?;
                 let x =
-                    pair.first().and_then(Value::as_f64).filter(|v| v.is_finite() && (0. ..=1.).contains(v)).ok_or_else(|| bad("curve input must be0..1"))?;
+                    pair.first().and_then(Value::as_f64).filter(|v| v.is_finite() && (0. ..=1.).contains(v)).ok_or_else(|| bad("curve input must be 0..1"))?;
                 let y =
-                    pair.get(1).and_then(Value::as_f64).filter(|v| v.is_finite() && (0. ..=1.).contains(v)).ok_or_else(|| bad("curve output must be0..1"))?;
+                    pair.get(1).and_then(Value::as_f64).filter(|v| v.is_finite() && (0. ..=1.).contains(v)).ok_or_else(|| bad("curve output must be 0..1"))?;
                 result.push((x as f32, y as f32));
             }
             result
@@ -72,7 +73,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "HDR Toning…",
         menu: &[],
         shortcut: None,
-        params: r#"{"radius":1..500=30,"strength":0.1..4=0.5,"gamma":0.1..2=1,"exposure":-5..5=0,"detail":-100..300=30,"shadow":-100..100=0,"highlight":-100..100=0,"vibrance":-100..100=0,"saturation":-100..100=20,"curve":[[input0..1,output0..1]]} (native local adaptation; preserves layers and alpha)"#,
+        params: r#"{"radius":1..500=30,"strength":0.1..4=0.5,"gamma":0.1..2=1,"exposure":-5..5=0,"detail":-100..300=30,"shadow":-100..100=0,"highlight":-100..100=0,"vibrance":-100..100=0,"saturation":-100..100=20,"curve":[[input0..1,output0..1]],"coalesce":string?} (native local adaptation; preserves layers and alpha)"#,
         enabled: crate::filters::has_filterable_layer,
         run,
         journal: true,
@@ -94,8 +95,38 @@ mod tests {
             json!({"unknown":1}),
             json!({"target":"bad"}),
             json!({"gamma":"1"}),
+            json!({"coalesce":true}),
+            json!({"coalesce":7}),
         ] {
             assert!(params(&value).is_err(), "{value}");
+        }
+    }
+    #[test]
+    fn native_hdr_drag_coalesces_execute_and_undo_at_every_depth() {
+        for depth in [8, 16, 32] {
+            let mut session = Session::new();
+            session.execute("file.new", json!({"width":2,"height":2,"depth":depth})).unwrap();
+            session.execute("layer.new.layer", json!({})).unwrap();
+            let id = session.active().unwrap().active_layer.unwrap();
+            session
+                .edit("fixture", |doc, _| {
+                    doc.layer_mut(id).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 0, 2, 2), &[0.4, 0.2, 0.1, 0.75]);
+                    Ok(())
+                })
+                .unwrap();
+            let before = session.active().unwrap().doc.clone();
+            let history = session.active().unwrap().history.past_len();
+            session.execute(ID, json!({"radius":1,"exposure":0.25,"coalesce":"hdr-drag"})).unwrap();
+            session.execute(ID, json!({"radius":1,"exposure":0.75,"coalesce":"hdr-drag"})).unwrap();
+            assert_eq!(session.active().unwrap().history.past_len(), history + 1);
+            let changed = session.active().unwrap().doc.clone();
+            assert_ne!(*changed, *before);
+            session.undo();
+            assert_eq!(*session.active().unwrap().doc, *before);
+            session.redo();
+            assert_eq!(*session.active().unwrap().doc, *changed);
+            session.execute(ID, json!({"radius":1,"exposure":-0.5,"coalesce":"another-drag"})).unwrap();
+            assert_eq!(session.active().unwrap().history.past_len(), history + 2);
         }
     }
     #[test]

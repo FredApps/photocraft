@@ -34,6 +34,7 @@ pub(crate) fn params(id: &str, p: &Value) -> Result<FilterParams> {
             continue;
         }
         match key.as_str() {
+            "coalesce" if value.is_string() => {}
             "layer" if value.as_u64().is_some() => {}
             "target" if matches!(value.as_str(), Some("pixels" | "mask" | "quickMask")) => {}
             "target"
@@ -46,7 +47,7 @@ pub(crate) fn params(id: &str, p: &Value) -> Result<FilterParams> {
     match id {
         CONVOLUTION => {
             let input =
-                p.get("kernel").and_then(Value::as_array).filter(|v| v.len() == 25).ok_or_else(|| bad("kernel must contain exactly25 finite coefficients"))?;
+                p.get("kernel").and_then(Value::as_array).filter(|v| v.len() == 25).ok_or_else(|| bad("kernel must contain exactly 25 finite coefficients"))?;
             let mut kernel = Vec::new();
             kernel.try_reserve_exact(25).map_err(|_| bad("convolution parameters unavailable"))?;
             for v in input {
@@ -59,7 +60,7 @@ pub(crate) fn params(id: &str, p: &Value) -> Result<FilterParams> {
                 .get("channels")
                 .and_then(Value::as_array)
                 .filter(|v| !v.is_empty() && v.len() <= 5)
-                .ok_or_else(|| bad("channels must contain1..5 native channel booleans"))?;
+                .ok_or_else(|| bad("channels must contain 1..5 native channel booleans"))?;
             let mut channels = Vec::new();
             channels.try_reserve_exact(input.len()).map_err(|_| bad("convolution parameters unavailable"))?;
             for v in input {
@@ -83,12 +84,12 @@ pub(crate) fn params(id: &str, p: &Value) -> Result<FilterParams> {
                 .get("amounts")
                 .and_then(Value::as_array)
                 .filter(|v| !v.is_empty() && v.len() <= 5)
-                .ok_or_else(|| bad("amounts must contain1..5 native channel amounts"))?;
+                .ok_or_else(|| bad("amounts must contain 1..5 native channel amounts"))?;
             let mut amounts = Vec::new();
             amounts.try_reserve_exact(input.len()).map_err(|_| bad("noise parameters unavailable"))?;
             for item in input {
                 amounts
-                    .push(item.as_f64().filter(|v| v.is_finite() && (0.0..=400.).contains(v)).ok_or_else(|| bad("amounts must be finite numbers in0..400"))?
+                    .push(item.as_f64().filter(|v| v.is_finite() && (0.0..=400.).contains(v)).ok_or_else(|| bad("amounts must be finite numbers in 0..400"))?
                         as f32);
             }
             let boolean = |name| p.get(name).and_then(Value::as_bool).ok_or_else(|| bad("monochromatic and relative must be booleans"));
@@ -101,7 +102,7 @@ pub(crate) fn params(id: &str, p: &Value) -> Result<FilterParams> {
                 .get("seed")
                 .and_then(Value::as_f64)
                 .filter(|n| n.is_finite() && n.fract() == 0. && (0.0..=f64::from(u32::MAX)).contains(n))
-                .ok_or_else(|| bad("seed must be an unsigned32-bit integer"))? as u32;
+                .ok_or_else(|| bad("seed must be an unsigned 32-bit integer"))? as u32;
             Ok(FilterParams::ChannelNoise(photocraft_algo::channel_noise::Params {
                 amounts,
                 distribution,
@@ -115,13 +116,13 @@ pub(crate) fn params(id: &str, p: &Value) -> Result<FilterParams> {
                 .get("radius")
                 .and_then(Value::as_f64)
                 .filter(|n| n.is_finite() && n.fract() == 0. && (1.0..=500.0).contains(n))
-                .ok_or_else(|| bad("radius must be an integer in1..500"))? as u16;
+                .ok_or_else(|| bad("radius must be an integer in 1..500"))? as u16;
             let number = |name| {
                 p.get(name)
                     .and_then(Value::as_f64)
                     .filter(|n| n.is_finite() && (0.0..=100.0).contains(n))
                     .map(|n| n as f32)
-                    .ok_or_else(|| bad("percentiles must be finite numbers in0..100"))
+                    .ok_or_else(|| bad("percentiles must be finite numbers in 0..100"))
             };
             let shape = match p.get("shape").and_then(Value::as_str) {
                 Some("disc") => photocraft_algo::rank::Neighborhood::Disc,
@@ -132,7 +133,7 @@ pub(crate) fn params(id: &str, p: &Value) -> Result<FilterParams> {
             let channels = match p.get("channels") {
                 None => None,
                 Some(v) => {
-                    let input = v.as_array().filter(|v| v.len() <= 5).ok_or_else(|| bad("channels must be0..5 native booleans"))?;
+                    let input = v.as_array().filter(|v| v.len() <= 5).ok_or_else(|| bad("channels must be 0..5 native booleans"))?;
                     let mut mask = Vec::new();
                     mask.try_reserve_exact(input.len()).map_err(|_| bad("native rank channel mask unavailable"))?;
                     for v in input {
@@ -156,7 +157,7 @@ pub(crate) fn params(id: &str, p: &Value) -> Result<FilterParams> {
                 .filter(|n| n.is_finite() && (0.0..=1.0).contains(n))
                 .ok_or_else(|| bad("value must be a finite number in 0..1"))?;
             if p.get("target").is_some_and(|v| v.as_str() != Some("pixels")) {
-                return Err(bad("Set Alpha requires layer pixels"));
+                return Err(bad(if id == SET_ALPHA { "Set Alpha requires layer pixels" } else { "Threshold Alpha requires layer pixels" }));
             }
             Ok(if id == SET_ALPHA { FilterParams::SetAlpha { value: value as f32 } } else { FilterParams::ThresholdAlpha { value: value as f32 } })
         }
@@ -191,14 +192,14 @@ pub(crate) fn params(id: &str, p: &Value) -> Result<FilterParams> {
                 .get("values")
                 .and_then(Value::as_array)
                 .filter(|v| v.len() == 256)
-                .ok_or_else(|| bad("values must contain exactly256 finite numbers in0..1"))?;
+                .ok_or_else(|| bad("values must contain exactly 256 finite numbers in 0..1"))?;
             let mut values = Vec::new();
             values.try_reserve_exact(256).map_err(|_| bad("alpha curve allocation unavailable"))?;
             for item in input {
                 let value = item
                     .as_f64()
                     .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
-                    .ok_or_else(|| bad("values must contain exactly256 finite numbers in0..1"))?;
+                    .ok_or_else(|| bad("values must contain exactly 256 finite numbers in 0..1"))?;
                 values.push(value as f32);
             }
             Ok(FilterParams::AlphaCurve { values })
@@ -281,7 +282,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Convolution…",
             menu: &[],
             shortcut: None,
-            params: r#"{"kernel":[25 finite coefficients],"scale":nonzero,"offset":normalized,"channels":[native channel booleans,alpha last],"alphaWeighted":bool,"edge":"transparent|repeat|wrap|black|white"="repeat"}"#,
+            params: r#"{"kernel":[25 finite coefficients],"scale":nonzero,"offset":normalized,"channels":[native channel booleans,alpha last],"alphaWeighted":bool,"edge":"transparent|repeat|wrap|black|white"}"#,
             enabled: crate::filters::has_filterable_layer,
             run: |s, p| {
                 params(CONVOLUTION, p)?;
@@ -294,7 +295,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Channel Noise…",
             menu: &[],
             shortcut: None,
-            params: r#"{"amounts":[native channels0..400,alpha last],"distribution":"uniform|gaussian"="uniform","monochromatic":bool,"relative":bool,"seed":u32}"#,
+            params: r#"{"amounts":[native channels 0..400,alpha last],"distribution":"uniform|gaussian","monochromatic":bool,"relative":bool,"seed":u32}"#,
             enabled: crate::filters::has_filterable_layer,
             run: |s, p| {
                 params(CHANNEL_NOISE, p)?;
@@ -307,7 +308,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Percentile…",
             menu: &[],
             shortcut: None,
-            params: r#"{"radius":1..500,"colorPercentile":0..100,"alphaPercentile":0..100,"shape":"disc|square|diamond"="disc","channels":[bool]?=all}"#,
+            params: r#"{"radius":1..500,"colorPercentile":0..100,"alphaPercentile":0..100,"shape":"disc|square|diamond","channels":[bool]?=all}"#,
             enabled: crate::filters::has_filterable_layer,
             run: |s, p| {
                 params(PERCENTILE, p)?;
@@ -330,7 +331,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Alpha Curve",
             menu: &[],
             shortcut: None,
-            params: r#"{"values":[256 finite samples in0..1]}"#,
+            params: r#"{"values":[256 finite samples in 0..1]}"#,
             enabled: alpha_enabled,
             run: curve,
             journal: true,
@@ -350,7 +351,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Threshold Alpha…",
             menu: &[],
             shortcut: None,
-            params: r#"{"value":0..1} (native alpha > value becomes1; equality becomes0)"#,
+            params: r#"{"value":0..1} (native alpha > value becomes 1; equality becomes 0)"#,
             enabled: alpha_enabled,
             run: threshold,
             journal: true,
@@ -381,6 +382,94 @@ pub fn specs() -> Vec<CommandSpec> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn native_enum_controls_require_explicit_valid_values() {
+        let mut kernel = vec![0.; 25];
+        kernel[12] = 1.;
+        for (id, key, good) in [
+            (CONVOLUTION, "edge", json!({"kernel":kernel,"scale":1,"offset":0,"channels":[true,true,true,false],"alphaWeighted":false,"edge":"repeat"})),
+            (CHANNEL_NOISE, "distribution", json!({"amounts":[10,10,10,0],"distribution":"uniform","monochromatic":false,"relative":false,"seed":1})),
+            (PERCENTILE, "shape", json!({"radius":1,"colorPercentile":50,"alphaPercentile":50,"shape":"disc"})),
+        ] {
+            assert!(params(id, &good).is_ok());
+            let mut missing = good.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(params(id, &missing).is_err(), "{id} requires {key}");
+            for invalid in [json!(null), json!(false), json!(7), json!("unknown")] {
+                let mut value = good.clone();
+                value[key] = invalid;
+                assert!(params(id, &value).is_err(), "{id}: {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_filter_drag_coalesces_and_undo_restores_original_document() {
+        let mut session = Session::new();
+        session.execute("file.new", json!({"width":2,"height":2,"depth":32})).unwrap();
+        session.execute("layer.new.layer", json!({})).unwrap();
+        let original = session.active().unwrap().doc.clone();
+        let history = session.active().unwrap().history.past_len();
+        session.execute(SET_ALPHA, json!({"value":0.25,"coalesce":"coverage-drag"})).unwrap();
+        session.execute(SET_ALPHA, json!({"value":0.75,"coalesce":"coverage-drag"})).unwrap();
+        assert_eq!(session.active().unwrap().history.past_len(), history + 1);
+        let id = session.active().unwrap().active_layer.unwrap();
+        assert_eq!(session.active().unwrap().doc.layer(id).unwrap().surface().unwrap().pixel(0, 0)[3], 0.75);
+        session.undo();
+        assert_eq!(*session.active().unwrap().doc, *original);
+        assert!(params(SET_ALPHA, &json!({"value":0.5,"coalesce":7})).is_err());
+        let error = params(THRESHOLD_ALPHA, &json!({"value":0.5,"target":"mask"})).unwrap_err().to_string();
+        assert!(error.contains("Threshold Alpha requires layer pixels"), "{error}");
+    }
+
+    #[test]
+    fn color_only_noise_and_convolution_preserve_background_and_transparency_locks() {
+        let mut kernel = vec![0.; 25];
+        kernel[12] = 0.5;
+        for depth in [8, 16, 32] {
+            for (id, good, alpha_key, alpha_values) in [
+                (
+                    CONVOLUTION,
+                    json!({"kernel":kernel,"scale":1,"offset":0,"channels":[true,true,true,false],"alphaWeighted":false,"edge":"repeat"}),
+                    "channels",
+                    json!([true, true, true, true]),
+                ),
+                (
+                    CHANNEL_NOISE,
+                    json!({"amounts":[30,30,30,0],"distribution":"uniform","monochromatic":false,"relative":false,"seed":71}),
+                    "amounts",
+                    json!([30, 30, 30, 100]),
+                ),
+            ] {
+                let mut session = Session::new();
+                session.execute("file.new", json!({"width":2,"height":2,"depth":depth,"background":"white"})).unwrap();
+                let background = session.active().unwrap().active_layer.unwrap();
+                assert!(session.active().unwrap().doc.is_background(background));
+                session.execute(id, good.clone()).unwrap();
+                assert!(session.active().unwrap().doc.is_background(background), "{id} {depth}");
+
+                session.execute("layer.new.layer", json!({})).unwrap();
+                let layer = session.active().unwrap().active_layer.unwrap();
+                session
+                    .edit("source", |doc, _| {
+                        doc.layer_mut(layer).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 0, 2, 2), &[0.4, 0.3, 0.2, 0.6]);
+                        Ok(())
+                    })
+                    .unwrap();
+                session.execute("layer.lockLayers", json!({"transparency":true})).unwrap();
+                let alpha = session.active().unwrap().doc.layer(layer).unwrap().surface().unwrap().pixel(0, 0)[3];
+                session.execute(id, good.clone()).unwrap();
+                assert_eq!(session.active().unwrap().doc.layer(layer).unwrap().surface().unwrap().pixel(0, 0)[3], alpha);
+                let before = session.active().unwrap().doc.clone();
+                let history = session.active().unwrap().history.past_len();
+                let mut changes_alpha = good.clone();
+                changes_alpha[alpha_key] = alpha_values;
+                assert!(session.execute(id, changes_alpha).is_err());
+                assert_eq!(*session.active().unwrap().doc, *before);
+                assert_eq!(session.active().unwrap().history.past_len(), history);
+            }
+        }
+    }
     #[test]
     fn strict_recorded_parameters_refuse_hostile_values() {
         for (id, values) in [
