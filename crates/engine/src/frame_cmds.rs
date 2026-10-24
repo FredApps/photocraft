@@ -307,13 +307,12 @@ fn fit(s: &mut Session, p: &Value) -> Result<Value> {
                 let k = (fw / w).max(fh / h);
                 let transform =
                     f.transform.mul(&Affine { m: [k / fw, 0.0, 0.0, k / fh, (1.0 - w * k / fw) / 2.0 - x0 * k / fw, (1.0 - h * k / fh) / 2.0 - y0 * k / fh] });
-                let (child_id, mut smart) = (child.id, smart.clone());
+                let child_id = child.id;
+                let relative = transform.mul(&smart.transform.inverse().ok_or_else(|| bad("the frame image has a degenerate transform"))?);
+                // The same path as `edit.transform`, so the image's linked masks and Smart Filter
+                // mask move with it.
                 return s.edit("Fit Content to Frame", |doc, _| {
-                    smart.transform = transform;
-                    if let Some(pixels) = crate::smart_cmds::render(doc, &smart)? {
-                        smart.cache = Some(pixels);
-                    }
-                    doc.layer_mut(child_id).ok_or(EngineError::NoLayer(child_id))?.content = LayerContent::Smart(smart);
+                    crate::transform_cmds::transform_by(doc, child_id, relative, photocraft_algo::transform::Interp::Bicubic)?;
                     Ok(json!({"layer":id.0,"content":child_id.0}))
                 });
             }

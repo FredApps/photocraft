@@ -480,3 +480,74 @@ fn a_pcraft_with_unusable_frame_metadata_still_opens() {
     assert!(l.frame.is_none());
     assert!(l.vector_mask.is_some(), "the clip survives as the group's vector mask");
 }
+
+/// A frame at (40,28) 32×32 holding session layer `A` (a 20×20 patch at (4,4)), with `setup` run on
+/// the image before it is fitted. Returns the session, the frame and the image ids.
+fn fitted(setup: impl FnOnce(&mut Layer)) -> (Session, LayerId, LayerId) {
+    let (mut s, a, _) = session();
+    let frame = LayerId(s.execute("layer.new.frame", json!({"x":40,"y":28,"width":32,"height":32,"layer":a.0})).unwrap()["layer"].as_u64().unwrap());
+    let child = s.active().unwrap().doc.layer(frame).unwrap().children().unwrap()[0].id;
+    s.edit("setup", |doc, _| {
+        setup(doc.layer_mut(child).unwrap());
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.frame.fit", json!({"layer":frame.0,"mode":"contentToFrame"})).unwrap();
+    (s, frame, child)
+}
+
+fn near(a: Rect, b: Rect) -> bool {
+    (a.x0 - b.x0).abs() <= 1 && (a.y0 - b.y0).abs() <= 1 && (a.x1 - b.x1).abs() <= 1 && (a.y1 - b.y1).abs() <= 1
+}
+
+fn image_bounds(s: &Session, child: LayerId) -> Rect {
+    let LayerContent::Smart(sm) = &s.active().unwrap().doc.layer(child).unwrap().content else { panic!("smart") };
+    sm.cache.as_ref().unwrap().content_bounds()
+}
+
+fn patch_mask(bounds: Rect) -> photocraft_doc::LayerMask {
+    let mut m = photocraft_doc::LayerMask::hide_all();
+    m.surface.fill_rect(bounds, &[1.0]);
+    m
+}
+
+#[test]
+fn fitting_content_moves_a_linked_raster_mask_with_the_image() {
+    let (mut s, frame, child) = fitted(|l| l.mask = Some(patch_mask(Rect::new(4, 4, 24, 24))));
+    let image = image_bounds(&s, child);
+    assert!(image.x0 >= 30, "the image moved into the frame: {image:?}");
+    let mask = s.active().unwrap().doc.layer(child).unwrap().mask.as_ref().unwrap().surface.content_bounds();
+    assert!(near(mask, image), "the mask {mask:?} follows the image {image:?}");
+    assert!(s.undo());
+    let l = s.active().unwrap().doc.layer(child).unwrap();
+    assert_eq!(l.mask.as_ref().unwrap().surface.content_bounds(), Rect::new(4, 4, 24, 24));
+    assert!(s.active().unwrap().doc.layer(frame).is_some());
+}
+
+#[test]
+fn fitting_content_moves_a_linked_vector_mask_with_the_image() {
+    let outline = photocraft_doc::Path::new(vec![photocraft_doc::Subpath::polygon(&[(4., 4.), (24., 4.), (24., 24.), (4., 24.)])]);
+    let (mut s, _, child) = fitted(|l| l.vector_mask = Some(photocraft_doc::VectorMask::new(outline.clone())));
+    let image = image_bounds(&s, child);
+    let (x0, y0, x1, y1) = s.active().unwrap().doc.layer(child).unwrap().vector_mask.as_ref().unwrap().path.control_bounds().unwrap();
+    assert!(near(Rect::new(x0.round() as i32, y0.round() as i32, x1.round() as i32, y1.round() as i32), image), "{x0} {y0} {x1} {y1} vs {image:?}");
+    assert!(s.undo());
+    let vm = s.active().unwrap().doc.layer(child).unwrap().vector_mask.clone().unwrap();
+    assert_eq!(vm.path, outline);
+}
+
+#[test]
+fn fitting_content_moves_the_smart_filter_mask_with_the_image() {
+    let (mut s, _, child) = fitted(|l| {
+        if let LayerContent::Smart(sm) = &mut l.content {
+            sm.filter_mask = Some(patch_mask(Rect::new(4, 4, 24, 24)));
+        }
+    });
+    let image = image_bounds(&s, child);
+    let LayerContent::Smart(sm) = &s.active().unwrap().doc.layer(child).unwrap().content else { panic!("smart") };
+    let mask = sm.filter_mask.as_ref().unwrap().surface.content_bounds();
+    assert!(near(mask, image), "the filter mask {mask:?} follows the image {image:?}");
+    assert!(s.undo());
+    let LayerContent::Smart(sm) = &s.active().unwrap().doc.layer(child).unwrap().content else { panic!("smart") };
+    assert_eq!(sm.filter_mask.as_ref().unwrap().surface.content_bounds(), Rect::new(4, 4, 24, 24));
+}

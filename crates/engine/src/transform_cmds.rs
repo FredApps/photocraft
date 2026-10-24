@@ -549,6 +549,22 @@ pub fn split_selected(surf: &Surface, sel: &Surface) -> Result<(Surface, Surface
     Ok((lifted, rest))
 }
 
+/// Moves layer `id` by `affine` (document → document) as `edit.transform` does: its content, linked
+/// masks and Smart Filter mask follow, and type, shapes and smart objects re-render. The document
+/// selection is left alone.
+pub(crate) fn transform_by(doc: &mut Document, id: LayerId, affine: Affine, interp: Interp) -> Result<()> {
+    let h = crate::smart_cmds::affine_homography(&affine);
+    let group = group_locks(doc, id);
+    let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+    let taken = crate::smart_cmds::take_caches(std::slice::from_mut(l));
+    transform_layer(None, group, l, &h, Some(affine), interp)?;
+    let snapshot = doc.clone();
+    if let Some(l) = doc.layer_mut(id) {
+        refresh_text(&snapshot, l);
+    }
+    crate::smart_cmds::restore_unrendered(doc, taken, |c| warp_surface(c, c.content_bounds(), &h, interp))
+}
+
 pub(crate) fn refresh_text(doc: &Document, l: &mut Layer) {
     match &mut l.content {
         LayerContent::Text(t) => crate::type_cmds::refresh(doc, t),
