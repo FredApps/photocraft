@@ -21,10 +21,17 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 
 pub(crate) fn is_input(p: &Path) -> bool {
     let known = |e: &str| {
-        matches!(e, "pcraft" | "psd" | "psb" | "pdn" | "ora" | "kra" | "krz" | "af" | "afdesign" | "afphoto" | "afpub")
+        matches!(e, "pcraft" | "psd" | "psb" | "pdn" | "ora" | "kra" | "krz" | "af" | "afdesign" | "afphoto" | "afpub" | "xcf" | "xcfgz" | "xcfbz2" | "xcfxz")
             || photocraft_codecs::from_extension(e).is_some_and(|f| photocraft_codecs::caps(f).read)
     };
-    p.is_file() && p.extension().is_some_and(|e| known(&e.to_string_lossy().to_ascii_lowercase()))
+    // A transport suffix alone does not identify an image: only the supported XCF compound
+    // names are candidates. The importer still validates the actual container and XCF bytes.
+    p.is_file()
+        && (p.extension().is_some_and(|e| known(&e.to_string_lossy().to_ascii_lowercase()))
+            || p.file_name().is_some_and(|name| {
+                let name = name.to_string_lossy().to_ascii_lowercase();
+                [".xcf.gz", ".xcf.bz2", ".xcf.xz"].iter().any(|suffix| name.ends_with(suffix))
+            }))
 }
 
 /// Drops the Save and view steps the desktop records from `action` (Batch saves each result
