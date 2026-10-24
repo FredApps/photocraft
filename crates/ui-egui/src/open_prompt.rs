@@ -358,9 +358,14 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
         return Err("damaged PSD cannot be opened before confirmation".into());
     }
     let Held { mut doc, initial_view, read_only, damage_pending: _, name, path, warnings, bytes, slot, question, policy_applied } = held;
-    if let Some(view) = &initial_view {
-        view.validate(&doc).map_err(|e| e.to_string())?;
+    if let Some(view) = &initial_view
+        && let Err(error) = view.validate(&doc)
+    {
+        let error = error.to_string();
+        app.open_failed(&name, &error);
+        return Err(error);
     }
+    let previous_active = app.session.active_index();
     let index = if question.is_some() || policy_applied {
         if let Some(action) = action
             && let Err(e) = app.session.color.resolve_open(&mut doc, action)
@@ -382,12 +387,23 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
             }
         }
     };
-    app.session.apply_import_initial_view(initial_view).map_err(|e| e.to_string())?;
-    // add_document may remap a persisted ID already owned by another open document.
-    let document = app.session.documents().get(index).map(|st| st.doc.id).ok_or("the opened document is missing")?;
     if let Some(st) = app.session.active_mut() {
         st.source_read_only = read_only;
     }
+    if let Err(error) = app.session.apply_import_initial_view(initial_view) {
+        // The initial validation normally makes this infallible: preparation
+        // preserves view targets and add_document only remaps the document ID.
+        // Still discard only this new admission if those invariants ever change.
+        let _ = app.session.close(index);
+        if let Some(previous) = previous_active {
+            app.session.set_active(previous);
+        }
+        let error = error.to_string();
+        app.open_failed(&name, &error);
+        return Err(error);
+    }
+    // add_document may remap a persisted ID already owned by another open document.
+    let document = app.session.documents().get(index).map(|st| st.doc.id).ok_or("the opened document is missing")?;
     let index = match slot {
         Some(slot) => app
             .run("document.move", json!({"document": index, "to": slot}))
@@ -400,3 +416,6 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
     crate::jobs_ui::after_open(app, document, &name, path.as_deref(), &warnings, bytes.as_deref().map(Vec::as_slice))?;
     Ok(json!({"document": index, "action": action}))
 }
+
+#[cfg(test)]
+mod tests;
