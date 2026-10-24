@@ -7,6 +7,9 @@ use photocraft_doc::{Document, LayerContent, LayerPath, MAX_GROUP_DEPTH, SmartSo
 use crate::jobs::JobCtx;
 use crate::{EngineError, Result, Session, smart_cmds};
 
+#[path = "import_prepare/memo.rs"]
+mod memo;
+
 impl Session {
     /// Apply a validated import's native view state once, without an edit or history step.
     /// Callers validate before publishing the pending document; native reopen supplies no hint.
@@ -67,6 +70,7 @@ struct Allowance {
     remaining_bytes: u64,
     source_bytes: usize,
     items: usize,
+    memo: memo::Memo,
 }
 
 fn limit(what: &str) -> EngineError {
@@ -74,15 +78,44 @@ fn limit(what: &str) -> EngineError {
 }
 
 impl Allowance {
-    fn bytes(&mut self, bytes: u64) -> Result<()> {
-        self.remaining_bytes = self.remaining_bytes.checked_sub(bytes).ok_or_else(|| limit("its working-byte allowance"))?;
+    fn charge_bytes(remaining: &mut u64, bytes: u64) -> Result<()> {
+        *remaining = remaining.checked_sub(bytes).ok_or_else(|| limit("its working-byte allowance"))?;
+        Ok(())
+    }
+    fn source(&mut self, bytes: usize) -> Result<()> {
+        self.source_bytes = self.source_bytes.checked_sub(bytes).ok_or_else(|| limit("1 GiB of embedded source bytes"))?;
         Ok(())
     }
 
-    fn render(&mut self, doc: &Document) -> Result<()> {
+    fn item(&mut self) -> Result<()> {
+        self.items = self.items.checked_sub(1).ok_or_else(|| limit("its preparation item count"))?;
+        Ok(())
+    }
+
+    fn bytes(&mut self, bytes: u64) -> Result<()> {
+        Self::charge_bytes(&mut self.remaining_bytes, bytes)
+    }
+
+    fn memo_hit(
+        &mut self,
+        key: &memo::Key,
+        bytes: &Arc<Vec<u8>>,
+        profile: &Option<Arc<Vec<u8>>>,
+        ctx: &JobCtx,
+    ) -> Result<Option<(Arc<Vec<u8>>, photocraft_raster::Surface)>> {
+        let Self { remaining_bytes, memo, .. } = self;
+        memo.get(key, bytes, profile, ctx, &mut |bytes| Self::charge_bytes(remaining_bytes, bytes))
+    }
+
+    fn render_bytes(doc: &Document) -> Result<u64> {
         // Native composition uses RGBA float pixels; filters also keep source/result buffers.
-        let bytes = doc.size.area().checked_mul(32).ok_or_else(|| limit("its raster bounds"))?;
-        self.bytes(bytes)
+        doc.size.area().checked_mul(32).ok_or_else(|| limit("its raster bounds"))
+    }
+
+    fn render(&mut self, doc: &Document) -> Result<u64> {
+        let bytes = Self::render_bytes(doc)?;
+        self.bytes(bytes)?;
+        Ok(bytes)
     }
 }
 
@@ -92,15 +125,20 @@ impl Allowance {
 /// Session-scoped hosts use [`Session::prepare_imported_document`] to install their authority.
 pub fn prepare_imported_document(doc: &mut Document, ctx: &JobCtx) -> Result<()> {
     ctx.check()?;
-    let mut allowance = Allowance { remaining_bytes: MAX_PREPARATION_BYTES, source_bytes: MAX_SOURCE_BYTES, items: MAX_ITEMS };
+    let mut allowance = Allowance { remaining_bytes: MAX_PREPARATION_BYTES, source_bytes: MAX_SOURCE_BYTES, items: MAX_ITEMS, memo: Default::default() };
+    prepare_with_allowance(doc, ctx, &mut allowance)
+}
+
+fn prepare_with_allowance(doc: &mut Document, ctx: &JobCtx, allowance: &mut Allowance) -> Result<()> {
+    ctx.check()?;
     // Check hierarchy before cloning: a malformed API-supplied group tree must not reach a
     // recursive Clone before the ordinary native depth/count bounds are established.
-    let ids = missing_caches(doc, ctx, &mut allowance)?;
+    let ids = missing_caches(doc, ctx, allowance)?;
     if ids.is_empty() {
         return ctx.check();
     }
     let mut pending = doc.clone();
-    prepare_layers(&mut pending, ids, ctx, 0, &mut allowance)?;
+    prepare_layers(&mut pending, ids, ctx, 0, allowance)?;
     ctx.check()?;
     *doc = pending;
     Ok(())
@@ -129,7 +167,7 @@ fn missing_caches(doc: &Document, ctx: &JobCtx, allowance: &mut Allowance) -> Re
             LayerContent::Text(_) | LayerContent::Shape(_) | LayerContent::Smart(_)
                 if layer.surface().is_none_or(|surface| surface.format() != doc.pixel_format()) || crate::import_native_actions::has_pending(layer) =>
             {
-                allowance.items = allowance.items.checked_sub(1).ok_or_else(|| limit("its preparation item count"))?;
+                allowance.item()?;
                 let mut path = parent.clone();
                 path.push(index);
                 out.push(path);
@@ -152,19 +190,43 @@ fn prepare_layers(doc: &mut Document, ids: Vec<LayerPath>, ctx: &JobCtx, depth: 
     let changed = !ids.is_empty();
     for path in ids {
         ctx.check()?;
-        allowance.render(doc)?;
         let mut layer = doc.layer_at(&path).cloned().ok_or_else(|| EngineError::Other("native preparation layer is missing".into()))?;
         match &mut layer.content {
-            LayerContent::Text(text) => crate::type_cmds::refresh(doc, text),
-            LayerContent::Shape(shape) => crate::vector_cmds::refresh_shape(doc, shape),
+            LayerContent::Text(text) => {
+                allowance.render(doc)?;
+                crate::type_cmds::refresh(doc, text);
+            }
+            LayerContent::Shape(shape) => {
+                allowance.render(doc)?;
+                crate::vector_cmds::refresh_shape(doc, shape);
+            }
             LayerContent::Smart(object) => {
                 // Only in-memory source resolution here. Ordinary explicit relink/refresh owns
                 // external reads; an imported locator alone cannot authorize them.
                 let (name, bytes) = smart_cmds::embedded_source_bytes(&doc.metadata, &object.source)
                     .ok_or_else(|| EngineError::Other("native smart cache is missing and its source needs explicit resource resolution".into()))?;
-                allowance.source_bytes = allowance.source_bytes.checked_sub(bytes.len()).ok_or_else(|| limit("1 GiB of embedded source bytes"))?;
+                allowance.source(bytes.len())?;
+                if photocraft_format::is_pcraft(&bytes) && depth >= MAX_CONTENT_DEPTH {
+                    return Err(limit("64 nested native contents"));
+                }
+                let memo_key = memo::Key::new(doc, object, &bytes, ctx)?;
+                if let Some(key) = &memo_key
+                    && let Some((prepared_bytes, cache)) = allowance.memo_hit(key, &bytes, &doc.icc_profile, ctx)?
+                {
+                    if let SmartSource::Embedded { bytes, .. } = &mut object.source {
+                        *bytes = prepared_bytes;
+                    }
+                    object.cache = Some(cache);
+                    ctx.check()?;
+                    let destination = doc.layer_at_mut(&path).ok_or_else(|| EngineError::Other("native preparation layer is missing".into()))?;
+                    destination.content = layer.content;
+                    continue;
+                }
+                allowance.render(doc)?;
                 let source_was_embedded = matches!(object.source, SmartSource::Embedded { .. });
                 let original_source = object.source.clone();
+                let original_bytes = bytes.clone();
+                let mut leaf_raster = false;
                 let prepared_bytes = if photocraft_format::is_pcraft(&bytes) {
                     let opts = photocraft_format::LoadOptions {
                         max_total_bytes: allowance.remaining_bytes,
@@ -175,6 +237,10 @@ fn prepare_layers(doc: &mut Document, ids: Vec<LayerPath>, ctx: &JobCtx, depth: 
                     let (mut source, decoded_bytes) = photocraft_format::load_from_bytes_measured(&bytes, &opts)
                         .map_err(|e| EngineError::Other(format!("cannot prepare embedded native contents: {e}")))?;
                     allowance.bytes(decoded_bytes)?;
+                    // Reuse only original raster-only native bundles. A nested
+                    // Smart/filter/resource must retain its own preparation and
+                    // authorization traversal, even if its outer Smart is plain.
+                    leaf_raster = source.layers.iter().all(|layer| matches!(layer.content, LayerContent::Raster(_)) && layer.video.is_none());
                     if prepare(&mut source, ctx, depth + 1, allowance)? { Arc::new(smart_cmds::encode_source(&source)?) } else { bytes }
                 } else {
                     bytes
@@ -188,8 +254,19 @@ fn prepare_layers(doc: &mut Document, ids: Vec<LayerPath>, ctx: &JobCtx, depth: 
                 if !source_was_embedded && let LayerContent::Smart(object) = &mut layer.content {
                     object.source = original_source;
                 }
+                ctx.check()?;
+                if leaf_raster
+                    && let Some(key) = memo_key
+                    && let Some(surface) = layer.surface()
+                    && let Some(bytes) = allowance.memo.vacancy(&key, surface, allowance.remaining_bytes)
+                {
+                    allowance.bytes(bytes)?;
+                    allowance.memo.insert(key, original_bytes, doc.icc_profile.clone(), surface);
+                }
             }
-            _ => {}
+            _ => {
+                allowance.render(doc)?;
+            }
         }
         ctx.check()?;
         let destination = doc.layer_at_mut(&path).ok_or_else(|| EngineError::Other("native preparation layer is missing".into()))?;
@@ -197,6 +274,10 @@ fn prepare_layers(doc: &mut Document, ids: Vec<LayerPath>, ctx: &JobCtx, depth: 
     }
     Ok(changed)
 }
+
+#[cfg(test)]
+#[path = "import_prepare/resource_tests.rs"]
+mod resource_tests;
 
 #[cfg(test)]
 mod initial_view_tests {
