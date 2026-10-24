@@ -213,7 +213,8 @@ pub(crate) struct Renderer {
     material_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     mips: crate::uv_mips::Mips,
-    compositor: photocraft_gpu::Compositor,
+    compositor: Option<photocraft_gpu::Compositor>,
+    compositor_error: Option<String>,
     last_map_stats: Option<photocraft_gpu::Stats>,
     map_blit_layout: wgpu::BindGroupLayout,
     map_blit: wgpu::RenderPipeline,
@@ -226,6 +227,7 @@ pub(crate) struct Renderer {
     texture_id: Option<egui::TextureId>,
     last: Option<(u64, Camera, [u32; 2], bool, u64)>,
     map_generation: u64,
+    last_pbr_active: bool,
     regions: std::collections::BTreeMap<(usize, bool), crate::uv_lighting::RegionHint>,
     #[cfg(test)]
     timer: Option<photocraft_gpu::timing::GpuTimer>,
@@ -290,6 +292,7 @@ impl Renderer {
         if settings != self.lighting {
             self.lighting = settings;
             self.last = None;
+            self.last_pbr_active = false;
         }
         if !Arc::ptr_eq(&self.environment.source, &environment) || self.environment.output_hash != maps.output.as_ref().map_or(0, |(hash, _)| *hash) {
             self.environment = GpuEnvironment::new(&self.rs, &self.mips, environment, maps.output.as_ref())?;
@@ -390,6 +393,52 @@ impl Renderer {
     pub fn frame_info(&self) -> Option<([u32; 2], u32)> {
         self.target.as_ref().map(|t| (t.size, t.samples))
     }
+    pub fn diagnostics(&self, channel: photocraft_uv::preview::Channel) -> serde_json::Value {
+        let frame = self.frame_info();
+        let maps: Vec<_> = self
+            .surfaces
+            .iter()
+            .enumerate()
+            .map(|(material, surface)| {
+                let maps: Vec<_> = surface
+                    .maps
+                    .iter()
+                    .enumerate()
+                    .filter(|(kind, _)| surface.present.get(*kind).copied().unwrap_or(false))
+                    .map(|(kind, map)| {
+                        let channel = match kind {
+                            0 => "Color",
+                            1 => "Normal",
+                            2 => "AO",
+                            3 => "Metallic",
+                            4 => "Roughness",
+                            _ => "Unknown",
+                        };
+                        let source = match map.source {
+                            MapSource::Cpu => "cpu",
+                            MapSource::GpuComposite => "gpu-composite",
+                            MapSource::CpuFallback => "cpu-fallback",
+                        };
+                        serde_json::json!({"channel": channel, "source": source, "size": map.size})
+                    })
+                    .collect();
+                serde_json::json!({"material": material, "maps": maps})
+            })
+            .collect();
+        serde_json::json!({
+            "rendererActive": self.health.is_ok(),
+            "backend": self.adapter_label,
+            "renderTargetSize": frame.map(|(size, _)| size),
+            "samples": frame.map(|(_, samples)| samples),
+            "pbrEnabled": self.lighting.pbr,
+            "pbrActive": self.last_pbr_active && self.last.as_ref().is_some_and(|(_, camera, _, _, _)| camera.channel == channel),
+            "channel": channel.label(),
+            "mapCompositorActive": self.compositor.is_some() && self.health.is_ok(),
+            "mapCompositorError": self.compositor_error,
+            "maps": maps,
+            "maxTextureDimension2d": self.max_texture_side(),
+        })
+    }
     pub fn clear(&mut self) {
         self.regions.clear();
         self.mesh = None;
@@ -398,15 +447,19 @@ impl Renderer {
         self.target = None;
         self.spare_target = None;
         self.last = None;
+        self.last_pbr_active = false;
         if let Some(id) = self.texture_id.take() {
             self.rs.renderer.write().free_texture(&id);
         }
     }
     pub fn new(rs: RenderState, health: photocraft_gpu::DeviceHealth) -> Result<Self, String> {
+        Self::new_with_map_compositor(rs, health, true)
+    }
+    fn new_with_map_compositor(rs: RenderState, health: photocraft_gpu::DeviceHealth, enable_map_compositor: bool) -> Result<Self, String> {
         use std::future::Future;
         let validation = rs.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let memory = rs.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::create(rs.clone(), health)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::create(rs.clone(), health, enable_map_compositor)));
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         for pop in [memory.pop(), validation.pop()] {
             if let std::task::Poll::Ready(Some(error)) = std::pin::pin!(pop).poll(&mut cx) {
@@ -415,7 +468,7 @@ impl Renderer {
         }
         result.map_err(|_| "3D GPU setup panicked; using CPU preview".to_owned())?
     }
-    fn create(rs: RenderState, health: photocraft_gpu::DeviceHealth) -> Result<Self, String> {
+    fn create(rs: RenderState, health: photocraft_gpu::DeviceHealth, enable_map_compositor: bool) -> Result<Self, String> {
         if !crate::gpu_canvas::supports_f16_canvas(&rs.adapter) {
             return Err("GPU does not support filtered half-float normal-map mip targets".into());
         }
@@ -625,9 +678,21 @@ impl Renderer {
             anisotropy_clamp: if rs.adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::ANISOTROPIC_FILTERING) { 4 } else { 1 },
             ..Default::default()
         });
-        let mut compositor = photocraft_gpu::Compositor::try_new_with_format(device, photocraft_gpu::Compositor::preferred_acc_format(&rs.adapter))
-            .map_err(|e| e.to_string())?;
-        compositor.measure_gpu_time(device, &rs.queue);
+        let (mut compositor, compositor_error) = if enable_map_compositor {
+            match photocraft_gpu::Compositor::try_new_with_format(device, photocraft_gpu::Compositor::preferred_acc_format(&rs.adapter)) {
+                Ok(compositor) => (Some(compositor), None),
+                Err(error) => {
+                    let detail = error.to_string();
+                    log::warn!("UV GPU map compositor unavailable; retaining the 3D renderer with CPU map fallback: {detail}");
+                    (None, Some(detail))
+                }
+            }
+        } else {
+            (None, Some("disabled".into()))
+        };
+        if let Some(compositor) = &mut compositor {
+            compositor.measure_gpu_time(device, &rs.queue);
+        }
         let map_blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("uv compositor map blit"),
             entries: &[
@@ -695,6 +760,7 @@ impl Renderer {
             sampler,
             mips,
             compositor,
+            compositor_error,
             last_map_stats: None,
             map_blit_layout,
             map_blit,
@@ -707,6 +773,7 @@ impl Renderer {
             texture_id: None,
             last: None,
             map_generation: 0,
+            last_pbr_active: false,
             regions: Default::default(),
             #[cfg(test)]
             timer,
@@ -954,8 +1021,8 @@ impl Renderer {
         let pipeline = &self.map_blit;
         let target = &map.levels[0];
         let linear_srgb = u32::from(linear_srgb);
-        let stats = self
-            .compositor
+        let compositor = self.compositor.as_mut().ok_or_else(|| "GPU map compositor unavailable".to_string())?;
+        let stats = compositor
             .render(device, queue, doc, doc.bounds(), |encoder, chunk| {
                 let [x, y, w, h] = [chunk.rect.x0.max(0) as u32, chunk.rect.y0.max(0) as u32, chunk.rect.width(), chunk.rect.height()];
                 if w == 0 || h == 0 || x.saturating_add(w) > size[0] || y.saturating_add(h) > size[1] {
@@ -1132,9 +1199,14 @@ impl Renderer {
         }
         self.mesh(draw.geometry.clone())?;
         self.materials(&draw)?;
+        let pbr_active = self.lighting.pbr
+            && draw.camera.shaded
+            && draw.camera.channel == photocraft_uv::preview::Channel::Material
+            && draw.scene.materials.iter().enumerate().any(|(id, _)| !draw.masked.contains(&id));
         let samples = if draw.antialias { self.aa_samples } else { 1 };
         let key = (draw.generation, draw.camera, draw.size, draw.antialias, self.map_generation);
         if self.last == Some(key) && self.mesh.as_ref().is_some_and(|mesh| &mesh.selected == draw.selected) {
+            self.last_pbr_active = pbr_active;
             return self.texture_id.ok_or_else(|| "GPU viewport texture unavailable".into());
         }
         let device = &self.rs.device;
@@ -1287,6 +1359,7 @@ impl Renderer {
             timer.submitted();
         }
         self.last = Some(key);
+        self.last_pbr_active = pbr_active;
         self.texture_id.ok_or_else(|| "Missing GPU texture id".into())
     }
 }
@@ -1332,7 +1405,166 @@ mod tests {
         let health = photocraft_gpu::DeviceHealth::watch(&rs.device);
         let renderer = Renderer::new(rs, health).unwrap();
         assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
+        assert!(renderer.compositor.is_some(), "map compositor errors must not masquerade as a healthy renderer");
         renderer
+    }
+    #[cfg(target_os = "windows")]
+    fn dx12_fxc_render_state() -> Result<RenderState, String> {
+        let mut setup = crate::gpu_canvas::wgpu_setup();
+        let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut setup else { return Err("native GPU setup must create a device".into()) };
+        create.instance_descriptor.backends = wgpu::Backends::DX12;
+        create.instance_descriptor.flags = wgpu::InstanceFlags::empty();
+        create.instance_descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+        Ok(egui_kittest::wgpu::create_render_state(setup, Default::default()))
+    }
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn dx12_fxc_renderer_initializes_for_production_backend() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let rs = dx12_fxc_render_state().unwrap();
+        assert_eq!(rs.adapter.get_info().backend, wgpu::Backend::Dx12);
+        let health = photocraft_gpu::DeviceHealth::watch(&rs.device);
+        let renderer = Renderer::new(rs, health).unwrap();
+        assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
+        assert!(renderer.compositor.is_some(), "DX12/FXC map compositor unavailable: {:?}", renderer.compositor_error);
+    }
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn dx12_fxc_map_compositor_renders_for_production_backend() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let rs = dx12_fxc_render_state().unwrap();
+        assert_eq!(rs.adapter.get_info().backend, wgpu::Backend::Dx12);
+        let health = photocraft_gpu::DeviceHealth::watch(&rs.device);
+        let mut renderer = Renderer::new(rs, health).unwrap();
+        assert!(renderer.compositor.is_some(), "DX12/FXC failed to create the map compositor: {:?}", renderer.compositor_error);
+        let doc = photocraft_doc::Document::with_background(
+            "DX12 FXC map compositor",
+            photocraft_geom::Size::new(4, 4),
+            photocraft_color::ColorMode::Rgb,
+            photocraft_color::SampleType::U8,
+            photocraft_color::Color::rgb(0.2, 0.4, 0.6),
+        );
+        let map = renderer.map_gpu_composite(&doc, (doc.id.0, 1, 0, 0), false, None).unwrap();
+        renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+        assert_eq!(map.size, [4, 4]);
+        assert_eq!(map.source, MapSource::GpuComposite);
+        assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
+    }
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn missing_map_compositor_keeps_dx12_orbit_and_pbr_cpu_map_fallback() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let rs = dx12_fxc_render_state().unwrap();
+        assert_eq!(rs.adapter.get_info().backend, wgpu::Backend::Dx12);
+        let health = photocraft_gpu::DeviceHealth::watch(&rs.device);
+        let mut renderer = Renderer::new_with_map_compositor(rs, health, false).unwrap();
+        assert!(renderer.compositor.is_none());
+
+        let doc = Arc::new(photocraft_doc::Document::with_background(
+            "PBR CPU fallback map",
+            photocraft_geom::Size::new(16, 8),
+            photocraft_color::ColorMode::Rgb,
+            photocraft_color::SampleType::U8,
+            photocraft_color::Color::rgb(0.7, 0.2, 0.1),
+        ));
+        let (scene, geometry) = scene();
+        let mut maps = crate::uv_lighting::SurfaceMaps::default();
+        maps.gpu[0] = vec![Some(crate::uv_lighting::GpuMapRequest { doc, key: (1, 1, 0, 1), linear_srgb: true }); scene.materials.len()];
+        maps.use_color_for_pbr = vec![true; scene.materials.len()];
+        let settings = photocraft_uv::lighting::Settings { pbr: true, ..Default::default() };
+        renderer.set_lighting(settings, &maps, Arc::new(photocraft_uv::lighting::Environment::studio())).unwrap();
+        assert_eq!(renderer.surfaces[0].maps[0].source, MapSource::CpuFallback);
+        assert_eq!(renderer.surfaces[0].maps[0].size, [16, 8]);
+
+        let empty = BTreeSet::new();
+        let colors = vec![None; scene.materials.len()];
+        renderer
+            .draw(Draw {
+                scene: &scene,
+                geometry,
+                camera: Camera { channel: photocraft_uv::preview::Channel::Material, shaded: true, ..Default::default() },
+                size: [128, 128],
+                antialias: false,
+                selected: &empty,
+                hidden: &empty,
+                generation: 1,
+                colors: &colors,
+                normals: &[],
+                keys: &[],
+                normal_keys: &[],
+                masked: &empty,
+            })
+            .unwrap();
+        renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+        assert!(renderer.lighting.pbr, "PBR lighting must stay active during map-compositor fallback");
+        assert!(renderer.last_pbr_active, "PBR must be active in the shaded Material view");
+        assert!(matches!(renderer.materials[0].as_ref().unwrap().color, MaterialColor::Surface { .. }));
+        let inspected = renderer.diagnostics(photocraft_uv::preview::Channel::Material);
+        assert_eq!(inspected["rendererActive"], true);
+        assert_eq!(inspected["pbrEnabled"], true);
+        assert_eq!(inspected["pbrActive"], true);
+        assert_eq!(inspected["renderTargetSize"], serde_json::json!([128, 128]));
+        assert_eq!(inspected["maps"][0]["maps"][0]["source"], "cpu-fallback");
+        assert_eq!(inspected["maps"][0]["maps"][0]["size"], serde_json::json!([16, 8]));
+        assert!(inspected.get("pixels").is_none() && inspected.get("paths").is_none());
+        assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
+    }
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn dx12_fxc_keeps_full_resolution_maps_for_multiple_materials() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let rs = dx12_fxc_render_state().unwrap();
+        assert_eq!(rs.adapter.get_info().backend, wgpu::Backend::Dx12);
+        let health = photocraft_gpu::DeviceHealth::watch(&rs.device);
+        let mut renderer = Renderer::new(rs, health).unwrap();
+        assert!(renderer.compositor.is_some(), "DX12/FXC map compositor unavailable: {:?}", renderer.compositor_error);
+
+        let doc = Arc::new(photocraft_doc::Document::with_background(
+            "Full-resolution PBR source",
+            photocraft_geom::Size::new(4097, 37),
+            photocraft_color::ColorMode::Rgb,
+            photocraft_color::SampleType::U8,
+            photocraft_doc::Color::rgb(0.65, 0.35, 0.12),
+        ));
+        let (mut scene, geometry) = scene();
+        scene.materials.push(scene.materials[0].clone());
+        let mut maps = crate::uv_lighting::SurfaceMaps::default();
+        maps.gpu[0] = vec![
+            Some(crate::uv_lighting::GpuMapRequest { doc: doc.clone(), key: (doc.id.0, 1, 0, 1), linear_srgb: true }),
+            Some(crate::uv_lighting::GpuMapRequest { doc: doc.clone(), key: (doc.id.0, 1, 0, 1), linear_srgb: true }),
+        ];
+        maps.use_color_for_pbr = vec![true; 2];
+        let settings = photocraft_uv::lighting::Settings { pbr: true, ..Default::default() };
+        renderer.set_lighting(settings, &maps, Arc::new(photocraft_uv::lighting::Environment::studio())).unwrap();
+        for surface in renderer.surfaces.iter().take(2) {
+            assert_eq!(surface.maps[0].size, [4097, 37]);
+            assert_eq!(surface.maps[0].source, MapSource::GpuComposite);
+        }
+        let empty = BTreeSet::new();
+        let colors = vec![None; scene.materials.len()];
+        renderer
+            .draw(Draw {
+                scene: &scene,
+                geometry,
+                camera: Camera { channel: photocraft_uv::preview::Channel::Material, shaded: true, ..Default::default() },
+                size: [128, 128],
+                antialias: false,
+                selected: &empty,
+                hidden: &empty,
+                generation: 1,
+                colors: &colors,
+                normals: &[],
+                keys: &[],
+                normal_keys: &[],
+                masked: &empty,
+            })
+            .unwrap();
+        renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+        assert!(renderer.last_pbr_active);
+        for material in renderer.materials.iter().take(2).flatten() {
+            assert_eq!(material.color.size(), [4097, 37]);
+            assert!(matches!(material.color, MaterialColor::Surface { .. }));
+        }
     }
     fn opacity_bench_app(layer_count: usize) -> (crate::PhotocraftApp, photocraft_doc::LayerId) {
         let mut session = photocraft_engine::Session::new();
