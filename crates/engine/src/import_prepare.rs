@@ -222,7 +222,7 @@ fn prepare_layers(doc: &mut Document, ids: Vec<LayerPath>, ctx: &JobCtx, depth: 
                     destination.content = layer.content;
                     continue;
                 }
-                allowance.render(doc)?;
+                let render_reservation = allowance.render(doc)?;
                 let source_was_embedded = matches!(object.source, SmartSource::Embedded { .. });
                 let original_source = object.source.clone();
                 let original_bytes = bytes.clone();
@@ -231,12 +231,18 @@ fn prepare_layers(doc: &mut Document, ids: Vec<LayerPath>, ctx: &JobCtx, depth: 
                     let opts = photocraft_format::LoadOptions {
                         max_total_bytes: allowance.remaining_bytes,
                         max_blob_bytes: usize::try_from(allowance.remaining_bytes).unwrap_or(usize::MAX).min(MAX_SOURCE_BYTES),
-                        max_canvas_pixels: allowance.remaining_bytes / 32,
+                        // This render frame has already been debited. Its canvas
+                        // admission must not reserve the same frame a second time.
+                        // Actual decoded payload still fits only remaining_bytes.
+                        max_canvas_pixels: allowance.remaining_bytes.checked_add(render_reservation).ok_or_else(|| limit("its raster bounds"))? / 32,
                         ..Default::default()
                     };
                     let (mut source, decoded_bytes) = photocraft_format::load_from_bytes_measured(&bytes, &opts)
                         .map_err(|e| EngineError::Other(format!("cannot prepare embedded native contents: {e}")))?;
                     allowance.bytes(decoded_bytes)?;
+                    // A source larger than the parent cannot borrow a free frame:
+                    // debit its extra extent before recursive work or composition.
+                    allowance.bytes(Allowance::render_bytes(&source)?.saturating_sub(render_reservation))?;
                     // Reuse only original raster-only native bundles. A nested
                     // Smart/filter/resource must retain its own preparation and
                     // authorization traversal, even if its outer Smart is plain.

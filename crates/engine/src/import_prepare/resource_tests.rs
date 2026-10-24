@@ -238,3 +238,72 @@ fn repeated_native_cache_hits_keep_each_depth_hdr_and_cow_edit_independence() {
         assert!(!Arc::ptr_eq(a, b), "{depth:?}: edited tile detaches");
     }
 }
+
+fn sparse_source(depth: SampleType) -> (Document, Arc<Vec<u8>>, u64) {
+    let mut source = Document::new("Original sparse source", Size::new(256, 256), ColorMode::Rgb, depth);
+    let mut layer = Layer::raster("Sparse pixels", source.pixel_format());
+    layer.surface_mut().unwrap().write_pixel(3, 5, &[0.25, 0.5, 0.75, 1.]);
+    source.layers.push(layer);
+    let bytes = Arc::new(smart_cmds::encode_source(&source).unwrap());
+    let (_, decoded) = photocraft_format::load_from_bytes_measured(&bytes, &Default::default()).unwrap();
+    (source, bytes, decoded)
+}
+
+#[test]
+fn native_canvas_admission_reuses_its_already_debited_same_extent_render_reservation() {
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let (source, bytes, decoded) = sparse_source(depth);
+        let mut parent = Document::new("Same extent parent", source.size, source.mode, source.depth);
+        parent.layers.push(smart(bytes));
+        let mut ordinary = parent.clone();
+        prepare_imported_document(&mut ordinary, &JobCtx::new()).unwrap();
+        let mut charged = allowance();
+        charged.render(&parent).unwrap();
+        let render = MAX_PREPARATION_BYTES - charged.remaining_bytes;
+        assert!(decoded < render, "small sparse source makes duplicate frame reservation observable");
+        let mut exact = allowance();
+        exact.remaining_bytes = render + decoded;
+        prepare_with_allowance(&mut parent, &JobCtx::new(), &mut exact).unwrap();
+        assert_eq!(exact.remaining_bytes, 0, "same extent reserves its native render exactly once");
+        assert_eq!(parent, ordinary, "{depth:?}: admission credit does not change ordinary native pixels or editable data");
+    }
+}
+
+#[test]
+fn larger_native_source_requires_checked_extra_render_debit_before_composition() {
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let (source, bytes, decoded) = sparse_source(depth);
+        let mut parent = Document::new("Small parent", Size::new(16, 16), source.mode, source.depth);
+        parent.layers.push(smart(bytes));
+        let LayerContent::Smart(object) = &mut parent.layers[0].content else { panic!("native smart") };
+        object.smart_filters.push(SmartFilter {
+            command: "image.adjustments.invert".into(),
+            params: serde_json::json!({}),
+            blend: BlendMode::Normal,
+            opacity: 1.,
+            visible: true,
+        });
+        let mut source_charge = allowance();
+        source_charge.render(&source).unwrap();
+        let source_render = MAX_PREPARATION_BYTES - source_charge.remaining_bytes;
+        let mut ordinary = parent.clone();
+        prepare_imported_document(&mut ordinary, &JobCtx::new()).unwrap();
+        let mut exact = parent.clone();
+        let mut budget = allowance();
+        budget.remaining_bytes = source_render + decoded;
+        prepare_with_allowance(&mut exact, &JobCtx::new(), &mut budget).unwrap();
+        assert_eq!(budget.remaining_bytes, 0, "{depth:?}: larger source's additional extent is actually debited");
+        assert_eq!(exact, ordinary);
+        let mut short = allowance();
+        short.remaining_bytes = source_render + decoded - 1;
+        let mut refused = parent.clone();
+        FIRST_FILTER_CHECKS.with(|count| count.set(0));
+        let _scope = crate::jobs::render_authorization_scope(Some(cancel_second_filter));
+        assert!(
+            prepare_with_allowance(&mut refused, &JobCtx::new(), &mut short).unwrap_err().to_string().contains("working-byte"),
+            "source cannot spend a reserved frame twice"
+        );
+        assert_eq!(FIRST_FILTER_CHECKS.with(|count| count.get()), 0, "extra source extent is debited before even authorizing its render filter");
+        assert_eq!(refused, parent, "{depth:?}: failed top-up leaves pending native data unchanged");
+    }
+}
