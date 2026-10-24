@@ -34,7 +34,7 @@ Baseline: 2026-10-05, commit `f5d2bcb54a`, Apple M4 Pro (48 GB), GPU Apple M4 Pr
 | P8 | Duplicate a 12 MP layer (first) | ≤ 100 ms p95 | 508 | 699 | 699 | 907 MB | 919 MB | over budget (target not met yet) | [#209](https://github.com/storytold/photocraft/issues/209) |
 | P9 | Duplicate a 12 MP layer (repeat) | ≤ 20 ms p95 | 406 | 627 | 627 | 749 MB | 919 MB | over budget (target not met yet) | [#209](https://github.com/storytold/photocraft/issues/209) |
 | P10 | Paste a 12 MP layer (first) | ≤ 100 ms p95 | 1232 | 3136 | 3136 | 1.3 GB | 1.4 GB | over budget (target not met yet) | [#209](https://github.com/storytold/photocraft/issues/209) |
-| P11 | Paste a 12 MP layer (repeat) | ≤ 20 ms p95 | 445 | 1174 | 1174 | 958 MB | 1.4 GB | **BUDGET BROKEN** | [#209](https://github.com/storytold/photocraft/issues/209) |
+| P11 | Paste a 12 MP layer (repeat) | ≤ 20 ms p95 | 445 | 1174 | 1174 | 958 MB | 1.4 GB | over budget (target not met yet) | [#209](https://github.com/storytold/photocraft/issues/209) |
 | P12 | Arrow-key nudge in a 150-layer document | ≤ 30 ms p95 | – | – | – | – | – | **missing**: panicked: wgpu error: Validation Error / Caused by: /   In Queue::write_buffer /     Buffer with 'pc_compose_uniforms' label is invalid | [#209](https://github.com/storytold/photocraft/issues/209) |
 | P51 | New layer in a 150-layer document | ≤ 16 ms p95 | – | – | – | – | – | not run | [#1771](https://github.com/storytold/photocraft/issues/1771) |
 | P13 | Brush dab on a 15000×10000 16-bit document | ≤ 80 ms p95 | 6.42 | 146 | 146 | 839 MB | 2.0 GB | over budget (target not met yet) | [#209](https://github.com/storytold/photocraft/issues/209) |
