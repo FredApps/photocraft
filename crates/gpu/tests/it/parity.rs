@@ -3,6 +3,7 @@
 
 use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::adjust::{CurvePoint, HueRange, LevelsChannel};
+use photocraft_doc::mask_paint::{Paint, Stack};
 use photocraft_doc::{Adjustment, Document, Fill, GradientStyle, Layer, LayerContent, LayerMask};
 use photocraft_geom::{Rect, Size, TILE_SIZE};
 use photocraft_gpu::{Compositor, render_to_vec};
@@ -216,6 +217,67 @@ fn diff_rect(g: &mut Gpu, doc: &Document, rect: Rect, what: &str) -> Result<phot
 
 fn check(g: &mut Gpu, doc: &Document, what: &str) {
     diff_rect(g, doc, doc.bounds(), what).unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[test]
+fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
+    let Some(mut g) = gpu() else { return };
+    for sample in SampleType::ALL {
+        let width = TILE_SIZE as u32 + 4;
+        let gray = PixelFormat::new(ColorMode::Grayscale, sample, false);
+        let rgba = PixelFormat::new(ColorMode::Rgb, sample, true);
+        let mut mask = LayerMask::reveal_all();
+        mask.surface = photocraft_raster::Surface::with_default(gray, &[0.0]);
+        let mut base = photocraft_raster::Surface::with_default(gray, &[0.17]);
+        base.write_region(Rect::new(0, 0, 8, 4), &(0..32).map(|i| 0.1 + i as f32 / 40.0).collect::<Vec<_>>());
+        let mut low = photocraft_raster::Surface::with_default(rgba, &[0.72, 0.0, 0.0, 0.23]);
+        low.write_region(Rect::new(1, 0, 7, 4), &(0..24).flat_map(|i| [0.9 - i as f32 / 60.0, 0.0, 0.0, 0.15 + i as f32 / 45.0]).collect::<Vec<_>>());
+        let mut hidden = photocraft_raster::Surface::with_default(rgba, &[0.2, 0.0, 0.0, 0.9]);
+        hidden.write_region(Rect::new(0, 1, 8, 3), &[0.0; 64]);
+        let mut top = photocraft_raster::Surface::with_default(rgba, &[0.12, 0.0, 0.0, 0.31]);
+        top.write_region(Rect::new(2, 0, 8, 4), &(0..24).flat_map(|i| [0.25 + i as f32 / 70.0, 0.0, 0.0, 0.12 + i as f32 / 55.0]).collect::<Vec<_>>());
+        mask.paint = Some(Stack {
+            base,
+            layers: vec![
+                Paint { name: "low".into(), visible: true, opacity: 0.63, surface: low },
+                Paint { name: "hidden".into(), visible: false, opacity: 1.0, surface: hidden },
+                Paint { name: "top".into(), visible: true, opacity: 0.74, surface: top },
+            ],
+            active: 2,
+        });
+        photocraft_compose::mask_paint::refresh(&mut mask, None);
+        let stack = mask.paint.as_ref().unwrap();
+        let mut expected_default = stack.base.default_pixel()[0];
+        for paint in stack.layers.iter().filter(|paint| paint.visible) {
+            let source = paint.surface.default_pixel();
+            let alpha = source[3] * paint.opacity;
+            expected_default = source[0] * alpha + expected_default * (1.0 - alpha);
+        }
+        let expected = photocraft_raster::Surface::with_default(gray, &[expected_default]).default_pixel();
+        assert_eq!(mask.surface.default_pixel(), expected, "flattened default {sample:?}");
+
+        let mut d = Document::new("paint mask oracle", Size::new(width, 4), ColorMode::Rgb, sample);
+        let mut masked = Layer::raster("masked base", rgba);
+        masked.mask = Some(mask);
+        *masked.surface_mut().unwrap() = photocraft_raster::Surface::with_default(rgba, &[0.2, 0.4, 0.7, 0.8]);
+        masked.surface_mut().unwrap().write_region(Rect::new(0, 0, 8, 4), &(0..32).flat_map(|i| [0.2 + i as f32 / 80.0, 0.4, 0.7, 1.0]).collect::<Vec<_>>());
+        d.layers.push(masked);
+        // Keep these unmasked so the first mask is at the head of a batchable run.
+        for (name, value) in [("after one", 0.24), ("after two", 0.53)] {
+            let mut layer = Layer::raster(name, rgba);
+            *layer.surface_mut().unwrap() = photocraft_raster::Surface::with_default(rgba, &[value, 0.15, 0.31, 0.4]);
+            let pixels = (0..32).flat_map(|_| [value, 0.15, 0.31, 0.4]).collect::<Vec<_>>();
+            layer.surface_mut().unwrap().write_region(Rect::new(0, 0, 8, 4), &pixels);
+            d.layers.push(layer);
+        }
+        check(&mut g, &d, &format!("paint mask stack {sample:?}"));
+
+        let mask = d.layers[0].mask.as_mut().unwrap();
+        let old = mask.paint.clone().unwrap();
+        mask.paint.as_mut().unwrap().layers[2].opacity = 0.19;
+        photocraft_compose::mask_paint::refresh_changes(mask, Some(&old));
+        check(&mut g, &d, &format!("paint mask opacity rerender {sample:?}"));
+    }
 }
 
 /// Growing a layer's tile footprint keeps the old texels in the overlap (`keep_overlap`)

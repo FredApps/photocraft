@@ -285,7 +285,18 @@ fn region(rect: photocraft_geom::Rect) -> [u32; 4] {
     if rect.is_empty() { [0; 4] } else { [rect.x0 as u32, rect.y0 as u32, rect.width(), rect.height()] }
 }
 
+#[cfg(test)]
 fn refresh(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &mut Cache) -> Result<(), String> {
+    refresh_with_lighting(app, ctx, cache, photocraft_uv::lighting::Settings::default())
+}
+fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &mut Cache, lighting: photocraft_uv::lighting::Settings) -> Result<(), String> {
+    let refresh_started = crate::gpu_canvas::now_ms();
+    let mut cpu_compose_ms = 0.0;
+    // UV hit testing and the brush cursor consult CPU texture alpha. An opacity slider can
+    // skip that work while the pointer is elsewhere, but refresh it on demand before the
+    // pointer returns to the 3D surface.
+    let cpu_pick_needed = crate::uv_mask_paint_preview::active_document(app).is_some()
+        && cache.viewport.is_some_and(|viewport| ctx.input(|input| input.pointer.hover_pos().is_some_and(|pos| viewport.contains(pos))));
     let map_kind = if matches!(cache.display_channel, Channel::Material | Channel::Normal) { Channel::Color } else { cache.display_channel };
     let mut bindings = app.session.uv.map_bindings(map_kind).to_vec();
     cache.masked.clear();
@@ -340,6 +351,7 @@ fn refresh(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &mut Cache) -> R
         };
         let revision = app.session.documents().get(index).map_or(0, |st| st.revision);
         let (doc, preview) = crate::canvas::display_doc(app, index);
+        let doc = crate::uv_mask_paint_preview::cpu_document(app, doc, preview);
         let key = (doc.id.0, revision, preview);
         if cache.opacity_keys.get(material) == Some(&key) {
             continue;
@@ -400,6 +412,23 @@ fn refresh(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &mut Cache) -> R
         } else {
             crate::canvas::display_doc(app, index)
         };
+        let has_opacity_map = app.session.uv.map_bindings(Channel::Opacity).get(material).is_some_and(Option::is_some);
+        let gpu_pbr_color = cache.gpu.is_some()
+            && crate::uv_mask_paint_preview::active_document(app).is_some()
+            && !cpu_pick_needed
+            && lighting.pbr
+            && cache.display_channel == Channel::Material
+            && !cache.masked.contains(&material)
+            && !has_opacity_map
+            && crate::uv_lighting::gpu_color_encoding(&doc, Channel::Color).is_some()
+            && cache.textures.get(material).and_then(Option::as_ref).is_some();
+        if gpu_pbr_color {
+            // PBR binds the full-resolution, linear compositor map prepared by
+            // uv_lighting. Leave CPU cache keys untouched so toggling PBR back
+            // off forces a fresh display image.
+            continue;
+        }
+        let doc = crate::uv_mask_paint_preview::cpu_document(app, doc, preview_key);
         let display = app.session.color.canvas_display(&doc).map_err(|e| e.to_string())?;
         let opacity_key = if matches!(cache.display_channel, Channel::Material | Channel::Color | Channel::Normal) {
             cache.opacity_keys.get(material).copied().unwrap_or_default()
@@ -438,7 +467,9 @@ fn refresh(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &mut Cache) -> R
         let regions = crate::uv_damage::regions(&mut cache.snapshots[material], &doc, damage);
         let mut hints = Vec::new();
         for rect in regions {
+            let compose_started = crate::gpu_canvas::now_ms();
             let buffer = photocraft_compose::render_reduced_damage(&doc, w, h, rect);
+            cpu_compose_ms += crate::gpu_canvas::now_ms() - compose_started;
             let image = display.to_rgba8(&buffer);
             let mut rgba: Vec<[f32; 4]> = if matches!(map_kind, Channel::Color | Channel::Emissive) {
                 image.pixels.as_chunks::<4>().0.iter().map(|p| p.map(|v| f32::from(v) / 255.0)).collect()
@@ -492,6 +523,7 @@ fn refresh(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &mut Cache) -> R
         };
         let revision = app.session.documents().get(index).map_or(0, |d| d.revision);
         let (doc, preview_key) = crate::canvas::display_doc(app, index);
+        let doc = crate::uv_mask_paint_preview::cpu_document(app, doc, preview_key);
         let key = (doc.id.0, revision, preview_key);
         if cache.normal_keys.get(material) == Some(&key) && cache.normals.get(material).is_some_and(Option::is_some) {
             continue;
@@ -520,7 +552,9 @@ fn refresh(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &mut Cache) -> R
         let regions = crate::uv_damage::regions(&mut cache.normal_snapshots[material], &doc, damage);
         let mut hints = Vec::new();
         for rect in regions {
+            let compose_started = crate::gpu_canvas::now_ms();
             let buffer = photocraft_compose::render_reduced_damage(&doc, w, h, rect);
+            cpu_compose_ms += crate::gpu_canvas::now_ms() - compose_started;
             hints.push(region(buffer.rect));
             if let Some(image) = cache.normals.get_mut(material) {
                 patch_image(image, [w, h], buffer.rect, buffer.px)?;
@@ -539,6 +573,10 @@ fn refresh(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &mut Cache) -> R
     if textures_changed {
         cache.rendered = None;
     }
+    let refresh_ms = crate::gpu_canvas::now_ms() - refresh_started;
+    app.perf.span("uv.refresh", refresh_ms);
+    app.perf.span("uv.compose.cpu", cpu_compose_ms);
+    app.perf.span("uv.prepare", (refresh_ms - cpu_compose_ms).max(0.0));
     Ok(())
 }
 
@@ -1225,11 +1263,34 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // The quality settle interval owns no input: a click immediately after zoom
     // must still begin a stroke or select a shell.
     let gesture = navigation.gesture || wheel != 0.0;
-    if !moving && !crate::adjust_preview::settling(app, 180.0) && cache.refreshed.is_none_or(|at| at.elapsed() >= Duration::from_millis(33)) {
-        if let Err(e) = refresh(app, ui.ctx(), &mut cache) {
+    let opacity_preview = crate::uv_mask_paint_preview::active_document(app);
+    let active_preview = opacity_preview.or_else(|| crate::uv_paint::active_document(&cache.paint));
+    let active_preview_gpu = active_preview.is_some_and(|id| {
+        state.lighting.pbr
+            && state.channel == Channel::Material
+            && cache.gpu.is_some()
+            && cache.masked.is_empty()
+            && app.session.uv.map_bindings(Channel::Color).contains(&Some(id))
+            && app.session.uv.map_bindings(Channel::Opacity).iter().all(Option::is_none)
+            && app
+                .session
+                .documents()
+                .iter()
+                .find(|st| st.doc.id == id)
+                .is_some_and(|st| crate::uv_lighting::gpu_color_encoding(&st.doc, Channel::Color).is_some())
+    });
+    let settle = crate::adjust_preview::settling(app, 180.0);
+    let interval_elapsed = cache.refreshed.is_none_or(|at| at.elapsed() >= Duration::from_millis(33));
+    if !moving && (active_preview_gpu || ((opacity_preview.is_some() || !settle) && interval_elapsed)) {
+        if let Err(e) = refresh_with_lighting(app, ui.ctx(), &mut cache, state.lighting) {
             state.status = e;
         }
-        if let Err(e) = crate::uv_lighting::refresh(app, &mut cache.lighting.surface) {
+        let lighting_refresh = if cache.gpu.is_some() {
+            crate::uv_lighting::refresh_gpu(app, &mut cache.lighting.surface)
+        } else {
+            crate::uv_lighting::refresh(app, &mut cache.lighting.surface)
+        };
+        if let Err(e) = lighting_refresh {
             state.status = e;
         }
         cache.refreshed = Some(Instant::now());
@@ -1268,12 +1329,25 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             masked: &cache.masked,
         };
         let environment = crate::uv_lighting::ensure(&mut cache.lighting);
-        let result = renderer.set_lighting(state.lighting, &cache.lighting.surface, environment).and_then(|()| renderer.draw(draw));
+        let map_started = crate::gpu_canvas::now_ms();
+        let map_result = renderer.set_lighting(state.lighting, &cache.lighting.surface, environment);
+        app.perf.span("uv.pbr.prepare", crate::gpu_canvas::now_ms() - map_started);
+        if let Some(stats) = renderer.take_map_stats()
+            && let Some(timing) = stats.gpu_time
+        {
+            app.perf.record_gpu(timing);
+            app.perf.span("uv.pbr.gpu", timing.ms);
+        }
+        let draw_started = crate::gpu_canvas::now_ms();
+        let result = map_result.and_then(|()| renderer.draw(draw));
+        app.perf.span("uv.draw.gpu", crate::gpu_canvas::now_ms() - draw_started);
         match result {
             Ok(id) => gpu_image = Some(id),
             Err(e) => {
                 state.status = format!("3D GPU: {e}. CPU fallback.");
                 cache.gpu = None;
+                cache.keys.fill((0, 0, 0, 0));
+                cache.refreshed = None;
             }
         }
     }
@@ -1945,6 +2019,10 @@ mod tests {
             } else {
                 fixture_app()
             };
+            // The imported-model branch is a bare application state, unlike fixture_app(),
+            // and the 3D viewport (including its WGPU render state) is created only in the
+            // UV workspace.
+            app.ui.workspace = "3D".into();
             app.run("uv.texture.create", json!({"width":4096,"height":4096,"depth":16})).unwrap();
             app.run("tools.setColors", json!({"foreground":"#ff0000"})).unwrap();
             app.run("tools.setBrush", json!({"brush":{"size":32.0,"hardness":0.5}})).unwrap();

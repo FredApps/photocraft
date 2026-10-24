@@ -17,7 +17,9 @@ const STRIDE: u64 = 72;
 type Key = (u64, u64, u64, u64);
 struct GpuSurface {
     maps: Vec<Map>,
+    gpu_spares: Vec<Option<Map>>,
     present: [bool; 5],
+    use_color_for_pbr: bool,
     version: u64,
 }
 impl GpuSurface {
@@ -123,18 +125,55 @@ struct Map {
     view: wgpu::TextureView,
     size: [u32; 2],
     key: Key,
-    data: Vec<u8>,
+    // CPU snapshots only exist for CPU-uploaded maps. A compositor-backed map has no
+    // byte mirror: keeping one here would either require a readback or let a later
+    // changed-region upload compare against stale pixels.
+    data: Option<Vec<u8>>,
+    source: MapSource,
     cutout: bool,
     levels: Vec<wgpu::TextureView>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapSource {
+    Cpu,
+    GpuComposite,
+    CpuFallback,
 }
 struct Material {
     masked: bool,
     cutout: bool,
-    color: Map,
+    color: MaterialColor,
     normal: Map,
     group: wgpu::BindGroup,
     _uniform: wgpu::Buffer,
     surface_version: u64,
+}
+enum MaterialColor {
+    Owned(Box<Map>),
+    Surface { size: [u32; 2], key: Key, cutout: bool },
+}
+impl MaterialColor {
+    fn size(&self) -> [u32; 2] {
+        match self {
+            Self::Owned(map) => map.size,
+            Self::Surface { size, .. } => *size,
+        }
+    }
+    fn key(&self) -> Key {
+        match self {
+            Self::Owned(map) => map.key,
+            Self::Surface { key, .. } => *key,
+        }
+    }
+    fn cutout(&self) -> bool {
+        match self {
+            Self::Owned(map) => map.cutout,
+            Self::Surface { cutout, .. } => *cutout,
+        }
+    }
+}
+fn material_map_key(key: Key, size: [u32; 2]) -> Key {
+    (key.0, key.1, key.2, key.3 ^ ((u64::from(size[0])) << 32) ^ u64::from(size[1]))
 }
 struct Batch {
     material: usize,
@@ -174,6 +213,10 @@ pub(crate) struct Renderer {
     material_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     mips: crate::uv_mips::Mips,
+    compositor: photocraft_gpu::Compositor,
+    last_map_stats: Option<photocraft_gpu::Stats>,
+    map_blit_layout: wgpu::BindGroupLayout,
+    map_blit: wgpu::RenderPipeline,
     pipelines: Vec<wgpu::RenderPipeline>,
     aa_samples: u32,
     mesh: Option<Mesh>,
@@ -227,7 +270,13 @@ impl Renderer {
             for _ in 0..5 {
                 maps.push(self.map_region(None, Key::default(), true, None, None)?);
             }
-            self.surfaces.push(GpuSurface { maps, present: [false; 5], version: 0 });
+            self.surfaces.push(GpuSurface {
+                maps,
+                gpu_spares: std::iter::repeat_with(|| None).take(5).collect(),
+                present: [false; 5],
+                use_color_for_pbr: false,
+                version: 0,
+            });
         }
         Ok(())
     }
@@ -246,21 +295,77 @@ impl Renderer {
             self.environment = GpuEnvironment::new(&self.rs, &self.mips, environment, maps.output.as_ref())?;
             self.last = None;
         }
-        for material in 0..maps.images.iter().map(Vec::len).max().unwrap_or(0) {
+        for material in 0..maps.images.iter().map(Vec::len).chain(maps.gpu.iter().map(Vec::len)).max().unwrap_or(0) {
             self.ensure_surface(material)?;
+            let use_color_for_pbr = maps.use_color_for_pbr.get(material).copied().unwrap_or(false);
+            if let Some(surface) = self.surfaces.get_mut(material)
+                && surface.use_color_for_pbr != use_color_for_pbr
+            {
+                surface.use_color_for_pbr = use_color_for_pbr;
+                surface.version = surface.version.wrapping_add(1);
+                self.map_generation = self.map_generation.wrapping_add(1);
+            }
             for kind in 0..5 {
                 let image = maps.images.get(kind).and_then(|m| m.get(material)).and_then(Option::as_ref);
-                let key = maps.keys.get(kind).and_then(|m| m.get(material)).copied().unwrap_or_default();
-                let changed = self.surfaces.get(material).and_then(|s| s.maps.get(kind)).is_none_or(|m| m.key != key)
-                    || self.surfaces.get(material).and_then(|s| s.present.get(kind)).copied() != Some(image.is_some());
+                let gpu_request = maps.gpu.get(kind).and_then(|m| m.get(material)).and_then(Option::as_ref);
+                let key = gpu_request.map_or_else(|| maps.keys.get(kind).and_then(|m| m.get(material)).copied().unwrap_or_default(), |request| request.key);
+                let present = image.is_some() || gpu_request.is_some();
+                let gpu_source = gpu_request.is_some();
+                let changed = self.surfaces.get(material).and_then(|s| s.maps.get(kind)).is_none_or(|m| {
+                    m.key != key || if gpu_source { !matches!(m.source, MapSource::GpuComposite | MapSource::CpuFallback) } else { m.source != MapSource::Cpu }
+                }) || self.surfaces.get(material).and_then(|s| s.present.get(kind)).copied() != Some(present);
                 if changed {
-                    let previous = self.surfaces.get_mut(material).and_then(|s| if kind < s.maps.len() { Some(s.maps.remove(kind)) } else { None });
                     let hint = maps.regions.get(kind).and_then(|slots| slots.get(material)).cloned().flatten();
-                    let map = self.map_region(image, key, true, previous, hint)?;
+                    let map = if let Some(request) = gpu_request {
+                        let spare = self.surfaces.get_mut(material).and_then(|surface| surface.gpu_spares.get_mut(kind)).and_then(Option::take);
+                        match self.map_gpu_composite(&request.doc, request.key, request.linear_srgb, spare) {
+                            Ok(map) => map,
+                            Err(_) => {
+                                // Unsupported GPU features and transient device errors keep a
+                                // complete CPU map available; never expose a partially written
+                                // destination or leave the previous revision active.
+                                let fallback_doc = crate::gpu_canvas::materialize_paint_masks(&request.doc);
+                                let rendered = photocraft_compose::render(&fallback_doc, fallback_doc.bounds());
+                                let rgba = if request.linear_srgb {
+                                    rendered
+                                        .px
+                                        .into_iter()
+                                        .map(|mut p| {
+                                            for c in &mut p[..3] {
+                                                *c = if *c <= 0.04045 { *c / 12.92 } else { ((*c + 0.055) / 1.055).powf(2.4) };
+                                            }
+                                            p
+                                        })
+                                        .collect()
+                                } else {
+                                    rendered.px
+                                };
+                                let image = Image { width: request.doc.size.width as usize, height: request.doc.size.height as usize, rgba };
+                                let empty = self.map_single(None, Key::default(), true, None, None)?;
+                                let previous = self.surfaces.get_mut(material).and_then(|s| s.maps.get_mut(kind)).map(|map| std::mem::replace(map, empty));
+                                let mut map = self.map_region(Some(&image), request.key, true, previous, None)?;
+                                map.source = MapSource::CpuFallback;
+                                map
+                            }
+                        }
+                    } else {
+                        let empty = self.map_single(None, Key::default(), true, None, None)?;
+                        let previous = self.surfaces.get_mut(material).and_then(|s| s.maps.get_mut(kind)).map(|map| std::mem::replace(map, empty));
+                        self.map_region(image, key, true, previous, hint)?
+                    };
+                    let mut map = map;
+                    map.cutout = kind == 0 && (gpu_source || image.is_some_and(|im| im.rgba.iter().any(|pixel| pixel[3] < 1.0)));
                     if let Some(surface) = self.surfaces.get_mut(material) {
-                        surface.maps.insert(kind, map);
+                        if let Some(slot) = surface.maps.get_mut(kind) {
+                            let old = std::mem::replace(slot, map);
+                            if old.source == MapSource::GpuComposite
+                                && let Some(spare) = surface.gpu_spares.get_mut(kind)
+                            {
+                                *spare = Some(old);
+                            }
+                        }
                         if let Some(v) = surface.present.get_mut(kind) {
-                            *v = image.is_some();
+                            *v = present;
                         }
                         surface.version = surface.version.wrapping_add(1);
                     }
@@ -273,8 +378,11 @@ impl Renderer {
     pub fn adapter_label(&self) -> &str {
         &self.adapter_label
     }
+    pub(crate) fn take_map_stats(&mut self) -> Option<photocraft_gpu::Stats> {
+        self.last_map_stats.take()
+    }
     pub fn texture_sizes(&self) -> Vec<([u32; 2], [u32; 2])> {
-        self.materials.iter().map(|m| m.as_ref().map_or(([0; 2], [0; 2]), |m| (m.color.size, m.normal.size))).collect()
+        self.materials.iter().map(|m| m.as_ref().map_or(([0; 2], [0; 2]), |m| (m.color.size(), m.normal.size))).collect()
     }
     pub fn max_texture_side(&self) -> u32 {
         self.rs.device.limits().max_texture_dimension_2d
@@ -517,6 +625,59 @@ impl Renderer {
             anisotropy_clamp: if rs.adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::ANISOTROPIC_FILTERING) { 4 } else { 1 },
             ..Default::default()
         });
+        let mut compositor = photocraft_gpu::Compositor::try_new_with_format(device, photocraft_gpu::Compositor::preferred_acc_format(&rs.adapter))
+            .map_err(|e| e.to_string())?;
+        compositor.measure_gpu_time(device, &rs.queue);
+        let map_blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("uv compositor map blit"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: std::num::NonZeroU64::new(16),
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let map_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("uv compositor map blit"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("uv_map.wgsl").into()),
+        });
+        let map_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("uv compositor map blit"),
+            bind_group_layouts: &[Some(&map_blit_layout)],
+            immediate_size: 0,
+        });
+        let map_blit = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("uv compositor map blit"),
+            layout: Some(&map_pipeline_layout),
+            vertex: wgpu::VertexState { module: &map_shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &map_shader,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba16Float, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                compilation_options: Default::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         #[cfg(test)]
         let timer = photocraft_gpu::timing::GpuTimer::new(&rs.device, &rs.queue);
         let adapter_label = format!("{} · {:?}", rs.adapter.get_info().name, rs.adapter.get_info().backend);
@@ -533,6 +694,10 @@ impl Renderer {
             material_layout,
             sampler,
             mips,
+            compositor,
+            last_map_stats: None,
+            map_blit_layout,
+            map_blit,
             pipelines,
             aa_samples,
             mesh: None,
@@ -622,7 +787,7 @@ impl Renderer {
         hint: Option<crate::uv_lighting::RegionHint>,
     ) -> Result<Map, String> {
         if let Some((expected, regions)) = hint
-            && previous.as_ref().is_some_and(|m| m.key == expected)
+            && previous.as_ref().is_some_and(|m| m.source == MapSource::Cpu && m.key == expected)
             && image.is_some_and(|im| previous.as_ref().is_some_and(|m| m.size == [im.width as u32, im.height as u32]))
         {
             let mut current = previous;
@@ -641,7 +806,7 @@ impl Renderer {
         self.map_single(image, key, normal, previous, None)
     }
     fn map_single(&self, image: Option<&Image>, key: Key, normal: bool, mut previous: Option<Map>, hint: Option<(Key, [u32; 4])>) -> Result<Map, String> {
-        if hint.is_none() && previous.as_ref().is_some_and(|m| m.key == key) {
+        if hint.is_none() && previous.as_ref().is_some_and(|m| m.source == MapSource::Cpu && m.key == key) {
             return previous.ok_or_else(|| "Missing cached texture".into());
         }
         let size = image.map_or([1, 1], |im| [im.width as u32, im.height as u32]);
@@ -652,7 +817,7 @@ impl Renderer {
             return Err("Invalid material image dimensions or length".into());
         }
         if let (Some(im), Some((expected, [x, y, w, h]))) = (image, hint)
-            && previous.as_ref().is_some_and(|old| old.key == expected && old.size == size)
+            && previous.as_ref().is_some_and(|old| old.source == MapSource::Cpu && old.key == expected && old.size == size)
             && x.checked_add(w).is_some_and(|end| end <= size[0])
             && y.checked_add(h).is_some_and(|end| end <= size[1])
         {
@@ -681,7 +846,11 @@ impl Renderer {
                 );
                 for (row, source) in bytes.chunks_exact(w as usize * stride).enumerate() {
                     let start = ((y as usize + row) * im.width + x as usize) * stride;
-                    old.data.get_mut(start..start + source.len()).ok_or("Invalid cached texture update")?.copy_from_slice(source);
+                    old.data
+                        .as_mut()
+                        .and_then(|data| data.get_mut(start..start + source.len()))
+                        .ok_or("Invalid cached texture update")?
+                        .copy_from_slice(source);
                 }
                 self.mips.regenerate(&self.rs, &old.texture, size, &old.levels, [x, y, w, h]);
             }
@@ -704,8 +873,8 @@ impl Renderer {
             [0.5, 0.5, 1.0, 1.0].into_iter().flat_map(|x| crate::gpu_canvas::f32_to_f16(x).to_le_bytes()).collect()
         };
         let bytes_per_texel = if normal { 8 } else { 4 };
-        if let Some(mut old) = previous.filter(|m| m.size == size) {
-            if let Some([x, y, w, h]) = changed_region(&old.data, &data, size, bytes_per_texel) {
+        if let Some(mut old) = previous.filter(|m| m.size == size && m.source == MapSource::Cpu) {
+            if let Some([x, y, w, h]) = old.data.as_deref().and_then(|old_data| changed_region(old_data, &data, size, bytes_per_texel)) {
                 let offset = (y as usize * size[0] as usize + x as usize) * bytes_per_texel;
                 let Some(bytes) = data.get(offset..) else {
                     return Err("Invalid texture update region".into());
@@ -718,7 +887,7 @@ impl Renderer {
                 );
                 self.mips.regenerate(&self.rs, &old.texture, size, &old.levels, [x, y, w, h]);
             }
-            old.data = data;
+            old.data = Some(data);
             old.key = key;
             old.cutout = cutout;
             return Ok(old);
@@ -748,7 +917,89 @@ impl Renderer {
         );
         let view = texture.create_view(&Default::default());
         self.mips.regenerate(&self.rs, &texture, size, &levels, [0, 0, size[0], size[1]]);
-        Ok(Map { texture, view, size, key, data, cutout, levels })
+        Ok(Map { texture, view, size, key, data: Some(data), source: MapSource::Cpu, cutout, levels })
+    }
+    fn map_gpu_composite(&mut self, doc: &photocraft_doc::Document, key: Key, linear_srgb: bool, previous: Option<Map>) -> Result<Map, String> {
+        let size = [doc.size.width, doc.size.height];
+        let max = self.rs.device.limits().max_texture_dimension_2d;
+        if size.contains(&0) || size.iter().any(|side| *side > max) {
+            return Err("GPU-composited map exceeds the full-resolution texture limit".into());
+        }
+        let mut map = if let Some(map) = previous.filter(|map| map.source == MapSource::GpuComposite && map.size == size) {
+            map
+        } else {
+            let levels_n = 32 - size[0].max(size[1]).leading_zeros();
+            let texture = self.rs.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("uv compositor PBR map"),
+                size: extent(size),
+                mip_level_count: levels_n,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let levels: Vec<_> = (0..levels_n)
+                .map(|level| texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: level, mip_level_count: Some(1), ..Default::default() }))
+                .collect();
+            let view = texture.create_view(&Default::default());
+            Map { texture, view, size, key, data: None, source: MapSource::GpuComposite, cutout: true, levels }
+        };
+        let device = &self.rs.device;
+        let queue = &self.rs.queue;
+        let layout = &self.map_blit_layout;
+        let pipeline = &self.map_blit;
+        let target = &map.levels[0];
+        let linear_srgb = u32::from(linear_srgb);
+        let stats = self
+            .compositor
+            .render(device, queue, doc, doc.bounds(), |encoder, chunk| {
+                let [x, y, w, h] = [chunk.rect.x0.max(0) as u32, chunk.rect.y0.max(0) as u32, chunk.rect.width(), chunk.rect.height()];
+                if w == 0 || h == 0 || x.saturating_add(w) > size[0] || y.saturating_add(h) > size[1] {
+                    return;
+                }
+                let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("uv compositor map chunk"),
+                    contents: &[x.to_le_bytes(), y.to_le_bytes(), linear_srgb.to_le_bytes(), 0u32.to_le_bytes()].concat(),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("uv compositor map chunk"),
+                    layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(chunk.view) },
+                        wgpu::BindGroupEntry { binding: 1, resource: uniform.as_entire_binding() },
+                    ],
+                });
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("uv compositor map chunk"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+                pass.set_scissor_rect(x, y, w, h);
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &group, &[]);
+                pass.draw(0..3, 0..1);
+            })
+            .map_err(|e| e.to_string())?;
+        self.last_map_stats = Some(stats);
+        map.key = key;
+        map.data = None;
+        map.source = MapSource::GpuComposite;
+        self.mips.regenerate(&self.rs, &map.texture, size, &map.levels, [0, 0, size[0], size[1]]);
+        Ok(map)
     }
     fn materials(&mut self, draw: &Draw<'_>) -> Result<(), String> {
         if draw.scene.materials.len() > 4096 {
@@ -762,8 +1013,24 @@ impl Renderer {
             .map(|(id, _)| {
                 let c = draw.keys.get(id).copied().unwrap_or_default();
                 let n = draw.normal_keys.get(id).copied().unwrap_or_default();
+                let gpu_color = (self.lighting.pbr && draw.camera.channel == photocraft_uv::preview::Channel::Material && !draw.masked.contains(&id))
+                    .then(|| {
+                        self.surfaces
+                            .get(id)
+                            .filter(|surface| surface.use_color_for_pbr && surface.present.first().copied().unwrap_or(false))
+                            .and_then(|surface| surface.maps.first())
+                    })
+                    .flatten();
                 (
-                    draw.colors.get(id).and_then(Option::as_ref).map_or((0, 0, 0, 0), |im| (c.0, c.1, c.2, c.3 ^ ((im.width as u64) << 32) ^ im.height as u64)),
+                    gpu_color.map_or_else(
+                        || {
+                            draw.colors
+                                .get(id)
+                                .and_then(Option::as_ref)
+                                .map_or((0, 0, 0, 0), |im| (c.0, c.1, c.2, c.3 ^ ((im.width as u64) << 32) ^ im.height as u64))
+                        },
+                        |map| material_map_key(map.key, map.size),
+                    ),
                     draw.normals.get(id).and_then(Option::as_ref).map_or((0, 0, 0, 0), |im| (n.0, n.1, n.2, ((im.width as u64) << 32) | im.height as u64)),
                 )
             })
@@ -772,7 +1039,7 @@ impl Renderer {
             let Some(&(ck, nk)) = keys.get(id) else { continue };
             if self.materials.get(id).and_then(Option::as_ref).is_some_and(|m| {
                 m.masked == draw.masked.contains(&id)
-                    && m.color.key == ck
+                    && m.color.key() == ck
                     && m.normal.key == nk
                     && m.surface_version == self.surfaces.get(id).map_or(0, |s| s.version)
             }) {
@@ -780,12 +1047,36 @@ impl Renderer {
             }
             // Cache by document revision: moving the camera never uploads these maps.
             let previous = self.materials.get_mut(id).and_then(Option::take);
-            let (pc, pn) = previous.map_or((None, None), |m| (Some(m.color), Some(m.normal)));
+            let (pc, pn) = previous.map_or((None, None), |m| {
+                (
+                    match m.color {
+                        MaterialColor::Owned(map) => Some(*map),
+                        MaterialColor::Surface { .. } => None,
+                    },
+                    Some(m.normal),
+                )
+            });
+            self.ensure_surface(id)?;
             let color_hint = self.regions.remove(&(id, false));
             let normal_hint = self.regions.remove(&(id, true));
-            let color = self.map_region(draw.colors.get(id).and_then(Option::as_ref), ck, false, pc, color_hint)?;
+            let surface_color = (self.lighting.pbr && draw.camera.channel == photocraft_uv::preview::Channel::Material && !draw.masked.contains(&id))
+                .then(|| {
+                    self.surfaces
+                        .get(id)
+                        .filter(|surface| surface.use_color_for_pbr && surface.present.first().copied().unwrap_or(false))
+                        .and_then(|surface| surface.maps.first())
+                })
+                .flatten();
+            let color = if let Some(map) = surface_color {
+                MaterialColor::Surface { size: map.size, key: material_map_key(map.key, map.size), cutout: map.cutout }
+            } else {
+                MaterialColor::Owned(Box::new(self.map_region(draw.colors.get(id).and_then(Option::as_ref), ck, false, pc, color_hint)?))
+            };
+            let color_view = match &color {
+                MaterialColor::Owned(map) => &map.view,
+                MaterialColor::Surface { .. } => &surface_color.ok_or("Missing GPU surface map")?.view,
+            };
             let normal = self.map_region(draw.normals.get(id).and_then(Option::as_ref), nk, true, pn, normal_hint)?;
-            self.ensure_surface(id)?;
             let surface = self.surfaces.get(id).ok_or("Missing PBR maps")?;
             let uniform = self.rs.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("uv material"),
@@ -805,7 +1096,7 @@ impl Renderer {
                 label: Some("uv material"),
                 layout: &self.material_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color.view) },
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(color_view) },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&normal.view) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                     wgpu::BindGroupEntry { binding: 3, resource: uniform.as_entire_binding() },
@@ -819,7 +1110,7 @@ impl Renderer {
             let value = Material {
                 masked: draw.masked.contains(&id),
                 surface_version: self.surfaces.get(id).map_or(0, |s| s.version),
-                cutout: !draw.masked.contains(&id) && (color.cutout || material.color[3] < 1.0),
+                cutout: !draw.masked.contains(&id) && (color.cutout() || material.color[3] < 1.0),
                 color,
                 normal,
                 group,
@@ -1043,6 +1334,291 @@ mod tests {
         assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
         renderer
     }
+    fn opacity_bench_app(layer_count: usize) -> (crate::PhotocraftApp, photocraft_doc::LayerId) {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", serde_json::json!({"width":4096,"height":4096,"depth":16})).unwrap();
+        session.uv.scene = Some(Arc::new(Scene::default()));
+        let layer_id = session.active().unwrap().active_layer.unwrap();
+        let state = session.active_mut().unwrap();
+        let doc = Arc::make_mut(&mut state.doc);
+        let mut mask = photocraft_doc::LayerMask::hide_all();
+        let gray = photocraft_color::PixelFormat::new(photocraft_color::ColorMode::Grayscale, photocraft_color::SampleType::U16, false);
+        let rgba = photocraft_color::PixelFormat::RGBA16;
+        let tile_size = photocraft_geom::TILE_SIZE;
+        let mut base = photocraft_raster::Surface::with_default(gray, &[0.18]);
+        for y in (0..4096).step_by(tile_size as usize) {
+            for x in (0..4096).step_by(tile_size as usize) {
+                let mut pixels = Vec::with_capacity(tile_size as usize * tile_size as usize);
+                for py in 0..tile_size {
+                    for px in 0..tile_size {
+                        pixels.push(0.12 + (((x + px) * 3 + (y + py) * 5).rem_euclid(701) as f32) / 1400.0);
+                    }
+                }
+                base.write_region(photocraft_geom::Rect::new(x, y, x + tile_size, y + tile_size), &pixels);
+            }
+        }
+        let layers = (0..layer_count)
+            .map(|index| {
+                let mut surface = photocraft_raster::Surface::with_default(rgba, &[0.75, 0.2, 0.05, 0.28 + index as f32 * 0.01]);
+                for y in (0..4096).step_by(tile_size as usize) {
+                    for x in (0..4096).step_by(tile_size as usize) {
+                        let mut pixels = Vec::with_capacity(tile_size as usize * tile_size as usize * 4);
+                        for py in 0..tile_size {
+                            for px in 0..tile_size {
+                                let pattern = ((x + px) * 7 + (y + py) * 11 + index as i32 * 29).rem_euclid(257) as f32 / 257.0;
+                                pixels.extend_from_slice(&[0.18 + pattern * 0.55, 0.08 + pattern * 0.22, 0.04 + pattern * 0.12, 0.24 + pattern * 0.52]);
+                            }
+                        }
+                        surface.write_region(photocraft_geom::Rect::new(x, y, x + tile_size, y + tile_size), &pixels);
+                    }
+                }
+                photocraft_doc::mask_paint::Paint { name: format!("Paint {index}"), visible: true, opacity: 0.75, surface }
+            })
+            .collect();
+        mask.paint = Some(photocraft_doc::mask_paint::Stack { base, layers, active: layer_count.saturating_sub(1) });
+        photocraft_compose::mask_paint::refresh(&mut mask, None);
+        doc.layer_mut(layer_id).unwrap().mask = Some(mask);
+        (crate::PhotocraftApp::new(session, Default::default()), layer_id)
+    }
+    fn median_p95(times: &mut [f64]) -> (f64, f64) {
+        times.sort_by(f64::total_cmp);
+        (times[times.len() / 2], times[times.len() * 95 / 100])
+    }
+    #[test]
+    #[ignore = "explicit 4K mask Paint opacity CPU/GPU preview benchmark; waits for completed submissions"]
+    fn benchmark_native_mask_paint_opacity_preview_4k() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        const FRAMES: usize = 24;
+        for layer_count in [1, 10] {
+            let changed_indices: &[usize] = if layer_count == 1 { &[0] } else { &[0, layer_count - 1] };
+            for &changed_index in changed_indices {
+                let (mut canonical, layer) = opacity_bench_app(layer_count);
+                let initial = &canonical.session.active().unwrap().doc;
+                std::hint::black_box(photocraft_compose::render(initial, initial.bounds()));
+                let mut cpu_times = Vec::with_capacity(FRAMES);
+                for frame in 0..FRAMES {
+                    let opacity = (frame + 1) as f32 / (FRAMES + 1) as f32;
+                    let start = std::time::Instant::now();
+                    canonical
+                        .run(
+                            "uv.maskPaint.modify",
+                            serde_json::json!({"layer":layer.0,"index":changed_index,"opacity":opacity,"coalesce":"mask-opacity-bench"}),
+                        )
+                        .unwrap();
+                    let doc = &canonical.session.active().unwrap().doc;
+                    let pixels = photocraft_compose::render(doc, doc.bounds());
+                    std::hint::black_box(pixels);
+                    cpu_times.push(start.elapsed().as_secs_f64() * 1000.0);
+                }
+                let (cpu_median, cpu_p95) = median_p95(&mut cpu_times);
+
+                let (mut preview, layer) = opacity_bench_app(layer_count);
+                let mut renderer = renderer();
+                let initial = preview.session.active().unwrap().doc.clone();
+                let initial_key = (initial.id.0, preview.session.active().unwrap().revision, 0, 0);
+                let cold_start = std::time::Instant::now();
+                let mut active_map = Some(renderer.map_gpu_composite(&initial, initial_key, true, None).unwrap());
+                let cold_submit_ms = cold_start.elapsed().as_secs_f64() * 1000.0;
+                let cold_wait = std::time::Instant::now();
+                renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+                let cold_complete_ms = cold_wait.elapsed().as_secs_f64() * 1000.0;
+
+                // Warm the transient-opacity plan and allocate the second texture used by the
+                // production ping-pong map cache. Cold residency remains visible above, outside
+                // the hot drag distributions below.
+                crate::uv_mask_paint_preview::set(&mut preview, layer, changed_index, 0.5);
+                let (warm_doc, warm_key) = crate::uv_mask_paint_preview::display_doc(&mut preview, 0).unwrap();
+                let mut spare_map = Some(renderer.map_gpu_composite(&warm_doc, (warm_doc.id.0, 1, warm_key, 0), true, None).unwrap());
+                renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+                let mut prep_times = Vec::with_capacity(FRAMES);
+                let mut submit_times = Vec::with_capacity(FRAMES);
+                let mut complete_times = Vec::with_capacity(FRAMES);
+                let mut gpu_ms = Vec::new();
+                for frame in 0..FRAMES {
+                    let opacity = (frame + 1) as f32 / (FRAMES + 1) as f32;
+                    let start = std::time::Instant::now();
+                    crate::uv_mask_paint_preview::set(&mut preview, layer, changed_index, opacity);
+                    let (doc, key) = crate::uv_mask_paint_preview::display_doc(&mut preview, 0).unwrap();
+                    prep_times.push(start.elapsed().as_secs_f64() * 1000.0);
+
+                    let start = std::time::Instant::now();
+                    let map = renderer.map_gpu_composite(&doc, (doc.id.0, 1, key, 0), true, spare_map.take()).unwrap();
+                    submit_times.push(start.elapsed().as_secs_f64() * 1000.0);
+                    spare_map = active_map.replace(map);
+                    let stats = renderer.take_map_stats().unwrap();
+                    if frame > 0
+                        && let Some(timing) = stats.gpu_time
+                    {
+                        gpu_ms.push(timing.ms);
+                    }
+                    let start = std::time::Instant::now();
+                    renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+                    complete_times.push(start.elapsed().as_secs_f64() * 1000.0);
+                }
+                // Drain the last asynchronous timestamp without including this duplicate render
+                // in the per-value submit and completion distributions.
+                let (final_doc, final_key) = crate::uv_mask_paint_preview::display_doc(&mut preview, 0).unwrap();
+                let final_map = renderer.map_gpu_composite(&final_doc, (final_doc.id.0, 1, final_key, 0), true, spare_map.take()).unwrap();
+                let _ = active_map.replace(final_map);
+                renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+                if let Some(timing) = renderer.take_map_stats().and_then(|stats| stats.gpu_time) {
+                    gpu_ms.push(timing.ms);
+                }
+                let commit = crate::uv_mask_paint_preview::pending(&preview).unwrap();
+                let start = std::time::Instant::now();
+                preview.run("uv.maskPaint.modify", commit.params()).unwrap();
+                let commit_ms = start.elapsed().as_secs_f64() * 1000.0;
+                let (prep_median, prep_p95) = median_p95(&mut prep_times);
+                let (submit_median, submit_p95) = median_p95(&mut submit_times);
+                let (complete_median, complete_p95) = median_p95(&mut complete_times);
+                let (gpu_median, gpu_p95) = if gpu_ms.is_empty() { (f64::NAN, f64::NAN) } else { median_p95(&mut gpu_ms) };
+                println!(
+                    "4K U16 dense opacity layers={layer_count} index={changed_index}: cold GPU map encode+submit={cold_submit_ms:.2}ms, completion={cold_complete_ms:.2}ms; hot canonical command+CPU render median={cpu_median:.2}ms p95={cpu_p95:.2}ms; preview prep={prep_median:.2}/{prep_p95:.2}ms, GPU map encode+submit={submit_median:.2}/{submit_p95:.2}ms, completion wait={complete_median:.2}/{complete_p95:.2}ms, async GPU composite={gpu_median:.2}/{gpu_p95:.2}ms, final commit={commit_ms:.2}ms ({} profile)\n",
+                    if cfg!(debug_assertions) { "test" } else { "release" }
+                );
+                assert_eq!(
+                    preview.session.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[changed_index].opacity,
+                    commit.opacity
+                );
+            }
+        }
+    }
+    #[test]
+    fn gpu_compositor_writes_pbr_map_without_a_cpu_mirror() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut renderer = renderer();
+        let mut doc = photocraft_doc::Document::with_background(
+            "GPU map sink",
+            photocraft_geom::Size::new(1031, 1037),
+            photocraft_color::ColorMode::Rgb,
+            photocraft_color::SampleType::U8,
+            photocraft_color::Color::rgb(0.5, 0.25, 0.75),
+        );
+        let bounds = photocraft_geom::Rect::new(1023, 1021, 1031, 1037);
+        let format = doc.pixel_format();
+        let pixel = photocraft_raster::from_rgba(&format, [0.9, 0.1, 0.3, 0.4]);
+        doc.layers[0].surface_mut().unwrap().fill_rect(bounds, &pixel);
+        let key = (doc.id.0, 1, 0, 7);
+        let map = renderer.map_gpu_composite(&doc, key, true, None).unwrap();
+        renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+        assert_eq!(map.source, MapSource::GpuComposite);
+        assert_eq!(map.key, key);
+        assert_eq!(map.size, [1031, 1037]);
+        assert!(map.data.is_none());
+        assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
+        let pixels = read_rgba16f(&renderer, &map.texture, 0);
+        let sample = |x: usize, y: usize| pixels[y * 1031 + x];
+        let inside = sample(1025, 1032);
+        let before_edge = sample(1022, 1032);
+        let after_edge = sample(1030, 1020);
+        assert!((inside[0] - 0.79).abs() < 0.015 && (inside[1] - 0.01).abs() < 0.004 && (inside[2] - 0.074).abs() < 0.008);
+        assert!((inside[3] - 0.4).abs() < 0.01, "alpha is preserved: {inside:?}");
+        assert!((before_edge[0] - 0.214).abs() < 0.015 && (before_edge[3] - 1.0).abs() < 0.01);
+        assert!((after_edge[0] - 0.214).abs() < 0.015, "right chunk edge is initialized: {after_edge:?}");
+        assert!(map.levels.len() > 1);
+        let mip = read_rgba16f(&renderer, &map.texture, 1);
+        let mip_pixel = mip[(1032 / 2) * 515 + 1024 / 2];
+        assert!((mip_pixel[0] - inside[0]).abs() < 0.02 && (mip_pixel[3] - inside[3]).abs() < 0.02, "PBR mip keeps linear color and alpha: {mip_pixel:?}");
+    }
+    #[test]
+    fn pbr_material_binds_the_gpu_composited_surface_map() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut renderer = renderer();
+        let doc = Arc::new(photocraft_doc::Document::with_background(
+            "GPU PBR source",
+            photocraft_geom::Size::new(16, 8),
+            photocraft_color::ColorMode::Rgb,
+            photocraft_color::SampleType::U8,
+            photocraft_color::Color::rgb(0.7, 0.2, 0.1),
+        ));
+        let (scene, geometry) = scene();
+        let mut maps = crate::uv_lighting::SurfaceMaps::default();
+        maps.gpu[0] = vec![Some(crate::uv_lighting::GpuMapRequest { doc: doc.clone(), key: (doc.id.0, 1, 0, 7), linear_srgb: true }); scene.materials.len()];
+        maps.use_color_for_pbr = vec![true; scene.materials.len()];
+        let settings = photocraft_uv::lighting::Settings { pbr: true, ..Default::default() };
+        renderer.set_lighting(settings, &maps, Arc::new(photocraft_uv::lighting::Environment::studio())).unwrap();
+        assert_eq!(renderer.surfaces[0].maps[0].source, MapSource::GpuComposite);
+        let empty = BTreeSet::new();
+        let colors = vec![None; scene.materials.len()];
+        renderer
+            .draw(Draw {
+                scene: &scene,
+                geometry: geometry.clone(),
+                camera: Camera { channel: photocraft_uv::preview::Channel::Material, ..Default::default() },
+                size: [128, 128],
+                antialias: false,
+                selected: &empty,
+                hidden: &empty,
+                generation: 1,
+                colors: &colors,
+                normals: &[],
+                keys: &[],
+                normal_keys: &[],
+                masked: &empty,
+            })
+            .unwrap();
+        assert!(matches!(renderer.materials[0].as_ref().unwrap().color, MaterialColor::Surface { .. }));
+        let generation = renderer.map_generation;
+        renderer
+            .draw(Draw {
+                scene: &scene,
+                geometry: geometry.clone(),
+                camera: Camera { yaw: 0.3, channel: photocraft_uv::preview::Channel::Material, ..Default::default() },
+                size: [128, 128],
+                antialias: false,
+                selected: &empty,
+                hidden: &empty,
+                generation: 2,
+                colors: &colors,
+                normals: &[],
+                keys: &[],
+                normal_keys: &[],
+                masked: &empty,
+            })
+            .unwrap();
+        assert_eq!(renderer.map_generation, generation, "camera motion must reuse the GPU-backed material binding");
+        maps.use_color_for_pbr[0] = false; // A bound opacity map is combined in the display image instead.
+        renderer.set_lighting(settings, &maps, Arc::new(photocraft_uv::lighting::Environment::studio())).unwrap();
+        renderer
+            .draw(Draw {
+                scene: &scene,
+                geometry: geometry.clone(),
+                camera: Camera { channel: photocraft_uv::preview::Channel::Material, ..Default::default() },
+                size: [128, 128],
+                antialias: false,
+                selected: &empty,
+                hidden: &empty,
+                generation: 3,
+                colors: &colors,
+                normals: &[],
+                keys: &[],
+                normal_keys: &[],
+                masked: &empty,
+            })
+            .unwrap();
+        assert!(matches!(renderer.materials[0].as_ref().unwrap().color, MaterialColor::Owned(_)), "opacity must not be dropped from the PBR map");
+        maps.use_color_for_pbr[0] = true;
+        let masked = BTreeSet::from([0usize]);
+        renderer
+            .draw(Draw {
+                scene: &scene,
+                geometry,
+                camera: Camera { channel: photocraft_uv::preview::Channel::Material, ..Default::default() },
+                size: [128, 128],
+                antialias: false,
+                selected: &empty,
+                hidden: &empty,
+                generation: 3,
+                colors: &colors,
+                normals: &[],
+                keys: &[],
+                normal_keys: &[],
+                masked: &masked,
+            })
+            .unwrap();
+        assert!(matches!(renderer.materials[0].as_ref().unwrap().color, MaterialColor::Owned(_)), "mask display must use its own display map");
+        assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
+    }
     #[test]
     fn uv_gpu_mask_is_unlit_in_material_and_normal_modes_and_restores_cached_material() {
         let _gpu = photocraft_testkit::gpu_lock();
@@ -1133,6 +1709,47 @@ mod tests {
         buffer.unmap();
         pixels
     }
+    fn read_rgba16f(renderer: &Renderer, texture: &wgpu::Texture, mip: u32) -> Vec<[f32; 4]> {
+        let (w, h) = ((texture.width() >> mip).max(1), (texture.height() >> mip).max(1));
+        let row = (w * 8).div_ceil(256) * 256;
+        let buffer = renderer.rs.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("uv float map readback"),
+            size: u64::from(row) * u64::from(h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = renderer.rs.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture, mip_level: mip, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+            extent([w, h]),
+        );
+        renderer.rs.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+            let _ = tx.send(result);
+        });
+        assert!(renderer.health.wait(&renderer.rs.device, None), "{:?}", renderer.health.fault());
+        rx.recv().unwrap().unwrap();
+        let mapped = buffer.get_mapped_range(..).unwrap();
+        let pixels = mapped
+            .chunks_exact(row as usize)
+            .flat_map(|line| {
+                line[..w as usize * 8].as_chunks::<8>().0.iter().map(|p| {
+                    std::array::from_fn(|i| {
+                        let bits = u16::from_le_bytes([p[i * 2], p[i * 2 + 1]]);
+                        let sign = u32::from(bits & 0x8000) << 16;
+                        let exponent = u32::from((bits >> 10) & 0x1f);
+                        let fraction = u32::from(bits & 0x03ff);
+                        if exponent == 0 { 0.0 } else { f32::from_bits(sign | ((exponent + 112) << 23) | (fraction << 13)) }
+                    })
+                })
+            })
+            .collect();
+        drop(mapped);
+        buffer.unmap();
+        pixels
+    }
     #[test]
     fn pbr_environment_emissive_and_resident_navigation() {
         let _gpu = photocraft_testkit::gpu_lock();
@@ -1171,13 +1788,13 @@ mod tests {
         renderer.set_lighting(settings, &surfaces, env.clone()).unwrap();
         let first = render(&mut renderer, camera, &hidden);
         let generation = renderer.map_generation;
-        let map_pointer = renderer.surfaces[0].maps[0].data.as_ptr();
+        let map_pointer = renderer.surfaces[0].maps[0].data.as_ref().unwrap().as_ptr();
         for i in 0..12 {
             renderer.set_lighting(settings, &surfaces, env.clone()).unwrap();
             render(&mut renderer, Camera { yaw: camera.yaw + i as f64 * 0.01, ..camera }, &hidden);
         }
         assert_eq!(renderer.map_generation, generation, "orbit must not upload maps");
-        assert_eq!(renderer.surfaces[0].maps[0].data.as_ptr(), map_pointer);
+        assert_eq!(renderer.surfaces[0].maps[0].data.as_ref().unwrap().as_ptr(), map_pointer);
         for im in surfaces.images[2].iter_mut().flatten() {
             im.rgba.fill([1.0; 4]);
         }
@@ -1188,13 +1805,13 @@ mod tests {
         let rough = render(&mut renderer, camera, &hidden);
         assert!(first != rough, "roughness must change reflected lighting");
         let old = surfaces.keys[0][0];
-        let pointer = renderer.surfaces[0].maps[0].data.as_ptr();
+        let pointer = renderer.surfaces[0].maps[0].data.as_ref().unwrap().as_ptr();
         surfaces.images[0][0].as_mut().unwrap().rgba[0] = [0.1, 0.5, 0.2, 1.0];
         surfaces.keys[0][0].1 += 1;
         surfaces.regions[0] = vec![None; scene.materials.len()];
         surfaces.regions[0][0] = Some((old, vec![[0, 0, 1, 1]]));
         renderer.set_lighting(settings, &surfaces, env.clone()).unwrap();
-        assert_eq!(pointer, renderer.surfaces[0].maps[0].data.as_ptr(), "PBR brush damage updates the existing encoded map");
+        assert_eq!(pointer, renderer.surfaces[0].maps[0].data.as_ref().unwrap().as_ptr(), "PBR brush damage updates the existing encoded map");
         renderer.set_lighting(photocraft_uv::lighting::Settings { brightness: 0.0, ..settings }, &surfaces, env.clone()).unwrap();
         let dark = render(&mut renderer, camera, &hidden);
         for im in surfaces.images[4].iter_mut().flatten() {
@@ -1258,13 +1875,13 @@ mod tests {
         for normal in [false, true] {
             let mut image = Image { width: 8, height: 8, rgba: vec![[0.5, 0.5, 1.0, 1.0]; 64] };
             let map = renderer.map(Some(&image), (1, 1, 0, 0), normal, None).unwrap();
-            let pointer = map.data.as_ptr();
+            let pointer = map.data.as_ref().unwrap().as_ptr();
             image.rgba[3 * 8 + 2] = [1.0, 0.0, 0.0, 0.0];
             let map = renderer.map_region(Some(&image), (1, 2, 0, 0), normal, Some(map), Some(((1, 1, 0, 0), vec![[2, 3, 1, 1]]))).unwrap();
-            assert_eq!(pointer, map.data.as_ptr(), "small edits must retain the full encoded snapshot allocation");
+            assert_eq!(pointer, map.data.as_ref().unwrap().as_ptr(), "small edits must retain the full encoded snapshot allocation");
             let stride = if normal { 8 } else { 4 };
             if normal {
-                assert_eq!(&map.data[(3 * 8 + 2) * stride..(3 * 8 + 2) * stride + 2], &crate::gpu_canvas::f32_to_f16(1.0).to_le_bytes());
+                assert_eq!(&map.data.as_ref().unwrap()[(3 * 8 + 2) * stride..(3 * 8 + 2) * stride + 2], &crate::gpu_canvas::f32_to_f16(1.0).to_le_bytes());
             } else {
                 assert_eq!(read_texture(&renderer, &map.texture, 0)[3 * 8 + 2], [255, 0, 0, 0]);
                 assert!(map.cutout);
@@ -1402,7 +2019,7 @@ mod tests {
                 normal_keys: &nkeys,
             })
             .unwrap();
-        assert!(renderer.materials.iter().flatten().all(|m| m.color.size == [1, 1]));
+        assert!(renderer.materials.iter().flatten().all(|m| m.color.size() == [1, 1]));
         assert!(read(&renderer).iter().any(|p| p[1] > p[0] + 10));
         renderer
             .draw(Draw {

@@ -33,6 +33,8 @@ pub enum Kernel {
     Clear,
     Content,
     Mask,
+    /// One step of an editable layer-mask Paint stack (base copy, paint-over, or final quantize).
+    MaskStack,
     Blend,
     /// `Content` then `Blend` in one pass: a plain layer's pixels blended straight onto A.
     LayerBlend,
@@ -80,6 +82,7 @@ impl Kernel {
             Kernel::Clear | Kernel::CopyRect | Kernel::CopyFull => return None,
             Kernel::Content => "fs_content",
             Kernel::Mask => "fs_mask",
+            Kernel::MaskStack => "fs_mask_stack",
             Kernel::Blend => "fs_blend",
             Kernel::LayerBlend => "fs_layerblend",
             Kernel::LayerBatch => "fs_layerbatch",
@@ -122,9 +125,10 @@ impl Kernel {
     }
 
     /// Every kernel with a pipeline.
-    pub const DRAWN: [Kernel; 24] = [
+    pub const DRAWN: [Kernel; 25] = [
         Kernel::Content,
         Kernel::Mask,
+        Kernel::MaskStack,
         Kernel::Blend,
         Kernel::LayerBlend,
         Kernel::LayerBatch,
@@ -155,6 +159,8 @@ impl Kernel {
 pub enum Role {
     Content,
     Mask,
+    /// An editable Paint surface belonging to the layer mask. The index distinguishes residents.
+    MaskPaint(u16),
     /// A stroked shape's stroke alone (its fill uses `Content`).
     Stroke,
 }
@@ -234,9 +240,16 @@ impl SurfaceRef<'_> {
 #[derive(Clone, Debug)]
 pub struct MaskUse<'a> {
     pub layer: LayerId,
-    pub surface: SurfaceRef<'a>,
+    pub source: MaskSource<'a>,
     pub density: f32,
     pub default: f32,
+}
+
+/// The coverage sampled by a layer-compositing pass.
+#[derive(Clone, Debug)]
+pub enum MaskSource<'a> {
+    Surface(SurfaceRef<'a>),
+    Slot(Slot),
 }
 
 impl<'a> Pass<'a> {
@@ -413,6 +426,8 @@ pub const F_TEXT_GAMMA: u32 = 8192;
 /// (`p0.x`) inside the shape, times the shape's alpha: `FxInit` `INIT_INSIDE` then
 /// `INIT_ALPHA` in the merge, for a layer with no interior effects between them.
 pub const F_LAYER_SHAPE: u32 = 1_048_576;
+/// A layer mask samples a planner slot containing the flattened editable Paint stack.
+pub const F_MASK_SLOT: u32 = 2_097_152;
 
 /// A layer's Blend If ranges for `F_BLEND_IF`: Gray, then the colour channels, each as
 /// [this layer, underlying layer]; every range as two floats, `black low × 256 + black high` and
@@ -492,8 +507,12 @@ impl<'a> Planner<'a> {
             pass.flags |= F_HDR;
         }
         let (a, b, c, d) = (pass.a, pass.b, pass.c, pass.d);
+        let mask_slot = pass.mask.as_ref().and_then(|m| match &m.source {
+            MaskSource::Slot(s) => Some(*s),
+            MaskSource::Surface(_) => None,
+        });
         self.passes.push(pass);
-        for s in [a, b, c, d].into_iter().flatten() {
+        for s in [a, b, c, d, mask_slot].into_iter().flatten() {
             self.release(s);
         }
         dst
@@ -537,21 +556,66 @@ impl<'a> Planner<'a> {
         Ok(backdrop)
     }
 
-    fn mask_use(&self, layer: &'a Layer) -> Option<MaskUse<'a>> {
+    fn mask_use(&mut self, layer: &'a Layer) -> Result<Option<MaskUse<'a>>, Unsupported> {
+        if let Some(m) = layer.mask.as_ref().filter(|m| m.enabled)
+            && let Some(stack) = &m.paint
+        {
+            if layer.vector_mask.is_some() || m.feather > 0.0 {
+                return Err(Unsupported("Paint-layer mask combined with vector or feathered mask (composited on the CPU)".into()));
+            }
+            let mut base = Pass::new(Kernel::MaskStack, 0);
+            base.adjust_kind = 0;
+            base.tex = Some(TexUse { layer: layer.id, role: Role::Mask, surface: SurfaceRef::Doc(&stack.base) });
+            base.color[0] = stack.base.default_pixel().first().copied().unwrap_or(1.0);
+            let mut coverage = self.emit(base);
+            for (index, paint) in stack.layers.iter().enumerate() {
+                if !paint.opacity.is_finite() || !(0.0..=1.0).contains(&paint.opacity) {
+                    return Err(Unsupported("Paint mask contains an invalid opacity".into()));
+                }
+                if !paint.visible || paint.opacity <= 0.0 {
+                    continue;
+                }
+                let Ok(index) = u16::try_from(index) else {
+                    return Err(Unsupported("Paint mask has too many layers for the GPU compositor".into()));
+                };
+                let mut p = Pass::new(Kernel::MaskStack, 0);
+                p.adjust_kind = 1;
+                p.a = Some(coverage);
+                p.opacity = paint.opacity;
+                for (dst, value) in p.color.iter_mut().zip(paint.surface.default_pixel().iter()) {
+                    *dst = *value;
+                }
+                p.tex = Some(TexUse { layer: layer.id, role: Role::MaskPaint(index), surface: SurfaceRef::Doc(&paint.surface) });
+                coverage = self.emit(p);
+            }
+            let mut quantize = Pass::new(Kernel::MaskStack, 0);
+            quantize.adjust_kind = 2;
+            quantize.a = Some(coverage);
+            if let Some(q) = photocraft_compose::adjustment_quantum(stack.base.format().sample) {
+                quantize.params[0][0] = q;
+            }
+            let coverage = self.emit(quantize);
+            return Ok(Some(MaskUse {
+                layer: layer.id,
+                source: MaskSource::Slot(coverage),
+                density: m.density,
+                default: stack.base.default_pixel().first().copied().unwrap_or(1.0),
+            }));
+        }
         if let Some(c) = photocraft_compose::masks::combined_mask(layer, self.cx.canvas) {
             let default = c.default_pixel().first().copied().unwrap_or(1.0);
-            return Some(MaskUse { layer: layer.id, surface: SurfaceRef::Derived(std::sync::Arc::new(c)), density: 1.0, default });
+            return Ok(Some(MaskUse { layer: layer.id, source: MaskSource::Surface(SurfaceRef::Derived(std::sync::Arc::new(c))), density: 1.0, default }));
         }
-        let m = layer.mask.as_ref()?;
+        let Some(m) = layer.mask.as_ref() else { return Ok(None) };
         if !m.enabled {
-            return None;
+            return Ok(None);
         }
-        Some(MaskUse {
+        Ok(Some(MaskUse {
             layer: layer.id,
-            surface: SurfaceRef::Doc(&m.surface),
+            source: MaskSource::Surface(SurfaceRef::Doc(&m.surface)),
             density: m.density,
             default: m.surface.default_pixel().first().copied().unwrap_or(1.0),
-        })
+        }))
     }
 
     /// `compose::apply_blend_if`: `after` (the backdrop with `layer` drawn) mixed back towards
@@ -687,7 +751,7 @@ impl<'a> Planner<'a> {
                 p.a = Some(self.retain(before));
                 p.b = Some(after);
                 p.opacity = opacity;
-                p.mask = self.mask_use(layer);
+                p.mask = self.mask_use(layer)?;
                 after = self.emit(p);
             }
             if visible_clipped.is_empty() {
@@ -732,7 +796,7 @@ impl<'a> Planner<'a> {
             p.b = Some(adjusted);
             p.mode = layer.blend;
             p.opacity = opacity;
-            p.mask = self.mask_use(layer);
+            p.mask = self.mask_use(layer)?;
             return Ok(self.emit(p));
         }
 
@@ -756,7 +820,7 @@ impl<'a> Planner<'a> {
             p.a = Some(content);
             p.b = Some(stroke);
             let mut content = self.emit(p);
-            if let Some(m) = self.mask_use(layer) {
+            if let Some(m) = self.mask_use(layer)? {
                 let mut p = Pass::new(Kernel::Mask, 0);
                 p.a = Some(content);
                 p.mask = Some(m);
@@ -874,7 +938,7 @@ impl<'a> Planner<'a> {
                 if layer.mask.is_some() || layer.vector_mask.is_some() {
                     let mut p = Pass::new(Kernel::Mask, 0);
                     p.a = Some(s);
-                    p.mask = self.mask_use(layer);
+                    p.mask = self.mask_use(layer)?;
                     return Ok(self.emit(p));
                 }
                 Ok(s)
@@ -894,7 +958,7 @@ impl<'a> Planner<'a> {
                 if layer.mask.is_some() || layer.vector_mask.is_some() {
                     let mut p = Pass::new(Kernel::Mask, 0);
                     p.a = Some(s);
-                    p.mask = self.mask_use(layer);
+                    p.mask = self.mask_use(layer)?;
                     return Ok(self.emit(p));
                 }
                 Ok(s)
@@ -907,9 +971,9 @@ impl<'a> Planner<'a> {
     }
 
     /// The Content pass of a raster / text / shape / smart / fill layer.
-    fn content_pass(&self, layer: &'a Layer) -> Result<Pass<'a>, Unsupported> {
+    fn content_pass(&mut self, layer: &'a Layer) -> Result<Pass<'a>, Unsupported> {
         let mut p = Pass::new(Kernel::Content, 0);
-        p.mask = self.mask_use(layer);
+        p.mask = self.mask_use(layer)?;
         match &layer.content {
             LayerContent::Fill(f) => match &layer.fill_cache {
                 Some(c) if c.fill == *f => self.surface_tex(&mut p, layer.id, &c.surface),
@@ -989,7 +1053,7 @@ impl<'a> Planner<'a> {
             p.b = Some(adjusted);
             p.mode = layer.blend;
             p.opacity = opacity;
-            p.mask = self.mask_use(layer);
+            p.mask = self.mask_use(layer)?;
             return Ok(self.emit(p));
         }
         if has_effects(layer) {
@@ -1065,9 +1129,12 @@ impl<'a> Planner<'a> {
                 p.b = Some(self.retain(s));
                 p.clip = Some(clip);
                 let union = self.emit(p);
-                let m = self.mask_use(layer);
+                let m = self.mask_use(layer)?;
                 let masked = |me: &mut Self, slot: Slot| match &m {
                     Some(m) => {
+                        if let MaskSource::Slot(s) = &m.source {
+                            me.retain(*s);
+                        }
                         let mut p = Pass::new(Kernel::Mask, 0);
                         p.a = Some(slot);
                         p.mask = Some(m.clone());
@@ -1078,7 +1145,11 @@ impl<'a> Planner<'a> {
                 };
                 let fill = masked(self, content);
                 content = masked(self, union);
-                (fill, Some(masked(self, s)))
+                let stroke = masked(self, s);
+                if let Some(MaskUse { source: MaskSource::Slot(slot), .. }) = &m {
+                    self.release(*slot);
+                }
+                (fill, Some(stroke))
             }
             None => (self.retain(content), None),
         };

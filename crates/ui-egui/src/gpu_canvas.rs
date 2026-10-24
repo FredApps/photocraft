@@ -654,11 +654,19 @@ impl GpuCanvas {
                 // Encoding and submitting only: the GPU is still running this work.
                 out.composite_ms = now_ms() - t0;
                 out.uploads = stats.tiles_uploaded as u64;
+                out.gpu_upload_bytes = stats.bytes_uploaded as u64;
+                out.gpu_passes = stats.passes as u64;
+                out.gpu_chunks = stats.chunks as u64;
                 out.gpu = stats.gpu_time;
                 return out;
             }
             Err(e) => out.fallback = Some(e.0),
         }
+        // Paint-mask previews are GPU-first and intentionally leave `mask.surface` untouched.
+        // If a feature in the document makes the GPU plan unsupported, materialize the mask
+        // stacks for this CPU fallback without changing the live document or preview snapshot.
+        let cpu_doc = out.fallback.as_ref().map(|_| materialize_paint_masks(doc));
+        let doc = cpu_doc.as_ref().unwrap_or(doc);
         let px = region.width() as u64 * region.height() as u64;
         if defer && px >= DEFER_PX && self.prepare_texture(key, doc).is_some() {
             out.kind = REFRESH_DEFERRED;
@@ -873,6 +881,22 @@ impl GpuCanvas {
     }
 }
 
+/// Flatten transient Paint mask stacks into a private document copy for CPU consumers.
+/// The live/display document remains GPU-first and its canonical surface is not mutated.
+pub(crate) fn materialize_paint_masks(doc: &photocraft_doc::Document) -> photocraft_doc::Document {
+    let mut materialized = doc.clone();
+    let mask_ids: Vec<_> =
+        materialized.walk().iter().filter_map(|(_, _, layer)| layer.mask.as_ref().filter(|mask| mask.paint.is_some()).map(|_| layer.id)).collect();
+    for id in mask_ids {
+        if let Some(mask) = materialized.layer_mut(id).and_then(|layer| layer.mask.as_mut())
+            && mask.paint.is_some()
+        {
+            photocraft_compose::mask_paint::refresh(mask, None);
+        }
+    }
+    materialized
+}
+
 /// A CPU composite as the canvas texture stores it (`display`'s encoding; as is without one).
 fn texture_buffer<'a>(
     display: Option<&photocraft_engine::display_color::CanvasDisplay>,
@@ -906,6 +930,12 @@ pub struct Refresh {
     pub upload_ms: f64,
     /// Layer tiles the wgpu compositor uploaded.
     pub uploads: u64,
+    /// Bytes uploaded for changed layer tiles by the wgpu compositor.
+    pub gpu_upload_bytes: u64,
+    /// Planned compositor passes for this refresh.
+    pub gpu_passes: u64,
+    /// Chunk renders for this refresh.
+    pub gpu_chunks: u64,
     /// How long the GPU spent executing a recent wgpu composite, once its timestamps came back
     /// (a frame or two after that refresh, so usually an earlier one than this). It carries its
     /// own pixel count and is never this refresh's unless they match. `None` when the device has
@@ -1021,6 +1051,12 @@ pub struct Perf {
     pub gpu: bool,
     /// Layer tiles uploaded by the last GPU composite.
     pub gpu_uploads: u64,
+    /// Bytes uploaded for changed layer tiles by the last GPU composite.
+    pub gpu_upload_bytes: u64,
+    /// Planned compositor passes in the last GPU refresh.
+    pub gpu_passes: u64,
+    /// Chunk renders in the last GPU refresh.
+    pub gpu_chunks: u64,
     /// How long the GPU spent executing a recent composite (ms), from timestamp queries read
     /// back after the fact. `None` on the CPU compositor, on a device without timestamp queries
     /// and on wasm — there is then no honest number to report, and `composite_ms` is not one.
@@ -1205,6 +1241,9 @@ impl Perf {
         self.upload_ms = upload_ms;
         if !kind.starts_with("gpu") {
             self.gpu_uploads = 0;
+            self.gpu_upload_bytes = 0;
+            self.gpu_passes = 0;
+            self.gpu_chunks = 0;
             // The CPU compositor did this one: there is no GPU time, and the last GPU
             // refresh's would be read as this refresh's.
             self.gpu_ms = None;
@@ -1217,6 +1256,10 @@ impl Perf {
     /// Record a canvas refresh and any GPU measurement that came back with it.
     pub fn record_refresh(&mut self, r: &Refresh) {
         self.record(r.kind, r.px, r.composite_ms, r.upload_ms);
+        self.gpu_uploads = r.uploads;
+        self.gpu_upload_bytes = r.gpu_upload_bytes;
+        self.gpu_passes = r.gpu_passes;
+        self.gpu_chunks = r.gpu_chunks;
         if let Some(t) = r.gpu {
             self.record_gpu(t);
         }

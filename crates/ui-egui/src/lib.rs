@@ -260,6 +260,8 @@ mod uv_mask;
 #[cfg(feature = "uv-workbench")]
 mod uv_mask_paint;
 #[cfg(feature = "uv-workbench")]
+mod uv_mask_paint_preview;
+#[cfg(feature = "uv-workbench")]
 mod uv_mips;
 #[cfg(feature = "uv-workbench")]
 mod uv_paint;
@@ -712,6 +714,8 @@ pub struct PhotocraftApp {
     #[cfg(feature = "uv-workbench")]
     pub(crate) uv_cache: uv_ui::Cache,
     #[cfg(feature = "uv-workbench")]
+    pub(crate) uv_mask_paint_preview: Option<uv_mask_paint_preview::Preview>,
+    #[cfg(feature = "uv-workbench")]
     pub(crate) uv_paint_key: Option<String>,
     pub session: Session,
     pub ui: UiState,
@@ -1041,6 +1045,8 @@ impl PhotocraftApp {
             #[cfg(feature = "uv-workbench")]
             uv_cache: Default::default(),
             #[cfg(feature = "uv-workbench")]
+            uv_mask_paint_preview: None,
+            #[cfg(feature = "uv-workbench")]
             uv_paint_key: None,
             session,
             ui: UiState::default(),
@@ -1316,6 +1322,12 @@ impl PhotocraftApp {
         }
 
         #[cfg(feature = "uv-workbench")]
+        if id == "uv.maskPaint.preview.cancel" {
+            self.uv_mask_paint_preview = None;
+            return Ok(Value::Null);
+        }
+
+        #[cfg(feature = "uv-workbench")]
         let mut params = params;
         #[cfg(feature = "uv-workbench")]
         if id.starts_with("paint.")
@@ -1335,7 +1347,49 @@ impl PhotocraftApp {
         if gate.is_some() {
             self.session.authorize = gate;
         }
-        let result = self.run_command(id, params);
+        #[cfg(feature = "uv-workbench")]
+        let mut skip_command = false;
+        #[cfg(not(feature = "uv-workbench"))]
+        let skip_command = false;
+        let mut result = Ok(Value::Null);
+        #[cfg(feature = "uv-workbench")]
+        if let Some(commit) = crate::uv_mask_paint_preview::pending(self) {
+            let target = self.session.documents().iter().position(|st| st.doc.id == commit.doc);
+            if let Some(target) = target {
+                if self.session.documents().get(target).is_none_or(|st| st.revision != commit.revision) {
+                    result = Err("The mask Paint opacity preview is stale. Press Escape to discard it.".into());
+                    skip_command = true;
+                } else {
+                    let exact_ui_commit = id == "uv.maskPaint.modify"
+                        && params.get("layer").and_then(Value::as_u64) == Some(commit.layer.0)
+                        && params.get("index").and_then(Value::as_u64) == u64::try_from(commit.index).ok()
+                        && params.as_object().is_some_and(|object| object.len() == 3)
+                        && params.get("opacity").and_then(Value::as_f64).is_some_and(|value| (value as f32).to_bits() == commit.opacity.to_bits());
+                    let previous = self.session.active_index();
+                    if previous != Some(target) && !self.session.set_active(target) {
+                        result = Err("The mask Paint opacity preview document is unavailable".into());
+                        skip_command = true;
+                    } else {
+                        result = self.run_command("uv.maskPaint.modify", commit.params());
+                        if let Some(previous) = previous.filter(|previous| *previous != target) {
+                            self.session.set_active(previous);
+                        }
+                        if result.is_ok() {
+                            crate::uv_mask_paint_preview::clear(self, commit);
+                            skip_command = exact_ui_commit;
+                        } else {
+                            skip_command = true;
+                        }
+                    }
+                }
+            } else {
+                self.uv_mask_paint_preview = None;
+                log::warn!("canceled mask Paint opacity preview because its document was closed");
+            }
+        }
+        if !skip_command {
+            result = self.run_command(id, params);
+        }
         if gate.is_some() {
             self.session.authorize = None;
         }
@@ -2323,6 +2377,8 @@ impl eframe::App for PhotocraftApp {
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.cap_frame_rate();
+        #[cfg(feature = "uv-workbench")]
+        crate::uv_mask_paint_preview::cancel_stale_on_escape(self, ctx);
         i18n::set_current(i18n::Lang::from_pref(&self.session.prefs().interface.language));
         // Caps Lock state read from the OS once per frame (see `Services::caps_lock`): the canvas
         // cursor block needs it before the frame renders. `None` (Wayland/web) keeps `false`.

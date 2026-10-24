@@ -9,13 +9,35 @@ use std::sync::Arc;
 pub(crate) const MAPS: [Channel; 5] = [Channel::Color, Channel::Metallic, Channel::Roughness, Channel::Ao, Channel::Emissive];
 pub(crate) type Key = (u64, u64, u64, u64);
 pub(crate) type RegionHint = (Key, Vec<[u32; 4]>);
+#[derive(Clone)]
+pub(crate) struct GpuMapRequest {
+    pub doc: Arc<photocraft_doc::Document>,
+    pub key: Key,
+    pub linear_srgb: bool,
+}
 #[derive(Default)]
 pub(crate) struct SurfaceMaps {
     pub images: [Vec<Option<Image>>; 5],
+    pub gpu: [Vec<Option<GpuMapRequest>>; 5],
     pub keys: [Vec<Key>; 5],
     pub regions: [Vec<Option<RegionHint>>; 5],
+    pub use_color_for_pbr: Vec<bool>,
     pub output: Option<(u64, Image)>,
     snapshots: [Vec<Option<Arc<photocraft_doc::Document>>>; 5],
+}
+pub(crate) fn gpu_color_encoding(doc: &photocraft_doc::Document, channel: Channel) -> Option<bool> {
+    if !matches!(channel, Channel::Color | Channel::Emissive) || doc.mode != photocraft_color::ColorMode::Rgb {
+        return None;
+    }
+    let profile = photocraft_engine::color_cmds::composite_profile(doc);
+    let hash = profile.content_hash();
+    if hash == photocraft_cms::Builtin::Srgb.profile().content_hash() {
+        Some(true)
+    } else if hash == photocraft_cms::Builtin::LinearSrgb.profile().content_hash() {
+        Some(false)
+    } else {
+        None
+    }
 }
 #[derive(Default)]
 pub(crate) struct Cache {
@@ -29,6 +51,12 @@ pub(crate) struct Cache {
     pending: Option<std::sync::mpsc::Receiver<Result<(String, Environment), String>>>,
 }
 pub(crate) fn refresh(app: &mut PhotocraftApp, maps: &mut SurfaceMaps) -> Result<(), String> {
+    refresh_impl(app, maps, false)
+}
+pub(crate) fn refresh_gpu(app: &mut PhotocraftApp, maps: &mut SurfaceMaps) -> Result<(), String> {
+    refresh_impl(app, maps, true)
+}
+fn refresh_impl(app: &mut PhotocraftApp, maps: &mut SurfaceMaps, allow_gpu: bool) -> Result<(), String> {
     let monitor = app.session.active().and_then(|st| app.session.color.canvas_display(&st.doc).ok()).map(|d| d.monitor.clone());
     let monitor = monitor.as_deref().unwrap_or(photocraft_cms::Builtin::Srgb.profile());
     let hash = monitor.content_hash();
@@ -39,15 +67,25 @@ pub(crate) fn refresh(app: &mut PhotocraftApp, maps: &mut SurfaceMaps) -> Result
         transform.convert_f32(&source, 4, lut.rgba.as_flattened_mut(), 4, true);
         maps.output = Some((hash, lut));
     }
+    let opacity_bindings = app.session.uv.map_bindings(Channel::Opacity).to_vec();
+    let material_count = MAPS.iter().map(|channel| app.session.uv.map_bindings(*channel).len()).max().unwrap_or(0);
+    maps.use_color_for_pbr.resize(material_count, false);
+    for material in 0..material_count {
+        maps.use_color_for_pbr[material] = opacity_bindings.get(material).is_none_or(Option::is_none);
+    }
     for (kind, channel) in MAPS.into_iter().enumerate() {
         let bindings = app.session.uv.map_bindings(channel).to_vec();
         maps.images[kind].resize_with(bindings.len(), || None);
+        maps.gpu[kind].resize_with(bindings.len(), || None);
         maps.keys[kind].resize(bindings.len(), Key::default());
         maps.regions[kind].resize(bindings.len(), None);
         maps.regions[kind].fill(None);
         maps.snapshots[kind].resize(bindings.len(), None);
         for (material, id) in bindings.into_iter().enumerate() {
             let Some(index) = id.and_then(|id| app.session.documents().iter().position(|s| s.doc.id == id)) else {
+                if let Some(v) = maps.gpu[kind].get_mut(material) {
+                    *v = None;
+                }
                 if let Some(v) = maps.images[kind].get_mut(material) {
                     *v = None;
                 }
@@ -62,7 +100,28 @@ pub(crate) fn refresh(app: &mut PhotocraftApp, maps: &mut SurfaceMaps) -> Result
             // Profile assignment/conversion is a document revision. Avoid parsing an ICC
             // profile for every unchanged slot, including numeric maps, on every refresh.
             let key = (doc.id.0, revision, live, 0);
-            if maps.keys[kind].get(material) == Some(&key) {
+            let gpu_request = allow_gpu.then(|| gpu_color_encoding(&doc, channel)).flatten().map(|linear_srgb| GpuMapRequest {
+                doc: doc.clone(),
+                key: (doc.id.0, revision, live, photocraft_engine::color_cmds::composite_profile(&doc).content_hash()),
+                linear_srgb,
+            });
+            if let Some(slot) = maps.gpu[kind].get_mut(material) {
+                *slot = gpu_request.clone();
+            }
+            if gpu_request.is_some() {
+                if let Some(slot) = maps.images[kind].get_mut(material) {
+                    *slot = None;
+                }
+                maps.snapshots[kind][material] = None;
+                if let Some(slot) = maps.keys[kind].get_mut(material) {
+                    *slot = key;
+                }
+                continue;
+            }
+            if let Some(slot) = maps.gpu[kind].get_mut(material) {
+                *slot = None;
+            }
+            if maps.keys[kind].get(material) == Some(&key) && maps.images[kind].get(material).is_some_and(Option::is_some) {
                 continue;
             }
             let old = maps.keys[kind].get(material).copied().unwrap_or_default();

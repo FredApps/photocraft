@@ -31,6 +31,9 @@ pub(crate) struct State {
 pub(crate) fn pending(state: &State) -> bool {
     state.doc.is_some() && state.last.is_some()
 }
+pub(crate) fn active_document(state: &State) -> Option<photocraft_doc::DocId> {
+    pending(state).then_some(state.doc).flatten()
+}
 fn mods() -> Modifiers {
     Modifiers::NONE
 }

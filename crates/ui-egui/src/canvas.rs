@@ -1357,6 +1357,10 @@ pub(crate) const GPU_OUTPUT: u32 = u32::MAX;
 
 /// The document to render: the committed one, or a clone with the live adjustment preview applied.
 pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> (std::sync::Arc<Document>, u64) {
+    #[cfg(feature = "uv-workbench")]
+    if let Some(shown) = crate::uv_mask_paint_preview::display_doc(app, idx) {
+        return shown;
+    }
     if let Some(shown) = crate::type_panels_ui::color_picker::display_doc(app, idx) {
         return shown;
     }
@@ -2082,6 +2086,9 @@ fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, visible:
     }
     if r.kind.starts_with("gpu") {
         app.perf.gpu_uploads = r.uploads;
+        app.perf.gpu_upload_bytes = r.gpu_upload_bytes;
+        app.perf.gpu_passes = r.gpu_passes;
+        app.perf.gpu_chunks = r.gpu_chunks;
     } else {
         app.perf.gpu_fallback = r.fallback;
     }

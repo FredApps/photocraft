@@ -3,7 +3,7 @@ use crate::{PhotocraftApp, theme::Tokens};
 use photocraft_doc::Layer;
 use serde_json::{Value, json};
 
-pub(crate) fn rows(app: &PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, actions: &mut Vec<(String, Value)>) {
+pub(crate) fn rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, actions: &mut Vec<(String, Value)>) {
     if app.ui.workspace != "3D" || !app.ui.mask_target || app.session.active().and_then(|s| s.active_layer) != Some(layer.id) {
         return;
     }
@@ -50,16 +50,19 @@ pub(crate) fn rows(app: &PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, action
                             ui.close();
                         }
                     });
-                    let mut opacity = paint.opacity * 100.0;
-                    let opacity_response=ui.add(egui::DragValue::new(&mut opacity).range(0.0..=100.0).suffix("%").speed(0.5)).on_hover_text(tl!("Opacity"));
-                    let gesture_id=ui.id().with("opacity-gesture");
-                    if opacity_response.drag_started() || opacity_response.gained_focus() {
-                        let pass=ui.ctx().cumulative_pass_nr();
-                        ui.ctx().data_mut(|d|d.insert_temp(gesture_id,pass));
-                    }
+                    let preview_opacity = crate::uv_mask_paint_preview::value(app, layer.id, index, paint.opacity);
+                    let mut opacity = preview_opacity * 100.0;
+                    let opacity_response = ui.add(egui::DragValue::new(&mut opacity).range(0.0..=100.0).suffix("%").speed(0.5)).on_hover_text(tl!("Opacity"));
                     if opacity_response.changed() {
-                        let gesture=ui.ctx().data(|d|d.get_temp::<u64>(gesture_id)).unwrap_or_else(||ui.ctx().cumulative_pass_nr());
-                        actions.push(("uv.maskPaint.modify".into(),json!({"layer":layer.id.0,"index":index,"opacity":opacity/100.0,"coalesce":format!("mask-opacity:{}:{index}:{gesture}",layer.id.0)})));
+                        crate::uv_mask_paint_preview::set(app, layer.id, index, opacity / 100.0);
+                        ui.ctx().request_repaint();
+                    }
+                    if opacity_response.drag_stopped() || opacity_response.lost_focus() {
+                        if opacity_response.changed() {
+                            actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"opacity":opacity/100.0})));
+                        } else if preview_opacity != paint.opacity {
+                            actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"opacity":preview_opacity})));
+                        }
                     }
                 })
                 .response;
