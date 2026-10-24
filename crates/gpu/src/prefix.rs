@@ -140,7 +140,7 @@ impl Prefix {
     /// Drops the chunks `doc` invalidated and returns the checkpoint this render captures at, one
     /// of `checkpoints` (the plan's that a batch run starts at). A chunk held at any other point
     /// is dropped too: resuming there would group the layers above it differently.
-    pub(crate) fn prepare(&mut self, doc: &Document, checkpoints: &[Checkpoint]) -> Option<Checkpoint> {
+    pub(crate) fn prepare(&mut self, doc: &Document, checkpoints: &[Checkpoint], captures: &[Checkpoint]) -> Option<Checkpoint> {
         if self.budget == 0 {
             return None;
         }
@@ -174,9 +174,12 @@ impl Prefix {
         let kept = self.checkpoint.filter(|c| same_context && changed.is_none() && checkpoints.contains(c));
         let checkpoint = kept.or_else(|| match changed {
             // Just below the edit; nothing when it is at the bottom.
-            Some(changed) if same_context => capture_below(checkpoints, &self.previous_checkpoints, changed),
+            Some(changed) if same_context => {
+                capture_below(captures, &self.previous_checkpoints, changed).or_else(|| capture_below(checkpoints, &self.previous_checkpoints, changed))
+            }
             _ => {
-                let mut useful = checkpoints.iter().rev().filter(|c| c.pass_end > 1);
+                let points = if captures.iter().any(|c| c.pass_end > 1) { captures } else { checkpoints };
+                let mut useful = points.iter().rev().filter(|c| c.pass_end > 1);
                 let last = useful.next().copied();
                 useful.next().copied().or(last)
             }

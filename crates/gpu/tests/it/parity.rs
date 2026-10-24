@@ -392,10 +392,10 @@ fn prefix_repeated_mid_stack_paste_and_undo_keep_a_shared_batch_boundary() {
         // (their output aliases their first input). An insertion makes three,
         // removing the former end boundary from run_starts without changing its
         // raw plan checkpoint tuple.
-        for seed in 0..20 {
+        for seed in 0..19 {
             doc.layers.push(noise_layer("Pasted pixels", fmt, doc.bounds(), 101 + seed, 0.2));
         }
-        let insertion = doc.layers.len();
+        let mut insertion = doc.layers.len();
         let mut upper = noise_layer("Styled upper panel", fmt, Rect::new(130, 70, 230, 140), 59, 0.3);
         upper.effects.items = vec![Effect::default_drop_shadow()];
         doc.layers.push(upper);
@@ -409,13 +409,16 @@ fn prefix_repeated_mid_stack_paste_and_undo_keep_a_shared_batch_boundary() {
             assert!(difference <= TOL, "{depth:?}: {label} CPU/native GPU premultiplied difference {difference} at pixel{pixel}");
             stats
         };
-        exact(&doc, "initial");
+        exact(&doc, "initial nineteen plain passes");
+        // The final first-paste fixture grows nineteen to twenty passes. Its
+        // captured tail must survive the first repeat's next insertion too.
+        doc.layers.insert(insertion, doc.layers[insertion - 1].duplicate());
+        exact(&doc, "first paste to twenty plain passes");
+        insertion += 1;
         for sample in 0..3 {
             doc.layers.insert(insertion, doc.layers[insertion - 1].duplicate());
             let pasted = exact(&doc, "paste");
-            if sample > 0 {
-                assert!(pasted.prefix_hits > 0, "{depth:?} sample{sample}: repeated paste lost the shared lower boundary: {pasted:?}");
-            }
+            assert!(pasted.prefix_hits > 0, "{depth:?} sample{sample}: repeated paste lost the shared lower boundary: {pasted:?}");
             doc.layers.remove(insertion);
             let undone = exact(&doc, "undo");
             assert!(undone.prefix_hits > 0, "{depth:?} sample{sample}: undo should reuse unchanged lower pixels: {undone:?}");
