@@ -76,10 +76,9 @@ fn historical_choice_uses_upstream_clap_validation_for_all_import_commands() {
         vec!["batch", "--actions", "actions.json", "--in", "inputs", "--out", "outputs"],
     ];
     for base in cases {
-        for (name, expected) in [
-            ("little-endian", photocraft_io::HistoricalXcfSampleOrder::LittleEndian),
-            ("big-endian", photocraft_io::HistoricalXcfSampleOrder::BigEndian),
-        ] {
+        for (name, expected) in
+            [("little-endian", photocraft_io::HistoricalXcfSampleOrder::LittleEndian), ("big-endian", photocraft_io::HistoricalXcfSampleOrder::BigEndian)]
+        {
             let mut argv: Vec<OsString> = base.iter().map(OsString::from).collect();
             argv.extend(["--historical-xcf-sample-order".into(), name.into()]);
             let parsed = parse(&argv).unwrap();
