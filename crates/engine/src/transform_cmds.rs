@@ -556,8 +556,10 @@ pub(crate) fn transform_by(doc: &mut Document, id: LayerId, affine: Affine, inte
     let h = crate::smart_cmds::affine_homography(&affine);
     let group = group_locks(doc, id);
     let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+    // Price the smart object caches before they are taken: the fallback warp below isn't budgeted.
+    check_layer_budget(None, l, &h)?;
     let taken = crate::smart_cmds::take_caches(std::slice::from_mut(l));
-    transform_layer(None, group, l, &h, Some(affine), interp)?;
+    apply_transform(None, group, l, &h, Some(affine), interp, &Interrupt::NONE)?;
     let snapshot = doc.clone();
     if let Some(l) = doc.layer_mut(id) {
         refresh_text(&snapshot, l);
