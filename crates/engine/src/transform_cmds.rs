@@ -562,7 +562,8 @@ pub(crate) fn transform_by(doc: &mut Document, id: LayerId, affine: Affine, inte
     if let Some(l) = doc.layer_mut(id) {
         refresh_text(&snapshot, l);
     }
-    crate::smart_cmds::restore_unrendered(doc, taken, |c| warp_surface(c, c.content_bounds(), &h, interp))
+    crate::smart_cmds::restore_unrendered(doc, taken, |c| warp_surface(c, c.content_bounds(), &h, interp))?;
+    Ok(())
 }
 
 pub(crate) fn refresh_text(doc: &Document, l: &mut Layer) {
