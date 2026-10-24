@@ -1150,7 +1150,9 @@ impl Ex {
                 outer.mask = None;
                 outer.vector_mask = None;
                 let mut parts = vec![clip];
-                if let Some(shape) = frame.stroke_shape() {
+                if let Some(mut shape) = frame.stroke_shape() {
+                    // Readers that composite pixels see the border too, as for any shape layer.
+                    shape.cache = Some(photocraft_vector::render_shape(&shape, self.fmt, self.canvas));
                     let mut border = Layer::new("Frame Stroke", LayerContent::Shape(shape));
                     border.psd_blocks.push((*b"pcFs", std::sync::Arc::new(vec![1])));
                     let bid = self.fresh_id();

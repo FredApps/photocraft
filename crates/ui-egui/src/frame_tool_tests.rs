@@ -437,3 +437,80 @@ fn drawing_a_frame_with_another_frames_image_selected_leaves_that_image_in_place
     assert_ne!(second.id, first);
     assert!(second.children().unwrap().is_empty(), "the new frame is empty");
 }
+
+/// Esc during a frame's content drag ends its automatic transform: a Free Transform started
+/// afterwards waits for Enter instead of committing on its first pointer release.
+#[test]
+fn cancelling_a_frame_content_drag_clears_its_auto_commit() {
+    let mut app = app();
+    app.session
+        .edit("Photo", |doc, active| {
+            let mut l = Layer::raster("Photo", doc.pixel_format());
+            l.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 200, 200), &[1., 0., 0., 1.]);
+            let id = l.id;
+            doc.layers.push(l);
+            *active = Some(id);
+            Ok(id)
+        })
+        .unwrap();
+    drag(&mut app, [20., 30.], [120., 110.]);
+    double_click(&mut app, [65., 65.]);
+    let ctx = egui::Context::default();
+    crate::PhotocraftApp::setup_context(&ctx, Default::default());
+    ctx.begin_pass(Default::default());
+    app.frame_tool_ctx = Some(ctx.clone());
+    tool_event(&mut app, ToolEvent::Down { x: 70., y: 75., pressure: 1.0 }, egui::Modifiers::NONE);
+    assert!(app.ui.frame_tool.auto_transform, "a content drag transforms automatically");
+    crate::transform_tool::cancel(&mut app);
+    ctx.end_pass().textures_delta.clear();
+    assert!(app.ui.transform.is_none());
+    assert!(!app.ui.frame_tool.auto_transform);
+}
+
+/// Double-clicking a frame's content thumbnail opens a Smart Object's contents; a pixel layer
+/// inside a frame (as PSD files can hold) has no contents to open.
+#[test]
+fn double_clicking_frame_content_opens_only_smart_objects() {
+    use egui::{Event, PointerButton, vec2};
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 400, "height": 300})).unwrap();
+    let photo = s.execute("layer.new.layer", json!({"name": "Photo"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("edit.fill", json!({"contents": "black"})).unwrap();
+    let smart = s.execute("layer.new.frame", json!({"x": 10, "y": 10, "width": 100, "height": 80, "layer": photo})).unwrap()["layer"].as_u64().unwrap();
+    let pixels = s.execute("layer.new.frame", json!({"x": 200, "y": 10, "width": 100, "height": 80})).unwrap()["layer"].as_u64().unwrap();
+    s.edit("Pixels", |doc, _| {
+        let l = Layer::raster("Pixels", doc.pixel_format());
+        doc.layer_mut(LayerId(pixels)).and_then(Layer::children_mut).unwrap().push(l);
+        Ok(())
+    })
+    .unwrap();
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(1440.0, 900.0)).with_step_dt(1.0 / 60.0).with_max_steps(64).build_eframe(move |cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        PhotocraftApp::new(s, crate::Services::default())
+    });
+    let ctx = h.ctx.clone();
+    let (r, _) = crate::control::ControlRequest::new("ui.set", json!({"dock": {"collapsed": ["color", "properties", "history", "navigator"]}}));
+    crate::control::handle(h.state_mut(), &ctx, &r);
+    h.run_steps(8);
+    let double_click_content = |h: &mut egui_kittest::Harness<PhotocraftApp>, layer: u64| {
+        // Past egui's double-click window, so the last pair's clicks don't run on into these.
+        h.run_steps(30);
+        let row = crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == layer).unwrap();
+        let thumb = row.thumbnail.unwrap();
+        let at = thumb.center() + vec2(thumb.width() + 6.0, 0.0);
+        h.hover_at(at);
+        h.run_steps(1);
+        for _ in 0..2 {
+            h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+            h.run_steps(1);
+            h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            h.run_steps(1);
+        }
+        h.run_steps(3);
+    };
+    double_click_content(&mut h, pixels);
+    assert_eq!(h.state().session.documents().len(), 1, "a pixel layer has no contents to open");
+    assert!(!h.state().ui.status_error, "{}", h.state().ui.status);
+    double_click_content(&mut h, smart);
+    assert_eq!(h.state().session.documents().len(), 2, "the Smart Object's contents open");
+}

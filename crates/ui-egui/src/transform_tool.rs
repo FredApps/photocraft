@@ -1249,6 +1249,8 @@ pub fn cancel(app: &mut PhotocraftApp) {
     if app.ui.transform.as_ref().is_some_and(crate::frame_tool::frame_transform) {
         app.frame_preview = None;
     }
+    // A frame drag's session (frame or content) ends here; a later one must not commit on release.
+    app.ui.frame_tool.auto_transform = false;
     // Esc while the commit runs cancels the job; the session ends when it does.
     if let Some(job) = committing(app) {
         crate::jobs_ui::cancel(app, job);

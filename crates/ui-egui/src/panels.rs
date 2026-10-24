@@ -3280,6 +3280,7 @@ fn layer_row(
         if resp.double_clicked()
             && resp.interact_pointer_pos().is_some_and(|p| content_thumb.contains(p))
             && let Some(child) = l.children().and_then(|c| c.first())
+            && matches!(child.content, LayerContent::Smart(_))
         {
             actions.push(("layer.smartObjects.editContents".into(), json!({"layer":child.id.0})));
         }
