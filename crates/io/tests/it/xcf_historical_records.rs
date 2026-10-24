@@ -252,23 +252,29 @@ fn link_rename_monitor_bits_stay_inert_while_legacy_movement_is_a_separate_nativ
 
 #[cfg(feature = "corpus")]
 #[test]
-#[ignore = "Requires GIMP2.9.6 source fixtures absent from the official corpus pin (T088)"]
-fn genuine_gimp_2_9_6_highdepth_sources_use_explicit_provenance_order_and_editable_native_reopen() {
-    use photocraft_color::{ColorMode, SampleType};
+#[ignore = "Requires independently authored historical sources absent from the official corpus pin (T088)"]
+fn genuine_historical_highdepth_sources_use_explicit_provenance_order_and_editable_native_reopen() {
+    use photocraft_color::{BlendMode, ColorMode, SampleType};
     use photocraft_io::{HistoricalXcfSampleOrder, ImportOptions, IoError};
     // Producer provenance and every raw public PDB pixel are recorded in the
     // authoring corpus tools/gimp-xcf/historical_2_9_6.provenance.json.
-    // The ordinary Save As better-compression v8 F32 witness is recorded separately
-    // in historical_2_9_6_v008.provenance.json; no v8 U16 producer is claimed.
-    // Windows2.9.6 is externally verified LE; no header discriminator is claimed.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/gimp");
-    for version in [7, 8, 9, 11] {
+    // The ordinary Save As better-compression v8 F32 witness and the stock PDB
+    // v8 U16 derivative are recorded in historical_2_9_6_v008.provenance.json
+    // and historical_2_9_6_v008_u16.provenance.json, with independent readbacks.
+    // The v10 pair comes from unmodified GIMP development commit0874703,
+    // whose stock loader fixes its predecessor's missing version10 entry.
+    // Both qualified x86-64 producers are externally verified LE; no in-file
+    // discriminator is claimed for other historical producers.
+    // Local producer qualification can point directly at an authoring checkout;
+    // ordinary corpus tests and fetch defaults keep their official pinned inputs.
+    let root = std::env::var_os("PHOTOCRAFT_XCF_SOURCE_CORPUS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/gimp"));
+    for (version, producer, compression) in
+        [(7, "2-9-6", "rle"), (8, "2-9-6", "zlib"), (9, "2-9-6", "rle"), (10, "2-9-5-0874703", "zlib"), (11, "2-9-6", "rle")]
+    {
         for (suffix, depth) in [("u16-asymmetric", SampleType::U16), ("float", SampleType::F32)] {
-            if version == 8 && depth != SampleType::F32 {
-                continue;
-            }
-            let compression = if version == 8 { "zlib" } else { "rle" };
-            let name = format!("historical-2-9-6-v{version:03}-{suffix}-{compression}.xcf");
+            let name = format!("historical-{producer}-v{version:03}-{suffix}-{compression}.xcf");
             let path = root.join(&name);
             let source = std::fs::read(&path)
                 .unwrap_or_else(|e| panic!("{}: {e}; needs original producer fixtures absent from the official corpus pin", path.display()));
@@ -280,6 +286,14 @@ fn genuine_gimp_2_9_6_highdepth_sources_use_explicit_provenance_order_and_editab
             let mut doc = imported.document;
             assert_eq!((doc.size.width, doc.size.height, doc.mode, doc.depth), (8, 6, ColorMode::Rgb, depth));
             assert_eq!(doc.layers.len(), 1);
+            assert_eq!(
+                doc.layers[0].blend,
+                match version {
+                    9 => BlendMode::Overlay,
+                    10 => BlendMode::Multiply,
+                    _ => BlendMode::Normal,
+                }
+            );
             let LayerContent::Raster(surface) = &doc.layers[0].content else { panic!("native editable original pixels") };
             for y in 0..6 {
                 for x in 0..8 {

@@ -69,10 +69,14 @@ CLI `convert`, `info`, `run` and `batch` accept
 `historicalXcfSampleOrder: "little-endian"` (or `"big-endian"`). Without a choice, noninteractive
 imports refuse ambiguous high-depth files rather than publish potentially wrong pixels. The
 public IO API exposes the same choice through `ImportOptions::historical_xcf_sample_order`.
-Genuine Windows GIMP 2.9.6 XCF7/9/11 sources and a stock GUI-saved XCF8 F32 zlib source
-qualify those selected little-endian cases; synthetic checks cover both orders across7–11.
-XCF8 U16 and genuine XCF10 producer coverage remain unqualified. GIMP2.9.6 is used only for
-these historical development-format probes; stable-source coverage is separate. The publicly
+Genuine U16/F32 sources qualify selected little-endian cases across XCF7–11: Windows GIMP
+2.9.6 supplies versions7/8/9/11, and unmodified GIMP 2.9.5 development commit
+[`0874703`](https://github.com/GNOME/gimp/commit/0874703e3b7f2d211816feccd745404ed8ec3d71)
+supplies version10. Every source was independently saved, reopened twice and checked against
+its original formula and stored bytes. The v8 and v10 files use the writers' internal zlib
+compression; the U16 samples are asymmetric. Synthetic checks cover both orders across7–11.
+These isolated runtimes qualify historical development formats; they are not PhotoCraft
+dependencies, and stable-source coverage is separate. The publicly
 pinned corpus currently contains 14 XCF originals and their 14 rendered references. Expanded
 source fixtures are proposed in [corpus PR #9](https://github.com/storytold/photocraft-corpus/pull/9);
 upstream acceptance and an immutable pin/manifest update are still required for ordinary CI.
@@ -178,3 +182,7 @@ Its tests are explicitly ignored pending publication and an upstream corpus pin 
 Running that suite with `--ignored` currently requires those additional local corpus files;
 it cannot yet be reproduced from the public pin alone. Local passes do not accept those
 source families as complete.
+
+The ignored genuine historical-source test also accepts `PHOTOCRAFT_XCF_SOURCE_CORPUS_DIR`
+pointing to the authoring checkout's `gimp/` directory. This test-only override allows explicit
+local qualification without changing the ordinary corpus cache or upstream fetch defaults.
