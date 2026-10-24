@@ -252,19 +252,26 @@ fn link_rename_monitor_bits_stay_inert_while_legacy_movement_is_a_separate_nativ
 
 #[cfg(feature = "corpus")]
 #[test]
-#[ignore = "Requires expanded unpublished GIMP2.9.6 source corpus (T088); no upstream pin yet"]
+#[ignore = "Requires GIMP2.9.6 source fixtures absent from the official corpus pin (T088)"]
 fn genuine_gimp_2_9_6_highdepth_sources_use_explicit_provenance_order_and_editable_native_reopen() {
     use photocraft_color::{ColorMode, SampleType};
     use photocraft_io::{HistoricalXcfSampleOrder, ImportOptions, IoError};
     // Producer provenance and every raw public PDB pixel are recorded in the
     // authoring corpus tools/gimp-xcf/historical_2_9_6.provenance.json.
+    // The ordinary Save As better-compression v8 F32 witness is recorded separately
+    // in historical_2_9_6_v008.provenance.json; no v8 U16 producer is claimed.
     // Windows2.9.6 is externally verified LE; no header discriminator is claimed.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/gimp");
-    for version in [7, 9, 11] {
+    for version in [7, 8, 9, 11] {
         for (suffix, depth) in [("u16-asymmetric", SampleType::U16), ("float", SampleType::F32)] {
-            let name = format!("historical-2-9-6-v{version:03}-{suffix}-rle.xcf");
+            if version == 8 && depth != SampleType::F32 {
+                continue;
+            }
+            let compression = if version == 8 { "zlib" } else { "rle" };
+            let name = format!("historical-2-9-6-v{version:03}-{suffix}-{compression}.xcf");
             let path = root.join(&name);
-            let source = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}; needs unpublished original producer batch", path.display()));
+            let source = std::fs::read(&path)
+                .unwrap_or_else(|e| panic!("{}: {e}; needs original producer fixtures absent from the official corpus pin", path.display()));
             assert_eq!(&source[..14], format!("gimp xcf v{version:03}\0").as_bytes());
             assert!(matches!(photocraft_io::import(&name, &source), Err(IoError::HistoricalXcfSampleOrderRequired(_))));
             let options = ImportOptions { historical_xcf_sample_order: Some(HistoricalXcfSampleOrder::LittleEndian), ..Default::default() };

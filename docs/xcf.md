@@ -69,10 +69,13 @@ CLI `convert`, `info`, `run` and `batch` accept
 `historicalXcfSampleOrder: "little-endian"` (or `"big-endian"`). Without a choice, noninteractive
 imports refuse ambiguous high-depth files rather than publish potentially wrong pixels. The
 public IO API exposes the same choice through `ImportOptions::historical_xcf_sample_order`.
-Genuine Windows GIMP 2.9.6 XCF7/9/11 sources qualify the selected little-endian path; synthetic
-checks cover both orders across7–11. XCF8/10 producer qualification remains open. The publicly
-pinned corpus currently contains 14 XCF originals and their 14 rendered references. Additional
-source families remain pending public fixture publication and independent native validation.
+Genuine Windows GIMP 2.9.6 XCF7/9/11 sources and a stock GUI-saved XCF8 F32 zlib source
+qualify those selected little-endian cases; synthetic checks cover both orders across7–11.
+XCF8 U16 and genuine XCF10 producer coverage remain unqualified. GIMP2.9.6 is used only for
+these historical development-format probes; stable-source coverage is separate. The publicly
+pinned corpus currently contains 14 XCF originals and their 14 rendered references. Expanded
+source fixtures are proposed in [corpus PR #9](https://github.com/storytold/photocraft-corpus/pull/9);
+upstream acceptance and an immutable pin/manifest update are still required for ordinary CI.
 
 Open notices summarize material differences. The read-only **Import Conversion Report** lists
 native equivalents, native approximations and unapplied source features per item; automation
