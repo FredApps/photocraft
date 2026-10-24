@@ -650,14 +650,18 @@ impl FilterParams {
     /// that can hold transparency, so callers turn the Background into a normal layer first and
     /// refuse a layer whose transparency is locked instead of putting the old alpha back.
     pub fn makes_transparency(&self) -> bool {
+        if let Self::ChannelNoise(params) = self {
+            return params.amounts.last().is_some_and(|amount| *amount > 0.);
+        }
+        if let Self::Convolution(params) = self {
+            return params.channels.last().copied().unwrap_or(false);
+        }
         if let Self::Percentile(params) = self {
             return params.channels.as_ref().is_none_or(|channels| channels.last().copied().unwrap_or(false));
         }
         matches!(
             self,
             FilterParams::ColorToAlpha { .. }
-                | FilterParams::ChannelNoise(_)
-                | FilterParams::Convolution(_)
                 | FilterParams::SetAlpha { .. }
                 | FilterParams::AlphaCurve { .. }
                 | FilterParams::AlphaToColor
@@ -1558,4 +1562,60 @@ fn apply_radial_reference(
     ctl: &photocraft_raster::Interrupt,
 ) -> Option<Surface> {
     apply_tiled_with_impl(surface, params, area.intersect(&extent), bounds, selection, auto_tile(params, bounds), Some(extent), ctl, false)
+}
+
+#[cfg(test)]
+mod selected_alpha_tests {
+    use super::*;
+    use photocraft_color::{ColorMode, PixelFormat, SampleType};
+
+    #[test]
+    fn selective_filters_declare_transparency_only_for_selected_alpha() {
+        let bounds = Rect::new(0, 0, 4, 3);
+        for mode in [ColorMode::Grayscale, ColorMode::Rgb, ColorMode::Cmyk] {
+            for depth in SampleType::ALL {
+                let format = PixelFormat::new(mode, depth, true);
+                let mut source = Surface::new(format);
+                let mut pixel = vec![0.4; format.channels()];
+                *pixel.last_mut().unwrap() = 0.6;
+                source.fill_rect(bounds, &pixel);
+                for alpha in [false, true] {
+                    let mut amounts = vec![30.; format.channels()];
+                    *amounts.last_mut().unwrap() = if alpha { 100. } else { 0. };
+                    let noise = FilterParams::ChannelNoise(channel_noise::Params {
+                        amounts,
+                        distribution: Distribution::Uniform,
+                        monochromatic: false,
+                        relative: false,
+                        seed: 71,
+                    });
+                    let mut channels = vec![true; format.channels()];
+                    *channels.last_mut().unwrap() = alpha;
+                    let mut kernel = vec![0.; 25];
+                    kernel[12] = 0.5;
+                    let convolution = FilterParams::Convolution(convolution::Params {
+                        kernel,
+                        scale: 1.,
+                        offset: 0.,
+                        channels,
+                        alpha_weighted: false,
+                        edge: convolution::Edge::Repeat,
+                    });
+                    for filter in [noise, convolution] {
+                        assert_eq!(filter.makes_transparency(), alpha, "{mode:?} {depth:?}");
+                        let out = apply_in_with(&source, &filter, bounds, bounds, None, bounds, &photocraft_raster::Interrupt::NONE).unwrap();
+                        if alpha {
+                            assert_ne!(out.pixel(1, 1).last(), source.pixel(1, 1).last());
+                        } else {
+                            for y in 0..3 {
+                                for x in 0..4 {
+                                    assert_eq!(out.pixel(x, y).last(), source.pixel(x, y).last());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
