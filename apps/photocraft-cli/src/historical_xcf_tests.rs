@@ -1,4 +1,6 @@
 use super::*;
+use photocraft_automation::{AuthorizedWorkspace, Headless};
+use serde_json::json;
 
 fn source() -> Vec<u8> {
     struct Wire(Vec<u8>);
@@ -60,8 +62,44 @@ fn source() -> Vec<u8> {
 fn invoke(args: &[&str]) -> (i32, String, String) {
     let mut out = Vec::new();
     let mut err = Vec::new();
-    let code = run(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>(), &mut out, &mut err);
+    let code = run(args.iter().copied(), &mut out, &mut err);
     (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+}
+
+#[test]
+fn historical_choice_uses_upstream_clap_validation_for_all_import_commands() {
+    use crate::args::{Command, parse};
+    let cases = [
+        vec!["convert", "source.xcf", "native.pcraft"],
+        vec!["info", "source.xcf"],
+        vec!["run", "source.xcf", "--out", "native.pcraft"],
+        vec!["batch", "--actions", "actions.json", "--in", "inputs", "--out", "outputs"],
+    ];
+    for base in cases {
+        for (name, expected) in [
+            ("little-endian", photocraft_io::HistoricalXcfSampleOrder::LittleEndian),
+            ("big-endian", photocraft_io::HistoricalXcfSampleOrder::BigEndian),
+        ] {
+            let mut argv: Vec<OsString> = base.iter().map(OsString::from).collect();
+            argv.extend(["--historical-xcf-sample-order".into(), name.into()]);
+            let parsed = parse(&argv).unwrap();
+            let choice = match parsed.command {
+                Command::Convert(a) => a.import.historical_xcf_sample_order,
+                Command::Info(a) => a.import.historical_xcf_sample_order,
+                Command::Run(a) => a.import.historical_xcf_sample_order,
+                Command::Batch(a) => a.import.historical_xcf_sample_order,
+                _ => panic!("unexpected command"),
+            };
+            assert_eq!(choice, Some(expected));
+            argv.extend(["--historical-xcf-sample-order".into(), name.into()]);
+            assert_eq!(parse(&argv).err().unwrap().exit_code(), 2);
+        }
+        let mut argv: Vec<OsString> = base.iter().map(OsString::from).collect();
+        argv.extend(["--historical-xcf-sample-order".into(), "guess".into()]);
+        assert_eq!(parse(&argv).err().unwrap().exit_code(), 2);
+        argv.pop();
+        assert_eq!(parse(&argv).err().unwrap().exit_code(), 2);
+    }
 }
 
 #[test]
@@ -88,7 +126,7 @@ fn historical_choice_reaches_cli_conversion_and_capability_scoped_rpc() {
     }
     assert_eq!(std::fs::read(&input).unwrap(), bytes);
     let (code, _, error) = invoke(&["info", source_path, "--historical-xcf-sample-order", "guess"]);
-    assert_eq!(code, 1);
+    assert_eq!(code, 2);
     assert!(error.contains("little-endian"), "{error}");
     let mut h = Headless::with_workspace(AuthorizedWorkspace::new(Some(&dir), None).unwrap());
     h.handle("doc.new", json!({"width": 2, "height": 2})).unwrap();
