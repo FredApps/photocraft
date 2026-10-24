@@ -17,6 +17,8 @@ photocraft-cli: headless PhotoCraft
 USAGE:
   photocraft-cli convert <in> <out> [--format <ext>] [--quality <1-100>] [--in-place] [--tiff-layers] [--tiff-compression <none|lzw|zip>] [--tga-bits <24|32>] [--dpx-bits <8|10|12|16>] [--dds-compression <none|bc1|bc2|bc3>] [--dds-mipmaps] [--jpeg-format <baseline|optimized|progressive>]
       Convert between formats (.pcraft, .psd, .png, .jpg, .tif, .webp, .exr, …).
+      --historical-xcf-sample-order <little-endian|big-endian> explicitly selects the sample byte order
+      for unmarked high-depth XCF7–11 files (also accepted by info, run and batch).
       An <out> that is the <in> file is refused, as the result would replace the original;
       --in-place allows it.
       TIFF output is flat unless --tiff-layers keeps the layers (Photoshop layer data);
@@ -30,7 +32,7 @@ USAGE:
       --jpeg-format picks a JPEG's scans, as JPEG Options does: baseline (the default), optimized
       (Huffman tables fitted to the image; RGB is written 4:2:0 and keeps the standard tables, so
       only Gray and CMYK shrink) or progressive.
-  photocraft-cli info <file> [--compact]
+  photocraft-cli info <file> [--compact] [--historical-xcf-sample-order <little-endian|big-endian>]
       Print the document as JSON (size, mode, depth, layer tree).
   photocraft-cli run (<file> | --new <json>) --cmd <id> [--params <json>] [--cmd …] [--out <file>] [--format <ext>] [--quality <1-100>] [--in-place] [--tiff-layers] [--tiff-compression <none|lzw|zip>] [--tga-bits <24|32>] [--dpx-bits <8|10|12|16>] [--dds-compression <none|bc1|bc2|bc3>] [--dds-mipmaps] [--jpeg-format <baseline|optimized|progressive>]
       Open a file, run engine commands in order, save the result. Each --params
@@ -85,11 +87,20 @@ struct Subcommand {
 const SUBCOMMANDS: &[Subcommand] = &[
     Subcommand {
         name: "convert",
-        values: &["--format", "--quality", "--tga-bits", "--dpx-bits", "--dds-compression", "--tiff-compression", "--jpeg-format"],
+        values: &[
+            "--historical-xcf-sample-order",
+            "--format",
+            "--quality",
+            "--tga-bits",
+            "--dpx-bits",
+            "--dds-compression",
+            "--tiff-compression",
+            "--jpeg-format",
+        ],
         bare: &["--in-place", "--tiff-layers", "--dds-mipmaps"],
         run: convert,
     },
-    Subcommand { name: "info", values: &[], bare: &["--compact"], run: |a, out, _| info(a, out) },
+    Subcommand { name: "info", values: &["--historical-xcf-sample-order"], bare: &["--compact"], run: |a, out, _| info(a, out) },
     Subcommand {
         name: "run",
         values: &[
@@ -104,6 +115,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
             "--dds-compression",
             "--tiff-compression",
             "--jpeg-format",
+            "--historical-xcf-sample-order",
         ],
         bare: &["--in-place", "--tiff-layers", "--dds-mipmaps"],
         run: run_cmds,
@@ -122,6 +134,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
             "--dds-compression",
             "--tiff-compression",
             "--jpeg-format",
+            "--historical-xcf-sample-order",
         ],
         bare: &["--in-place", "--tiff-layers", "--dds-mipmaps"],
         run: batch,
@@ -351,15 +364,28 @@ fn refuse_overwriting_input(a: &Args, input: &str, output: &str) -> R {
     Ok(())
 }
 
+fn historical_xcf_sample_order(a: &Args) -> Result<Option<photocraft_io::HistoricalXcfSampleOrder>, String> {
+    if a.flags.iter().filter(|(flag, _)| flag == "--historical-xcf-sample-order").count() > 1 {
+        return Err("--historical-xcf-sample-order may only be specified once".into());
+    }
+    let params = a.get("--historical-xcf-sample-order").map(|order| json!({"historicalXcfSampleOrder": order})).unwrap_or_else(|| json!({}));
+    photocraft_engine::file_cmds::historical_xcf_sample_order(&params, "CLI import").map_err(|error| error.to_string())
+}
+
 fn convert(a: &Args, _out: &mut dyn Write, err: &mut dyn Write) -> R {
     let [input, output] = a.positional.as_slice() else {
         return Err("convert needs <in> <out>".into());
     };
     let opts = export_opts(a)?;
     refuse_overwriting_input(a, input, output)?;
-    let mut o = files::open(Path::new(input)).map_err(|e| e.to_string())?;
+    let mut o = files::open_with_sample_order(Path::new(input), historical_xcf_sample_order(a)?).map_err(|e| e.to_string())?;
+    if o.source_read_only && photocraft_engine::file_cmds::same_file(input, output) {
+        return Err("the output is the import-only source; choose another native or export destination".into());
+    }
     // Preferences › Raw Defaults › Resolution at its default, as `run` and `info` open a raw.
-    photocraft_engine::file_cmds::raw_defaults(&photocraft_engine::Session::new(), &o.warnings, &mut o.document);
+    let session = photocraft_engine::Session::new();
+    photocraft_engine::file_cmds::raw_defaults(&session, &o.warnings, &mut o.document);
+    session.prepare_imported_document(&mut o.document, &photocraft_engine::jobs::JobCtx::new()).map_err(|e| e.to_string())?;
     warn_all(err, &o.warnings);
     warn_all(err, &photocraft_engine::type_extra_cmds::missing_font_warnings(&o.document));
     let ws = files::save(&o.document, Path::new(output), a.get("--format"), &opts, None).map_err(|e| e.to_string())?;
@@ -377,7 +403,7 @@ fn info(a: &Args, out: &mut dyn Write) -> R {
         return Err("info needs <file>".into());
     };
     let mut h = Headless::trusted_local();
-    let opened = h.open(Path::new(file)).map_err(|e| e.to_string())?;
+    let opened = h.open_with_sample_order(Path::new(file), historical_xcf_sample_order(a)?).map_err(|e| e.to_string())?;
     let mut doc = h.inspect(None).map_err(|e| e.to_string())?;
     let mut warnings = opened["warnings"].as_array().cloned().unwrap_or_default();
     if let Some(st) = h.session.active() {
@@ -411,6 +437,7 @@ fn command_list(a: &Args) -> Result<Vec<(String, Value)>, String> {
 }
 
 fn run_cmds(a: &Args, out: &mut dyn Write, err: &mut dyn Write) -> R {
+    let order = historical_xcf_sample_order(a)?;
     let opts = export_opts(a)?;
     let mut h = Headless::trusted_local();
     // Opening, running commands and exporting can all notice the same missing font:
@@ -422,7 +449,7 @@ fn run_cmds(a: &Args, out: &mut dyn Write, err: &mut dyn Write) -> R {
             if let Some(out) = a.get("--out") {
                 refuse_overwriting_input(a, file, out)?;
             }
-            let o = h.open(Path::new(file)).map_err(|e| e.to_string())?;
+            let o = h.open_with_sample_order(Path::new(file), order).map_err(|e| e.to_string())?;
             let ws: Vec<String> = serde_json::from_value(o["warnings"].clone()).unwrap_or_default();
             reported_fonts.extend(ws.iter().cloned());
             warn_all(err, &ws);
@@ -584,6 +611,7 @@ fn strip_shell_steps(action: &mut Action) {
 }
 
 fn batch(a: &Args, out: &mut dyn Write, err: &mut dyn Write) -> R {
+    let order = historical_xcf_sample_order(a)?;
     let actions_path = a.get("--actions").ok_or("batch needs --actions <file>")?;
     let in_dir = PathBuf::from(a.get("--in").ok_or("batch needs --in <dir>")?);
     let out_dir = PathBuf::from(a.get("--out").ok_or("batch needs --out <dir>")?);
@@ -620,7 +648,7 @@ fn batch(a: &Args, out: &mut dyn Write, err: &mut dyn Write) -> R {
             // Steps that play another action find it in the set; the session's playback stack
             // stops an action that calls itself.
             h.session.actions.list = set.clone();
-            h.open(input).map_err(|e| e.to_string())?;
+            h.open_with_sample_order(input, order).map_err(|e| e.to_string())?;
             for (id, p) in &actions {
                 if photocraft_engine::actions_cmds::shell_view_command(id) || photocraft_engine::actions_cmds::shell_save_command(id) {
                     continue;
@@ -925,3 +953,6 @@ mod batch_action_set_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod historical_xcf_tests;

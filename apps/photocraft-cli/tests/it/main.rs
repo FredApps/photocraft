@@ -2,3 +2,4 @@
 
 mod cli;
 mod orientation;
+mod xcf_native_workflows;
