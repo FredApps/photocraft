@@ -330,6 +330,7 @@ fn remove_matte(s: &mut Session, white: bool) -> Result<Value> {
     if !white && matches!(active_layer(s).map(|layer| &layer.content), Ok(LayerContent::Smart(_))) {
         let id = layer_param(s, &Value::Null)?;
         return s.edit("Remove Black Matte", |doc, _| {
+            crate::commands::check_pixels_unlocked(doc, id)?;
             let selection = doc.selection.clone();
             crate::smart_cmds::add_smart_filter(
                 doc,
@@ -1110,6 +1111,48 @@ mod native_matte_tests {
         }
     }
 
+    #[test]
+    fn smart_remove_black_matte_refuses_direct_and_inherited_pixel_locks_atomically() {
+        for inherited in [false, true] {
+            for all in [false, true] {
+                let mut session = Session::new();
+                session.execute("file.new", json!({"width":2,"height":2,"depth":32})).unwrap();
+                session.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+                let id = session.active().unwrap().active_layer.unwrap();
+                session
+                    .edit("locked fixture", |doc, _| {
+                        let layer = doc.layers.remove(0);
+                        if inherited {
+                            let mut group = Layer::group("locked parent", vec![layer]);
+                            if all {
+                                group.locks.all = true;
+                            } else {
+                                group.locks.pixels = true;
+                            }
+                            doc.layers.push(group);
+                        } else {
+                            doc.layers.push(layer);
+                            let locks = &mut doc.layer_mut(id).unwrap().locks;
+                            if all {
+                                locks.all = true;
+                            } else {
+                                locks.pixels = true;
+                            }
+                        }
+                        Ok(())
+                    })
+                    .unwrap();
+                let before = session.active().unwrap().doc.clone();
+                let history = session.active().unwrap().history.past_len();
+                let active = session.active().unwrap().active_layer;
+                assert!(session.execute("layer.matting.removeBlackMatte", json!({})).is_err());
+                assert!(std::sync::Arc::ptr_eq(&before, &session.active().unwrap().doc));
+                assert_eq!(*before, *session.active().unwrap().doc);
+                assert_eq!(session.active().unwrap().history.past_len(), history);
+                assert_eq!(session.active().unwrap().active_layer, active);
+            }
+        }
+    }
     #[test]
     fn existing_native_remove_black_matte_is_editable_smart_filter_with_undo_and_reopen() {
         let mut session = Session::new();
