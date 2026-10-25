@@ -127,6 +127,29 @@ fn fill_and_levels_layers_compose_modify_undo_and_round_trip() {
 }
 
 #[test]
+fn removing_fill_image_clears_source_and_is_undoable() {
+    let mut s = fixture(8);
+    s.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.4})).unwrap();
+    let layer = s.active().unwrap().active_layer.unwrap();
+    s.edit("Set test Fill image", |doc, _| {
+        let fill = &mut doc.layer_mut(layer).unwrap().mask.as_mut().unwrap().paint.as_mut().unwrap().layers[0];
+        fill.fill_map = Some(photocraft_raster::Surface::with_default(photocraft_color::PixelFormat::GRAY8, &[0.7]));
+        fill.fill_map_size = [16, 16];
+        Ok(serde_json::Value::Null)
+    })
+    .unwrap();
+
+    s.execute("uv.maskPaint.modify", json!({"index":0,"clear_fill_map":true})).unwrap();
+    let fill = &s.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0];
+    assert!(fill.fill_map.is_none());
+    assert_eq!(fill.fill_map_size, [0, 0]);
+    s.execute("edit.undo", json!({})).unwrap();
+    let fill = &s.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0];
+    assert!(fill.fill_map.is_some(), "undo restores the image source");
+    assert_eq!(fill.fill_map_size, [16, 16]);
+}
+
+#[test]
 fn opacity_drag_is_one_undo_and_does_not_rewrite_untouched_mask_tiles() {
     let mut s = fixture(16);
     let id = s.active().unwrap().active_layer.unwrap();

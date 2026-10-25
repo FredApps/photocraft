@@ -3,112 +3,109 @@ use crate::{PhotocraftApp, theme::Tokens};
 use photocraft_doc::{Layer, mask_paint::EffectKind};
 use serde_json::{Value, json};
 
+fn effect_selection_id(doc: u64, layer: u64) -> egui::Id {
+    egui::Id::new(("uv-mask-effect-selection", doc, layer))
+}
+
+pub(crate) fn clear_effect_selection(ctx: &egui::Context, doc: u64, layer: u64) {
+    ctx.data_mut(|data| data.remove::<usize>(effect_selection_id(doc, layer)));
+}
+
+pub(crate) fn selected_effect(ctx: &egui::Context, doc: u64, layer: u64) -> Option<usize> {
+    ctx.data_mut(|data| data.get_temp::<usize>(effect_selection_id(doc, layer)))
+}
+
+fn effect_is_selected(ctx: &egui::Context, doc: u64, layer: u64, index: usize) -> bool {
+    selected_effect(ctx, doc, layer) == Some(index)
+}
+
 pub(crate) fn rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, actions: &mut Vec<(String, Value)>) -> bool {
     if app.ui.workspace != "3D" || !app.ui.mask_target || app.session.active().and_then(|s| s.active_layer) != Some(layer.id) {
         return false;
     }
     let Some(stack) = layer.mask.as_ref().and_then(|m| m.paint.as_ref()) else { return false };
-    let Some((doc_id, revision)) = app.session.active().map(|st| (st.doc.id.0, st.revision)) else { return false };
-    let selection_id = ui.id().with(("mask-effect-selection", doc_id, layer.id.0));
-    let previous_selection = ui.ctx().data_mut(|data| data.get_temp::<(u64, usize)>(selection_id));
-    if previous_selection != Some((revision, stack.active)) {
-        if let Some((old_revision, old_index)) = previous_selection {
-            for key in ["value", "input_black", "gamma", "input_white", "output_black", "output_white"] {
-                let parameter_id = egui::Id::new(("mask-effect-param", doc_id, old_revision, layer.id.0, old_index, key));
-                ui.ctx().data_mut(|data| {
-                    data.remove::<f32>(parameter_id);
-                });
-            }
-        }
-        ui.ctx().data_mut(|data| data.insert_temp(selection_id, (revision, stack.active)));
-    }
+    let Some(doc_id) = app.session.active().map(|st| st.doc.id.0) else { return false };
     let tokens = Tokens::get(ui.ctx());
-    let response =
-        egui::CollapsingHeader::new(tl!("Mask Paint Effects")).id_salt(("mask-paint-effects", doc_id, layer.id.0)).default_open(false).show(ui, |ui| {
-            for (index, paint) in stack.layers.iter().enumerate().rev() {
-                ui.push_id(("mask-paint", layer.id.0, index), |ui| {
-                    let row_bounds = ui.available_rect_before_wrap().intersect(ui.clip_rect());
-                    let response = ui
-                        .horizontal(|ui| {
-                            ui.add_space(40.0);
-                            let (eye, eye_response) = ui.allocate_exact_size(egui::vec2(22.0, 20.0), egui::Sense::click());
-                            crate::icons::paint(
-                                ui,
-                                eye,
-                                if paint.visible { "eye" } else { "eye-off" },
-                                14.0,
-                                if paint.visible { tokens.icon } else { tokens.text_faint },
-                            );
-                            if eye_response.on_hover_text(tl!("Visibility")).clicked() {
-                                actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"visible":!paint.visible})));
-                            }
-                            let (icon_rect, icon_response) = ui.allocate_exact_size(egui::vec2(16.0, 20.0), egui::Sense::click());
-                            let icon = match &paint.kind {
-                                EffectKind::Paint => "brush",
-                                EffectKind::Fill { .. } => "paint-bucket",
-                                EffectKind::Levels { .. } => "contrast",
-                            };
-                            crate::icons::paint(ui, icon_rect, icon, 14.0, tokens.icon);
-                            let name = ui.selectable_label(index == stack.active, &paint.name);
-                            if name.clicked() || icon_response.clicked() {
-                                actions.push(("uv.maskPaint.select".into(), json!({"layer":layer.id.0,"index":index})));
-                                actions.push(("ui.maskTarget".into(), json!(true)));
-                            }
-                            name.context_menu(|ui| {
-                                add_menu(ui, layer.id.0, actions);
-                                ui.separator();
-                                let mut name = paint.name.clone();
-                                if ui.text_edit_singleline(&mut name).changed() {
-                                    actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"name":name})));
-                                }
-                                for (label, to, enabled) in [
-                                    (tl!("Move Up"), index.saturating_add(1), index + 1 < stack.layers.len()),
-                                    (tl!("Move Down"), index.saturating_sub(1), index > 0),
-                                ] {
-                                    if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
-                                        actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"to":to})));
-                                        ui.close();
-                                    }
-                                }
-                                let delete_label = match &paint.kind {
-                                    EffectKind::Paint => tl!("Delete Paint layer"),
-                                    EffectKind::Fill { .. } => tl!("Delete Fill layer"),
-                                    EffectKind::Levels { .. } => tl!("Delete Levels layer"),
-                                };
-                                if ui.button(delete_label).clicked() {
-                                    actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"remove":true})));
-                                    ui.close();
-                                }
-                            });
-                            let preview_opacity = crate::uv_mask_paint_preview::value(app, layer.id, index, paint.opacity);
-                            let mut opacity = preview_opacity * 100.0;
-                            let opacity_response =
-                                ui.add(egui::DragValue::new(&mut opacity).range(0.0..=100.0).suffix("%").speed(0.5)).on_hover_text(tl!("Opacity"));
-                            if opacity_response.changed() {
-                                crate::uv_mask_paint_preview::set(app, layer.id, index, opacity / 100.0);
-                                ui.ctx().request_repaint();
-                            }
-                            if opacity_response.drag_stopped() || opacity_response.lost_focus() {
-                                if opacity_response.changed() {
-                                    actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"opacity":opacity/100.0})));
-                                } else if preview_opacity != paint.opacity {
-                                    actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"opacity":preview_opacity})));
-                                }
-                            }
-                        })
-                        .response;
-                    if index == stack.active && matches!(&paint.kind, EffectKind::Fill { .. }) {
-                        let drop_rect = egui::Rect::from_min_max(
-                            egui::pos2(row_bounds.left(), response.rect.top()),
-                            egui::pos2(row_bounds.right(), response.rect.bottom()),
-                        );
-                        app.uv_cache.library.fill_targets.push((drop_rect, doc_id, layer.id.0, index));
+    for (index, paint) in stack.layers.iter().enumerate().rev() {
+        ui.push_id(("mask-paint", layer.id.0, index), |ui| {
+            let row_bounds = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+            let response = ui
+                .horizontal(|ui| {
+                    ui.add_space(40.0);
+                    let (eye, eye_response) = ui.allocate_exact_size(egui::vec2(22.0, 20.0), egui::Sense::click());
+                    crate::icons::paint(
+                        ui,
+                        eye,
+                        if paint.visible { "eye" } else { "eye-off" },
+                        14.0,
+                        if paint.visible { tokens.icon } else { tokens.text_faint },
+                    );
+                    if eye_response.on_hover_text(tl!("Visibility")).clicked() {
+                        actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"visible":!paint.visible})));
                     }
-                    ui.painter().hline(response.rect.x_range(), response.rect.bottom(), egui::Stroke::new(0.5, tokens.text_faint));
-                });
+                    let (icon_rect, icon_response) = ui.allocate_exact_size(egui::vec2(16.0, 20.0), egui::Sense::click());
+                    let icon = match &paint.kind {
+                        EffectKind::Paint => "brush",
+                        EffectKind::Fill { .. } => "paint-bucket",
+                        EffectKind::Levels { .. } => "contrast",
+                    };
+                    crate::icons::paint(ui, icon_rect, icon, 14.0, tokens.icon);
+                    let selected = effect_is_selected(ui.ctx(), doc_id, layer.id.0, index);
+                    let name = ui.selectable_label(selected, &paint.name);
+                    if name.clicked() || icon_response.clicked() {
+                        ui.ctx().data_mut(|data| data.insert_temp(effect_selection_id(doc_id, layer.id.0), index));
+                        actions.push(("uv.maskPaint.select".into(), json!({"layer":layer.id.0,"index":index})));
+                    }
+                    name.context_menu(|ui| {
+                        add_menu(ui, layer.id.0, actions);
+                        ui.separator();
+                        let mut name = paint.name.clone();
+                        if ui.text_edit_singleline(&mut name).changed() {
+                            actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"name":name})));
+                        }
+                        for (label, to, enabled) in
+                            [(tl!("Move Up"), index.saturating_add(1), index + 1 < stack.layers.len()), (tl!("Move Down"), index.saturating_sub(1), index > 0)]
+                        {
+                            if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                                actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"to":to})));
+                                ui.close();
+                            }
+                        }
+                        let delete_label = match &paint.kind {
+                            EffectKind::Paint => tl!("Delete Paint layer"),
+                            EffectKind::Fill { .. } => tl!("Delete Fill layer"),
+                            EffectKind::Levels { .. } => tl!("Delete Levels layer"),
+                        };
+                        if ui.button(delete_label).clicked() {
+                            actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"remove":true})));
+                            ui.close();
+                        }
+                    });
+                    let preview_opacity = crate::uv_mask_paint_preview::value(app, layer.id, index, paint.opacity);
+                    let mut opacity = preview_opacity * 100.0;
+                    let opacity_response = ui.add(egui::DragValue::new(&mut opacity).range(0.0..=100.0).suffix("%").speed(0.5)).on_hover_text(tl!("Opacity"));
+                    if opacity_response.changed() {
+                        crate::uv_mask_paint_preview::set(app, layer.id, index, opacity / 100.0);
+                        ui.ctx().request_repaint();
+                    }
+                    if opacity_response.drag_stopped() || opacity_response.lost_focus() {
+                        if opacity_response.changed() {
+                            actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"opacity":opacity/100.0})));
+                        } else if preview_opacity != paint.opacity {
+                            actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer.id.0,"index":index,"opacity":preview_opacity})));
+                        }
+                    }
+                })
+                .response;
+            if effect_is_selected(ui.ctx(), doc_id, layer.id.0, index) && matches!(&paint.kind, EffectKind::Fill { .. }) {
+                let drop_rect =
+                    egui::Rect::from_min_max(egui::pos2(row_bounds.left(), response.rect.top()), egui::pos2(row_bounds.right(), response.rect.bottom()));
+                app.uv_cache.library.fill_targets.push((drop_rect, doc_id, layer.id.0, index));
             }
+            ui.painter().hline(response.rect.x_range(), response.rect.bottom(), egui::Stroke::new(0.5, tokens.text_faint));
         });
-    response.body_returned.is_some()
+    }
+    !stack.layers.is_empty()
 }
 
 /// Levels mask effects use the familiar Properties tab instead of expanding controls in Layers.
@@ -119,9 +116,10 @@ pub(crate) fn levels_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> b
     let Some(st) = app.session.active() else { return false };
     let Some(layer) = st.active_layer.and_then(|id| st.doc.layer(id)) else { return false };
     let Some(stack) = layer.mask.as_ref().and_then(|mask| mask.paint.as_ref()) else { return false };
-    let Some(effect) = stack.layers.get(stack.active) else { return false };
+    let Some(index) = selected_effect(ui.ctx(), st.doc.id.0, layer.id.0).filter(|index| *index == stack.active) else { return false };
+    let Some(effect) = stack.layers.get(index) else { return false };
     let EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } = &effect.kind else { return false };
-    let (layer_id, index) = (layer.id, stack.active);
+    let (layer_id, index) = (layer.id, index);
     let mut actions = Vec::new();
     ui.horizontal(|ui| {
         let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 20.0), egui::Sense::hover());
@@ -158,12 +156,17 @@ pub(crate) fn fill_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> boo
     let Some(st) = app.session.active() else { return false };
     let Some(layer) = st.active_layer.and_then(|id| st.doc.layer(id)) else { return false };
     let Some(stack) = layer.mask.as_ref().and_then(|mask| mask.paint.as_ref()) else { return false };
-    let Some(effect) = stack.layers.get(stack.active) else { return false };
+    let Some(index) = selected_effect(ui.ctx(), st.doc.id.0, layer.id.0).filter(|index| *index == stack.active) else { return false };
+    let Some(effect) = stack.layers.get(index) else { return false };
     let EffectKind::Fill { value, rotation, repeat_u, repeat_v, mirror_u, mirror_v } = &effect.kind else { return false };
     let layer_id = layer.id.0;
-    let index = stack.active;
-    let bounds = effect.fill_bounds.unwrap_or([0, 0, st.doc.size.width as i32, st.doc.size.height as i32]);
-    let (bounds, rotation) = crate::uv_mask_paint_preview::fill_transform(app, layer.id, index, bounds, *rotation);
+    let (_, rotation) = crate::uv_mask_paint_preview::fill_transform(
+        app,
+        layer.id,
+        index,
+        effect.fill_bounds.unwrap_or([0, 0, st.doc.size.width as i32, st.doc.size.height as i32]),
+        *rotation,
+    );
     let mut actions = Vec::new();
     ui.heading(&effect.name);
     ui.label(tl!("Fill"));
@@ -191,10 +194,38 @@ pub(crate) fn fill_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> boo
         }
     });
     ui.add_space(6.0);
-    ui.weak(tl!("Drag the rectangle handles on the 2D canvas to resize the Fill mask."));
-    ui.label(format!("{}: {} × {} px", tl!("Bounds"), bounds[2] - bounds[0], bounds[3] - bounds[1]));
-    if effect.fill_map.is_some() {
-        ui.weak(tl!("Image from the Images tab"));
+    if let Some(map) = effect.fill_map.as_ref() {
+        let [source_w, source_h] = effect.fill_map_size;
+        if source_w > 0 && source_h > 0 {
+            ui.add_space(6.0);
+            let preview_w = ui.available_width().min(120.0).max(1.0);
+            let preview_h = (preview_w * (source_h as f32 / source_w as f32)).min(72.0).max(1.0);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(preview_w, preview_h), egui::Sense::hover());
+            let tex_w = 120usize;
+            let tex_h = ((source_h as f64 / source_w as f64 * tex_w as f64).round() as usize).clamp(1, 72);
+            let texture_id = egui::Id::new(("uv-fill-map-preview", st.doc.id.0, layer_id, index));
+            let cached = ui.ctx().data_mut(|data| data.get_temp::<(u64, egui::TextureHandle)>(texture_id));
+            let handle = if let Some((_, handle)) = cached.filter(|(revision, _)| *revision == st.revision) {
+                handle
+            } else {
+                let pixels = (0..tex_h)
+                    .flat_map(|y| (0..tex_w).map(move |x| (x, y)))
+                    .map(|(x, y)| {
+                        let sx = ((x as u64 * u64::from(source_w)) / tex_w as u64).min(u64::from(source_w - 1)) as i32;
+                        let sy = ((y as u64 * u64::from(source_h)) / tex_h as u64).min(u64::from(source_h - 1)) as i32;
+                        egui::Color32::from_gray((map.sample_channel(sx, sy, 0).clamp(0.0, 1.0) * 255.0).round() as u8)
+                    })
+                    .collect();
+                let image = egui::ColorImage::new([tex_w, tex_h], pixels);
+                let handle = ui.ctx().load_texture(format!("uv-fill-map-{}-{layer_id}-{index}", st.doc.id.0), image, egui::TextureOptions::LINEAR);
+                ui.ctx().data_mut(|data| data.insert_temp(texture_id, (st.revision, handle.clone())));
+                handle
+            };
+            ui.painter().image(handle.id(), rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+        }
+        if ui.button(tl!("Remove image")).clicked() {
+            actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer_id,"index":index,"clear_fill_map":true})));
+        }
     } else {
         ui.weak(tl!("Uniform grayscale Fill"));
     }
@@ -340,7 +371,7 @@ mod tests {
     use photocraft_raster::Surface;
 
     #[test]
-    fn targeting_mask_does_not_expand_child_effect_rows() {
+    fn mask_effect_rows_are_direct_and_mask_target_has_no_selected_child() {
         let mut session = photocraft_engine::Session::new();
         session.execute("file.new", json!({"width":16,"height":16})).unwrap();
         let layer_id = session.active().unwrap().active_layer.unwrap();
@@ -368,10 +399,29 @@ mod tests {
         let layer = app.session.active().unwrap().doc.layer(layer_id).unwrap().clone();
         let ctx = egui::Context::default();
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 120.0))), ..Default::default() };
-        let mut expanded = true;
+        let mut visible = false;
         let mut actions = Vec::new();
-        let _ = ctx.run_ui(input, |ui| expanded = rows(&mut app, ui, &layer, &mut actions));
-        assert!(!expanded, "targeting the mask shows a collapsed header, not effect rows");
+        let mut output = ctx.run_ui(input, |ui| visible = rows(&mut app, ui, &layer, &mut actions));
+        output.textures_delta.clear();
+        assert!(visible, "effect rows are shown directly without an expandable header");
         assert!(actions.is_empty(), "targeting a mask does not select a child effect");
+        assert_eq!(selected_effect(&ctx, doc_id(&app), layer.id.0), None);
+    }
+
+    #[test]
+    fn targeting_mask_thumbnail_clears_selected_child_effect() {
+        let ctx = egui::Context::default();
+        let doc = 41;
+        let layer = 9;
+        ctx.data_mut(|data| data.insert_temp(effect_selection_id(doc, layer), 2usize));
+        assert_eq!(selected_effect(&ctx, doc, layer), Some(2));
+
+        // This is the state transition used by the Layers-panel mask-thumbnail handler.
+        clear_effect_selection(&ctx, doc, layer);
+        assert_eq!(selected_effect(&ctx, doc, layer), None, "the mask is targeted without selecting a child effect");
+    }
+
+    fn doc_id(app: &PhotocraftApp) -> u64 {
+        app.session.active().unwrap().doc.id.0
     }
 }

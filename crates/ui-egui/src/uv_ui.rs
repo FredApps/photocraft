@@ -37,6 +37,7 @@ impl OrbitPivot {
 pub struct State {
     pub open: bool,
     pub show_overlay: bool,
+    pub show_wireframe: bool,
     pub select_shells: bool,
     pub paint_wrap: bool,
     #[serde(skip)]
@@ -87,6 +88,7 @@ impl Default for State {
         Self {
             open: false,
             show_overlay: true,
+            show_wireframe: false,
             select_shells: false,
             paint_wrap: false,
             picker_3d: false,
@@ -95,7 +97,7 @@ impl Default for State {
             texture_path: String::new(),
             project_path: String::new(),
             uv_set: 0,
-            guard: 8.0,
+            guard: 0.0,
             horizontal: 0.0,
             vertical: 0.0,
             feather: 0.0,
@@ -1386,6 +1388,15 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     } else if let Some(handle) = &cache.frame_handle {
         ui.painter().image(handle.id(), rect, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
     }
+    if state.show_wireframe
+        && let Some((_, geometry)) = &cache.geometry
+    {
+        let painter = ui.painter_at(rect);
+        let stroke = Stroke::new(0.7, Tokens::get(ui.ctx()).text_faint);
+        for edge in wireframe_segments(&geometry, camera, [w as u32, h as u32], rect, &app.session.uv.hidden_materials) {
+            painter.line_segment(edge, stroke);
+        }
+    }
     if state.select_shells && !gesture {
         if let Some((area, mods)) = crate::uv_box::input(ui, &response, &mut cache.shell_box_3d)
             && let Some((_, g)) = &cache.geometry
@@ -1483,20 +1494,21 @@ fn canvas_materials(app: &PhotocraftApp, index: usize) -> Vec<usize> {
 /// Whether the active 2D canvas is showing the selected mask Fill's own controls.
 /// The canvas uses this to keep the generic Move/Free Transform state machine from
 /// seeing the same pointer events as the Fill manipulator.
-pub(crate) fn fill_manipulator_active(app: &PhotocraftApp, index: usize) -> bool {
+pub(crate) fn fill_manipulator_active(app: &PhotocraftApp, ctx: &egui::Context, index: usize) -> bool {
     if app.ui.workspace != "3D" || !app.ui.mask_target || app.session.uv.topology.is_none() || canvas_materials(app, index).is_empty() {
         return false;
     }
     let Some(document) = app.session.documents().get(index) else { return false };
     app.session.active().is_some_and(|st| {
-        st.doc.id == document.doc.id
-            && st
-                .active_layer
-                .and_then(|id| st.doc.layer(id))
-                .and_then(|layer| layer.mask.as_ref())
-                .and_then(|mask| mask.paint.as_ref())
-                .and_then(|stack| stack.layers.get(stack.active))
-                .is_some_and(|effect| matches!(&effect.kind, photocraft_doc::mask_paint::EffectKind::Fill { .. }))
+        if st.doc.id != document.doc.id {
+            return false;
+        }
+        let Some(layer) = st.active_layer.and_then(|id| st.doc.layer(id)) else { return false };
+        let Some(stack) = layer.mask.as_ref().and_then(|mask| mask.paint.as_ref()) else { return false };
+        crate::uv_mask_paint::selected_effect(ctx, st.doc.id.0, layer.id.0)
+            .filter(|index| *index == stack.active)
+            .and_then(|index| stack.layers.get(index))
+            .is_some_and(|effect| matches!(&effect.kind, photocraft_doc::mask_paint::EffectKind::Fill { .. }))
     })
 }
 
@@ -1723,6 +1735,38 @@ fn inverse_rotate_point(point: [f64; 2], bounds: [i32; 4], rotation: f32) -> [f6
     [center[0] + cos * dx + sin * dy, center[1] - sin * dx + cos * dy]
 }
 
+fn wireframe_segments(
+    geometry: &photocraft_uv::prepared::Geometry,
+    camera: Camera,
+    size: [u32; 2],
+    rect: Rect,
+    hidden_materials: &std::collections::BTreeSet<usize>,
+) -> Vec<[Pos2; 2]> {
+    let mut segments = Vec::with_capacity(geometry.triangles.len().saturating_mul(3));
+    for triangle in &geometry.triangles {
+        if hidden_materials.contains(&triangle.material) {
+            continue;
+        }
+        let Some(points) = triangle
+            .positions
+            .iter()
+            .map(|position| {
+                let point = geometry.project_normalized(camera, position.map(f64::from), size)?;
+                Some(rect.min + vec2(point[0] as f32 * rect.width(), point[1] as f32 * rect.height()))
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        if let Ok(points) = <Vec<Pos2> as TryInto<[Pos2; 3]>>::try_into(points) {
+            for edge in 0..3 {
+                segments.push([points[edge], points[(edge + 1) % 3]]);
+            }
+        }
+    }
+    segments
+}
+
 fn point_in_quad(point: Pos2, quad: [Pos2; 4]) -> bool {
     let mut sign = 0.0_f32;
     for index in 0..4 {
@@ -1865,6 +1909,18 @@ fn choose(app: &mut PhotocraftApp, state: &mut State, ui: &egui::Ui, material: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wireframe_projects_visible_polygons_and_default_shell_margin_is_zero() {
+        let app = fixture_app();
+        let scene = app.session.uv.scene.as_ref().unwrap();
+        let topology = app.session.uv.topology.as_ref().unwrap();
+        let geometry = photocraft_uv::prepared::Geometry::new(scene, topology).unwrap();
+        let segments = wireframe_segments(&geometry, Camera::default(), [400, 400], Rect::from_min_size(Pos2::ZERO, vec2(400.0, 400.0)), &Default::default());
+        assert_eq!(segments.len(), geometry.triangles.len() * 3);
+        let state = State::default();
+        assert_eq!(state.guard, 0.0);
+        assert!(!state.show_wireframe);
+    }
     #[test]
     fn rotated_fill_manipulator_uses_the_transformed_quad_for_outline_and_hit_testing() {
         let corners = fill_corners([0, 0, 8, 4], 45.0).map(|[x, y]| pos2(x, y));

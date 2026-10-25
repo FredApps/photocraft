@@ -313,3 +313,11 @@ fn fill_transform_preview_recomposes_only_damaged_tiles() {
     assert!(shown_mask.surface.sample_channel(34, 8, 0) > 0.95, "new Fill extent is recomposed in the damaged tile");
     assert!(shown_mask.surface.sample_channel(2, 8, 0) < 0.25, "old Fill extent is cleared in the same damage update");
 }
+
+#[test]
+fn fill_transform_preview_is_rate_limited_without_changing_pointer_state() {
+    let now = std::time::Instant::now();
+    assert!(super::fill_preview_refresh_due(None, now), "the first transform preview is immediate");
+    assert!(!super::fill_preview_refresh_due(Some(now - std::time::Duration::from_millis(50)), now));
+    assert!(super::fill_preview_refresh_due(Some(now - std::time::Duration::from_millis(90)), now));
+}

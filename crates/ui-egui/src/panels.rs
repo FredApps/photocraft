@@ -2987,6 +2987,12 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         if id == "ui.maskTarget" {
             app.ui.mask_target = p.as_bool().unwrap_or(false);
             app.ui.vector_mask_target = false;
+            #[cfg(feature = "uv-workbench")]
+            if app.ui.mask_target
+                && let Some((doc, layer)) = app.session.active().and_then(|st| st.active_layer.map(|layer| (st.doc.id.0, layer.0)))
+            {
+                crate::uv_mask_paint::clear_effect_selection(&ctx, doc, layer);
+            }
             app.sync_mask_targets();
             #[cfg(feature = "uv-workbench")]
             if app.ui.workspace == "3D" {

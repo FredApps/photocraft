@@ -340,7 +340,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         normal_bindings,
         map_bindings,
         material: active_material,
-        guard: 8.0,
+        guard: 0.0,
         padding: 3.0,
         generation,
         ..Default::default()
@@ -1211,14 +1211,14 @@ pub fn specs() -> Vec<CommandSpec> {
         spec(
             "uv.mask.apply",
             "Apply protected UV selection",
-            r#"{"material":int,"guard":px=8,"feather":px=0,"openBorders":bool=false,"padding":px=3}"#,
+            r#"{"material":int,"guard":px=0,"feather":px=0,"openBorders":bool=false,"padding":px=3}"#,
             mesh,
             apply_mask,
         ),
         spec(
             "uv.layer.create",
             "Create protected UV paint layer",
-            r#"{"material":int,"guard":px=8,"feather":px=0,"openBorders":bool=false}"#,
+            r#"{"material":int,"guard":px=0,"feather":px=0,"openBorders":bool=false}"#,
             mesh,
             paint_layer,
         ),

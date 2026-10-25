@@ -4661,6 +4661,7 @@ shape	Appearance	Оформление
 	Perspective view             F5	Перспектива                     F5
 	Orthographic view            F6	Ортографический вид          F6
 	3D display	Отображение 3D
+	Show polygon wireframe	Показывать полигональную сетку
 	MSAA antialiasing	Сглаживание MSAA
 	Smooth navigation	Плавная навигация
 	Up to 1600 px while navigating; source maps stay full size and full viewport resolution returns when you release the mouse.	До 1600 px во время жеста; исходные карты и полное разрешение после отпускания мыши.

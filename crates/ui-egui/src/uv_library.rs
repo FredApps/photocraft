@@ -122,16 +122,14 @@ pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     handle
                 })
             };
-        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::click_and_drag());
+        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 61.0), Sense::click_and_drag());
         ui.painter().rect_filled(rect, 3.0, t.chrome);
         if let Some(image) = handle {
             let size = image.size_vec2();
-            let s = (60.0 / size.x.max(size.y)).min(1.0);
-            let area = Rect::from_center_size(rect.left_center() + vec2(36.0, 0.0), size * s);
+            let s = (51.0 / size.x.max(size.y)).min(1.0);
+            let area = Rect::from_center_size(rect.left_center() + vec2(30.6, 0.0), size * s);
             ui.painter().image(image.id(), area, Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
         }
-        let text = ui.painter().layout(asset.source.name.clone(), egui::FontId::proportional(12.0), t.text, (rect.width() - 84.0).max(20.0));
-        ui.painter().galley(rect.min + vec2(76.0, 12.0), text, t.text);
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::fmt(tl!("Image: {name}"), &[("name", &asset.source.name)])));
         response.dnd_set_drag_payload(Drag { id: asset.id });

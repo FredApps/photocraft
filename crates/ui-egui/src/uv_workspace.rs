@@ -255,6 +255,7 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
             icon_menu(ui, "sun", tl!("3D display"), |ui| {
                 let s = &mut app.ui.uv_workbench;
                 ui.checkbox(&mut s.shaded, tl!("Lighting"));
+                ui.checkbox(&mut s.show_wireframe, tl!("Show polygon wireframe"));
                 ui.checkbox(&mut s.antialias, tl!("MSAA antialiasing"));
                 ui.checkbox(&mut s.fast_navigation, tl!("Smooth navigation")).on_hover_text(tl!(
                     "Up to 1600 px while navigating; source maps stay full size and full viewport resolution returns when you release the mouse."

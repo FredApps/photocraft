@@ -204,6 +204,7 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
     let visible = p.get("visible").map(|v| v.as_bool().ok_or_else(|| bad("Visibility must be boolean"))).transpose()?;
     let destination = p.get("to").map(|v| v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("Invalid destination"))).transpose()?;
     let remove = p.get("remove").and_then(Value::as_bool).unwrap_or(false);
+    let clear_fill_map = p.get("clear_fill_map").map(|v| v.as_bool().ok_or_else(|| bad("clear_fill_map must be boolean"))).transpose()?.unwrap_or(false);
     let fill_value = p.get("value").map(|_| unit_param(p, "value", 0.0)).transpose()?;
     let rotation = p.get("rotation").map(|_| rotation_param(p)).transpose()?;
     let repeat_u = p.get("repeat_u").map(|_| bool_param(p, "repeat_u", true)).transpose()?;
@@ -243,7 +244,8 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
         || output_black.is_some()
         || output_white.is_some()
         || gamma.is_some()
-        || bounds.is_some();
+        || bounds.is_some()
+        || clear_fill_map;
     let mut damage = photocraft_geom::Rect::EMPTY;
     let result = s.edit("Edit mask Paint layer", |doc, _| {
         let canvas = doc.bounds();
@@ -309,6 +311,10 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                 if let Some(next) = bounds {
                     paint.fill_bounds = Some(next);
                 }
+                if clear_fill_map {
+                    paint.fill_map = None;
+                    paint.fill_map_size = [0, 0];
+                }
             }
             EffectKind::Levels { input_black: ib, gamma: g, input_white: iw, output_black: ob, output_white: ow } => {
                 if fill_value.is_some()
@@ -318,6 +324,7 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                     || mirror_u.is_some()
                     || mirror_v.is_some()
                     || bounds.is_some()
+                    || clear_fill_map
                 {
                     return Err(bad("Fill value does not apply to Levels layers"));
                 }
@@ -350,6 +357,7 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                     || input_white.is_some()
                     || output_black.is_some()
                     || output_white.is_some()
+                    || clear_fill_map
                 {
                     return Err(bad("Effect settings do not apply to Paint layers"));
                 }
@@ -432,7 +440,7 @@ pub fn specs() -> Vec<CommandSpec> {
         (
             "uv.maskPaint.modify",
             "Edit mask Paint layer",
-            r#"{"layer":id?,"index":int,"visible":bool?,"opacity":number?,"name":string?,"to":int?,"remove":bool?,"value":number?,"rotation":degrees?,"bounds":[i32,i32,i32,i32]?,"repeat_u":bool?,"repeat_v":bool?,"mirror_u":bool?,"mirror_v":bool?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#,
+            r#"{"layer":id?,"index":int,"visible":bool?,"opacity":number?,"name":string?,"to":int?,"remove":bool?,"value":number?,"rotation":degrees?,"bounds":[i32,i32,i32,i32]?,"repeat_u":bool?,"repeat_v":bool?,"mirror_u":bool?,"mirror_v":bool?,"clear_fill_map":bool?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#,
             modify,
         ),
     ]

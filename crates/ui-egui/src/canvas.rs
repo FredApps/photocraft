@@ -4081,7 +4081,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         None => app.ui.tool,
     };
     #[cfg(feature = "uv-workbench")]
-    let fill_manipulator_active = crate::uv_ui::fill_manipulator_active(app, idx);
+    let fill_manipulator_active = crate::uv_ui::fill_manipulator_active(app, ui.ctx(), idx);
     #[cfg(not(feature = "uv-workbench"))]
     let fill_manipulator_active = false;
     #[cfg(feature = "uv-workbench")]

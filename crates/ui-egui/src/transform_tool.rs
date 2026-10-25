@@ -1246,7 +1246,7 @@ pub fn follow_edits(app: &mut PhotocraftApp) {
 /// must not create a second session targeting its linked parent raster.
 pub(crate) fn route_to_mask_fill(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     #[cfg(feature = "uv-workbench")]
-    let owns = app.session.active_index().is_some_and(|index| crate::uv_ui::fill_manipulator_active(app, index));
+    let owns = app.session.active_index().is_some_and(|index| crate::uv_ui::fill_manipulator_active(app, ctx, index));
     #[cfg(not(feature = "uv-workbench"))]
     let owns = false;
     if owns && (app.ui.transform.is_some() || app.transform_preview.is_some()) {

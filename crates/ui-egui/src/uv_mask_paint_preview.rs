@@ -1,6 +1,9 @@
 //! Transient opacity and spatial Fill previews for mask Paint layers. The committed document
 //! changes only when the control gesture ends; display snapshots materialize the live stack.
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use photocraft_doc::{DocId, Document, LayerId};
 use serde_json::json;
@@ -8,6 +11,7 @@ use serde_json::json;
 use crate::PhotocraftApp;
 
 const KEY_BASE: u64 = 1 << 42;
+const FILL_PREVIEW_MIN_INTERVAL: Duration = Duration::from_millis(80);
 
 pub(crate) struct Preview {
     doc: DocId,
@@ -19,6 +23,7 @@ pub(crate) struct Preview {
     rotation: Option<f32>,
     shown: Option<(u64, Arc<Document>)>,
     shown_fill: Option<([i32; 4], f32)>,
+    shown_at: Option<Instant>,
     materialized: Option<(u64, Arc<Document>)>,
 }
 
@@ -78,11 +83,23 @@ pub(crate) fn set(app: &mut PhotocraftApp, layer: LayerId, index: usize, opacity
             p.rotation = None;
             p.shown = None;
             p.shown_fill = None;
+            p.shown_at = None;
             p.materialized = None;
         }
     } else if app.uv_mask_paint_preview.is_none() && opacity.to_bits() != canonical.to_bits() {
-        app.uv_mask_paint_preview =
-            Some(Preview { doc, revision, layer, index, opacity, bounds: None, rotation: None, shown: None, shown_fill: None, materialized: None });
+        app.uv_mask_paint_preview = Some(Preview {
+            doc,
+            revision,
+            layer,
+            index,
+            opacity,
+            bounds: None,
+            rotation: None,
+            shown: None,
+            shown_fill: None,
+            shown_at: None,
+            materialized: None,
+        });
     }
 }
 
@@ -136,6 +153,7 @@ pub(crate) fn set_fill(app: &mut PhotocraftApp, layer: LayerId, index: usize, bo
             rotation: Some(rotation),
             shown: None,
             shown_fill: None,
+            shown_at: None,
             materialized: None,
         });
     }
@@ -192,6 +210,11 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Do
     {
         return Some((shown.clone(), key));
     }
+    if let Some((seen, shown)) = &p.shown
+        && !fill_preview_refresh_due(p.shown_at, Instant::now())
+    {
+        return Some((shown.clone(), *seen));
+    }
     let source = p.shown.as_ref().map_or_else(|| st.doc.clone(), |(_, shown)| shown.clone());
     let mut doc = (*source).clone();
     let canvas = doc.bounds();
@@ -229,7 +252,12 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Do
     }
     let shown = Arc::new(doc);
     p.shown = Some((key, shown.clone()));
+    p.shown_at = Some(Instant::now());
     Some((shown, key))
+}
+
+fn fill_preview_refresh_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|last| now.duration_since(last) >= FILL_PREVIEW_MIN_INTERVAL)
 }
 
 fn fill_aabb([x0, y0, x1, y1]: [i32; 4], rotation: f32) -> photocraft_geom::Rect {
