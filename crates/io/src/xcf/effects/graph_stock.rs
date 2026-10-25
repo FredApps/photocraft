@@ -66,12 +66,17 @@ const RESOURCES: &[&str] = &[
     "gegl:lcms-from-profile",
 ];
 
+/// Resolve the finite audited stock namespace, including explicitly unavailable resource identities, without
+/// admitting future operation names.
 pub(super) fn operation(token: &str) -> Option<&'static str> {
     NAMES.iter().chain(UNMAPPED).chain(RESOURCES).copied().find(|name| *name == token || name.strip_prefix("gegl:") == Some(token))
 }
+/// Mark only actual input-free color, rectangle, and gradient generators so absent input pads are never
+/// filled with invented owner pixels.
 pub(super) fn generator(op: &str) -> bool {
     matches!(op, "gegl:color" | "gegl:rectangle" | "gegl:linear-gradient" | "gegl:radial-gradient")
 }
+/// Identify the owned stock placement family before translating its declared coordinate controls.
 fn placement(op: &str) -> bool {
     matches!(
         op,
@@ -88,6 +93,8 @@ fn placement(op: &str) -> bool {
             | "gegl:border-align"
     )
 }
+/// Expose typed declared stock properties and explicit unavailable-resource domains to the bounded graph
+/// decoder.
 pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
     let full = Kind::Number { min: -f64::MAX, max: f64::MAX };
     Some(match (op, name) {
@@ -113,6 +120,7 @@ pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
         _ => return None,
     })
 }
+/// Read a finite declared stock number and reject values outside its property domain.
 fn number(e: &StoredEffect<'_>, key: &str, default: f64) -> Result<f64, MappingFailure> {
     let v = e.number(key).map_err(invalid)?.unwrap_or(default);
     let Some(Kind::Number { min, max }) = field(e.operation, key) else {
@@ -123,6 +131,8 @@ fn number(e: &StoredEffect<'_>, key: &str, default: f64) -> Result<f64, MappingF
     }
     Ok(v)
 }
+/// Reject finite source geometry that cannot be represented as finite native coordinates instead of
+/// overflowing on conversion.
 fn finite_f32(v: f64) -> Result<f32, MappingFailure> {
     let f = v as f32;
     if !f.is_finite() { Err(MappingFailure::resource("stock graph coordinates exceed native finite geometry")) } else { Ok(f) }
@@ -183,6 +193,8 @@ fn svg_matrix(raw: &str) -> Result<Affine, MappingFailure> {
     }
     Ok(total)
 }
+/// Construct native affine placement about the declared origin and actual owner frame, preserving source
+/// coordinate-unit conversions.
 fn placement_matrix(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<Affine, MappingFailure> {
     let b = c.owner_bounds;
     if b.is_empty() {
@@ -253,6 +265,8 @@ fn placement_matrix(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<Affi
     };
     Ok(Affine::translate(ox, oy).mul(&matrix).mul(&Affine::translate(-ox, -oy)))
 }
+/// Translate supported stock generators and placements to ordinary native data; resource locators never
+/// authorize external reads.
 fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMapping, MappingFailure> {
     if RESOURCES.contains(&e.operation) {
         return Err(MappingFailure::resource(format!(
@@ -372,6 +386,8 @@ fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMappi
         _ => Err("unowned stock graph node".into()),
     }
 }
+/// Route only owned stock identities into the validated native adapter, leaving unrelated operations to other
+/// modules.
 pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> MappingResult {
     operation(e.operation)?;
     Some(map_known(e, c))
@@ -383,6 +399,7 @@ mod tests {
     use crate::xcf::effects::{Argument, ArgumentValue, NativeStructure};
     use photocraft_color::ColorMode;
     use photocraft_geom::Rect;
+    /// Provide actual owner/filter frames, DPI, and live resource allowances for stock mapping fixtures.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -396,10 +413,13 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Construct a typed numeric graph property for direct placement and generator tests.
     fn number_arg(name: &'static str, value: f64) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Literal(value) }
     }
     #[test]
+    /// Check audited aliases and resource failures do not accidentally expand the accepted operation
+    /// namespace.
     fn stock_names_and_explicit_resource_policy_do_not_admit_future_nodes() {
         assert_eq!(operation("translate"), Some("gegl:translate"));
         assert_eq!(operation("gegl:future-node"), None);
@@ -414,6 +434,7 @@ mod tests {
         assert!(map(&StoredEffect::test("gegl:clone", vec![Argument { name: "ref", value: ArgumentValue::String("missing") }]), &context()).unwrap().is_err());
     }
     #[test]
+    /// Compare gradient geometry and colors with independently authored native handles and stops.
     fn stock_gradient_has_independently_declared_native_handles_and_stops() {
         let e = StoredEffect::test(
             "gegl:linear-gradient",
@@ -432,6 +453,7 @@ mod tests {
         assert_eq!(stops[1].1.to_rgb(), [1., 1., 1.]);
     }
     #[test]
+    /// Verify rotation sign and pivot independently, and preserve a truly empty zero-scale result.
     fn stock_rotation_is_counterclockwise_about_declared_origin_and_scale_zero_is_empty() {
         let e = StoredEffect::test("gegl:rotate", vec![number_arg("degrees", 90.), number_arg("origin-x", 10.), number_arg("origin-y", 20.)]);
         let mapped = map(&e, &context()).unwrap().unwrap();
@@ -452,6 +474,8 @@ mod tests {
         }
     }
     #[test]
+    /// Compare degenerate gradient handling with native minimum-handle policy and persist the result at every
+    /// supported depth.
     fn short_and_zero_gradients_use_independent_native_minimum_handles_and_reopen_each_depth() {
         use photocraft_color::{Color, SampleType};
         use photocraft_doc::Document;
@@ -497,6 +521,8 @@ mod tests {
         assert!(map(&source, &c).unwrap().is_err());
     }
     #[test]
+    /// Require actual native alpha transfer data and resource admission rather than multiplying layer
+    /// opacity.
     fn unary_opacity_uses_native_clamped_alpha_table_and_preflights_budget() {
         let e = StoredEffect::test("gegl:opacity", vec![number_arg("value", 0.5)]);
         let mapped = map(&e, &context()).unwrap().unwrap();
@@ -511,6 +537,8 @@ mod tests {
         assert!(map(&StoredEffect::test("gegl:rectangle", vec![number_arg("width", -1.)]), &context()).unwrap().is_err());
     }
     #[test]
+    /// Compare each supported placement with independently derived affine matrices and reject controls
+    /// outside declared domains.
     fn additional_placements_have_independent_native_matrices_and_declared_domains() {
         let mut c = context();
         c.owner_bounds = Rect::new(10, 20, 30, 30);
@@ -533,10 +561,14 @@ mod tests {
         assert!(map(&StoredEffect::test("gegl:scale-size", vec![number_arg("x", 9001.)]), &c).unwrap().is_err());
     }
     #[test]
+    /// Compare prepared editable rectangles with independently authored native geometry across depths and
+    /// reopen.
     fn rectangle_is_native_editable_geometry_with_source_independent_multidepth_reopen() {
         use photocraft_color::SampleType;
         use photocraft_doc::Document;
         use photocraft_geom::Size;
+        /// Populate native Shape caches before render comparisons so equal transparent outputs cannot form a
+        /// vacuous oracle.
         fn prepare_shapes(doc: &mut Document) {
             let format = doc.pixel_format();
             let bounds = doc.bounds();

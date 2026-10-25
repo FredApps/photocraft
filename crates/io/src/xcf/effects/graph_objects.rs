@@ -10,12 +10,17 @@ use photocraft_geom::{Affine, Point};
 
 const NAMES: &[&str] = &["gegl:text", "gegl:path", "gegl:fill-path", "gegl:vector-stroke"];
 
+/// Resolve only the audited stock object names and their unqualified aliases; unrelated graph operations
+/// remain unowned.
 pub(super) fn operation(token: &str) -> Option<&'static str> {
     NAMES.iter().copied().find(|name| *name == token || name.strip_prefix("gegl:") == Some(token))
 }
+/// Identify text as genuinely input-free; path paint operations must retain their actual bound native input.
 pub(super) fn generator(op: &str) -> bool {
     op == "gegl:text"
 }
+/// Return the declared typed domain of supported object properties, keeping unknown or unavailable controls
+/// explicit.
 pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
     let opacity = Kind::Number { min: -2., max: 2. };
     Some(match (op, name) {
@@ -33,6 +38,7 @@ pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
         _ => return None,
     })
 }
+/// Read bounded UTF-8 without NUL bytes or apply the declared default; reject other stored types.
 fn string<'a>(e: &'a StoredEffect<'_>, key: &str, default: &'a str, limit: usize) -> Result<&'a str, MappingFailure> {
     match e.argument(key).map_err(invalid)? {
         None => Ok(default),
@@ -40,6 +46,7 @@ fn string<'a>(e: &'a StoredEffect<'_>, key: &str, default: &'a str, limit: usize
         _ => Err(invalid(format!("{} {key} requires bounded UTF-8 text without NUL", e.operation))),
     }
 }
+/// Validate finite object-property numbers against the declared numeric or integral field domain.
 fn number(e: &StoredEffect<'_>, key: &str, default: f64) -> Result<f64, MappingFailure> {
     let value = e.number(key).map_err(invalid)?.unwrap_or(default);
     let valid = match field(e.operation, key) {
@@ -54,11 +61,14 @@ struct Numbers<'a> {
     at: usize,
 }
 impl Numbers<'_> {
+    /// Skip only ASCII whitespace and commas between numeric path or transform tokens.
     fn space(&mut self) {
         while self.text.as_bytes().get(self.at).is_some_and(|v| v.is_ascii_whitespace() || *v == b',') {
             self.at += 1;
         }
     }
+    /// Parse one finite numeric token from the bounded literal, preserving exponent signs and rejecting
+    /// malformed coordinates.
     fn number(&mut self) -> Result<f64, MappingFailure> {
         self.space();
         let start = self.at;
@@ -80,6 +90,8 @@ impl Numbers<'_> {
         Ok(value)
     }
 }
+/// Compile the established bounded path-knot grammar into native subpaths; custom knots and unestablished
+/// syntax remain retained failures.
 fn path_data(literal: &str, c: &MappingContext<'_>) -> Result<Path, MappingFailure> {
     if !literal.is_ascii() {
         return Err("Stock path uses a non-ASCII/custom knot grammar not established by the builtin declarations".into());
@@ -159,6 +171,8 @@ fn path_data(literal: &str, c: &MappingContext<'_>) -> Result<Path, MappingFailu
     }
     Ok(Path::new(paths))
 }
+/// Parse a bounded list of ordinary affine transforms into native geometry, rejecting unknown syntax or
+/// nonfinite matrices.
 fn transform_data(value: &str) -> Result<Affine, MappingFailure> {
     if value.trim() == "none" {
         return Ok(Affine::IDENTITY);
@@ -213,6 +227,8 @@ fn transform_data(value: &str) -> Result<Affine, MappingFailure> {
         }
     }
 }
+/// Build editable native fill/stroke geometry over the actual input; absent path data preserves identity
+/// instead of inventing paint.
 fn path_object(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMapping, MappingFailure> {
     let literal = string(e, "d", "", 65_536)?;
     if literal.is_empty() {
@@ -288,6 +304,7 @@ fn path_object(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMap
     })
 }
 
+/// Validate declared object properties and budgets before producing editable native Text or Shape structures.
 fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMapping, MappingFailure> {
     generation_bytes(c, 4096)?;
     for arg in &e.arguments {
@@ -387,6 +404,7 @@ fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMappi
         "Stock UTF-8/font/pixel size, wrap and alignment become editable native text at the actual native DPI. Native fonts, fallback, glyph shaping, wrapping and antialiasing replace source typography; no source font or raster cache is imported. Vertical justification uses measured native logical lines. Read-only source width/height are recomputed by native layout; zero size retains editable text with zero native layer opacity.",
     ))
 }
+/// Translate only owned stock object identities, returning no match for other graph adapters.
 pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> MappingResult {
     operation(e.operation)?;
     Some(map_known(e, c))
@@ -399,6 +417,7 @@ mod tests {
     use photocraft_color::{ColorMode, SampleType};
     use photocraft_doc::Document;
     use photocraft_geom::{Rect, Size};
+    /// Provide explicit native bounds, DPI, color policy, and allowances for object translation fixtures.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -412,6 +431,8 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Extract the editable native replacement layer from an object mapping and require that it carries no
+    /// unexpected pattern resources.
     fn text(mapping: NativeMapping) -> Layer {
         let Some(NativeStructure::Replace { layer, patterns }) = mapping.structure else {
             panic!("expected ordinary native object");
@@ -419,13 +440,17 @@ mod tests {
         assert!(patterns.is_empty());
         *layer
     }
+    /// Construct a stored UTF-8 property for font, text, path, and transform literal fixtures.
     fn string_arg<'a>(name: &'a str, value: &'a str) -> Argument<'a> {
         Argument { name, value: ArgumentValue::String(value) }
     }
+    /// Construct a finite numeric object argument without involving graph-text parsing.
     fn numeric<'a>(name: &'a str, value: f64) -> Argument<'a> {
         Argument { name, value: ArgumentValue::Literal(value) }
     }
     #[test]
+    /// Compare editable UTF-8 text and pixel-to-point sizing with independently laid out native typography at
+    /// the actual DPI.
     fn stock_utf8_text_is_editable_native_text_with_pixel_units_and_native_counterpart() {
         let c = context();
         let e = StoredEffect::test(
@@ -475,6 +500,8 @@ mod tests {
         }
     }
     #[test]
+    /// Exercise empty sizing, alignment, invalid domains, admission, and cancellation without inventing text
+    /// geometry.
     fn text_zero_size_alignment_and_strict_domain_budget_cancellation_are_explicit() {
         let mut c = context();
         let zero = text(map(&StoredEffect::test("gegl:text", vec![numeric("size", 0.)]), &c).unwrap().unwrap());
@@ -528,6 +555,8 @@ mod tests {
         assert!(map(&StoredEffect::test("gegl:text", vec![]), &c).unwrap().is_err());
     }
     #[test]
+    /// Require actual declared path data and bound inputs; custom or missing payloads cannot become
+    /// fabricated native shapes.
     fn path_objects_require_actual_declared_payload_and_never_invent_an_input() {
         assert!(generator("gegl:text"));
         for op in ["gegl:path", "gegl:fill-path", "gegl:vector-stroke"] {
@@ -543,6 +572,7 @@ mod tests {
         assert_eq!(fail.reason, photocraft_doc::import_conversion::ConversionReason::InvalidOptionalData);
     }
     #[test]
+    /// Verify the established empty path sentinel stays editable empty geometry through native persistence.
     fn standalone_stock_sentinel_preserves_empty_editable_geometry_and_native_reopen() {
         for op in ["gegl:path", "gegl:fill-path", "gegl:vector-stroke"] {
             let source = StoredEffect::test(op, vec![string_arg("d", "s")]);
@@ -593,6 +623,8 @@ mod tests {
         }
     }
     #[test]
+    /// Compare prepared native path paint with an independent nontransparent Shape counterpart and preserve
+    /// the actual underlying image.
     fn established_path_literals_compile_to_editable_native_geometry_over_actual_input() {
         let c = context();
         let e = StoredEffect::test(

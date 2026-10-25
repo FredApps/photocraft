@@ -21,12 +21,14 @@ const SVG: &[(&str, &str)] = &[
     ("svg:xor", "gegl:xor"),
 ];
 const GIMP: &[&str] = &["gimp:anti-erase", "gimp:split", "gimp:pass-through"];
+/// Resolves the audited Porter-Duff aliases and exact core identities without admitting arbitrary compositor names.
 pub(super) fn operation(token: &str) -> Option<&'static str> {
     SVG.iter()
         .find(|(name, alias)| *name == token || *alias == token || name.strip_prefix("svg:") == Some(token))
         .map(|(name, _)| *name)
         .or_else(|| GIMP.iter().copied().find(|name| *name == token))
 }
+/// Returns only declared controls for the supported compositor policy, including explicit transfer flags.
 pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
     if GIMP.contains(&op) {
         graph_schema::field(op, name)
@@ -42,6 +44,7 @@ pub(super) struct Lowered {
     pub output: usize,
     pub notes: Vec<String>,
 }
+/// Appends one native mask step within both the local finite-policy limit and shared global stage allowance.
 fn push(steps: &mut Vec<NativeStage>, next: usize, step: NativeStage) -> Result<usize, MappingFailure> {
     let output = next.checked_add(steps.len()).filter(|n| *n <= 64).ok_or("native mask construction exceeds64 global stages")?;
     if steps.len() >= 8 {
@@ -50,18 +53,22 @@ fn push(steps: &mut Vec<NativeStage>, next: usize, step: NativeStage) -> Result<
     steps.push(step);
     Ok(output)
 }
+/// Constructs an ordinary native absolute-alpha stage targeting an actual earlier result.
 fn alpha(input: usize, value: f32) -> NativeStage {
     NativeStage::Apply {
         input,
         mapping: Box::new(NativeMapping { filters: vec![native_filter("filter.other.setAlpha", json!({"value":value}))], ..Default::default() }),
     }
 }
+/// Creates a native mask capture from the actual earlier input's alpha, optionally inverted.
 fn mask(input: usize, mask: usize, invert: bool) -> NativeStage {
     NativeStage::Mask { input, mask, component: NativeMaskComponent::Alpha, invert, scale: 1. }
 }
+/// Constructs an ordinary native layer join with explicit blend mode and full opacity.
 fn join(below: usize, above: usize, blend: BlendMode) -> NativeStage {
     NativeStage::Join { below, above, blend, opacity: 1. }
 }
+/// Builds bounded actual-input native masks and joins, applying auxiliary opacity once and disclosing native fractional-overlap differences.
 pub(super) fn lower(e: &StoredEffect<'_>, c: &MappingContext<'_>, main: usize, aux: usize, next: usize) -> Result<Lowered, MappingFailure> {
     let op = operation(e.operation).ok_or("unowned native mask policy")?;
     if main >= next || aux >= next || next == 0 || next > 64 {
@@ -167,6 +174,7 @@ mod tests {
     use photocraft_doc::{Document, Layer, LayerContent, LayerMask, SmartFilter, SmartObject, SmartSource};
     use photocraft_geom::{Rect, Size};
     use photocraft_raster::{Interrupt, Surface};
+    /// Supplies finite native bounds and explicit allowances for independent compositor-policy tests.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -180,6 +188,7 @@ mod tests {
             interrupt: Interrupt::NONE,
         }
     }
+    /// Checks operation identity, argument domains, actual input indices and global stage admission.
     #[test]
     fn exact_names_controls_actual_inputs_and_global_references_are_bounded() {
         for (name, alias) in SVG {
@@ -206,6 +215,7 @@ mod tests {
         c.remaining_metadata_bytes = 0;
         assert!(lower(&StoredEffect::test("svg:src-in", vec![]), &c, 0, 1, 2).is_err());
     }
+    /// Verifies source opacity is applied once to the actual auxiliary before mask capture and recombination.
     #[test]
     fn opacity_attenuates_the_actual_auxiliary_once_before_static_masks() {
         let source = StoredEffect::test("gimp:anti-erase", vec![Argument { name: "opacity", value: ArgumentValue::Literal(0.5) }]);
@@ -216,6 +226,7 @@ mod tests {
         assert!(matches!(result.steps[1], NativeStage::Join { below: 4, above: 8, opacity: 1., .. }));
         assert!(matches!(result.steps[3], NativeStage::Mask { input: 10, mask: 9, component: NativeMaskComponent::Alpha, invert: false, scale: 1. }));
     }
+    /// Compares prepared mask/join policies with independent native constructions and checks source-independent persistence.
     #[test]
     fn prepared_native_masks_match_independent_native_counterparts_and_reopen() {
         use crate::xcf::native_effects::{NativeEnvelope, NativeOwner};

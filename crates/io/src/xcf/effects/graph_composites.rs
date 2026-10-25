@@ -68,6 +68,8 @@ const SVG: &[(&str, &str, BlendMode, bool)] = &[
     ("svg:plus", "gegl:plus", BlendMode::LinearDodge, false),
 ];
 
+/// Resolve audited binary compositing identities without confusing arithmetic aliases with native blend-mode
+/// names.
 pub(super) fn operation(token: &str) -> Option<&'static str> {
     if matches!(token, "gegl:mix" | "mix") {
         return Some("gegl:mix");
@@ -92,6 +94,7 @@ pub(super) fn operation(token: &str) -> Option<&'static str> {
     SVG.iter().find(|(op, alias, _, _)| *op == token || *alias == token || alias.strip_prefix("gegl:") == Some(token)).map(|(op, ..)| *op)
 }
 
+/// Expose only declared binary properties, delegating scalar arithmetic domains to their dedicated schema.
 pub(super) fn field(operation: &str, name: &str) -> Option<Kind> {
     if operation == "gegl:mix" {
         return (name == "ratio").then_some(Kind::Number { min: -f64::MAX, max: f64::MAX });
@@ -108,10 +111,13 @@ pub(super) fn field(operation: &str, name: &str) -> Option<Kind> {
     }
 }
 
+/// Classify malformed or duplicate binary graph controls as invalid optional data.
 fn invalid(message: impl Into<String>) -> MappingFailure {
     MappingFailure { reason: ConversionReason::InvalidOptionalData, message: message.into() }
 }
 
+/// Translate audited source layer modes to ordinary native blends and explicit input-order reversal; unknown
+/// modes remain retained.
 fn native_mode(value: i32) -> Result<(BlendMode, bool), MappingFailure> {
     use BlendMode as B;
     let mode = match value {
@@ -129,6 +135,8 @@ fn native_mode(value: i32) -> Result<(BlendMode, bool), MappingFailure> {
     Ok(mode)
 }
 
+/// Validate binary controls and return a native construction recipe using actual input bindings, explicit
+/// opacity, and disclosed approximation policies.
 pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<BinaryMapping, MappingFailure> {
     let op = operation(effect.operation).ok_or("Binary native adapter does not own this source identity")?;
     let mut seen = std::collections::HashSet::new();
@@ -280,6 +288,7 @@ pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext<'_>) -> Re
 mod tests {
     use super::super::{Argument, ArgumentValue};
     use super::*;
+    /// Provide actual native bounds and resource allowances for binary mapping fixtures.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: photocraft_color::ColorMode::Rgb,
@@ -293,10 +302,14 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Evaluate a binary fixture with the fixed native context, preserving either its construction recipe or
+    /// classified failure.
     fn run(effect: &StoredEffect<'_>) -> Result<BinaryMapping, MappingFailure> {
         super::map(effect, &context())
     }
     #[test]
+    /// Check exact aliases distinguish unary arithmetic, actual binary input, and native Multiply compositing
+    /// roles.
     fn exact_stock_aliases_do_not_confuse_arithmetic_multiply_with_blending() {
         assert_eq!(operation("screen"), Some("svg:screen"));
         assert_eq!(operation("gegl:screen"), Some("svg:screen"));
@@ -336,6 +349,8 @@ mod tests {
         }
     }
     #[test]
+    /// Verify behind-mode scaling stays attached to the actual auxiliary before input reversal and reject
+    /// invalid domains.
     fn behind_scales_actual_auxiliary_before_swap_and_invalid_controls_fail() {
         let args = || vec![Argument { name: "opacity", value: ArgumentValue::Literal(0.4) }];
         let mapping = run(&StoredEffect::test("gimp:behind", args())).unwrap();

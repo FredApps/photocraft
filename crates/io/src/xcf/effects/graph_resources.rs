@@ -13,6 +13,7 @@ const NAMES: &[&str] = &["gegl:contrast-curve", "gegl:piecewise-blend"];
 const LEVEL_PADS: &[&str] =
     &["aux1", "aux2", "aux3", "aux4", "aux5", "aux6", "aux7", "aux8", "aux9", "aux10", "aux11", "aux12", "aux13", "aux14", "aux15", "aux16"];
 
+/// Recognizes only Contrast Curve and Piecewise Blend identities and their exact unqualified aliases.
 pub(super) fn operation(token: &str) -> Option<&'static str> {
     NAMES.iter().copied().find(|name| *name == token || name.strip_prefix("gegl:") == Some(token))
 }
@@ -22,6 +23,7 @@ pub(super) fn level_pad(name: &str) -> Option<usize> {
     LEVEL_PADS.iter().position(|pad| *pad == name).map(|index| index + 1)
 }
 
+/// Separates declared scalar controls from unavailable curve objects; actual level-image pads are handled as graph edges.
 pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
     match (op, name) {
         ("gegl:contrast-curve", "sampling-points") => Some(Kind::Integer { min: 0, max: 65_536 }),
@@ -35,6 +37,7 @@ pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
     }
 }
 
+/// Requires a finite nonnegative integral resource control within the declared maximum.
 fn integer(e: &StoredEffect<'_>, name: &str, default: i32, maximum: i32) -> Result<i32, MappingFailure> {
     let value = e.number(name).map_err(invalid)?.unwrap_or(f64::from(default));
     if !value.is_finite() || value.fract() != 0. || !(0. ..=f64::from(maximum)).contains(&value) {
@@ -43,6 +46,7 @@ fn integer(e: &StoredEffect<'_>, name: &str, default: i32, maximum: i32) -> Resu
     Ok(value as i32)
 }
 
+/// Maps the declared default curve or zero-level coverage policy, requiring actual resources for custom curves or positive levels.
 fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMapping, MappingFailure> {
     c.interrupt.check().map_err(|error| error.to_string())?;
     for argument in &e.arguments {
@@ -100,6 +104,7 @@ fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMappi
     }
 }
 
+/// Routes recognized unary resource operations without inventing missing curve points or level images.
 pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> MappingResult {
     operation(e.operation)?;
     Some(map_known(e, c))
@@ -227,6 +232,7 @@ mod tests {
     use super::*;
     use photocraft_doc::import_conversion::ConversionReason;
     use photocraft_geom::Rect;
+    /// Provides finite native bounds and explicit resource allowances for resource-lowering tests.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -240,9 +246,11 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Constructs an exact scalar argument for integer-domain and native resource policy assertions.
     fn n(name: &'static str, value: f64) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Literal(value) }
     }
+    /// Checks exact pad names and scalar declarations so image edges cannot be mistaken for numeric fields.
     #[test]
     fn exact_resource_schema_distinguishes_scalar_fields_and_actual_level_pads() {
         assert_eq!(operation("contrast-curve"), Some("gegl:contrast-curve"));
@@ -257,6 +265,7 @@ mod tests {
         assert_eq!(field("gegl:piecewise-blend", "aux1"), None);
         assert!(matches!(field("gegl:contrast-curve", "curve"), Some(Kind::Unavailable(_))));
     }
+    /// Distinguishes the declared identity curve's grayscale intent from a genuinely unavailable custom curve object.
     #[test]
     fn declared_default_curve_is_native_gray_while_actual_custom_curve_is_named_missing_resource() {
         let mapped = map(&StoredEffect::test("gegl:contrast-curve", vec![n("sampling-points", 65536.)]), &context()).unwrap().unwrap();
@@ -271,6 +280,7 @@ mod tests {
             assert!(map(&StoredEffect::test("gegl:contrast-curve", vec![n("sampling-points", value)]), &context()).unwrap().is_err());
         }
     }
+    /// Verifies zero-level coverage has a concrete native policy while positive levels require actual connected images.
     #[test]
     fn zero_levels_is_native_zero_coverage_and_positive_levels_need_real_images() {
         let mapped = map(&StoredEffect::test("gegl:piecewise-blend", vec![]), &context()).unwrap().unwrap();
@@ -285,6 +295,7 @@ mod tests {
             assert!(map(&StoredEffect::test("gegl:piecewise-blend", args), &context()).unwrap().is_err());
         }
     }
+    /// Checks real level bindings produce valid earlier-result references and respect the exact shared stage boundary.
     #[test]
     fn actual_piecewise_images_have_bounded_backward_native_stages() {
         let e = StoredEffect::test("gegl:piecewise-blend", vec![n("levels", 1.)]);
@@ -305,6 +316,7 @@ mod tests {
         super::super::validate_stages(&full, output).unwrap();
         assert_eq!(piecewise(&e, &context(), 0, &pads, 19).unwrap_err().reason, ConversionReason::ResourceUnavailable);
     }
+    /// Distinguishes missing resources from malformed pads, insufficient allowances and cancellation.
     #[test]
     fn piecewise_missing_images_differ_from_malformed_edges_and_budget_rejection() {
         let e = StoredEffect::test("gegl:piecewise-blend", vec![n("levels", 2.)]);
@@ -323,6 +335,7 @@ mod tests {
         c.interrupt = photocraft_raster::Interrupt::cancel_only(&cancelled);
         assert!(piecewise(&e, &c, 0, &[(1, 1), (2, 2)], 3).is_err());
     }
+    /// Compares native membership masks and Normal composition with an independent native counterpart, including depth quantization and persistence.
     #[test]
     fn actual_native_curve_mask_and_normal_join_match_independent_counterpart_and_reopen() {
         use photocraft_color::{PixelFormat, SampleType};

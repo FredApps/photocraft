@@ -14,6 +14,7 @@ const GRAPH_NOTICE: &str = "Bounded source syntax was lowered once to backward-i
 type Result<T> = std::result::Result<T, MappingFailure>;
 
 use super::graph_schema::Kind;
+/// Resolves only frozen or explicitly audited graph identities to their canonical native-converter operation names.
 fn operation(token: &str) -> Option<&'static str> {
     super::graph_porter::operation(token)
         .or_else(|| super::graph_composites::operation(token))
@@ -26,6 +27,7 @@ fn operation(token: &str) -> Option<&'static str> {
         .or_else(|| super::graph_displacement::operation(token))
         .or_else(|| super::graph_stock::operation(token))
 }
+/// Looks up typed property declarations across the same bounded operation vocabulary; unknown properties are not inferred.
 fn field(operation: &str, name: &str) -> Option<Kind> {
     super::graph_porter::field(operation, name)
         .or_else(|| super::graph_composites::field(operation, name))
@@ -41,6 +43,7 @@ fn field(operation: &str, name: &str) -> Option<Kind> {
 
 // Public GEGL0.4.72 gegl-color.h:57-64 defines CSS hexadecimal forms
 // and the sixteen HTML4 colors, separately from linear-light rgb[a](...).
+/// Parses documented linear numeric or CSS/HTML4 literals into finite color data with an explicit transfer interpretation.
 fn color(value: &str) -> Result<([f32; 4], bool)> {
     let (components, alpha) = if let Some(v) = value.strip_prefix("rgba(").and_then(|v| v.strip_suffix(')')) {
         (Some(v), true)
@@ -107,6 +110,7 @@ fn color(value: &str) -> Result<([f32; 4], bool)> {
 
 // GEGL's public chain entry uses g_shell_parse_argv. Apply only its inert
 // quote/backslash rules here: no variables, commands, paths or expressions run.
+/// Applies inert shell quoting and graph delimiters within byte/token limits; never expands variables or executes text.
 fn tokens(input: &str) -> Result<Vec<String>> {
     if input.len() > MAX_BYTES {
         return Err("Finite native graph candidate requires at most32768 UTF-8 bytes".into());
@@ -221,17 +225,21 @@ struct Decoder<'a> {
     notes: Vec<String>,
 }
 impl<'a> Decoder<'a> {
+    /// Returns the current borrowed graph token without advancing the decoder.
     fn peek(&self) -> Option<&'a str> {
         self.tokens.get(self.cursor).copied()
     }
+    /// Consumes one bounded graph token or reports an incomplete construction instead of indexing past input.
     fn take(&mut self) -> Result<&'a str> {
         let value = self.peek().ok_or("Incomplete finite native graph")?;
         self.cursor += 1;
         Ok(value)
     }
+    /// Consumes a required structural token and rejects mismatched graph syntax.
     fn expect(&mut self, expected: &str) -> Result<()> {
         if self.take()? == expected { Ok(()) } else { Err(format!("Finite native graph expected {expected}").into()) }
     }
+    /// Accepts bounded UTF-8 reference names without controls, whitespace or structural delimiters.
     fn label(&mut self) -> Result<&'a str> {
         let label = self.take()?;
         if label.is_empty() || label.len() > 128 || label.chars().any(|ch| ch.is_whitespace() || ch.is_control() || matches!(ch, '=' | '[' | ']')) {
@@ -239,6 +247,7 @@ impl<'a> Decoder<'a> {
         }
         Ok(label)
     }
+    /// Parses declared scalar fields with exact types and node/assignment limits, preserving F64 literals until native conversion.
     fn read_node(&mut self, context: &MappingContext<'_>) -> Result<Node<'a>> {
         context.interrupt.check().map_err(|e| e.to_string())?;
         let token = self.take()?;
@@ -307,6 +316,7 @@ impl<'a> Decoder<'a> {
         }
         Ok(Node { operation, arguments })
     }
+    /// Passes reduced aggregate generation and metadata allowances to the next converter while preserving native document context.
     fn next_context<'c>(&self, context: &MappingContext<'c>) -> MappingContext<'c> {
         MappingContext {
             mode: context.mode,
@@ -320,6 +330,7 @@ impl<'a> Decoder<'a> {
             interrupt: context.interrupt,
         }
     }
+    /// Charges retained native resource and metadata sizes against the graph's shared remaining allowances.
     fn admit(&mut self, mapping: &NativeMapping, context: &MappingContext<'_>) -> Result<()> {
         let (resource, metadata) =
             crate::xcf::native_effects::retained_mapping_bytes(mapping, &context.interrupt).map_err(|e| MappingFailure::resource(e.to_string()))?;
@@ -333,6 +344,7 @@ impl<'a> Decoder<'a> {
             .ok_or_else(|| MappingFailure::resource("Retained graph stages exceed the aggregate metadata allowance"))?;
         Ok(())
     }
+    /// Admits one non-nested native mapping while enforcing aggregate filter and construction-step limits.
     fn push_flat_mapping(&mut self, input: usize, mapping: NativeMapping, context: &MappingContext<'_>) -> Result<usize> {
         if matches!(&mapping.structure, Some(NativeStructure::Stages { .. })) {
             return Err("Nested native construction plans are not admitted".into());
@@ -349,6 +361,7 @@ impl<'a> Decoder<'a> {
         Ok(self.steps.len())
     }
 
+    /// Reserves deferred displacement metadata against the same aggregate graph allowance before appending the stage.
     fn admit_deferred(&mut self, step: &NativeStage) -> Result<()> {
         if let NativeStage::Displace { metadata_limit, .. } = step {
             self.remaining_metadata = self
@@ -359,6 +372,7 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
+    /// Flattens bounded native child plans with rebased references, rejecting unsupported outer data instead of discarding it.
     fn push_mapping(&mut self, input: usize, mut mapping: NativeMapping, context: &MappingContext<'_>) -> Result<usize> {
         if !matches!(&mapping.structure, Some(NativeStructure::Stages { .. })) {
             return self.push_flat_mapping(input, mapping, context);
@@ -457,6 +471,7 @@ impl<'a> Decoder<'a> {
         Ok(output)
     }
 
+    /// Parses an actual auxiliary block with the inherited native input and bounded recursion depth.
     fn auxiliary(&mut self, pad: &str, depth: usize, context: &MappingContext<'_>) -> Result<usize> {
         self.expect(pad)?;
         self.expect("=")?;
@@ -466,6 +481,7 @@ impl<'a> Decoder<'a> {
         Ok(output)
     }
 
+    /// Builds one finite graph block, preserving actual snapshots and named pads while rejecting invalid or unavailable bindings.
     fn block(&mut self, mut current: Option<usize>, depth: usize, context: &MappingContext<'_>) -> Result<usize> {
         if depth > MAX_DEPTH {
             return Err("Finite native graph exceeds8 auxiliary nesting levels".into());
@@ -622,14 +638,17 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// Appends an ordinary native construction step only within the shared global stage limit.
 fn native_push(steps: &mut Vec<NativeStage>, next: usize, stage: NativeStage) -> Result<usize> {
     let output = next.checked_add(steps.len()).filter(|value| *value <= MAX_NODES).ok_or("Auxiliary native construction exceeds64 stages")?;
     steps.push(stage);
     Ok(output)
 }
+/// Appends a native filter application to the specified earlier native result.
 fn native_apply(steps: &mut Vec<NativeStage>, next: usize, input: usize, mapping: NativeMapping) -> Result<usize> {
     native_push(steps, next, NativeStage::Apply { input, mapping: Box::new(mapping) })
 }
+/// Authors a native monochrome Channel Mixer gain and bias, requesting ordinary RGB working contents for Gray input.
 fn native_gain(gain: f64, offset: f64, context: &MappingContext<'_>) -> NativeMapping {
     NativeMapping {
         working_rgb: context.mode == photocraft_color::ColorMode::Grayscale,
@@ -637,10 +656,12 @@ fn native_gain(gain: f64, offset: f64, context: &MappingContext<'_>) -> NativeMa
         ..Default::default()
     }
 }
+/// Builds an editable native interval transfer rather than retaining a source threshold callback.
 fn native_interval(low: f64, high: f64) -> NativeMapping {
     let points = (0..256).map(|i| if (low..=high).contains(&(f64::from(i) / 255.)) { 255 } else { 0 }).collect::<Vec<_>>();
     NativeMapping { filters: vec![super::native_filter("image.adjustments.curves", serde_json::json!({"pencil":true,"points":points}))], ..Default::default() }
 }
+/// Lowers actual auxiliary-input arithmetic and compositing to native stages, respecting pad roles and resource admission.
 fn auxiliary_native(e: &StoredEffect<'_>, c: &MappingContext<'_>, main: usize, aux: usize, next: usize) -> Result<(Vec<NativeStage>, usize, Vec<String>)> {
     use super::NativeMaskComponent::{Alpha, Composite};
     use photocraft_color::BlendMode;
@@ -721,6 +742,7 @@ fn auxiliary_native(e: &StoredEffect<'_>, c: &MappingContext<'_>, main: usize, a
     Ok((steps, output, vec![policy.into()]))
 }
 
+/// Converts parsed typed graph arguments into a temporary stored-effect view for the selected native adapter.
 fn with_effect<T>(node: Node<'_>, context: &MappingContext<'_>, convert: impl FnOnce(&StoredEffect<'_>) -> Result<T>) -> Result<T> {
     let mut budget = context.remaining_metadata_bytes;
     let arguments = node
@@ -771,6 +793,7 @@ fn with_effect<T>(node: Node<'_>, context: &MappingContext<'_>, convert: impl Fn
     };
     convert(&effect)
 }
+/// Maps a parsed graph node using its reduced native context, preserving failure instead of substituting a default operation.
 fn node(node: Node<'_>, context: &MappingContext<'_>) -> Result<NativeMapping> {
     with_effect(node, context, |effect| {
         super::graph_tone::map(effect, context)
@@ -795,6 +818,7 @@ fn node(node: Node<'_>, context: &MappingContext<'_>) -> Result<NativeMapping> {
     })
 }
 
+/// Bounds temporary graph decoding storage before token and native-plan construction.
 fn decoding_scratch(input: &str) -> usize {
     MAX_TOKENS * (std::mem::size_of::<String>() + std::mem::size_of::<&str>())
         + MAX_ARGUMENTS * 2 * std::mem::size_of::<NodeArgument<'_>>()
@@ -804,6 +828,7 @@ fn decoding_scratch(input: &str) -> usize {
         + input.len().saturating_mul(32)
         + GRAPH_NOTICE.len()
 }
+/// Compiles finite graph text once into validated backward-indexed native stages with shared resource and cancellation checks.
 fn lower(input: &str, context: &MappingContext<'_>) -> Result<NativeMapping> {
     context.interrupt.check().map_err(|e| e.to_string())?;
     let scratch = decoding_scratch(input);
@@ -883,6 +908,7 @@ fn lower(input: &str, context: &MappingContext<'_>) -> Result<NativeMapping> {
     Ok(mapping)
 }
 
+/// Recognizes the stored graph operation and returns only ordinary native construction data or an explicit retained failure.
 pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext<'_>) -> MappingResult {
     if effect.operation != "gegl:gegl" {
         return None;
@@ -917,6 +943,7 @@ mod tests {
     use photocraft_raster::{Interrupt, Surface};
     use serde_json::json;
 
+    /// Creates a finite RGB graph mapping context with explicit generation and metadata allowances.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -930,9 +957,11 @@ mod tests {
             interrupt: Interrupt::NONE,
         }
     }
+    /// Parses a source graph through the actual mapping entry point for bounded native-plan assertions.
     fn run(input: &str, c: &MappingContext<'_>) -> Result<NativeMapping> {
         map(&StoredEffect::test("gegl:gegl", vec![Argument { name: "string", value: ArgumentValue::String(input) }]), c).unwrap()
     }
+    /// Checks scalar conversion and noncommuting operation order against independently declared native filter sequences.
     #[test]
     fn isolated_and_noncommuting_scalar_chains_emit_independently_specified_native_filters() {
         let c = context();
@@ -966,6 +995,7 @@ mod tests {
             assert_ne!(photocraft_compose::flatten(&actual).px, photocraft_compose::flatten(&reversed).px, "ordering oracle:{sample:?}");
         }
     }
+    /// Verifies an actual snapshot fork feeds the intended native branches before subsequent filters.
     #[test]
     fn one_explicit_snapshot_fork_preserves_native_branch_and_postfilter_order() {
         for label in ["in", "source_27"] {
@@ -982,6 +1012,7 @@ mod tests {
             assert_eq!(post.filters, vec![super::super::native_filter("image.adjustments.exposure", json!({"exposure":1.,"offset":0.,"gamma":1.}))]);
         }
     }
+    /// Checks typed routes retain native replacement/composite structures rather than flattening away meaningful data.
     #[test]
     fn twelve_frozen_nodes_have_typed_scalar_routes_and_structures_are_never_discarded() {
         for input in [
@@ -1007,6 +1038,7 @@ mod tests {
         assert!(matches!(&steps[1],NativeStage::Apply{input:1,mapping} if mapping.filters[0].command=="image.adjustments.invert"));
         assert!(run("rgb-clip", &context()).unwrap().structure.is_some());
     }
+    /// Requires malformed, unknown and unavailable graph constructs to fail atomically instead of partially executing a chain.
     #[test]
     fn hostile_unknown_incomplete_and_resource_syntax_is_rejected_as_a_whole() {
         for input in [
@@ -1056,6 +1088,7 @@ mod tests {
         assert!(map(&effect, &context()).unwrap().is_err());
     }
 
+    /// Verifies exact text literals retain F64 precision until native controls and cancellation stops conversion.
     #[test]
     fn graph_f64_literals_reach_native_controls_without_fake_wire_rounding_and_cancel_is_observed() {
         let exact = 0.12345678901234567f64;
@@ -1070,6 +1103,7 @@ mod tests {
         assert!(run("invert-linear", &c).is_err());
     }
 
+    /// Checks intermediate references and nested forks become valid earlier native-result indices without source dispatch data.
     #[test]
     fn intermediate_snapshot_references_nested_forks_and_full_structural_nodes_lower_to_native_only_indexes() {
         let mapping=run("id=original exposure exposure=-1 id=dark over aux=[ref=original invert-linear id=negative over aux=[ref=dark gaussian-blur std-dev-x=0 std-dev-y=0]] ref=negative rgb-clip",&context()).unwrap();
@@ -1109,6 +1143,7 @@ mod tests {
         assert!(run("id=in over aux=[ref=in invert-linear] over aux=[ref=in invert-linear]", &context()).is_ok());
     }
 
+    /// Verifies schema-defined enum identities and configuration structure survive typed lowering without fabricated proxy arguments.
     #[test]
     fn frozen_schema_fields_preserve_real_enum_ids_config_structure_and_no_proxy_flattening() {
         let config = run("gimp:brightness-contrast config='(brightness 0.25) (contrast -0.5)'", &context()).unwrap();
@@ -1124,6 +1159,7 @@ mod tests {
         assert!(run("id=in gimp:normal aux=[ref=in invert-linear]", &context()).is_ok());
     }
 
+    /// Checks color transfer flags, numeric precision and Unicode text remain typed native-converter inputs.
     #[test]
     fn documented_color_literals_and_utf8_text_are_typed_data_with_explicit_transfer_and_precision() {
         assert_eq!(color("#3af8").unwrap(), ([51. / 255., 170. / 255., 1., 136. / 255.], false));
@@ -1153,6 +1189,7 @@ mod tests {
         assert!(checker.structure.is_some());
     }
 
+    /// Verifies later generated patterns see the reduced shared allowance and failed lowering publishes no partial graph.
     #[test]
     fn generation_is_reduced_before_the_second_pattern_converter_and_failures_are_transactional() {
         let c = context();
@@ -1182,6 +1219,7 @@ mod tests {
         assert!(run("invert-linear invert-linear", &limited).unwrap_err().message.contains("aggregate metadata allowance"));
     }
 
+    /// Checks supplied auxiliary images are used for opacity, swapping and source/destination selection instead of being misclassified as absent.
     #[test]
     fn actual_aux_native_opacity_swap_and_source_destination_selection_are_not_missing_resources() {
         let result = run("id=in gimp:normal opacity=0.4 aux=[ref=in invert-linear]", &context()).unwrap();
@@ -1202,6 +1240,7 @@ mod tests {
         assert!(matches!(&steps[1],NativeStage::Knockout{below:0,above:1,opacity} if (*opacity-0.4).abs()<1e-7));
     }
 
+    /// Verifies actual pad bindings and deferred coordinate maps consume one shared native metadata budget.
     #[test]
     fn actual_native_auxiliary_roles_preserve_bindings_and_share_deferred_map_allowance() {
         use super::super::NativeMaskComponent;
@@ -1249,6 +1288,7 @@ mod tests {
         }
     }
 
+    /// Checks quoting changes only token data and UTF-8 labels continue to reference the correct native snapshots.
     #[test]
     fn shell_quoted_literals_are_inert_and_utf8_labels_preserve_actual_references() {
         // Public GLib shell_unquote rules, not C escapes or expression expansion.
@@ -1275,6 +1315,7 @@ mod tests {
         }
     }
 
+    /// Distinguishes scalar arithmetic from an actual auxiliary image without inventing or swapping operands.
     #[test]
     fn arithmetic_uses_actual_pad_presence_without_changing_scalar_or_auxiliary_identity() {
         use photocraft_color::BlendMode;
@@ -1295,6 +1336,7 @@ mod tests {
         assert_ne!(error.reason, photocraft_doc::import_conversion::ConversionReason::ResourceUnavailable);
     }
 
+    /// Checks child native indices are rebased correctly and unsupported outer filters/styles are rejected rather than lost.
     #[test]
     fn native_child_plans_rebase_input_and_output_without_nested_stages_or_losing_outer_data() {
         let mapping = run("invert-linear path d='M0,0 L4,0 L0,2 z' fill=red invert-linear", &context()).unwrap();

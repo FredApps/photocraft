@@ -6,6 +6,7 @@ use photocraft_color::ColorMode;
 use photocraft_doc::import_conversion::ConversionReason;
 use serde_json::json;
 
+/// Canonicalizes only the audited stock grayscale, posterize, threshold and wavelet-blur names.
 pub(super) fn operation(token: &str) -> Option<&'static str> {
     match token {
         "gray" | "grey" | "gegl:gray" | "gegl:grey" => Some("gegl:gray"),
@@ -15,6 +16,7 @@ pub(super) fn operation(token: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+/// Declares exact scalar domains for the supported stock tone controls; unknown fields have no inferred type.
 pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
     match (op, name) {
         ("gegl:posterize", "levels") => Some(Kind::Integer { min: 1, max: 64 }),
@@ -23,9 +25,11 @@ pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
         _ => None,
     }
 }
+/// Classifies malformed optional tone data separately from unsupported native conversion intent.
 fn invalid(message: impl Into<String>) -> MappingFailure {
     MappingFailure { reason: ConversionReason::InvalidOptionalData, message: message.into() }
 }
+/// Validates finite scalar or integral controls using the actual declared field domain.
 fn number(e: &StoredEffect<'_>, name: &str, default: f64) -> Result<f64, MappingFailure> {
     let n = e.number(name)?.unwrap_or(default);
     let (low, high, integer) = match field(e.operation, name) {
@@ -38,6 +42,7 @@ fn number(e: &StoredEffect<'_>, name: &str, default: f64) -> Result<f64, Mapping
     }
     Ok(n)
 }
+/// Maps audited stock tone intent to native adjustments and bounded Gaussian passes with explicit depth, clipping and algorithm policies.
 pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> MappingResult {
     operation(e.operation)?;
     Some((|| {
@@ -103,6 +108,7 @@ pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> MappingResult
 mod tests {
     use super::super::{Argument, ArgumentValue};
     use super::*;
+    /// Creates a finite RGB document context for declared tone-domain and native-parameter tests.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -116,6 +122,7 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Checks stock tone controls author the intended ordinary editable native commands and bounded pass parameters.
     #[test]
     fn declared_tone_controls_become_editable_native_commands() {
         let c = context();
@@ -145,6 +152,7 @@ mod tests {
         assert_eq!(operation("gegl:grey"), Some("gegl:gray"));
         assert_eq!(operation("gimp:posterize"), None);
     }
+    /// Requires invalid domains, duplicate fields and unowned controls to fail rather than disappearing during native conversion.
     #[test]
     fn invalid_or_unowned_fields_do_not_silently_discard_controls() {
         for (op, name, value) in [("gegl:posterize", "levels", 1.5), ("gegl:threshold", "value", 201.), ("gegl:wavelet-blur", "radius", f64::NAN)] {

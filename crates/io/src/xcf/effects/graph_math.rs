@@ -8,18 +8,25 @@ use serde_json::json;
 
 const NAMES: &[&str] = &["gegl:add", "gegl:subtract", "gegl:multiply", "gegl:divide", "gegl:gamma"];
 const MAX_PASSES: usize = 32;
+/// Resolve only the audited unary arithmetic identities and their stock unqualified aliases.
 pub(super) fn operation(token: &str) -> Option<&'static str> {
     NAMES.iter().copied().find(|name| *name == token || name.strip_prefix("gegl:") == Some(token))
 }
+/// Declare the finite scalar value property only for owned arithmetic operations; auxiliary image forms use
+/// separate adapters.
 pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
     (NAMES.contains(&op) && name == "value").then_some(Kind::Number { min: -f64::MAX, max: f64::MAX })
 }
+/// Build ordinary native per-color-channel affine coefficients while leaving native alpha outside Channel
+/// Mixer arithmetic.
 fn mixer(gain: f64, offset: f64) -> photocraft_doc::SmartFilter {
     native_filter(
         "image.adjustments.channelMixer",
         json!({"red":[gain*100.,0.,0.,offset*100.],"green":[0.,gain*100.,0.,offset*100.],"blue":[0.,0.,gain*100.,offset*100.],"monochrome":false}),
     )
 }
+/// Represent extreme finite color gain or offset with native center-only F64 Convolution, explicitly
+/// excluding alpha.
 fn affine(c: &MappingContext<'_>, gain: f64, offset: f64) -> photocraft_doc::SmartFilter {
     let mut kernel = [0.; 25];
     if let Some(center) = kernel.get_mut(12) {
@@ -31,6 +38,8 @@ fn affine(c: &MappingContext<'_>, gain: f64, offset: f64) -> photocraft_doc::Sma
     }
     native_filter("filter.other.convolution", json!({"kernel":kernel,"scale":1.,"offset":offset,"channels":channels,"alphaWeighted":false,"edge":"repeat"}))
 }
+/// Translate scalar arithmetic into bounded native Mixer, Exposure, Curves, or Convolution data with explicit
+/// depth and HDR policies.
 fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMapping, MappingFailure> {
     generation_bytes(c, 65_536)?;
     if c.remaining_metadata_bytes < 65_536 {
@@ -119,6 +128,8 @@ fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMappi
     notes.push("Unary stock scalar arithmetic becomes bounded ordinary native Channel Mixer, Exposure or pencil Curves controls. Native document encoding, signed/HDR policy, alpha preservation, F32 parameter precision and integer intermediate clipping/quantization remain authoritative. Gray Channel Mixer uses ordinary native RGB working contents and native final Gray conversion. Only the scalar input form is translated; no absent auxiliary input is invented.".into());
     Ok(NativeMapping { filters, working_rgb, notes, ..Default::default() })
 }
+/// Accept only owned unary scalar identities; actual auxiliary arithmetic remains the binary adapter's
+/// responsibility.
 pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> MappingResult {
     operation(e.operation)?;
     Some(map_known(e, c))
@@ -132,6 +143,7 @@ mod tests {
     use photocraft_doc::{Adjustment, Document, Layer, LayerContent};
     use photocraft_geom::{Rect, Size};
     use photocraft_raster::{Interrupt, Surface};
+    /// Provide a bounded native model/frame and allowances for independent arithmetic translation fixtures.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -145,10 +157,13 @@ mod tests {
             interrupt: Interrupt::NONE,
         }
     }
+    /// Construct a direct stored scalar arithmetic fixture without relying on graph parser defaults.
     fn source(op: &'static str, v: f64) -> StoredEffect<'static> {
         StoredEffect::test(op, vec![Argument { name: "value", value: ArgumentValue::Literal(v) }])
     }
     #[test]
+    /// Check independently specified defaults and native parameter values, including invalid and extreme
+    /// scalar domains.
     fn defaults_domains_and_exact_native_parameters_are_independent() {
         assert_eq!(operation("multiply"), Some("gegl:multiply"));
         assert_eq!(operation("math:arbitrary"), None);
@@ -182,6 +197,8 @@ mod tests {
         assert!(!map(&source("gegl:gamma", 2.), &gray).unwrap().unwrap().working_rgb);
     }
     #[test]
+    /// Compare arithmetic replay with independently authored native Channel Mixer data and verify
+    /// alpha/persistence across depths.
     fn native_channel_mixer_counterpart_preserves_alpha_and_native_reopen_each_depth() {
         for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
             let mapped = map(&source("gegl:multiply", 0.5), &context()).unwrap().unwrap();
@@ -213,6 +230,8 @@ mod tests {
         }
     }
     #[test]
+    /// Compare out-of-dialog exponents with independently computed finite native pencil curves, including
+    /// explicit endpoint policy.
     fn gamma_outside_exposure_uses_independent_native_root_curve_with_bounded_endpoints() {
         use photocraft_doc::adjust::{CurvePoint, ToneSpace};
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
@@ -290,6 +309,8 @@ mod tests {
         }
     }
     #[test]
+    /// Verify extreme finite affine controls use native F64 convolution and preserve alpha through native
+    /// serialization.
     fn affine_extremes_use_native_f64_convolution_with_alpha_excluded_and_native_reopen() {
         use photocraft_algo::convolution::{self, Edge, Params};
         use photocraft_doc::{SmartObject, SmartSource};

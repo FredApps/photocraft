@@ -13,11 +13,15 @@ const NAMES: &[&str] = &["gimp:offset", "gimp:dissolve", "gimp:equalize", "gimp:
 const OFFSET_TYPES: &[(&str, i32)] =
     &[("color", 0), ("GIMP_OFFSET_COLOR", 0), ("transparent", 1), ("GIMP_OFFSET_TRANSPARENT", 1), ("wrap-around", 2), ("GIMP_OFFSET_WRAP_AROUND", 2)];
 
+/// Resolve exact core namespace identities only; unqualified stock names must never alias into the GIMP
+/// namespace.
 pub(super) fn operation(token: &str) -> Option<&'static str> {
     // Unqualified names refer to GEGL's namespace; never alias them to GIMP.
     NAMES.iter().copied().find(|name| *name == token)
 }
 
+/// Return audited core property types and mark histogram/resource objects unavailable when no actual
+/// serialized data exists.
 pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
     Some(match (op, name) {
         ("gimp:offset", "x" | "y") => Kind::Integer { min: i64::from(i32::MIN), max: i64::from(i32::MAX) },
@@ -36,6 +40,8 @@ pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
     })
 }
 
+/// Translate integer offsets into native Offset plus optional vacated-band paint, preserving actual coverage
+/// and boundary intent.
 fn offset(e: &StoredEffect<'_>, c: &MappingContext) -> Result<super::NativeMapping, MappingFailure> {
     let x = integer(e, "x", 0, i32::MIN, i32::MAX)?;
     let y = integer(e, "y", 0, i32::MIN, i32::MAX)?;
@@ -82,6 +88,8 @@ fn offset(e: &StoredEffect<'_>, c: &MappingContext) -> Result<super::NativeMappi
     ))
 }
 
+/// Validate declared core properties before delegating finite native translations; unavailable object inputs
+/// receive explicit retention reasons.
 pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext) -> MappingResult {
     operation(e.operation)?;
     Some((|| {
@@ -108,6 +116,7 @@ mod tests {
     use super::*;
     use photocraft_color::ColorMode;
     use photocraft_geom::Rect;
+    /// Provide bounded native owner/filter frames and allowances for core operation fixtures.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -121,13 +130,18 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Construct a floating stored offset argument so signed and fractional source-domain behavior is tested
+    /// directly.
     fn number(name: &'static str, value: f64) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Literal(value) }
     }
+    /// Construct the exact stored offset enum without allowing unrelated stock namespace aliases.
     fn kind(value: i32) -> Argument<'static> {
         Argument { name: "type", value: ArgumentValue::Enum(value) }
     }
     #[test]
+    /// Check namespace separation and explicit resource roles so short names cannot bypass core input
+    /// requirements.
     fn exact_core_namespace_and_resource_roles_are_bounded() {
         for name in NAMES {
             assert_eq!(operation(name), Some(*name));
@@ -145,6 +159,8 @@ mod tests {
         assert!(matches!(field("gimp:cage-transform", "fill-plain-color"), Some(Kind::Boolean)));
     }
     #[test]
+    /// Verify accepted offsets use ordinary native parameter names while malformed source domains fail
+    /// explicitly.
     fn offset_uses_actual_native_schema_and_rejects_invalid_source_domains() {
         let e = StoredEffect::test("gimp:offset", vec![number("x", f64::from(i32::MIN)), number("y", 3.)]);
         let mapped = map(&e, &context()).unwrap().unwrap();
@@ -159,6 +175,7 @@ mod tests {
         assert_eq!(transparent.filters[0].params["undefinedAreas"], "transparent");
     }
     #[test]
+    /// Check fill masks cover only vacated bands and reject excessive geometry before allocation.
     fn colored_offset_masks_only_vacated_bands_and_preflights_geometry() {
         let e = StoredEffect::test("gimp:offset", vec![kind(0), number("x", 2.), number("y", -1.)]);
         let mapped = map(&e, &context()).unwrap().unwrap();
@@ -175,6 +192,7 @@ mod tests {
         assert_eq!(branches[0].vector_mask.as_ref().unwrap().path.subpaths.len(), 1);
     }
     #[test]
+    /// Compare independent native offset/paint constructions across depths while preserving partial coverage.
     fn native_offset_and_vacated_color_preserve_partial_alpha_at_all_depths() {
         use photocraft_algo::{FilterParams, UndefinedAreas};
         use photocraft_color::{PixelFormat, SampleType};

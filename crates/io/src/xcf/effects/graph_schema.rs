@@ -2316,6 +2316,8 @@ pub(super) fn operation(token: &str) -> Option<&'static str> {
     }
 }
 
+/// Resolve an audited canonical operation and return only its declared property type from the frozen schema
+/// table.
 pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
     let canonical = operation(op)?;
     TABLE.iter().find(|(op, _)| *op == canonical)?.1.iter().find(|(key, _)| *key == name).map(|(_, kind)| *kind)
@@ -2325,6 +2327,8 @@ pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
 mod tests {
     use super::*;
     #[test]
+    /// Reconcile frozen operation names, aliases, and field domains so the declarative schema cannot silently
+    /// drift.
     fn frozen_names_fields_and_aliases_reconcile_exactly() {
         assert_eq!(TABLE.len(), 182);
         assert_eq!(ALIASES.len(), 5);
@@ -2347,6 +2351,8 @@ mod tests {
         assert_eq!(operation("unregistered-future"), None);
     }
     #[test]
+    /// Require actual enum and config types for representative fields instead of accepting untyped string
+    /// placeholders.
     fn representative_actual_enum_and_config_domains_are_not_proxy_strings() {
         assert!(matches!(field("gegl:wind", "direction"),Some(Kind::Choice(values)) if values.contains(&("bottom",3))));
         assert!(matches!(field("gegl:alien-map", "color-model"),Some(Kind::Choice(values)) if values.contains(&("hsl",1))));
@@ -2357,12 +2363,16 @@ mod tests {
         assert_eq!(field("gegl:abs", "not-a-field"), None);
     }
     #[test]
+    /// Hash declared schema facts and compare the pinned digest to detect accidental property-domain changes.
     fn generated_declarative_fact_digest_catches_schema_drift() {
+        /// Accumulate raw schema-fact bytes with the fixed digest step; textual separators are added by the
+        /// caller.
         fn bytes(hash: &mut u64, bytes: &[u8]) {
             for b in bytes {
                 *hash = (*hash ^ u64::from(*b)).wrapping_mul(0x100000001b3);
             }
         }
+        /// Accumulate a textual schema fact followed by a NUL separator so adjacent names remain unambiguous.
         fn text(hash: &mut u64, value: &str) {
             bytes(hash, value.as_bytes());
             bytes(hash, &[0]);

@@ -9,6 +9,7 @@ const SAMPLERS: &[(&str, i32)] =
     &[("nearest", 0), ("Nearest", 0), ("linear", 1), ("Linear", 1), ("cubic", 2), ("Cubic", 2), ("nohalo", 3), ("NoHalo", 3), ("lohalo", 4), ("LoHalo", 4)];
 const EDGES: &[(&str, i32)] =
     &[("none", 0), ("None", 0), ("clamp", 1), ("Clamp", 1), ("loop", 2), ("Loop", 2), ("black", 3), ("Black", 3), ("white", 4), ("White", 4)];
+/// Resolve only the audited absolute and relative coordinate-map names and their stock aliases.
 pub(super) fn operation(token: &str) -> Option<&'static str> {
     match token {
         "map-relative" | "gegl:map-relative" => Some("gegl:map-relative"),
@@ -16,6 +17,8 @@ pub(super) fn operation(token: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+/// Declare bounded map scale, sampler, and edge properties without accepting arbitrary coordinate-program
+/// inputs.
 pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
     match (op, name) {
         ("gegl:map-relative", "scaling") => Some(Kind::Number { min: 0., max: 5000. }),
@@ -24,6 +27,8 @@ pub(super) fn field(op: &str, name: &str) -> Option<Kind> {
         _ => None,
     }
 }
+/// Bind actual earlier native input/map stages and reserve embedded-map metadata before emitting a static
+/// native Displace recipe.
 pub(super) fn lower(
     e: &StoredEffect<'_>,
     c: &MappingContext<'_>,
@@ -78,6 +83,8 @@ mod tests {
     use photocraft_geom::Rect;
     use photocraft_raster::Interrupt;
     #[test]
+    /// Verify coordinate mode, scale, edge policy, backward references, and aggregate metadata admission
+    /// reach the native stage recipe.
     fn exact_coordinate_controls_and_actual_references() {
         let context = MappingContext {
             mode: ColorMode::Rgb,
