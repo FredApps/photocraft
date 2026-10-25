@@ -214,4 +214,42 @@ mod synthetic {
         let saved = photocraft_format::save_to_bytes(&doc, &Default::default()).unwrap();
         assert_eq!(photocraft_format::load_from_bytes(&saved).unwrap().layers, doc.layers);
     }
+    #[test]
+    /// Import named Pango paints through full XCF framing, keeping X11 numbered colors and CSS gray precedence as editable native text after reopen.
+    fn named_markup_colors_import_as_editable_native_runs_and_persist() {
+        use photocraft_doc::import_conversion::{ConversionDisposition, ConversionReason, ImportConversion};
+        let config = br#"(markup "<markup><span foreground=\"steelblue4\">S</span><span fgcolor=\"gray42\">N</span><span color=\"gray\">C</span></markup>") (font "Sans") (font-size 12)"#;
+        let bytes = source_config(false, true, false, config);
+        let imported = photocraft_io::import("named-markup.xcf", &bytes).unwrap();
+        let doc = imported.document;
+        let LayerContent::Text(text) = &doc.layers[0].content else {
+            panic!("named paints must preserve editable text instead of falling back to saved raster pixels")
+        };
+        assert_eq!(text.text, "SNC");
+        assert_eq!(text.runs.len(), 3);
+        assert!(text.cache.is_none(), "decoding native type does not require installed fonts or a baked glyph cache");
+        // Independent X11 rgb.txt facts for the numbered names; unnumbered
+        // Pango gray uses CSS128, not the X11 table's190 value.
+        let expected = [[54., 100., 139.], [107., 107., 107.], [128., 128., 128.]];
+        for (run, expected) in text.runs.iter().zip(expected) {
+            assert_eq!(run.len, 1);
+            assert_eq!(run.style.color.mode, photocraft_color::ColorMode::Rgb);
+            assert_eq!(run.style.color.alpha, 1.);
+            for (actual, byte) in run.style.color.c.iter().take(3).zip(expected) {
+                assert!((*actual - byte / 255.).abs() < 1e-5, "named paint must match the independent RGB literal after native sRGB CMS");
+            }
+        }
+        let Some(ImportConversion::Report(report)) = doc.metadata.import_conversion.as_deref() else { panic!("typed conversion report") };
+        let converted = report.entries.iter().find(|entry| entry.feature_code == "xcf.text").unwrap();
+        assert_eq!(converted.disposition, ConversionDisposition::NativeApproximation);
+        assert_eq!(converted.reason, ConversionReason::NativePolicy);
+        assert!(converted.native_description.contains("Native editable text"));
+        assert!(imported.source_read_only && !imported.preview_only);
+        let saved = photocraft_format::save_to_bytes(&doc, &Default::default()).unwrap();
+        let reopened = photocraft_format::load_from_bytes(&saved).unwrap();
+        let LayerContent::Text(reopened_text) = &reopened.layers[0].content else { panic!("native reopen must retain editable type") };
+        assert_eq!(reopened_text.text, text.text);
+        assert_eq!(reopened_text.runs, text.runs);
+        assert_eq!(reopened.metadata.import_conversion, doc.metadata.import_conversion);
+    }
 }

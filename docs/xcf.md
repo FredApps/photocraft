@@ -54,6 +54,15 @@ hexadecimal text-markup colors become ordinary editable native text colors, with
 conversion and source alpha preserved. Unknown color names retain an explicit stored-pixel fallback. Source item sets
 and unsupported markers remain historical metadata rather than new editing behavior.
 
+Pango named colors in saved XCF text require the shared X11 vocabulary: for example,
+`steelblue4` and `gray42` must become explicit native RGB text-run colors. The production path is
+`xcf` import → `text::decode` → `markup_runs` → `markup_color` →
+`photocraft_codecs::x11_color_rgb`. The bounded codecs API exposes the existing X11 table across
+crate layers; the XCF text adapter applies Pango/CSS precedence first (`gray` is 128/255,
+whereas raw X11 `gray` is 190/255). XPM decoding and its existing name normalization are unchanged.
+The whole-file synthetic test `named_markup_colors_import_as_editable_native_runs_and_persist`
+checks this route through XCF import and native save/reopen without external corpus fixtures.
+
 The compatibility boundary is stock GIMP 3.2.6 and documented XCF 0–26 records. Synthetic wire
 tests and locally saved historical samples cover specific records; they do not qualify every
 historical GIMP release. High-depth versions 7–11 require an explicit sample byte-order choice:
