@@ -649,3 +649,27 @@ fn frame_stroke_exports_its_pixels() {
     let rec = f.layers().iter().find(|r| r.name() == "Frame Stroke").expect("stroke record");
     assert!(!rec.rect.is_empty(), "the border has no pixels: {:?}", rec.rect);
 }
+
+/// Invalidating an imported frame must not restore it from its preserved PSD metadata.
+#[test]
+fn an_invalidated_frame_stays_removed_after_psd_roundtrip() {
+    use photocraft_doc::{Document, Layer, Size};
+
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let mut doc = Document::new("frame", Size::new(8, 8), ColorMode::Rgb, depth);
+        doc.layers = vec![framed(vec![Layer::raster("image", doc.pixel_format())], None)];
+        let mut imported = roundtrip(&doc);
+        let frame = &mut imported.layers[0];
+        assert!(frame.frame.is_some(), "{depth:?}: the frame must first survive import");
+        assert!(frame.psd_blocks.iter().any(|(key, _)| key == b"pcFr"));
+        frame.frame = None;
+
+        let exported = export(&imported, "invalidated.psd", &ExportOptions::default()).unwrap();
+        let psd = PsdFile::from_bytes(&exported.bytes).unwrap();
+        assert!(psd.layers().iter().all(|layer| layer.block(b"pcFr").is_none()), "{depth:?}: stale frame metadata was exported");
+        let reopened = import("invalidated.psd", &exported.bytes).unwrap().document;
+        assert!(reopened.layers[0].frame.is_none(), "{depth:?}: the obsolete frame was restored");
+        assert!(reopened.layers[0].is_group());
+        assert_eq!(reopened.layers[0].children().unwrap().len(), 1);
+    }
+}

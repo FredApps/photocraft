@@ -747,8 +747,9 @@ impl Ex {
         if !matches!(l.content, LayerContent::Shape(_)) {
             self.vector_mask_block(l, &mut raw);
         }
+        // The document field owns frame state, including an imported frame's removal.
+        raw.retain(|(k, _)| k != b"pcFr");
         if let Some(frame) = &l.frame {
-            raw.retain(|(k, _)| k != b"pcFr");
             match serde_json::to_vec(frame) {
                 Ok(data) => raw.push((*b"pcFr", data)),
                 Err(e) => self.warnings.push(format!("frame metadata could not be written: {e}")),
@@ -1137,7 +1138,8 @@ impl Ex {
         for l in layers {
             // Export a frame as ordinary editable groups, a vector clip and a separate border.
             // Photoshop's private native-frame metadata is deliberately not fabricated.
-            if let (Some(frame), Some(children)) = (&l.frame, l.children()) {
+            let expanded;
+            let l = if let (Some(frame), Some(children)) = (&l.frame, l.children()) {
                 let mut clip = Layer::group("Frame Image", children.to_vec());
                 clip.blend = photocraft_color::BlendMode::Normal;
                 clip.mask = l.mask.clone();
@@ -1146,7 +1148,6 @@ impl Ex {
                 let cid = self.fresh_id();
                 self.layer_ids.insert(clip.id, cid);
                 let mut outer = l.clone();
-                outer.frame = None;
                 outer.mask = None;
                 outer.vector_mask = None;
                 let mut parts = vec![clip];
@@ -1162,14 +1163,12 @@ impl Ex {
                 if let Some(target) = outer.children_mut() {
                     *target = parts;
                 }
-                outer.psd_blocks.retain(|(key, _)| key != b"pcFr");
-                match serde_json::to_vec(frame) {
-                    Ok(data) => outer.psd_blocks.push((*b"pcFr", std::sync::Arc::new(data))),
-                    Err(e) => self.warnings.push(format!("frame metadata could not be written: {e}")),
-                }
-                self.emit(&[outer], tick);
-                continue;
-            }
+                // Emit this prepared group directly, retaining its typed frame for content_blocks.
+                expanded = outer;
+                &expanded
+            } else {
+                l
+            };
             let extra = self.content_blocks(l);
             match &l.content {
                 LayerContent::Group(g) => {
