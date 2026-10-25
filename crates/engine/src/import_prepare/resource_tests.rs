@@ -164,11 +164,12 @@ fn repeated_identical_filter_free_sources_share_only_completed_preparation_work(
     let original_repeated = repeated.clone();
     let hit_metadata = memo::clone_bytes(single.layers[0].surface().unwrap()).unwrap();
     let mut budget = allowance();
-    budget.remaining_bytes = one_unique_work + hit_metadata;
+    let render_peak = Allowance::render_bytes(&repeated).unwrap();
+    budget.remaining_bytes = render_peak + one_unique_work + hit_metadata;
     budget.source_bytes = bytes.len() * 2;
     budget.items = 2;
     prepare_with_allowance(&mut repeated, &JobCtx::new(), &mut budget).unwrap();
-    assert_eq!(budget.remaining_bytes, 0);
+    assert_eq!(budget.remaining_bytes, render_peak, "temporary rendering is released after retained memo/cache charges");
     assert_eq!(budget.source_bytes, 0);
     assert_eq!(budget.items, 0);
     assert_eq!(repeated.layers[0].surface(), repeated.layers[1].surface());
@@ -181,9 +182,14 @@ fn repeated_identical_filter_free_sources_share_only_completed_preparation_work(
     assert!(Arc::ptr_eq(first_tile, second_tile), "successful cache reuse shares native COW tiles");
     let mut insufficient_metadata = original_repeated.clone();
     let mut short_metadata = allowance();
+    // A memo hit does not reserve a frame: released render headroom would be
+    // available to fund it. This tiny fixture's hit metadata exceeds its32-byte
+    // render peak, so the first unique render fits but the second hit does not.
+    assert!(hit_metadata > render_peak);
     short_metadata.remaining_bytes = one_unique_work + hit_metadata - 1;
     assert!(prepare_with_allowance(&mut insufficient_metadata, &JobCtx::new(), &mut short_metadata).unwrap_err().to_string().contains("working-byte"));
     assert_eq!(short_metadata.remaining_bytes, hit_metadata - 1, "failed hit preflight does not debit or allocate its clone");
+    assert_eq!(short_metadata.source_bytes, MAX_SOURCE_BYTES - bytes.len() * 2, "failure occurs after entering the second Smart item");
     assert_eq!(insufficient_metadata, original_repeated);
     // A distinct original source still needs its own work allowance.
     let original = document(vec![smart(bytes), smart(source(Color::rgb(0.1, 0.7, 0.3)))]);
@@ -231,9 +237,10 @@ fn repeated_native_cache_hits_keep_each_depth_hdr_and_cow_edit_independence() {
         let mut hit_budget = allowance();
         let unique_work = MAX_PREPARATION_BYTES - unique_budget.remaining_bytes;
         let metadata = memo::clone_bytes(expected).unwrap();
-        hit_budget.remaining_bytes = unique_work + metadata;
+        let render_peak = Allowance::render_bytes(&repeated).unwrap();
+        hit_budget.remaining_bytes = render_peak + unique_work + metadata;
         prepare_with_allowance(&mut repeated, &JobCtx::new(), &mut hit_budget).unwrap();
-        assert_eq!(hit_budget.remaining_bytes, 0, "{depth:?}: actual hit charges metadata rather than unique rendering again");
+        assert_eq!(hit_budget.remaining_bytes, render_peak, "{depth:?}: cache hits charge metadata while temporary rendering is released");
         assert_eq!(repeated.depth, depth);
         for layer in &repeated.layers {
             let surface = layer.surface().unwrap();
@@ -278,9 +285,12 @@ fn native_canvas_admission_reuses_its_already_debited_same_extent_render_reserva
         let render = MAX_PREPARATION_BYTES - charged.remaining_bytes;
         assert!(decoded < render, "small sparse source makes duplicate frame reservation observable");
         let mut exact = allowance();
-        exact.remaining_bytes = render + decoded;
+        let mut retained = allowance();
+        retained.cache(ordinary.layers[0].surface().unwrap()).unwrap();
+        let cache = MAX_PREPARATION_BYTES - retained.remaining_bytes;
+        exact.remaining_bytes = render + decoded + cache;
         prepare_with_allowance(&mut parent, &JobCtx::new(), &mut exact).unwrap();
-        assert_eq!(exact.remaining_bytes, 0, "same extent reserves its native render exactly once");
+        assert_eq!(exact.remaining_bytes, render, "same extent releases temporary rendering but retains decoded/cache charges");
         assert_eq!(parent, ordinary, "{depth:?}: admission credit does not change ordinary native pixels or editable data");
     }
 }
@@ -307,9 +317,12 @@ fn larger_native_source_requires_checked_extra_render_debit_before_composition()
         prepare_imported_document(&mut ordinary, &JobCtx::new()).unwrap();
         let mut exact = parent.clone();
         let mut budget = allowance();
-        budget.remaining_bytes = source_render + decoded;
+        let mut retained = allowance();
+        retained.cache(ordinary.layers[0].surface().unwrap()).unwrap();
+        let cache = MAX_PREPARATION_BYTES - retained.remaining_bytes;
+        budget.remaining_bytes = source_render + decoded + cache;
         prepare_with_allowance(&mut exact, &JobCtx::new(), &mut budget).unwrap();
-        assert_eq!(budget.remaining_bytes, 0, "{depth:?}: larger source's additional extent is actually debited");
+        assert_eq!(budget.remaining_bytes, source_render, "{depth:?}: the full larger temporary frame is released after preparation");
         assert_eq!(exact, ordinary);
         let mut short = allowance();
         short.remaining_bytes = source_render + decoded - 1;
@@ -323,4 +336,102 @@ fn larger_native_source_requires_checked_extra_render_debit_before_composition()
         assert_eq!(FIRST_FILTER_CHECKS.with(|count| count.get()), 0, "extra source extent is debited before even authorizing its render filter");
         assert_eq!(refused, parent, "{depth:?}: failed top-up leaves pending native data unchanged");
     }
+}
+
+/// Prepare a sparse native item repeatedly on a larger declared canvas without allocating full-frame fixtures.
+fn sparse_items(kind: usize, count: usize) -> Document {
+    let mut doc = Document::new("Sequential sparse native work", Size::new(512, 512), ColorMode::Rgb, SampleType::U8);
+    for i in 0..count {
+        let layer = match kind {
+            0 => Layer::new("Sparse native text", LayerContent::Text(photocraft_doc::TextLayer { text: ".".into(), size_pt: 8., ..Default::default() })),
+            1 => Layer::new(
+                "Sparse native shape",
+                LayerContent::Shape(photocraft_doc::ShapeLayer {
+                    path: photocraft_doc::Path::new(vec![photocraft_doc::Subpath::polygon(&[(2., 2.), (4., 2.), (4., 4.), (2., 4.)])]),
+                    fill: Some(photocraft_doc::Fill::Solid(Color::BLACK)),
+                    ..Default::default()
+                }),
+            ),
+            _ => smart(source(Color::rgb(i as f32 / count as f32, 0.3, 0.7))),
+        };
+        doc.layers.push(layer);
+    }
+    doc
+}
+
+#[test]
+/// Many sparse native items require retained cache totals plus one sequential render peak, not one frame per item.
+fn sequential_text_shape_and_smart_release_only_temporary_frames() {
+    for kind in 0..3 {
+        let original = sparse_items(kind, 8);
+        let frame = Allowance::render_bytes(&original).unwrap();
+        let mut ordinary = original.clone();
+        let mut measured = allowance();
+        prepare_with_allowance(&mut ordinary, &JobCtx::new(), &mut measured).unwrap();
+        let retained = MAX_PREPARATION_BYTES - measured.remaining_bytes;
+        assert!(retained > 0, "actual native caches remain charged");
+        assert!(retained < frame * 7, "sparse retained data is smaller than seven full render frames");
+        let initial = frame + retained;
+        let mut exact = allowance();
+        exact.remaining_bytes = initial;
+        let mut pending = original.clone();
+        prepare_with_allowance(&mut pending, &JobCtx::new(), &mut exact).unwrap();
+        assert_eq!(exact.remaining_bytes, frame, "{kind}: release frame only, retain cache/source/memo storage");
+        assert_eq!(pending, ordinary);
+        assert!(pending.layers.iter().all(|layer| layer.surface().is_some()));
+        let mut cache_charge = allowance();
+        for layer in &pending.layers {
+            cache_charge.cache(layer.surface().unwrap()).unwrap();
+        }
+        assert!(retained >= MAX_PREPARATION_BYTES - cache_charge.remaining_bytes, "each retained payload and map remains charged");
+    }
+}
+
+#[test]
+/// Parent and child Smart preparation coexist: a budget sufficient for one peak cannot admit their nested peak.
+fn nested_smart_frames_remain_reserved_until_the_outer_item_finishes() {
+    let inner = sparse_items(2, 1);
+    let bytes = Arc::new(smart_cmds::encode_source(&inner).unwrap());
+    let mut original = Document::new("Nested native peak", inner.size, inner.mode, inner.depth);
+    original.layers.push(smart(bytes));
+    let frame = Allowance::render_bytes(&original).unwrap();
+    let mut ordinary = original.clone();
+    let mut measured = allowance();
+    prepare_with_allowance(&mut ordinary, &JobCtx::new(), &mut measured).unwrap();
+    let retained = MAX_PREPARATION_BYTES - measured.remaining_bytes;
+    assert!(retained < frame, "small sparse nested caches isolate concurrent render reservations");
+    let mut budget = allowance();
+    budget.remaining_bytes = frame + retained;
+    let mut refused = original.clone();
+    assert!(prepare_with_allowance(&mut refused, &JobCtx::new(), &mut budget).is_err());
+    assert_eq!(refused, original, "nested peak failure cannot publish a partially prepared source or cache");
+    assert!(budget.remaining_bytes >= frame, "all successfully reserved temporary frames are released on failure");
+}
+
+#[test]
+/// Failure or cancellation releases exact temporary reservations, including top-ups, while retained debits survive.
+fn temporary_scope_does_not_refund_retained_bytes_on_error_or_cancel() {
+    let doc = document(Vec::new());
+    for cancel in [false, true] {
+        let mut budget = allowance();
+        budget.remaining_bytes = 100;
+        let context = JobCtx::new();
+        let result: Result<()> = budget.with_render(&doc, |budget, frame, temporary| {
+            assert_eq!(frame, 32);
+            budget.extend_render(temporary, 16)?;
+            budget.bytes(7)?;
+            if cancel {
+                context.cancel();
+                context.check()
+            } else {
+                Err(limit("synthetic failure"))
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(budget.remaining_bytes, 93, "only the 48 temporary bytes are refunded");
+    }
+    let mut short = allowance();
+    short.remaining_bytes = 31;
+    assert!(short.with_render(&doc, |_, _, _| Ok(())).is_err());
+    assert_eq!(short.remaining_bytes, 31, "failed initial reservation is atomic");
 }

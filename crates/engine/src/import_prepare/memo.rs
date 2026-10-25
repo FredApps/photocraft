@@ -114,8 +114,9 @@ impl Memo {
         if self.entries.len() >= MAX_ENTRIES || self.entries.contains_key(key) {
             return None;
         }
-        // Payload tiles/source/profile remain COW aliases covered by the original
-        // unreleased unique-work debit. Price the additional map/entry metadata.
+        // Cache payload tiles remain COW aliases covered by the explicit retained
+        // cache debit. Source/profile aliases keep their existing source admission;
+        // the temporary render reservation is not the retained-payload charge.
         let bytes = clone_bytes(surface).ok()?.checked_add(u64::try_from(std::mem::size_of::<Entry>() + std::mem::size_of::<Key>() + 128).ok()?)?;
         if bytes > available || self.entries.try_reserve(1).is_err() {
             return None;
