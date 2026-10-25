@@ -45,13 +45,16 @@ fn live_mask_paint_reuses_stack_prefix_and_matches_canonical_refresh_at_every_de
                 paint: Some(Stack {
                     base,
                     layers: vec![
-                        Paint { name: "lower".into(), visible: true, opacity: 0.7, surface: lower, kind: EffectKind::Paint },
-                        Paint { name: "active".into(), visible: true, opacity: 0.8, surface: active, kind: EffectKind::Paint },
+                        Paint { name: "lower".into(), visible: true, opacity: 0.7, surface: lower, fill_map: None, fill_map_size: [0,0], fill_bounds: None, kind: EffectKind::Paint },
+                        Paint { name: "active".into(), visible: true, opacity: 0.8, surface: active, fill_map: None, fill_map_size: [0,0], fill_bounds: None, kind: EffectKind::Paint },
                         Paint {
                             name: "levels".into(),
                             visible: true,
                             opacity: 0.6,
                             surface: Surface::new(rgba),
+                            fill_map: None,
+                            fill_map_size: [0,0],
+                            fill_bounds: None,
                             kind: EffectKind::Levels { input_black: 0.05, gamma: 1.4, input_white: 0.9, output_black: 0.1, output_white: 0.8 },
                         },
                     ],
@@ -109,6 +112,9 @@ fn brush_does_not_write_to_a_flattened_mask_when_an_effect_is_selected() {
                     visible: true,
                     opacity: 1.0,
                     surface: Surface::new(PixelFormat::RGBA16),
+                    fill_map: None,
+                    fill_map_size: [0,0],
+                    fill_bounds: None,
                     kind: EffectKind::Fill { value: 0.8 },
                 }],
                 active: 0,
@@ -147,7 +153,7 @@ fn dense_ten_paint_mask_session() -> Session {
             })
             .collect();
         surface.write_region(rect, &pixels);
-        layers.push(Paint { name: format!("dense {index}"), visible: true, opacity: 0.8, surface, kind: EffectKind::Paint });
+        layers.push(Paint { name: format!("dense {index}"), visible: true, opacity: 0.8, surface, fill_map: None, fill_map_size: [0,0], fill_bounds: None, kind: EffectKind::Paint });
     }
     s.edit("dense mask benchmark", |doc, _| {
         let layer = doc.layer_mut(id).ok_or_else(|| EngineError::NoLayer(id))?;

@@ -12,6 +12,12 @@ pub struct Paint {
     pub opacity: f32,
     /// Paint pixels. Effects keep an empty placeholder here for format/API compatibility.
     pub surface: Surface,
+    /// Optional grayscale Fill input (a cropped selection or a library image).
+    pub fill_map: Option<Surface>,
+    /// Pixel size of `fill_map`; retained even when the map is entirely black.
+    pub fill_map_size: [u32; 2],
+    /// Destination rectangle in document pixels. `None` means the full canvas.
+    pub fill_bounds: Option<[i32; 4]>,
     pub kind: EffectKind,
 }
 

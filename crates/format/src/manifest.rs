@@ -426,6 +426,12 @@ pub struct MaskPaintLayerM {
     pub visible: bool,
     pub opacity: f32,
     pub surface: SurfaceM,
+    #[serde(default)]
+    pub fill_map: Option<SurfaceM>,
+    #[serde(default)]
+    pub fill_map_size: [u32; 2],
+    #[serde(default)]
+    pub fill_bounds: Option<[i32; 4]>,
     #[serde(default = "mask_paint_kind_default")]
     pub kind: String,
     #[serde(default = "mask_paint_value_default")]

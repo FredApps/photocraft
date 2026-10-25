@@ -416,7 +416,17 @@ impl Loader<'_> {
                 }
                 _ => return Err(FormatError::corrupt("invalid mask paint effect")),
             };
-            layers.push(photocraft_doc::mask_paint::Paint { name: p.name.clone(), visible: p.visible, opacity: p.opacity, surface, kind });
+            let fill_map = self.opt_surface(&p.fill_map)?;
+            layers.push(photocraft_doc::mask_paint::Paint {
+                name: p.name.clone(),
+                visible: p.visible,
+                opacity: p.opacity,
+                surface,
+                fill_map,
+                fill_map_size: p.fill_map_size,
+                fill_bounds: p.fill_bounds,
+                kind,
+            });
         }
         Ok(Some(photocraft_doc::mask_paint::Stack { base, layers, active: s.active }))
     }
@@ -769,6 +779,9 @@ fn mask_paint_m(m: &LayerMask, sink: &mut dyn Sink) -> Option<MaskPaintM> {
                     visible: p.visible,
                     opacity: p.opacity,
                     surface: surface_m(&p.surface, sink),
+                    fill_map: p.fill_map.as_ref().map(|map| surface_m(map, sink)),
+                    fill_map_size: p.fill_map_size,
+                    fill_bounds: p.fill_bounds,
                     kind: kind.into(),
                     value,
                     input_black,

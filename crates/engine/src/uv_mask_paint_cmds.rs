@@ -66,6 +66,8 @@ fn has_any(p: &Value, keys: &[&str]) -> bool {
 }
 fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let id = target(s, p)?;
+    let from_selection = p.get("from_selection").and_then(Value::as_bool).unwrap_or(false);
+    let selection = if from_selection { Some(s.active().and_then(|st| st.doc.selection.clone()).ok_or_else(|| bad("Make a selection first"))?) } else { None };
     let kind = p.get("kind").and_then(Value::as_str).unwrap_or("paint").to_owned();
     let default_name = match kind.as_str() {
         "fill" => "Fill",
@@ -74,6 +76,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let name = p.get("name").and_then(Value::as_str).unwrap_or(default_name).chars().take(128).collect::<String>();
     s.edit("Add mask Paint layer", |doc, active| {
+        let canvas = doc.bounds();
         let mask = doc.layer_mut(id).and_then(|l| l.mask.as_mut()).ok_or_else(|| bad("Layer has no mask"))?;
         let format = photocraft_color::PixelFormat::RGBA8.with_sample(mask.surface.format().sample);
         let base = mask.surface.clone();
@@ -105,7 +108,31 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
             EffectKind::Levels { .. } if p.get("value").is_some() => return Err(bad("Fill value does not apply to Levels layers")),
             _ => {}
         }
-        stack.layers.push(Paint { name, visible: true, opacity: 1.0, surface, kind: effect });
+        let (fill_map, fill_map_size, fill_bounds) = if matches!(&effect, EffectKind::Fill { .. }) {
+            if let Some(selection) = &selection {
+                let bounds = selection.content_bounds().intersect(&canvas);
+                if bounds.is_empty() {
+                    return Err(bad("The selection is empty"));
+                }
+                let width = bounds.width();
+                let height = bounds.height();
+                let mut pixels = Vec::with_capacity((width as usize).saturating_mul(height as usize).saturating_mul(4));
+                for y in bounds.y0..bounds.y1 {
+                    for x in bounds.x0..bounds.x1 {
+                        let value = selection.sample_channel(x, y, 0).clamp(0.0, 1.0);
+                        pixels.extend_from_slice(&[value, value, value, 1.0]);
+                    }
+                }
+                let mut map = Surface::with_default(format, &[0.0, 0.0, 0.0, 1.0]);
+                map.write_region(photocraft_geom::Rect::new(0, 0, width as i32, height as i32), &pixels);
+                (Some(map), [width, height], Some([bounds.x0, bounds.y0, bounds.x1, bounds.y1]))
+            } else {
+                (None, [0, 0], Some([canvas.x0, canvas.y0, canvas.x1, canvas.y1]))
+            }
+        } else {
+            (None, [0, 0], None)
+        };
+        stack.layers.push(Paint { name, visible: true, opacity: 1.0, surface, fill_map, fill_map_size, fill_bounds, kind: effect });
         stack.active = stack.layers.len().saturating_sub(1);
         *active = Some(id);
         Ok(json!({"index":stack.active}))
@@ -140,8 +167,30 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
     let output_black = p.get("output_black").map(|_| unit_param(p, "output_black", 0.0)).transpose()?;
     let output_white = p.get("output_white").map(|_| unit_param(p, "output_white", 1.0)).transpose()?;
     let gamma = p.get("gamma").map(|_| gamma_param(p)).transpose()?;
-    let effect_changed =
-        fill_value.is_some() || input_black.is_some() || input_white.is_some() || output_black.is_some() || output_white.is_some() || gamma.is_some();
+    let bounds = p
+        .get("bounds")
+        .and_then(Value::as_array)
+        .map(|v| {
+            if v.len() != 4 {
+                return Err(bad("Fill bounds require four coordinates"));
+            }
+            let mut out = [0i32; 4];
+            for (i, x) in v.iter().enumerate() {
+                out[i] = i32::try_from(x.as_i64().ok_or_else(|| bad("Invalid fill bounds"))?).map_err(|_| bad("Invalid fill bounds"))?;
+            }
+            if out[2] <= out[0] || out[3] <= out[1] {
+                return Err(bad("Fill bounds must have positive size"));
+            }
+            Ok(out)
+        })
+        .transpose()?;
+    let effect_changed = fill_value.is_some()
+        || input_black.is_some()
+        || input_white.is_some()
+        || output_black.is_some()
+        || output_white.is_some()
+        || gamma.is_some()
+        || bounds.is_some();
     let mut damage = photocraft_geom::Rect::EMPTY;
     let result = s.edit("Edit mask Paint layer", |doc, _| {
         let canvas = doc.bounds();
@@ -182,9 +231,12 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                 if let Some(next) = fill_value {
                     *value = next;
                 }
+                if let Some(next) = bounds {
+                    paint.fill_bounds = Some(next);
+                }
             }
             EffectKind::Levels { input_black: ib, gamma: g, input_white: iw, output_black: ob, output_white: ow } => {
-                if fill_value.is_some() {
+                if fill_value.is_some() || bounds.is_some() {
                     return Err(bad("Fill value does not apply to Levels layers"));
                 }
                 if let Some(next) = input_black {
@@ -204,7 +256,7 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             EffectKind::Paint => {
-                if fill_value.is_some() || input_black.is_some() || gamma.is_some() || input_white.is_some() || output_black.is_some() || output_white.is_some()
+                if fill_value.is_some() || bounds.is_some() || input_black.is_some() || gamma.is_some() || input_white.is_some() || output_black.is_some() || output_white.is_some()
                 {
                     return Err(bad("Effect settings do not apply to Paint layers"));
                 }
@@ -242,14 +294,52 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
     }
     Ok(result)
 }
+fn fill_source(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = target(s, p)?;
+    let index = index(p)?;
+    let asset_id = p.get("asset").and_then(Value::as_u64).ok_or_else(|| bad("Choose an image from the library"))?;
+    let asset = s.uv.assets.iter().find(|a| a.id == asset_id).ok_or_else(|| bad("Image is no longer in the library"))?;
+    let [width, height] = [asset.document.size.width, asset.document.size.height];
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 64_000_000 {
+        return Err(bad("Fill images must contain at most 64 million pixels"));
+    }
+    let rendered = photocraft_compose::render_reduced(&asset.document, width, height);
+    let format = photocraft_color::PixelFormat::RGBA8;
+    let mut map = Surface::with_default(format, &[0.0, 0.0, 0.0, 1.0]);
+    let rgba = rendered
+        .px
+        .iter()
+        .flat_map(|pixel| {
+            let gray = (pixel[0] * 0.2126 + pixel[1] * 0.7152 + pixel[2] * 0.0722).clamp(0.0, 1.0);
+            [gray, gray, gray, 1.0]
+        })
+        .collect::<Vec<_>>();
+    map.write_region(photocraft_geom::Rect::new(0, 0, width as i32, height as i32), &rgba);
+    s.edit("Set Fill image", |doc, _| {
+        let canvas = doc.bounds();
+        let mask = doc.layer_mut(id).and_then(|l| l.mask.as_mut()).ok_or_else(|| bad("Layer has no mask"))?;
+        let stack = mask.paint.as_mut().ok_or_else(|| bad("Mask has no effect layers"))?;
+        let fill = stack.layers.get_mut(index).ok_or_else(|| bad("Effect layer is out of range"))?;
+        if !matches!(&fill.kind, EffectKind::Fill { .. }) {
+            return Err(bad("Select a Fill layer first"));
+        }
+        fill.fill_map = Some(map);
+        fill.fill_map_size = [width, height];
+        if fill.fill_bounds.is_none() {
+            fill.fill_bounds = Some([canvas.x0, canvas.y0, canvas.x1, canvas.y1]);
+        }
+        Ok(Value::Null)
+    })
+}
 pub fn specs() -> Vec<CommandSpec> {
     [
-        ("uv.maskPaint.add", "Add mask stack layer", r#"{"layer":id?,"name":string?,"kind":"paint"|"fill"|"levels"?,"value":number?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#, add as fn(&mut Session, &Value) -> Result<Value>),
+        ("uv.maskPaint.add", "Add mask stack layer", r#"{"layer":id?,"name":string?,"kind":"paint"|"fill"|"levels"?,"value":number?,"from_selection":bool?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#, add as fn(&mut Session, &Value) -> Result<Value>),
         ("uv.maskPaint.select", "Select mask Paint layer", r#"{"layer":id?,"index":int}"#, select),
+        ("uv.maskPaint.fillSource", "Set Fill image", r#"{"layer":id?,"index":int,"asset":int}"#, fill_source),
         (
             "uv.maskPaint.modify",
             "Edit mask Paint layer",
-            r#"{"layer":id?,"index":int,"visible":bool?,"opacity":number?,"name":string?,"to":int?,"remove":bool?,"value":number?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#,
+            r#"{"layer":id?,"index":int,"visible":bool?,"opacity":number?,"name":string?,"to":int?,"remove":bool?,"value":number?,"bounds":[i32,i32,i32,i32]?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#,
             modify,
         ),
     ]

@@ -3107,6 +3107,21 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             continue;
         }
         let _ = app.run(&id, p);
+        #[cfg(feature = "uv-workbench")]
+        if app.ui.workspace == "3D" {
+            if id == "uv.maskPaint.select" {
+                let levels = app.session.active().and_then(|st| st.active_layer.and_then(|id| st.doc.layer(id))).and_then(|layer| {
+                    let stack = layer.mask.as_ref()?.paint.as_ref()?;
+                    Some(matches!(
+                        &stack.layers.get(stack.active)?.kind,
+                        photocraft_doc::mask_paint::EffectKind::Levels { .. } | photocraft_doc::mask_paint::EffectKind::Fill { .. }
+                    ))
+                });
+                app.ui.dock_tabs.properties = if levels == Some(true) { 0 } else { 2 };
+            } else if id == "layer.select" {
+                app.ui.dock_tabs.properties = 2;
+            }
+        }
     }
 }
 
@@ -4121,6 +4136,10 @@ fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 
 fn properties_body_inner(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
+    #[cfg(feature = "uv-workbench")]
+    if crate::uv_mask_paint::levels_properties(app, ui) || crate::uv_mask_paint::fill_properties(app, ui) {
+        return;
+    }
     let Some(st) = app.session.active() else {
         empty(ui, tl!("No properties"));
         return;

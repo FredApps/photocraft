@@ -4723,3 +4723,10 @@ shape	Appearance	Оформление
 	Output Black	Выходная чёрная точка
 	Output White	Выходная белая точка
 	Applied when you release the control	Применяется после отпускания элемента управления
+	Fill from selection	Заливка из выделения
+	Use as Fill image	Использовать как изображение заливки
+	Gray value	Уровень серого
+	Bounds	Границы
+	Drag the rectangle handles on the 2D canvas to resize the Fill mask.	Перетаскивайте угловые маркеры на 2D-холсте, чтобы изменить размер маски заливки.
+	Image from the Images tab	Изображение из вкладки «Изображения»
+	Uniform grayscale Fill	Однотонная заливка серым

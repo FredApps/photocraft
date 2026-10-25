@@ -122,6 +122,29 @@ pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 place(app, asset.id);
                 ui.close();
             }
+            let fill_target = app
+                .session
+                .active()
+                .and_then(|st| {
+                    st.active_layer.and_then(|id| st.doc.layer(id)).map(|layer| {
+                        let effect = layer.mask.as_ref().and_then(|mask| mask.paint.as_ref()).and_then(|stack| {
+                            stack
+                                .layers
+                                .get(stack.active)
+                                .map(|paint| (stack.active, matches!(&paint.kind, photocraft_doc::mask_paint::EffectKind::Fill { .. })))
+                        });
+                        (layer.id.0, effect)
+                    })
+                })
+                .filter(|(_, effect)| effect.is_some_and(|(_, is_fill)| is_fill));
+            if let Some((layer, Some((index, _)))) = fill_target
+                && ui.button(tl!("Use as Fill image")).clicked()
+            {
+                if let Err(error) = app.run("uv.maskPaint.fillSource", json!({"layer":layer,"index":index,"asset":asset.id})) {
+                    app.ui.uv_workbench.status = error;
+                }
+                ui.close();
+            }
             if ui.button(tl!("Remove from library")).clicked() {
                 remove = Some(asset.id);
                 ui.close();

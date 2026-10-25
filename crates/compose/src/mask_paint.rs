@@ -27,6 +27,10 @@ pub fn refresh_changes(mask: &mut LayerMask, old: Option<&Stack>) {
     }
     let mut changed = std::collections::BTreeSet::new();
     for (now, before) in stack.layers.iter().zip(&old.layers) {
+        if now.fill_map != before.fill_map || now.fill_map_size != before.fill_map_size || now.fill_bounds != before.fill_bounds {
+            refresh(mask, None);
+            return;
+        }
         if now.surface.default_pixel() != before.surface.default_pixel() {
             if !matches!(&now.kind, EffectKind::Paint) || !matches!(&before.kind, EffectKind::Paint) {
                 refresh(mask, None);
@@ -77,6 +81,11 @@ pub fn refresh(mask: &mut LayerMask, region: Option<Rect>) {
             if matches!(&paint.kind, EffectKind::Paint) {
                 tiles.extend(paint.surface.tiles().map(|(c, _)| *c));
             }
+            if let Some([x0, y0, x1, y1]) = paint.fill_bounds {
+                if x1 > x0 && y1 > y0 {
+                    tiles.extend(Rect::new(x0, y0, x1, y1).tiles());
+                }
+            }
         }
         refresh_tiles(mask, tiles.into_iter().collect());
         return;
@@ -102,8 +111,12 @@ pub fn refresh(mask: &mut LayerMask, region: Option<Rect>) {
                     }
                 }
                 EffectKind::Fill { value } => {
-                    for dst in &mut pixels {
-                        *dst = *value * layer.opacity + *dst * (1.0 - layer.opacity);
+                    for (offset, dst) in pixels.iter_mut().enumerate() {
+                        let x = band.x0 + (offset as i32 % band.width() as i32);
+                        let y = band.y0 + (offset as i32 / band.width() as i32);
+                        if let Some(fill) = fill_sample(layer, *value, x, y) {
+                            *dst = fill * layer.opacity + *dst * (1.0 - layer.opacity);
+                        }
                     }
                 }
                 EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
@@ -129,7 +142,10 @@ fn composite_default(stack: &Stack) -> f32 {
                     let alpha = source.get(3).copied().unwrap_or(0.0) * layer.opacity;
                     source.first().copied().unwrap_or(0.0) * alpha + value * (1.0 - alpha)
                 }
-                EffectKind::Fill { value: fill } => *fill * layer.opacity + value * (1.0 - layer.opacity),
+                EffectKind::Fill { value: fill } => {
+                    let map_value = layer.fill_map.as_ref().map(|map| map.default_pixel().first().copied().unwrap_or(*fill)).unwrap_or(*fill);
+                    if layer.fill_bounds.is_none() { map_value * layer.opacity + value * (1.0 - layer.opacity) } else { value }
+                }
                 EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
                     let adjusted = levels(value, *input_black, *gamma, *input_white, *output_black, *output_white);
                     adjusted * layer.opacity + value * (1.0 - layer.opacity)
@@ -190,8 +206,12 @@ fn composite_layers(stack: &Stack, start_layer: usize, end_layer: usize, region:
                 composite_paint_region(&mut pixels, &layer.surface, region, layer.opacity);
             }
             EffectKind::Fill { value } => {
-                for dst in &mut pixels {
-                    *dst = *value * layer.opacity + *dst * (1.0 - layer.opacity);
+                for (offset, dst) in pixels.iter_mut().enumerate() {
+                    let x = region.x0 + (offset as i32 % region.width() as i32);
+                    let y = region.y0 + (offset as i32 / region.width() as i32);
+                    if let Some(fill) = fill_sample(layer, *value, x, y) {
+                        *dst = fill * layer.opacity + *dst * (1.0 - layer.opacity);
+                    }
                 }
             }
             EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
@@ -242,8 +262,12 @@ fn refresh_tiles(mask: &mut LayerMask, coords: Vec<photocraft_geom::TileCoord>) 
                     composite_paint_region(&mut pixels, &layer.surface, region, layer.opacity);
                 }
                 EffectKind::Fill { value } => {
-                    for dst in &mut pixels {
-                        *dst = *value * layer.opacity + *dst * (1.0 - layer.opacity);
+                    for (offset, dst) in pixels.iter_mut().enumerate() {
+                        let x = region.x0 + (offset as i32 % region.width() as i32);
+                        let y = region.y0 + (offset as i32 / region.width() as i32);
+                        if let Some(fill) = fill_sample(layer, *value, x, y) {
+                            *dst = fill * layer.opacity + *dst * (1.0 - layer.opacity);
+                        }
                     }
                 }
                 EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
@@ -271,6 +295,26 @@ fn refresh_tiles(mask: &mut LayerMask, coords: Vec<photocraft_geom::TileCoord>) 
     #[cfg(target_arch = "wasm32")]
     let output = coords.iter().map(compose).collect::<Vec<_>>();
     mask.surface.put_tiles(output);
+}
+
+fn fill_sample(layer: &photocraft_doc::mask_paint::Paint, value: f32, x: i32, y: i32) -> Option<f32> {
+    let bounds = layer.fill_bounds;
+    let (u, v) = if let Some([x0, y0, x1, y1]) = bounds {
+        if x < x0 || y < y0 || x >= x1 || y >= y1 || x1 <= x0 || y1 <= y0 {
+            return None;
+        }
+        (((x - x0) as f32 + 0.5) / (x1 - x0) as f32, ((y - y0) as f32 + 0.5) / (y1 - y0) as f32)
+    } else {
+        (0.0, 0.0)
+    };
+    let Some(map) = &layer.fill_map else { return Some(value) };
+    let [width, height] = layer.fill_map_size;
+    if width == 0 || height == 0 {
+        return Some(value);
+    }
+    let sx = (u * width as f32).floor().clamp(0.0, width.saturating_sub(1) as f32) as i32;
+    let sy = (v * height as f32).floor().clamp(0.0, height.saturating_sub(1) as f32) as i32;
+    Some(map.sample_channel(sx, sy, 0))
 }
 
 /// Blend the red channel of a straight RGBA Paint tile directly into its grayscale destination.
@@ -325,7 +369,7 @@ mod tests {
     use photocraft_raster::Surface;
 
     fn layer(kind: EffectKind, opacity: f32) -> Paint {
-        Paint { name: "effect".into(), visible: true, opacity, surface: Surface::new(PixelFormat::RGBA8), kind }
+        Paint { name: "effect".into(), visible: true, opacity, surface: Surface::new(PixelFormat::RGBA8), fill_map: None, fill_map_size: [0,0], fill_bounds: None, kind }
     }
 
     #[test]
@@ -342,7 +386,7 @@ mod tests {
         }
         mask.paint = Some(Stack {
             base: base.clone(),
-            layers: vec![Paint { name: "many tiles".into(), visible: true, opacity: 1.0, surface: surface.clone(), kind: EffectKind::Paint }],
+            layers: vec![Paint { name: "many tiles".into(), visible: true, opacity: 1.0, surface: surface.clone(), fill_map: None, fill_map_size: [0,0], fill_bounds: None, kind: EffectKind::Paint }],
             active: 0,
         });
         refresh(&mut mask, None);
@@ -389,7 +433,7 @@ mod tests {
             let mut optimized = LayerMask::hide_all();
             optimized.surface = Surface::with_default(gray, &[0.0]);
             optimized.paint =
-                Some(Stack { base, layers: vec![Paint { name: "source".into(), visible: true, opacity: 0.73, surface, kind: EffectKind::Paint }], active: 0 });
+                Some(Stack { base, layers: vec![Paint { name: "source".into(), visible: true, opacity: 0.73, surface, fill_map: None, fill_map_size: [0,0], fill_bounds: None, kind: EffectKind::Paint }], active: 0 });
             let mut oracle = optimized.clone();
             refresh(&mut optimized, None);
             refresh(&mut oracle, Some(TileCoord::new(0, 0).rect()));
@@ -416,7 +460,7 @@ mod tests {
         optimized.surface = Surface::with_default(gray, &[0.0]);
         optimized.paint = Some(Stack {
             base,
-            layers: vec![Paint { name: "negative source".into(), visible: true, opacity: 0.65, surface, kind: EffectKind::Paint }],
+            layers: vec![Paint { name: "negative source".into(), visible: true, opacity: 0.65, surface, fill_map: None, fill_map_size: [0,0], fill_bounds: None, kind: EffectKind::Paint }],
             active: 0,
         });
         let mut oracle = optimized.clone();
@@ -440,7 +484,7 @@ mod tests {
         mask.surface = Surface::with_default(gray, &[0.0]);
         mask.paint = Some(Stack {
             base,
-            layers: vec![Paint { name: "default".into(), visible: true, opacity: 0.5, surface: surface.clone(), kind: EffectKind::Paint }],
+            layers: vec![Paint { name: "default".into(), visible: true, opacity: 0.5, surface: surface.clone(), fill_map: None, fill_map_size: [0,0], fill_bounds: None, kind: EffectKind::Paint }],
             active: 0,
         });
         refresh(&mut mask, None);

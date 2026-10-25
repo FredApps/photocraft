@@ -239,14 +239,17 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
         mask.paint = Some(Stack {
             base,
             layers: vec![
-                Paint { name: "low".into(), visible: true, opacity: 0.63, surface: low, kind: EffectKind::Paint },
-                Paint { name: "hidden".into(), visible: false, opacity: 1.0, surface: hidden, kind: EffectKind::Paint },
-                Paint { name: "top".into(), visible: true, opacity: 0.74, surface: top, kind: EffectKind::Paint },
+                Paint { name: "low".into(), visible: true, opacity: 0.63, surface: low, fill_map: None, fill_map_size: [0,0], fill_bounds: None, kind: EffectKind::Paint },
+                Paint { name: "hidden".into(), visible: false, opacity: 1.0, surface: hidden, fill_map: None, fill_map_size: [0,0], fill_bounds: None, kind: EffectKind::Paint },
+                Paint { name: "top".into(), visible: true, opacity: 0.74, surface: top, fill_map: None, fill_map_size: [0,0], fill_bounds: None, kind: EffectKind::Paint },
                 Paint {
                     name: "fill".into(),
                     visible: true,
                     opacity: 0.55,
                     surface: photocraft_raster::Surface::new(rgba),
+                    fill_map: None,
+                    fill_map_size: [0,0],
+                    fill_bounds: None,
                     kind: EffectKind::Fill { value: 0.37 },
                 },
                 Paint {
@@ -254,6 +257,9 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
                     visible: true,
                     opacity: 0.67,
                     surface: photocraft_raster::Surface::new(rgba),
+                    fill_map: None,
+                    fill_map_size: [0,0],
+                    fill_bounds: None,
                     kind: EffectKind::Levels { input_black: 0.1, gamma: 0.8, input_white: 0.9, output_black: 0.03, output_white: 0.95 },
                 },
             ],

@@ -1485,6 +1485,72 @@ pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &cr
     let document = app.session.documents().get(index)?;
     let size = [document.doc.size.width, document.doc.size.height];
     let t = Tokens::get(ui.ctx());
+    // A selected Fill exposes an editable rectangle directly on the active 2D map.
+    // The document pixels remain untouched; only the Fill's destination bounds change.
+    if let Some((layer_id, effect_index, bounds)) = app.session.active().and_then(|st| {
+        if st.doc.id != document.doc.id || !app.ui.mask_target {
+            return None;
+        }
+        let layer = st.active_layer.and_then(|id| st.doc.layer(id))?;
+        let stack = layer.mask.as_ref()?.paint.as_ref()?;
+        let effect = stack.layers.get(stack.active)?;
+        if !matches!(&effect.kind, photocraft_doc::mask_paint::EffectKind::Fill { .. }) {
+            return None;
+        }
+        Some((layer.id.0, stack.active, effect.fill_bounds.unwrap_or([0, 0, size[0] as i32, size[1] as i32])))
+    }) {
+        let id = ui.id().with(("fill-mask-manipulator", document.doc.id.0, layer_id, effect_index));
+        let response = ui.interact(xf.rect, id, Sense::click_and_drag());
+        let screen = |x: f32, y: f32| xf.to_screen(x, y);
+        let corners = [
+            screen(bounds[0] as f32, bounds[1] as f32),
+            screen(bounds[2] as f32, bounds[1] as f32),
+            screen(bounds[2] as f32, bounds[3] as f32),
+            screen(bounds[0] as f32, bounds[3] as f32),
+        ];
+        let box_rect = Rect::from_min_max(
+            egui::pos2(corners[0].x.min(corners[2].x), corners[0].y.min(corners[2].y)),
+            egui::pos2(corners[0].x.max(corners[2].x), corners[0].y.max(corners[2].y)),
+        );
+        let painter = ui.painter_at(xf.rect);
+        painter.rect_stroke(box_rect, 0.0, Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
+        for p in corners {
+            painter.rect_filled(Rect::from_center_size(p, vec2(9.0, 9.0)), 1.0, t.accent);
+        }
+        let drag_id = id.with("fixed-corner");
+        if response.drag_started() {
+            if let Some(pointer) = response.interact_pointer_pos() {
+                let nearest =
+                    corners.iter().enumerate().min_by(|(_, a), (_, b)| a.distance_sq(pointer).total_cmp(&b.distance_sq(pointer))).map(|(i, _)| i).unwrap_or(2);
+                let opposite = (nearest + 2) % 4;
+                let fixed = xf.to_doc(corners[opposite]);
+                ui.ctx().data_mut(|data| data.insert_temp(drag_id, fixed));
+            }
+        }
+        if response.dragged() || response.drag_stopped() {
+            if let (Some(pointer), Some(fixed)) = (response.interact_pointer_pos(), ui.ctx().data_mut(|data| data.get_temp::<[f64; 2]>(drag_id))) {
+                let moving = xf.to_doc(pointer);
+                let next = [
+                    fixed[0].min(moving[0]).round().clamp(0.0, size[0] as f64) as i32,
+                    fixed[1].min(moving[1]).round().clamp(0.0, size[1] as f64) as i32,
+                    fixed[0].max(moving[0]).round().clamp(0.0, size[0] as f64) as i32,
+                    fixed[1].max(moving[1]).round().clamp(0.0, size[1] as f64) as i32,
+                ];
+                if response.drag_stopped() {
+                    ui.ctx().data_mut(|data| data.remove::<[f64; 2]>(drag_id));
+                    if next[2] > next[0] && next[3] > next[1] {
+                        if let Err(error) = app.run("uv.maskPaint.modify", serde_json::json!({"layer":layer_id,"index":effect_index,"bounds":next})) {
+                            app.ui.uv_workbench.status = error;
+                        }
+                    }
+                } else {
+                    let a = screen(next[0] as f32, next[1] as f32);
+                    let b = screen(next[2] as f32, next[3] as f32);
+                    painter.rect_stroke(Rect::from_two_pos(a, b), 0.0, Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
+                }
+            }
+        }
+    }
     if app.ui.uv_workbench.show_overlay {
         let painter = ui.painter_at(xf.rect);
         for edge in &topology.boundaries {
