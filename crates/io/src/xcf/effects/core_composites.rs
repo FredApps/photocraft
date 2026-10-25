@@ -6,6 +6,7 @@ use photocraft_doc::import_conversion::ConversionReason;
 use serde_json::json;
 type Result<T> = std::result::Result<T, MappingFailure>;
 
+/// Rejects unknown or repeated core fields with an invalid-optional-data reason before native mapping.
 fn allowed(effect: &StoredEffect<'_>, fields: &[&str]) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     for argument in &effect.arguments {
@@ -18,6 +19,7 @@ fn allowed(effect: &StoredEffect<'_>, fields: &[&str]) -> Result<()> {
     }
     Ok(())
 }
+/// Reads a finite scalar within declared source bounds, preserving malformed-data classification.
 fn number(effect: &StoredEffect<'_>, name: &str, default: f64, lo: f64, hi: f64) -> Result<f64> {
     let value = effect.number(name)?.unwrap_or(default);
     if !value.is_finite() || !(lo..=hi).contains(&value) {
@@ -25,6 +27,7 @@ fn number(effect: &StoredEffect<'_>, name: &str, default: f64, lo: f64, hi: f64)
     }
     Ok(value)
 }
+/// Requires integral pixel controls before native morphology or crop geometry is constructed.
 fn integer(effect: &StoredEffect<'_>, name: &str, default: f64, lo: f64, hi: f64) -> Result<f64> {
     let value = number(effect, name, default, lo, hi)?;
     if value.fract() != 0.0 {
@@ -32,6 +35,7 @@ fn integer(effect: &StoredEffect<'_>, name: &str, default: f64, lo: f64, hi: f64
     }
     Ok(value)
 }
+/// Decomposes the frozen radius domain into at most five native roundness morphology passes within the native radius limit.
 fn morphology_passes(radius: f64, grow: bool) -> Vec<photocraft_doc::SmartFilter> {
     let mut remaining = radius;
     let mut filters = Vec::new();
@@ -46,6 +50,7 @@ fn morphology_passes(radius: f64, grow: bool) -> Vec<photocraft_doc::SmartFilter
     }
     filters
 }
+/// Builds native grow/shrink or difference-border structures with explicit unequal-axis, edge and feather approximations.
 fn morphology(effect: &StoredEffect<'_>, border: bool, grow: bool) -> Result<NativeMapping> {
     let fields: &[&str] = if border {
         &["radius-x", "radius-y", "feather", "edge-lock"]
@@ -96,6 +101,7 @@ fn morphology(effect: &StoredEffect<'_>, border: bool, grow: bool) -> Result<Nat
     Ok(mapping)
 }
 
+/// Validates composer scalars but reports the missing actual second image instead of fabricating an auxiliary owner copy.
 fn composer(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(effect, &["layer-mode", "opacity", "blend-space", "composite-space", "composite-mode"])?;
     number(effect, "opacity", 1.0, 0.0, 1.0)?;
@@ -107,6 +113,7 @@ fn composer(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
         effect.operation
     )))
 }
+/// Validates compose-crop coordinates while requiring the actual auxiliary composed pixels for meaningful lowering.
 fn crop(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(effect, &["x", "y", "width", "height"])?;
     integer(effect, "x", 0.0, f64::from(i32::MIN), f64::from(i32::MAX))?;
@@ -117,6 +124,7 @@ fn crop(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
         "Compose-crop requires its actual auxiliary composed pixels/coverage; scalar crop bounds alone cannot establish a unary owner crop. No source coordinate convention or missing backdrop is invented.",
     ))
 }
+/// Requires actual source and destination ICC objects; rendering intent alone cannot identify native transform endpoints.
 fn profile_transform(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(effect, &["rendering-intent", "black-point-compensation"])?;
     let intent = effect.enum_value("rendering-intent")?.unwrap_or(1);
@@ -128,6 +136,7 @@ fn profile_transform(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
         "Stock effect serialization omits source/destination GimpColorProfile objects and Babl format pointers. Rendering intent/BPC alone cannot identify the two actual native ICC endpoints; document ICC is not silently substituted as both profiles.",
     ))
 }
+/// Handles empty and alpha-only replacement masks natively, requiring real auxiliary pixels for RGB component replacement.
 fn mask_components(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(effect, &["mask", "alpha"])?;
     // Public GimpComponentMask enum assigns R/G/B/A bits1/2/4/8 (core-enums.h).
@@ -149,6 +158,7 @@ fn mask_components(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
     }
     Err("Invalid source component replacement mask".into())
 }
+/// Places converted native solid paint beneath actual input and explicitly discloses the transparent-pixel difference.
 fn semi_flatten(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(effect, &["color"])?;
     let color = if effect.argument("color")?.is_some() {
@@ -163,6 +173,7 @@ fn semi_flatten(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<N
     ]}),notes:vec!["Source semi-flatten fill color becomes an editable native solid fill beneath unchanged native input. Native source-over fills fractional coverage, while entirely transparent source pixels also reveal the native underlay; that zero-alpha difference is explicit. Native document color/compositing rules apply; source rendering is not emulated.".into()],..Default::default()})
 }
 
+/// Dispatches the frozen core identities, emitting native data only when the serialized resources support a meaningful conversion.
 pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext) -> MappingResult {
     Some(match effect.operation {
         "gimp:profile-transform"=>profile_transform(effect),
@@ -225,6 +236,7 @@ mod tests {
         "gimp:buffer-source-validate",
         "gimp:profile-transform",
     ];
+    /// Creates a finite native context for core composition, coverage and resource-policy tests.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -238,16 +250,20 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Requires recognized mapping results so tests can distinguish native conversion from named resource retention.
     fn run(operation: &'static str, args: Vec<Argument<'_>>) -> Result<NativeMapping> {
         map(&StoredEffect::test(operation, args), &context()).expect("owned exact identity")
     }
+    /// Constructs a typed source integer control for mask and morphology tests.
     fn int(name: &'static str, value: i32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Int(value) }
     }
+    /// Constructs a typed source boolean without relying on numeric truthiness.
     fn flag(name: &'static str, value: bool) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Bool(value) }
     }
 
+    /// Checks every binary/resource-dependent row names its actual missing input rather than substituting owner pixels or ICC data.
     #[test]
     fn all_frozen_binary_rows_require_actual_second_input_or_profile_endpoints() {
         assert_eq!(AUXILIARY.len(), 31);
@@ -258,6 +274,7 @@ mod tests {
         }
         assert!(map(&StoredEffect::test("gegl:exposure", vec![]), &context()).is_none());
     }
+    /// Verifies large valid radii decompose into bounded native passes instead of collapsing to one dialog maximum.
     #[test]
     fn morphology_source_domain_uses_bounded_native_passes_without_clamping() {
         for operation in ["gimp:grow", "gimp:shrink"] {
@@ -277,6 +294,7 @@ mod tests {
         assert_eq!(branches[1].blend, BlendMode::Difference);
         assert!(branches.iter().all(|branch| branch.filters.len() == 11));
     }
+    /// Confirms the chosen native RGBA morphology policy changes actual coverage across runtime depths.
     #[test]
     fn native_roundness_morphology_changes_rgba_coverage_at_all_depths() {
         let area = Rect::new(0, 0, 5, 5);
@@ -307,6 +325,7 @@ mod tests {
             assert_eq!(shrunk.pixel(1, 2), vec![0.0; 4]);
         }
     }
+    /// Checks the native underlay renders, remains editable and survives source-independent native storage.
     #[test]
     fn semi_flatten_native_underlay_renders_edits_and_reopens_as_native_fill() {
         let literal = ColorLiteral { encoding: "R'G'B'A u8", pixels: &[0, 0, 255, 255], profile: &[] };
@@ -331,6 +350,7 @@ mod tests {
         let reopened = photocraft_format::load_from_bytes(&saved).expect("native reopen");
         assert_eq!(photocraft_compose::flatten(&reopened).px, edited.px);
     }
+    /// Verifies absolute alpha replacement and empty masks use valid native controls, including zero coverage.
     #[test]
     fn alpha_only_zero_and_empty_component_masks_have_concrete_native_counterparts() {
         assert!(run("gimp:mask-components", vec![int("mask", 0)]).expect("no selected components").structure.is_none());
@@ -346,6 +366,7 @@ mod tests {
         assert_eq!(m.filters[0].params, json!({"connectivity":4,"channel":"each"}));
         assert!(m.notes[0].contains("approximation"));
     }
+    /// Checks invalid core fields and sizes fail before expensive native resource construction.
     #[test]
     fn hostile_core_inputs_are_rejected_without_allocating_source_sizes() {
         for (operation, args) in [
@@ -360,6 +381,7 @@ mod tests {
         }
     }
 
+    /// Authors a tiny original effect record with its raw argument payload for end-to-end retention tests.
     fn stored_resource(operation: &str) -> Vec<u8> {
         use crate::xcf::tests::{W, hierarchy};
         let mut w = W::new(26);
@@ -396,6 +418,7 @@ mod tests {
         w.ptr(0);
         w.out
     }
+    /// Verifies unavailable auxiliary data leaves usable native pixels and a durable inert source attachment after reopen.
     #[test]
     fn missing_auxiliary_import_retains_raw_data_and_usable_pixels_through_native_reopen() {
         use photocraft_doc::import_conversion::{ConversionDisposition, ImportConversion};

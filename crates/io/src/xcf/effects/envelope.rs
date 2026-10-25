@@ -8,11 +8,13 @@ use crate::xcf::{Cursor, MAX_PAYLOAD, MAX_STRING, Result, invalid};
 const MAX_EFFECTS: usize = 1024;
 const MAX_PROPERTIES: usize = 4096;
 
+/// Debits effect metadata before allocation, rejecting requests that exceed the document's remaining allowance.
 fn charge(budget: &mut usize, bytes: usize) -> Result<()> {
     *budget = budget.checked_sub(bytes).ok_or_else(|| invalid("stored effects exceed the document metadata allowance"))?;
     Ok(())
 }
 
+/// Accounts for retained diagnostic storage before appending an inert optional-effect error.
 fn push_error(effect: &mut StoredEffect<'_>, message: String, budget: &mut usize) -> Result<()> {
     charge(budget, message.capacity().saturating_add(2 * std::mem::size_of::<String>()))?;
     effect.errors.push(message);
@@ -160,6 +162,7 @@ pub(in crate::xcf) fn decode<'a>(base: &Cursor<'a>, offset: usize, version: u32,
     Ok(effect)
 }
 
+/// Reads a bounded NUL-terminated UTF-8 effect string and rejects embedded NULs or truncated framing.
 fn string<'a>(cursor: &mut Cursor<'a>) -> Result<&'a str> {
     let count = cursor.u32()? as usize;
     if count == 0 {
@@ -176,6 +179,7 @@ fn string<'a>(cursor: &mut Cursor<'a>) -> Result<&'a str> {
     std::str::from_utf8(bytes).map_err(|_| invalid("effect string is not valid UTF-8"))
 }
 
+/// Decodes one exactly consumed typed payload, retaining unknown bytes and rejecting malformed finite/scalar/color framing.
 fn argument<'a>(cursor: &mut Cursor<'a>, kind: u32, budget: &mut usize) -> Result<ArgumentValue<'a>> {
     let value = match kind {
         0 => {
@@ -235,19 +239,23 @@ fn argument<'a>(cursor: &mut Cursor<'a>, kind: u32, budget: &mut usize) -> Resul
 mod tests {
     use super::*;
 
+    /// Writes a big-endian word for independently authored effect-envelope test records.
     fn word(bytes: &mut Vec<u8>, value: u32) {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
+    /// Writes an original NUL-terminated counted UTF-8 string using the documented effect framing.
     fn text(bytes: &mut Vec<u8>, value: &str) {
         word(bytes, value.len() as u32 + 1);
         bytes.extend_from_slice(value.as_bytes());
         bytes.push(0);
     }
+    /// Frames a synthetic property with its declared kind and exact payload length.
     fn property(bytes: &mut Vec<u8>, kind: u32, value: &[u8]) {
         word(bytes, kind);
         word(bytes, value.len() as u32);
         bytes.extend_from_slice(value);
     }
+    /// Authors a tiny version-aware original effect record with known native-envelope fields and typed arguments.
     fn effect(version: u32, values: &[(&str, u32, Vec<u8>)]) -> Vec<u8> {
         let mut bytes = vec![0; 8];
         text(&mut bytes, "Owner effect");
@@ -273,10 +281,12 @@ mod tests {
         bytes.extend_from_slice(&0u64.to_be_bytes());
         bytes
     }
+    /// Runs the actual bounded envelope decoder on an original record at its known synthetic offset.
     fn decode_bytes(bytes: &[u8], version: u32) -> StoredEffect<'_> {
         decode(&Cursor { b: bytes, pos: 0, wide: true }, 8, version, &mut (32 << 20), &Interrupt::NONE).unwrap()
     }
 
+    /// Checks version-dependent operation metadata and native opacity, mode and visibility fields against original wire values.
     #[test]
     fn historical_version_presence_and_native_envelope_fields_are_explicit() {
         for version in [20, 21, 22, 26] {
@@ -296,6 +306,7 @@ mod tests {
         }
     }
 
+    /// Verifies all supported typed payloads and unknown arguments retain their original order and inert bytes.
     #[test]
     fn every_documented_argument_type_and_unknown_bytes_remain_ordered_data() {
         let mut string_value = Vec::new();
@@ -340,6 +351,7 @@ mod tests {
         assert!(matches!(parsed.argument("future").unwrap(),Some(ArgumentValue::Unknown{kind:900,bytes}) if *bytes==[4,5,6]));
     }
 
+    /// Checks malformed optional values remain non-executable and duplicate argument names cannot resolve ambiguously.
     #[test]
     fn invalid_optional_values_stay_inert_and_duplicate_names_are_not_ambiguous() {
         let bytes = effect(
@@ -359,6 +371,7 @@ mod tests {
         assert!(parsed.number("a").is_err());
     }
 
+    /// Exercises every record truncation and oversized length against bounded decoder failure.
     #[test]
     fn all_record_truncations_and_hostile_lengths_fail_without_panicking() {
         let bytes = effect(26, &[]);
@@ -371,6 +384,7 @@ mod tests {
         assert!(decode(&Cursor { b: &bytes, pos: 0, wide: true }, 8, 26, &mut 1, &Interrupt::NONE).is_err());
     }
 
+    /// Verifies pointer order is preserved while duplicate, out-of-file and excessive references are rejected.
     #[test]
     fn bounded_pointer_lists_preserve_order_and_reject_repeated_or_outside_records() {
         let mut bytes = vec![0; 64];

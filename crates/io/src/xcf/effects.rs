@@ -145,15 +145,19 @@ pub(super) enum ConfigExpr<'a> {
 }
 
 impl<'a> ConfigExpr<'a> {
+    /// Return only a parsed symbol, leaving other configuration value kinds distinguishable.
     pub fn as_symbol(&self) -> Option<&'a str> {
         if let Self::Symbol(value) = self { Some(value) } else { None }
     }
+    /// Return only a numeric configuration atom without coercing strings or symbols.
     pub fn as_number(&self) -> Option<f64> {
         if let Self::Number(value) = self { Some(*value) } else { None }
     }
+    /// Borrow an ordered configuration list without flattening repeated source groups.
     pub fn as_list(&self) -> Option<&[Self]> {
         if let Self::List(value) = self { Some(value) } else { None }
     }
+    /// Read the leading symbol of a configuration list when both shapes are valid.
     pub fn head(&self) -> Option<&'a str> {
         self.as_list()?.first()?.as_symbol()
     }
@@ -182,6 +186,7 @@ impl<'a> StoredEffect<'a> {
             operation => operation,
         }
     }
+    /// Construct a visible, full-strength synthetic stored effect with neutral envelope fields for independent mapping tests.
     #[cfg(test)]
     pub fn test(operation: &'a str, arguments: Vec<Argument<'a>>) -> Self {
         Self {
@@ -205,6 +210,7 @@ impl<'a> StoredEffect<'a> {
             errors: Vec::new(),
         }
     }
+    /// Resolve a unique named stored argument; duplicate source fields are invalid instead of silently overwritten.
     pub fn argument(&self, name: &str) -> std::result::Result<Option<&ArgumentValue<'a>>, String> {
         let mut matches = self.arguments.iter().filter(|arg| arg.name == name);
         let first = matches.next().map(|arg| &arg.value);
@@ -213,6 +219,7 @@ impl<'a> StoredEffect<'a> {
         }
         Ok(first)
     }
+    /// Read admitted stored numeric variants without accepting nonnumeric argument kinds.
     pub fn number(&self, name: &str) -> std::result::Result<Option<f64>, String> {
         match self.argument(name)? {
             None => Ok(None),
@@ -223,6 +230,7 @@ impl<'a> StoredEffect<'a> {
             _ => Err(format!("effect argument {name} is not a number")),
         }
     }
+    /// Read an optional typed source boolean, distinguishing absence from a mismatched argument type.
     pub fn boolean(&self, name: &str) -> std::result::Result<Option<bool>, String> {
         match self.argument(name)? {
             None => Ok(None),
@@ -230,6 +238,7 @@ impl<'a> StoredEffect<'a> {
             _ => Err(format!("effect argument {name} is not a boolean")),
         }
     }
+    /// Read an optional stored enum value without reinterpreting unrelated integer or string fields.
     pub fn enum_value(&self, name: &str) -> std::result::Result<Option<i32>, String> {
         match self.argument(name)? {
             None => Ok(None),
@@ -237,6 +246,7 @@ impl<'a> StoredEffect<'a> {
             _ => Err(format!("effect argument {name} is not an enum")),
         }
     }
+    /// Borrow a typed configuration argument while rejecting other stored value kinds.
     pub fn config(&self, name: &str) -> std::result::Result<Option<&Config<'a>>, String> {
         match self.argument(name)? {
             None => Ok(None),
@@ -354,6 +364,8 @@ pub(super) enum NativeStage {
     },
 }
 
+/// Validate a bounded flat native construction plan before materialization.
+/// References must point to existing inputs, and stage controls must satisfy their native domains.
 pub(super) fn validate_stages(steps: &[NativeStage], output: usize) -> std::result::Result<(), MappingFailure> {
     if steps.len() > 64 || output > steps.len() {
         return Err("Native construction plan exceeds its step or output bounds".into());
@@ -443,6 +455,7 @@ pub(super) struct NativeBranch {
 }
 
 impl Default for NativeBranch {
+    /// Create a neutral native branch with identity placement, full opacity and no implicit filters, masks or styles.
     fn default() -> Self {
         Self {
             filters: Vec::new(),
@@ -474,27 +487,33 @@ pub(super) struct MappingFailure {
 }
 
 impl MappingFailure {
+    /// Classify an unavailable resource separately from an unfinished native mapping.
     pub fn resource(message: impl Into<String>) -> Self {
         Self { reason: photocraft_doc::import_conversion::ConversionReason::ResourceUnavailable, message: message.into() }
     }
 }
 
 impl From<String> for MappingFailure {
+    /// Turn an owned adapter diagnostic into an explicit missing-mapping disposition for retained source data.
     fn from(message: String) -> Self {
         Self { reason: photocraft_doc::import_conversion::ConversionReason::MissingMapping, message }
     }
 }
 
 impl From<&str> for MappingFailure {
+    /// Preserve a borrowed adapter diagnostic through the same owned missing-mapping conversion.
     fn from(message: &str) -> Self {
         message.to_owned().into()
     }
 }
 
+/// Create a visible full-strength native Smart Filter whose supplied command and parameters remain ordinary native data.
 pub(super) fn native_filter(command: &str, params: serde_json::Value) -> SmartFilter {
     SmartFilter { command: command.into(), params, blend: photocraft_color::BlendMode::Normal, opacity: 1.0, visible: true }
 }
 
+/// Validate source errors, operation version and the frozen argument schema before dispatching to finite native mapping helpers.
+/// Unknown or unsupported cases return a reportable failure instead of applying defaults.
 pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext) -> std::result::Result<NativeMapping, MappingFailure> {
     context
         .interrupt
@@ -543,6 +562,7 @@ mod schema_tests {
     use super::*;
     use photocraft_doc::import_conversion::ConversionReason;
 
+    /// Build a bounded native mapping context with deterministic mode, profile, geometry and interrupt settings for unit tests.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: photocraft_color::ColorMode::Rgb,
@@ -557,6 +577,7 @@ mod schema_tests {
         }
     }
 
+    /// Verify unknown source fields and operation versions cannot be silently replaced by a native default mapping.
     #[test]
     fn unknown_stored_controls_are_never_silently_applied_as_native_defaults() {
         for operation in ["gegl:grid", "gegl:video-degradation", "gegl:gaussian-blur", "gimp:fill-source"] {
@@ -567,6 +588,7 @@ mod schema_tests {
         }
     }
 
+    /// Reject duplicate stored arguments while preserving only the deliberately admitted schema aliases.
     #[test]
     fn duplicate_known_arguments_are_invalid_but_schema_aliases_are_explicit() {
         let effect = StoredEffect::test(
@@ -579,6 +601,7 @@ mod schema_tests {
         assert!(schema::fields("user-installed:operation").is_none());
     }
 
+    /// Check compatibility aliases select native mappings without rewriting the original source operation identity.
     #[test]
     fn frozen_aliases_map_native_data_without_changing_source_identity() {
         for (alias, canonical) in [

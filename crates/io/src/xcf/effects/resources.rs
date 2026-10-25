@@ -77,6 +77,8 @@ pub(in crate::xcf) fn literal_rgb(value: &ColorLiteral<'_>) -> Result<[f32; 4], 
     Ok([r, g, b, a])
 }
 
+/// Decode portable typed literal colors into sRGB coordinates, rejecting unavailable data, nonfinite samples,
+/// or invalid alpha.
 pub(super) fn color(effect: &StoredEffect<'_>, name: &str) -> Result<[f32; 4], String> {
     match effect.argument(name)? {
         Some(ArgumentValue::Color(Some(value))) => literal_rgb(value),
@@ -103,6 +105,7 @@ pub(super) fn color(effect: &StoredEffect<'_>, name: &str) -> Result<[f32; 4], S
     }
 }
 
+/// Read a numeric resource-effect control with its declared default and reject nonfinite values.
 fn number(effect: &StoredEffect<'_>, name: &str, default: f64) -> Result<f64, String> {
     let value = effect.number(name)?.unwrap_or(default);
     if value.is_finite() { Ok(value) } else { Err(format!("nonfinite resource effect argument {name}")) }
@@ -142,10 +145,13 @@ pub(super) fn lookup(size: u32, label: &str, notes: Vec<String>, sample: impl Fn
     })
 }
 
+/// Attach the shared native lookup/interpolation policy to resource-effect translation notes.
 fn native_notes(detail: &str) -> Vec<String> {
     vec![format!("{detail}; editable native Color Lookup uses native RGB interpolation, bounded 0..1 gamut and PhotoCraft compositing")]
 }
 
+/// Dispatch supported literal-resource effects and classify unavailable resources separately from missing
+/// native mappings.
 pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext) -> MappingResult {
     let mapped = match effect.operation {
         "gegl:color-overlay" => overlay(effect, context),
@@ -175,6 +181,8 @@ pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext) -> Mappin
     )
 }
 
+/// Resample literal-control lookups through the actual native document profile so table inputs match stored
+/// native color coordinates.
 fn profile_lookup(mut mapping: NativeMapping, context: &MappingContext) -> Result<NativeMapping, MappingFailure> {
     // Literal controls and standard hue coordinates above are defined in sRGB.
     // A native Color Lookup instead consumes the stored document coordinates.
@@ -193,6 +201,8 @@ fn profile_lookup(mut mapping: NativeMapping, context: &MappingContext) -> Resul
     })
 }
 
+/// Decode overlay paint and translate its source color-space intent into an ordinary assigned-profile native
+/// style.
 fn overlay(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, String> {
     let color = color(effect, "value")?;
     let srgb = effect.boolean("srgb")?.unwrap_or(false);
@@ -214,6 +224,8 @@ pub(super) struct NativeColorMapper {
 }
 
 impl NativeColorMapper {
+    /// Create an sRGB-to-document paint transform, validating RGB/Gray profile compatibility and the document
+    /// transfer policy.
     pub(super) fn new(context: &MappingContext<'_>) -> Result<Self, String> {
         use photocraft_color::ColorMode;
         let fallback = match context.mode {
@@ -240,6 +252,8 @@ impl NativeColorMapper {
         Ok(Self { transform, mode: context.mode })
     }
 
+    /// Convert one finite portable paint into native model/profile coordinates while preserving validated
+    /// alpha.
     pub(super) fn convert(&self, [r, g, b, a]: [f32; 4]) -> Result<photocraft_color::Color, String> {
         if [r, g, b, a].iter().any(|v| !v.is_finite()) || !(0.0..=1.0).contains(&a) {
             return Err("native paint has nonfinite color or invalid alpha".into());
@@ -262,6 +276,8 @@ pub(super) fn native_color(effect: &StoredEffect<'_>, name: &str, context: &Mapp
     native_rgba(color(effect, name)?, context)
 }
 
+/// Store overlay coverage in native effect opacity and keep its native paint opaque, matching the renderer's
+/// actual fields.
 fn overlay_color(rgba: [f32; 4], context: &MappingContext, note: String) -> Result<NativeMapping, String> {
     use photocraft_color::BlendMode;
     use photocraft_doc::effects::{Effect, FxCommon};
@@ -277,6 +293,8 @@ fn overlay_color(rgba: [f32; 4], context: &MappingContext, note: String) -> Resu
     })
 }
 
+/// Author a bounded native lookup for independent channel-tolerance color replacement, preserving unaffected
+/// samples.
 fn exchange(effect: &StoredEffect<'_>) -> Result<NativeMapping, String> {
     let from = color(effect, "from-color")?.map(f64::from);
     let to = color(effect, "to-color")?.map(f64::from);
@@ -306,6 +324,8 @@ fn exchange(effect: &StoredEffect<'_>) -> Result<NativeMapping, String> {
     )
 }
 
+/// Convert an RGB control sample to hue, saturation, and value coordinates used while authoring native lookup
+/// data.
 fn hsv([r, g, b]: [f64; 3]) -> [f64; 3] {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
@@ -322,6 +342,7 @@ fn hsv([r, g, b]: [f64; 3]) -> [f64; 3] {
     [h, if max > 0.0 { delta / max } else { 0.0 }, max]
 }
 
+/// Convert hue-sector control coordinates back to RGB while building static native lookup parameters.
 fn rgb([h, s, v]: [f64; 3]) -> [f64; 3] {
     let h = h.rem_euclid(360.0) / 60.0;
     let c = v * s;
@@ -343,6 +364,8 @@ fn rgb([h, s, v]: [f64; 3]) -> [f64; 3] {
     [r + m, g + m, b + m]
 }
 
+/// Translate directed hue sectors and gray treatment into an ordinary native lookup, preserving full-turn and
+/// collapsed-sector distinctions.
 fn rotate(effect: &StoredEffect<'_>) -> Result<NativeMapping, String> {
     let sf = number(effect, "src-from", 0.0)?;
     let st = number(effect, "src-to", 90.0)?;
@@ -400,6 +423,8 @@ fn rotate(effect: &StoredEffect<'_>) -> Result<NativeMapping, String> {
     })
 }
 
+/// Translate supported literal color-warp controls into native lookup data; unresolved external resources
+/// remain inert.
 fn warp(effect: &StoredEffect<'_>) -> Result<NativeMapping, String> {
     let mut pairs = Vec::with_capacity(8);
     for index in 0..8 {
@@ -435,6 +460,7 @@ fn warp(effect: &StoredEffect<'_>) -> Result<NativeMapping, String> {
     )
 }
 
+/// Find the requested typed config property and reject malformed or duplicate serialized fields.
 fn field<'a, 'b>(config: &'b Config<'a>, name: &str) -> Result<Option<&'b [ConfigExpr<'a>]>, String> {
     let mut fields = config.fields(name);
     let value = fields.next();
@@ -444,6 +470,7 @@ fn field<'a, 'b>(config: &'b Config<'a>, name: &str) -> Result<Option<&'b [Confi
     Ok(value)
 }
 
+/// Read a config symbol from the bounded decoded syntax tree instead of interpreting arbitrary expressions.
 fn symbol<'a>(config: &Config<'a>, name: &str, default: &'a str) -> Result<&'a str, String> {
     match field(config, name)? {
         None => Ok(default),
@@ -452,6 +479,7 @@ fn symbol<'a>(config: &Config<'a>, name: &str, default: &'a str) -> Result<&'a s
     }
 }
 
+/// Translate typed fill options into native literal paint while refusing unavailable resource-backed fills.
 fn fill(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, String> {
     let options = effect.config("options")?.ok_or("resource unavailable: fill options were not stored")?;
     let style = symbol(options, "style", "fg-color")?;
@@ -475,6 +503,8 @@ fn fill(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMap
     overlay_color(color, context, "Stored fill color becomes ordinary native Color Overlay; native coverage replaces source antialias/feather policy".into())
 }
 
+/// Decode a serialized color payload with its encoding and profile, preserving binary bytes rather than
+/// assuming UTF-8 samples.
 fn config_color(value: &ConfigExpr<'_>) -> Result<[f32; 4], String> {
     let values = value.as_list().ok_or("fill color is not structured data")?;
     if matches!(values.first(), Some(ConfigExpr::Symbol("color-rgba"))) {
@@ -519,6 +549,8 @@ fn config_color(value: &ConfigExpr<'_>) -> Result<[f32; 4], String> {
     literal_rgb(&ColorLiteral { encoding, pixels: &bytes, profile: &profile })
 }
 
+/// Extract the bounded binary color payload in its declared representation without treating bytes as
+/// executable config.
 fn config_bytes(value: &ConfigExpr<'_>) -> Result<Vec<u8>, String> {
     match value {
         ConfigExpr::String(text) => Ok(text.as_bytes().to_vec()),
@@ -531,10 +563,14 @@ fn config_bytes(value: &ConfigExpr<'_>) -> Result<Vec<u8>, String> {
 mod tests {
     use super::super::{Argument, parse_config};
     use super::*;
+    /// Construct a portable numeric color fixture with explicit linear-light tagging and no host-endian
+    /// ambiguity.
     fn portable<'a>(name: &'a str, rgba: [f32; 4], linear: bool) -> Argument<'a> {
         Argument { name, value: ArgumentValue::LiteralColor { rgba, linear } }
     }
     #[test]
+    /// Compare portable floating literals against native CMS transforms, proving they are not rounded through
+    /// integer color paths.
     fn portable_numeric_colors_follow_native_cms_without_byte_or_integer_quantization() {
         for rgba in [[2., -0.125, 0.003, 0.375], [0.125, 0.5, 0.75, 1.], [0., -0., f32::from_bits(1), 0.]] {
             let encoded = StoredEffect::test("gegl:color", vec![portable("value", rgba, false)]);
@@ -552,6 +588,7 @@ mod tests {
         assert_eq!(color(&effect, "value").unwrap(), [0.125, 0.25, 0.5, 0.375]);
     }
     #[test]
+    /// Check independently transformed literal paints use assigned native RGB and Gray profiles.
     fn portable_literal_native_paint_honors_actual_rgb_and_gray_destination_profiles() {
         for (mode, builtin) in [(ColorMode::Rgb, Builtin::DisplayP3), (ColorMode::Grayscale, Builtin::GrayGamma22), (ColorMode::Rgb, Builtin::LinearSrgb)] {
             let rgba = [0.125, 0.5, 2., 0.375];
@@ -579,6 +616,8 @@ mod tests {
         }
     }
     #[test]
+    /// Reject hostile numeric colors while confirming the established portable byte literal behavior stays
+    /// unchanged.
     fn portable_color_rejects_nonfinite_or_invalid_alpha_and_preserves_old_wire_behavior() {
         for linear in [false, true] {
             for rgba in [
@@ -608,6 +647,8 @@ mod tests {
         assert!(literal_rgb(&ColorLiteral { encoding: "RGBA float", pixels: &ambiguous, profile: &[] }).unwrap_err().contains("byte-order"));
     }
     #[test]
+    /// Require shared literal validation across direct resource readers rather than divergent acceptance
+    /// rules.
     fn direct_color_readers_accept_the_same_validated_portable_literals() {
         let context = context();
         let colorize = StoredEffect::test("gimp:colorize", vec![portable("color", [0.125, 0.25, 0.5, 0.375], true)]);
@@ -631,6 +672,8 @@ mod tests {
         }
     }
     #[test]
+    /// Accept the byte-order-invariant all-zero float default without guessing the encoding of other
+    /// native-endian float blobs.
     fn exact_zero_float_paint_is_portable_but_other_native_float_bytes_are_not() {
         let little = [0.0_f32; 4].into_iter().flat_map(f32::to_le_bytes).collect::<Vec<_>>();
         let big = [0.0_f32; 4].into_iter().flat_map(f32::to_be_bytes).collect::<Vec<_>>();
@@ -649,6 +692,8 @@ mod tests {
     use photocraft_color::ColorMode;
     use photocraft_doc::{effects::Effect, import_conversion::ConversionReason};
 
+    /// Provide an explicit native color model, transfer policy, profile, and bounded frame for
+    /// resource-effect fixtures.
     fn context() -> MappingContext<'static> {
         let bounds = photocraft_geom::Rect::new(0, 0, 11, 7);
         MappingContext {
@@ -663,9 +708,12 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Construct a nonlinear sRGB byte-color fixture without an assigned profile for native literal
+    /// conversion tests.
     fn literal<'a>(name: &'a str, pixels: &'a [u8]) -> Argument<'a> {
         Argument { name, value: ArgumentValue::Color(Some(ColorLiteral { encoding: "R'G'B'A u8", pixels, profile: &[] })) }
     }
+    /// Extract and parse the ordinary native lookup table produced by an accepted resource mapping.
     fn table(mapping: &NativeMapping) -> photocraft_cms::lutfile::LutFile {
         let filter = &mapping.filters[0];
         assert_eq!(filter.command, "image.adjustments.colorLookup");
@@ -674,6 +722,8 @@ mod tests {
     }
 
     #[test]
+    /// Compare authored lookup samples with independent native CMS conversions for assigned RGB and Gray
+    /// documents.
     fn resource_tables_translate_literal_srgb_into_assigned_rgb_and_gray_profiles() {
         use photocraft_cms::{Intent, Transform};
         use photocraft_color::ColorMode;
@@ -731,6 +781,8 @@ mod tests {
     }
 
     #[test]
+    /// Check explicit literal ICC handling and reject ambiguous source float byte order instead of assuming
+    /// the importing host.
     fn portable_literals_use_their_profile_and_float_order_is_never_guessed() {
         let color = literal_rgb(&ColorLiteral { encoding: "R'G'B'A u8", pixels: &[64, 128, 192, 255], profile: &[] }).unwrap();
         for (got, want) in color.into_iter().zip([64.0 / 255.0, 128.0 / 255.0, 192.0 / 255.0, 1.0]) {
@@ -746,6 +798,8 @@ mod tests {
     }
 
     #[test]
+    /// Verify reusable paint conversion respects both linear Gray and independently assigned profile
+    /// transforms.
     fn reusable_native_color_mapper_honors_linear_gray_and_explicit_profiles() {
         let mut context = context();
         context.mode = ColorMode::Grayscale;
@@ -761,6 +815,8 @@ mod tests {
     }
 
     #[test]
+    /// Require ordinary native style fields and independently converted destination paint rather than
+    /// untagged sRGB values.
     fn color_overlay_is_an_ordinary_native_style_and_uses_actual_target_profile() {
         let effect = StoredEffect::test("gegl:color-overlay", vec![literal("value", &[64, 128, 192, 128])]);
         let mut context = context();
@@ -780,6 +836,8 @@ mod tests {
     }
 
     #[test]
+    /// Check each exchange tolerance influences only its intended channel range while unrelated colors remain
+    /// unchanged.
     fn exchange_keeps_independent_channel_ranges_and_unaffected_colors() {
         let effect = StoredEffect::test(
             "gegl:color-exchange",
@@ -800,6 +858,7 @@ mod tests {
     }
 
     #[test]
+    /// Exercise directed hue spans and gray treatment as separate native lookup controls.
     fn hue_sector_uses_direction_span_and_explicit_gray_controls() {
         let args = vec![
             Argument { name: "src-to", value: ArgumentValue::Float(120.0) },
@@ -816,6 +875,8 @@ mod tests {
     }
 
     #[test]
+    /// Require each gray-sector mode to produce its own meaningful native table rather than a shared ignored
+    /// default.
     fn gray_sector_modes_change_the_native_table_independently() {
         let make = |mode| {
             StoredEffect::test(
@@ -839,6 +900,7 @@ mod tests {
     }
 
     #[test]
+    /// Distinguish a full directed hue revolution from a genuinely empty sector.
     fn full_hue_turn_is_not_lost_as_a_degenerate_sector() {
         let full = StoredEffect::test(
             "gegl:color-rotate",
@@ -850,6 +912,8 @@ mod tests {
     }
 
     #[test]
+    /// Check the independently observed sector boundary cases remain distinct in authored native lookup
+    /// samples.
     fn observed_directed_full_empty_and_collapsed_hue_sectors_are_native_data() {
         let effect = |from, to, cw, dfrom, dto, dcw| {
             StoredEffect::test(
@@ -900,6 +964,8 @@ mod tests {
         assert_eq!(&lut.data[gray..gray + 3], &[0.5, 0.5, 0.]);
     }
     #[test]
+    /// Compare collapsed-sector replay with an independently constructed native counterpart and verify Smart
+    /// Filter persistence.
     fn collapsed_hue_sector_has_native_alpha_counterpart_and_smart_persistence() {
         use photocraft_color::{PixelFormat, SampleType};
         use photocraft_doc::{Adjustment, Document, Layer, LayerContent, SmartObject, SmartSource};
@@ -941,6 +1007,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensure binary samples remain bytes even when their incidental contents are valid UTF-8 text.
     fn binary_color_payload_that_is_valid_utf8_keeps_its_original_bytes() {
         let color = ConfigExpr::List(vec![
             ConfigExpr::Symbol("color"),
@@ -956,6 +1023,7 @@ mod tests {
     }
 
     #[test]
+    /// Require zero-strength warp to preserve identity without resolving a serialized resource locator.
     fn zero_weight_warp_stays_native_identity_and_never_resolves_resources() {
         const FROM: [&str; 8] = ["from-0", "from-1", "from-2", "from-3", "from-4", "from-5", "from-6", "from-7"];
         const TO: [&str; 8] = ["to-0", "to-1", "to-2", "to-3", "to-4", "to-5", "to-6", "to-7"];
@@ -972,6 +1040,8 @@ mod tests {
     }
 
     #[test]
+    /// Check absent actual resources receive resource-unavailable disposition and never authorize filesystem
+    /// access.
     fn unavailable_resources_are_inert_and_distinct_from_missing_mapping() {
         for operation in ["gimp:gradient", "gegl:negative-darkroom"] {
             let failure = map(&StoredEffect::test(operation, Vec::new()), &context()).unwrap().unwrap_err();
@@ -981,6 +1051,8 @@ mod tests {
     }
 
     #[test]
+    /// Verify typed literal fill options become ordinary native styles while malformed options fail
+    /// explicitly.
     fn fill_options_are_typed_and_literal_fills_are_native_styles() {
         let mut budget = 1 << 20;
         let config = parse_config(r#"(style bg-color)(background (color "R'G'B'A u8" 4 "\100\200\377\377" 0))"#, &mut budget).unwrap();
@@ -999,6 +1071,7 @@ mod tests {
     }
 
     #[test]
+    /// Confirm unconsumed serialized extras cannot silently become active native color or execution controls.
     fn extra_numeric_arguments_and_trailing_fill_color_fields_remain_inert() {
         let effect = StoredEffect::test(
             "gegl:color-overlay",

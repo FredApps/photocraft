@@ -6,6 +6,7 @@ const MAX_DEPTH: usize = 32;
 const MAX_NODES: usize = 8192;
 const MAX_TEXT: usize = 1 << 20;
 
+/// Parses bounded named configuration lists as data, charging the shared metadata allowance without evaluating expressions.
 pub(in crate::xcf) fn parse_config<'a>(raw: &'a str, budget: &mut usize) -> std::result::Result<Config<'a>, String> {
     if raw.len() > MAX_TEXT {
         return Err("effect configuration exceeds 1 MiB".into());
@@ -26,19 +27,23 @@ struct Reader<'a, 'b> {
 }
 
 impl<'a> Reader<'a, '_> {
+    /// Rejects syntax storage beyond the remaining document metadata allowance before vector growth.
     fn charge(&mut self, count: usize) -> std::result::Result<(), String> {
         *self.budget = self.budget.checked_sub(count).ok_or_else(|| "effect configuration exceeds document metadata allowance".to_string())?;
         Ok(())
     }
 
+    /// Reads the next Unicode scalar through a checked UTF-8 boundary without advancing input.
     fn peek(&self) -> Option<char> {
         self.raw.get(self.pos..)?.chars().next()
     }
 
+    /// Moves the byte cursor by a decoded character's UTF-8 length.
     fn advance(&mut self, character: char) {
         self.pos = self.pos.saturating_add(character.len_utf8());
     }
 
+    /// Skips ASCII whitespace and line comments without interpreting their contents.
     fn whitespace(&mut self) {
         loop {
             match self.peek() {
@@ -56,6 +61,7 @@ impl<'a> Reader<'a, '_> {
         }
     }
 
+    /// Builds ordered list data under depth and node caps, rejecting unmatched delimiters and charging storage before insertion.
     fn sequence(&mut self, depth: usize, nested: bool) -> std::result::Result<Vec<ConfigExpr<'a>>, String> {
         if depth > MAX_DEPTH {
             return Err("effect configuration nesting exceeds 32".into());
@@ -92,6 +98,7 @@ impl<'a> Reader<'a, '_> {
         }
     }
 
+    /// Reads a symbol or finite number while rejecting control characters, empty atoms and nonfinite numeric input.
     fn atom(&mut self) -> std::result::Result<ConfigExpr<'a>, String> {
         let start = self.pos;
         while let Some(character) = self.peek() {
@@ -116,6 +123,7 @@ impl<'a> Reader<'a, '_> {
         Ok(ConfigExpr::Symbol(atom))
     }
 
+    /// Decodes bounded quoted text and octal bytes, preserving binary payloads instead of forcing invalid UTF-8 into text.
     fn string(&mut self) -> std::result::Result<ConfigExpr<'a>, String> {
         self.advance('"');
         let mut text = Vec::new();
@@ -171,6 +179,7 @@ impl<'a> Reader<'a, '_> {
 mod tests {
     use super::*;
 
+    /// Verifies repeated fields keep their order and Unicode strings remain inert parsed configuration data.
     #[test]
     fn ordered_repeated_fields_and_unicode_text_are_data() {
         let raw = "# retained syntax\n(channel red) (gamma 1.25) (channel blue) (gamma 2) (label \"café\\n(x)\")";
@@ -182,6 +191,7 @@ mod tests {
         assert!(matches!(&escaped.forms[0], ConfigExpr::List(list) if matches!(&list[1], ConfigExpr::String(text) if text == "café")));
     }
 
+    /// Exercises invalid delimiters, nonfinite values and parser resource limits without invoking any evaluator.
     #[test]
     fn malformed_nonfinite_and_bounded_syntax_fails_without_evaluation() {
         for raw in ["(", ")", "(x \"unterminated)", "(x NaN)", "(x inf)", "(x \"\\q\")", "atom"] {
@@ -194,6 +204,7 @@ mod tests {
         assert!(parse_config("(x 1)", &mut 1).is_err());
     }
 
+    /// Checks escaped binary color/profile data remains exact bytes rather than a guessed text or numeric representation.
     #[test]
     fn quoted_binary_color_and_profile_payloads_are_bytes() {
         let config = parse_config("(color \"\\100\\200\\377\\000\")", &mut (1 << 20)).unwrap();

@@ -1,6 +1,7 @@
 //! Finite argument-name facts from the official stock GIMP 3.2.6 operation schemas.
 //! This is an input allowlist, never a command registry or runtime evaluator.
 
+/// Returns the frozen source argument-name allowlist for a known operation; this does not register commands or execute source behavior.
 pub(super) fn fields(operation: &str) -> Option<&'static [&'static str]> {
     Some(match operation {
         "gegl:absolute" | "gegl:abs" => &[],

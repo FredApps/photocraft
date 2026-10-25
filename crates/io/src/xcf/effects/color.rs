@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 use super::{ArgumentValue, ConfigExpr, MappingContext, MappingFailure, MappingResult, NativeMapping, StoredEffect, native_filter};
 
+/// Validates the exact owned color-effect fields before dispatching to native converters; duplicate or unmapped controls fail explicitly.
 pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext) -> MappingResult {
     let fields: &[&str] = match effect.operation {
         "gegl:c2g" => &["radius", "samples", "iterations", "enhance-shadows"],
@@ -51,10 +52,12 @@ pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext) -> Mappin
     })
 }
 
+/// Packages one native adjustment and its conversion policy without retaining executable source behavior.
 fn one(command: &str, params: Value, note: impl Into<String>) -> NativeMapping {
     NativeMapping { filters: vec![native_filter(command, params)], notes: vec![note.into()], ..Default::default() }
 }
 
+/// Reads a finite bounded scalar, leaving invalid source configuration unapplied instead of silently clamping it.
 fn number(effect: &StoredEffect<'_>, key: &str, default: f64, low: f64, high: f64) -> Result<f64, MappingFailure> {
     let value = effect.number(key)?.unwrap_or(default);
     if !value.is_finite() || !(low..=high).contains(&value) {
@@ -63,10 +66,12 @@ fn number(effect: &StoredEffect<'_>, key: &str, default: f64, low: f64, high: f6
     Ok(value)
 }
 
+/// Reads a typed optional source flag and applies its default only when absent.
 fn boolean(effect: &StoredEffect<'_>, key: &str, default: bool) -> Result<bool, MappingFailure> {
     Ok(effect.boolean(key)?.unwrap_or(default))
 }
 
+/// Converts coefficient fractions to native mixer percentages, using a bounded lookup when normalized rows exceed native controls.
 fn channel_mixer(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, MappingFailure> {
     let mut rows = [[0.0; 4]; 3];
     for ((row, names), diagonal) in
@@ -99,10 +104,12 @@ fn channel_mixer(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<
     ))
 }
 
+/// Constructs an ordinary native monochrome mixer with the supplied percentage row and policy note.
 fn mono_row(row: [f64; 4], note: impl Into<String>) -> NativeMapping {
     one("image.adjustments.channelMixer", json!({"monochrome":true,"gray":row}), note)
 }
 
+/// Translates source monochrome weights and optional neutral-preserving normalization into native mixer or lookup data.
 fn mono_mixer(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, MappingFailure> {
     let mut row = [number(effect, "red", 0.333, -5.0, 5.0)?, number(effect, "green", 0.333, -5.0, 5.0)?, number(effect, "blue", 0.333, -5.0, 5.0)?, 0.0];
     let preserve = boolean(effect, "preserve-luminosity", false)?;
@@ -122,6 +129,7 @@ fn mono_mixer(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<Nat
     ))
 }
 
+/// Normalizes color coefficients by signed sum, using L1 magnitude for zero-sum rows without dividing by zero.
 fn normalize_mixer_row(row: &mut [f64; 4]) {
     let sum: f64 = row.iter().take(3).sum();
     let divisor = if sum.abs() > 1e-8 { sum } else { row.iter().take(3).map(|v| v.abs()).sum() };
@@ -132,6 +140,7 @@ fn normalize_mixer_row(row: &mut [f64; 4]) {
     }
 }
 
+/// Stores an extended coefficient matrix as a bounded native color lookup, disclosing interpolation and gamut differences.
 fn mixer_lookup(rows: [[f64; 4]; 3], monochrome: bool, context: &MappingContext) -> Result<NativeMapping, MappingFailure> {
     native_lookup(
         context,
@@ -143,6 +152,7 @@ fn mixer_lookup(rows: [[f64; 4]; 3], monochrome: bool, context: &MappingContext)
     )
 }
 
+/// Selects native component extraction, including ordinary alpha-to-color data, and reports transfer-space differences.
 fn component(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, MappingFailure> {
     let component = effect.enum_value("component")?.unwrap_or(0);
     let invert = boolean(effect, "invert", false)?;
@@ -187,6 +197,7 @@ fn component(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<Nati
     Ok(mapping)
 }
 
+/// Builds native HSB/HSL extraction chains or the corresponding Gray policy; rejects unsupported document models.
 fn component_chain(model: &str, index: usize, invert: bool, context: &MappingContext) -> Result<NativeMapping, MappingFailure> {
     let mut row = [0.0; 4];
     if context.mode == ColorMode::Grayscale {
@@ -212,6 +223,7 @@ fn component_chain(model: &str, index: usize, invert: bool, context: &MappingCon
     Ok(mapping)
 }
 
+/// Authors native CMS-based Lab, LCh, CMYK or YCbCr component lookup data with explicit normalized encodings.
 fn native_component_lookup(component: i32, invert: bool, context: &MappingContext) -> Result<NativeMapping, MappingFailure> {
     native_lookup(
         context,
@@ -245,12 +257,14 @@ fn native_component_lookup(component: i32, invert: bool, context: &MappingContex
     )
 }
 
+/// Converts a neutral-relative saturation gain to the native signed percentage law.
 fn native_saturation_percent(scale: f64) -> f64 {
     // Existing native Hue/Saturation divides positive saturation by 1-s.
     // This maps a requested multiplicative gain without the +100% singularity.
     if scale > 1.0 { (1.0 - 1.0 / scale) * 100.0 } else { (scale - 1.0) * 100.0 }
 }
 
+/// Translates the validated source gain to native HSL saturation and discloses source-model differences.
 fn saturation(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFailure> {
     let scale = number(effect, "scale", 1.0, 0.0, 10.0)?;
     let model = effect.enum_value("colorspace")?.unwrap_or(0);
@@ -266,6 +280,7 @@ fn saturation(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFailure
     ))
 }
 
+/// Factors extended saturation into bounded ordinary native passes while applying selective Vibrance only once.
 fn vibrance(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFailure> {
     let value = number(effect, "vibrance", 0.0, -100.0, 100.0)?;
     let scale = number(effect, "saturation", 1.0, 0.0, 10.0)?;
@@ -290,6 +305,7 @@ fn vibrance(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFailure> 
     Ok(mapping)
 }
 
+/// Maps validated sepia strength to the existing native Photo Filter preset and discloses its distinct luminosity and transfer rules.
 fn sepia(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFailure> {
     let scale = number(effect, "scale", 1.0, 0.0, 1.0)?;
     let srgb = boolean(effect, "srgb", true)?;
@@ -303,6 +319,7 @@ fn sepia(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFailure> {
     ))
 }
 
+/// Builds separate native tonal corrections, signed curves and white-point exposure while retaining directional source intent.
 fn shadows_highlights(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFailure> {
     // Independent stock GIMP probes establish directions, not response equivalence.
     let shadows = number(effect, "shadows", 0.0, -100.0, 100.0)?;
@@ -344,6 +361,7 @@ fn shadows_highlights(effect: &StoredEffect<'_>) -> Result<NativeMapping, Mappin
     Ok(mapping)
 }
 
+/// Authors a bounded native lookup through the actual document profile and CMS, rejecting unsupported models or invalid transforms.
 pub(super) fn native_lookup(
     context: &MappingContext,
     title: &str,
@@ -386,6 +404,7 @@ pub(super) fn native_lookup(
     .map_err(Into::into)
 }
 
+/// Converts CIE hue, chroma and lightness intent into profile-aware native lookup data with disclosed gamut bounds.
 fn hue_chroma(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, MappingFailure> {
     let hue = number(effect, "hue", 0.0, -180.0, 180.0)? as f32;
     let chroma = number(effect, "chroma", 0.0, -100.0, 100.0)? as f32;
@@ -436,6 +455,7 @@ fn temperature_white(kelvin: f64) -> Result<[f64; 3], MappingFailure> {
     Ok(xyz.map(|v| v / y))
 }
 
+/// Builds a native Bradford white-point adaptation lookup from validated temperatures; no source spectral runtime is retained.
 fn temperature(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, MappingFailure> {
     use photocraft_cms::math;
     let original = number(effect, "original-temperature", 6500.0, 1000.0, 12000.0)?;
@@ -466,6 +486,7 @@ fn temperature(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<Na
     })
 }
 
+/// Combines native Black & White with bounded local contrast and shadow controls; source sampling quality becomes explicit provenance.
 fn c2g(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, MappingFailure> {
     use super::{NativeBranch, NativeStructure};
     let radius = number(effect, "radius", 300., 2., 6000.)?;
@@ -518,6 +539,7 @@ fn c2g(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapp
     Ok(mapping)
 }
 
+/// Chooses native monochrome weights or component extraction according to the declared desaturation mode.
 fn desaturate(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, MappingFailure> {
     match effect.enum_value("mode")?.unwrap_or(3) {
         0 => component_chain("hsl", 2, false, context),
@@ -534,15 +556,18 @@ fn desaturate(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<Nat
     }
 }
 
+/// Requires exactly one field value before the caller validates its scalar expression type.
 fn scalar<'a, 'b>(tail: &'b [ConfigExpr<'a>], name: &str) -> Result<&'b ConfigExpr<'a>, MappingFailure> {
     match tail {
         [value] => Ok(value),
         _ => Err(format!("{name} config field must contain exactly one value").into()),
     }
 }
+/// Reads a configuration scalar as a number, rejecting invalid expression types.
 fn config_number(value: &ConfigExpr<'_>, name: &str, low: f64, high: f64) -> Result<f64, MappingFailure> {
     value.as_number().filter(|n| n.is_finite() && (low..=high).contains(n)).ok_or_else(|| format!("{name} configuration value outside {low}..{high}").into())
 }
+/// Accepts the established configuration boolean symbols without inventing truthiness for unrelated values.
 fn config_bool(value: &ConfigExpr<'_>) -> Result<bool, MappingFailure> {
     match value.as_symbol() {
         Some("yes" | "true") => Ok(true),
@@ -550,6 +575,7 @@ fn config_bool(value: &ConfigExpr<'_>) -> Result<bool, MappingFailure> {
         _ => Err("Invalid source boolean configuration value".into()),
     }
 }
+/// Recognizes common configuration metadata fields that color adapters preserve without treating them as effect controls.
 fn base_config(name: &str) -> bool {
     matches!(
         name,
@@ -557,6 +583,7 @@ fn base_config(name: &str) -> bool {
     )
 }
 
+/// Maps ordered tonal ranges and preservation flags to ordinary native Color Balance controls.
 fn color_balance(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFailure> {
     let config = effect.config("config")?.ok_or_else(|| MappingFailure::from("Missing color-balance config"))?;
     let mut tones = [[0.0; 3]; 3];
@@ -600,6 +627,7 @@ fn color_balance(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFail
     ))
 }
 
+/// Preserves master and sector controls as native hue ranges, including explicit circular overlap limits.
 fn hue_saturation(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFailure> {
     let config = effect.config("config")?.ok_or_else(|| MappingFailure::from("Missing hue/saturation config"))?;
     let names = ["master", "reds", "yellows", "greens", "cyans", "blues", "magentas"];
@@ -659,6 +687,7 @@ fn hue_saturation(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFai
     ))
 }
 
+/// Uses saved scalar aliases or profile-aware literal color to construct one ordinary native Colorize adjustment.
 fn colorize(effect: &StoredEffect<'_>) -> Result<NativeMapping, MappingFailure> {
     let complete = ["hue", "saturation", "lightness"].iter().all(|key| effect.arguments.iter().any(|arg| arg.name == *key));
     if let Some(color) = effect.argument("color")? {
@@ -718,6 +747,7 @@ mod tests {
     use photocraft_raster::Surface;
     use std::sync::Arc;
 
+    /// Provides an RGB native mapping context with explicit profile, extent and resource allowances for color tests.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -731,13 +761,16 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Constructs a typed scalar source argument for native color-control assertions.
     fn float(name: &'static str, value: f32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Float(value) }
     }
+    /// Requires a successful recognized native conversion rather than accepting an unapplied source effect.
     fn mapped(operation: &'static str, args: Vec<Argument<'_>>) -> NativeMapping {
         map(&StoredEffect::test(operation, args), &context()).expect("owned B03 identity").expect("native conversion")
     }
 
+    /// Checks asymmetric matrix rows and monochrome weights against independently specified native percentage parameters.
     #[test]
     fn native_mixer_counterparts_preserve_asymmetric_rows_and_mono_units() {
         let m = mapped("gegl:channel-mixer", vec![float("rr-gain", 0.75), float("rg-gain", 0.25), float("bb-gain", -0.5)]);
@@ -752,6 +785,7 @@ mod tests {
         assert_eq!(buffer.px[0][3], 0.375);
     }
 
+    /// Verifies neutral-relative gains become the correct native saturation controls rather than silently clamped source numbers.
     #[test]
     fn native_saturation_and_vibrance_use_neutral_relative_scales_without_clamping() {
         let m = mapped("gegl:saturation", vec![float("scale", 1.25)]);
@@ -764,6 +798,7 @@ mod tests {
         }
     }
 
+    /// Checks repeated source tonal ranges remain distinct native adjustments with their own values.
     #[test]
     fn repeated_core_ranges_become_independent_native_controls() {
         let mut budget = 1 << 20;
@@ -784,6 +819,7 @@ mod tests {
         assert!(m.notes[0].contains("overlap=0.2"));
     }
 
+    /// Tests sector overlap endpoints and wrapping against native circular ranges and native persistence.
     #[test]
     fn core_hue_overlap_becomes_native_circular_limits_and_persists() {
         use photocraft_doc::adjust::HueRange;
@@ -854,6 +890,7 @@ mod tests {
         assert!(parse_config("(overlap nan)", &mut (1 << 20)).is_err());
     }
 
+    /// Verifies value extraction uses ordinary native HSB conversion and preserves coverage.
     #[test]
     fn hsv_value_uses_existing_native_component_chain_and_keeps_alpha() {
         let m = mapped("gegl:component-extract", vec![Argument { name: "component", value: ArgumentValue::Enum(5) }]);
@@ -878,6 +915,7 @@ mod tests {
         assert_eq!(buffer.px[0][3], 0.375);
     }
 
+    /// Checks redundant source aliases do not apply Colorize twice and emitted native filters survive storage.
     #[test]
     fn colorize_uses_saved_scalar_aliases_once_and_persists_ordinary_native_filters() {
         let color = ColorLiteral { encoding: "RGBA float", pixels: &[0; 16], profile: &[] };
@@ -908,6 +946,7 @@ mod tests {
         assert_eq!(object.smart_filters[0].opacity, 1.0);
     }
 
+    /// Requires explicit failure for unknown fields and unsupported source configurations instead of default color substitutions.
     #[test]
     fn unknown_and_unproved_color_configurations_are_not_silently_substituted() {
         let cases = [
@@ -925,6 +964,7 @@ mod tests {
         assert!(map(&StoredEffect::test("gegl:exposure", vec![]), &context()).is_none());
     }
 
+    /// Checks literal paint alpha does not replace layer coverage and converted Colorize remains native after reopen.
     #[test]
     fn colorize_literal_alpha_is_not_owner_coverage_and_reopens_as_native_data() {
         use photocraft_doc::adjust::HueRange;
@@ -981,6 +1021,7 @@ mod tests {
         }
     }
 
+    /// Verifies literal-only Colorize uses native HSL and tonal corrections preserve their declared direction.
     #[test]
     fn color_only_alias_uses_native_literal_hsl_and_shadow_direction_is_explicit() {
         let literal = ColorLiteral { encoding: "R'G'B'A u8", pixels: &[0, 255, 0, 255], profile: &[] };
@@ -1003,6 +1044,7 @@ mod tests {
         }
     }
 
+    /// Checks CIE lightness units and an independently known black endpoint in authored native lookup data.
     #[test]
     fn cie_lightness_units_generate_native_lookup_data_with_independent_black_endpoint() {
         let effect = StoredEffect::test("gegl:hue-chroma", vec![float("lightness", 20.0)]);
@@ -1022,6 +1064,7 @@ mod tests {
         assert!(table.data.iter().all(|value| value.is_finite() && (0.0..=1.0).contains(value)));
     }
 
+    /// Exercises native lookup CMS with linear encoding and assigned document profiles rather than assuming sRGB storage.
     #[test]
     fn cie_lookup_honors_linear_and_assigned_native_profile_models() {
         let effect = StoredEffect::test("gegl:hue-chroma", vec![float("lightness", 20.0), float("chroma", 15.0), float("hue", 30.0)]);
@@ -1048,6 +1091,7 @@ mod tests {
         assert!(map(&lift, &linear).expect("owned").is_ok());
     }
 
+    /// Checks the declared temperature domain and an independently specified illuminant white point.
     #[test]
     fn spectral_white_points_cover_source_domain_and_match_independent_illuminant_a() {
         for kelvin in [1000.0, 2856.0, 6500.0, 12000.0] {
@@ -1065,6 +1109,7 @@ mod tests {
         }
     }
 
+    /// Verifies observed white-balance direction and neutral identity through native lookup output.
     #[test]
     fn temperature_native_lookup_obeys_observed_correction_direction_and_neutral_identity() {
         let cool = mapped("gegl:color-temperature", vec![float("original-temperature", 6500.0), float("intended-temperature", 2856.0)]);
@@ -1085,6 +1130,7 @@ mod tests {
         assert_eq!(neutral.filters[0].command, "image.adjustments.channelMixer");
         assert!(neutral.filters[0].params.get("data").is_none(), "identity must not add lookup clipping to HDR");
     }
+    /// Tests source saturation endpoints against the actual native response law.
     #[test]
     fn native_saturation_gain_covers_full_source_domain_and_matches_native_response() {
         let input = [0.4, 0.5, 0.6]; // HSL saturation .2, lightness .5.
@@ -1098,6 +1144,7 @@ mod tests {
         }
     }
 
+    /// Checks neutral-preserving normalization and native lookup fallback for rows beyond mixer control limits.
     #[test]
     fn mixer_normalization_preserves_neutrals_and_extended_domain_is_native_lookup() {
         let preserve = Argument { name: "preserve-luminosity", value: ArgumentValue::Bool(true) };
@@ -1116,6 +1163,7 @@ mod tests {
         assert!(m.notes[0].contains("standard matrix"));
     }
 
+    /// Verifies component extraction across native color models, including opaque neutral output from alpha.
     #[test]
     fn native_components_cover_color_models_and_extract_alpha_as_ordinary_native_data() {
         for component in 8..=19 {
@@ -1160,6 +1208,7 @@ mod tests {
         }
     }
 
+    /// Checks signed shadow/highlight controls retain separate native transfer curves with the intended midpoint anchor.
     #[test]
     fn signed_tonal_controls_become_separate_native_curves_with_anchored_midpoint() {
         let m = mapped("gegl:shadows-highlights", vec![float("shadows", -40.0), float("highlights", 60.0)]);
@@ -1175,6 +1224,7 @@ mod tests {
         assert!(points[3][1].as_f64().expect("highlight") > 191.25);
         assert!(m.notes.iter().any(|note| note.contains("Curves approximation")));
     }
+    /// Verifies additional tonal fields become meaningful native radius, correction and exposure parameters.
     #[test]
     fn remaining_tonal_controls_translate_to_directional_native_parameters() {
         let compressed = mapped("gegl:shadows-highlights", vec![float("shadows", 90.0), float("highlights", -90.0), float("compress", 100.0)]);
@@ -1201,6 +1251,7 @@ mod tests {
             assert!((stops.exp2() - expected_gain).abs() < 1e-12);
         }
     }
+    /// Checks saturation decomposition stays bounded and does not repeat selective Vibrance.
     #[test]
     fn extended_vibrance_gain_uses_bounded_native_passes_with_one_vibrance_stage() {
         for scale in [2.1f32, 4.0, 10.0] {
@@ -1227,6 +1278,7 @@ mod tests {
         }
         assert!(actual.iter().zip(expected).all(|(a, b)| (*a - b).abs() < 1e-5));
     }
+    /// Verifies radius and shadow intent affect native controls while sampling quality is explicitly superseded and alpha retained.
     #[test]
     fn c2g_native_radius_shadow_and_superseded_quality_are_explicit_without_alpha_loss() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -1277,6 +1329,7 @@ mod tests {
             assert_eq!(pixel[1], pixel[2]);
         }
     }
+    /// Tests the large-neighborhood native branch construction, clipped coverage and source-independent persistence.
     #[test]
     fn c2g_large_neighborhood_native_clipped_branches_preserve_alpha_and_native_reopen() {
         use super::super::NativeStructure;

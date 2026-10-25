@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 use super::{ConfigExpr, MappingContext, MappingResult, NativeMapping, StoredEffect, native_filter};
 
+/// Routes the owned inversion, threshold, posterization and curve identities to ordinary native adjustments.
 pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext) -> MappingResult {
     match effect.operation {
         "gegl:invert-gamma" | "gegl:invert-linear" | "gegl:invert" => Some(invert(effect, context).map_err(Into::into)),
@@ -19,6 +20,7 @@ pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext) -> Mappin
     }
 }
 
+/// Rejects unknown and duplicate fields so unsupported source controls cannot disappear during conversion.
 fn allowed(effect: &StoredEffect<'_>, names: &[&str]) -> Result<(), String> {
     for argument in &effect.arguments {
         if !names.contains(&argument.name) {
@@ -29,6 +31,7 @@ fn allowed(effect: &StoredEffect<'_>, names: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks a finite inclusive scalar domain before authoring native transfer data.
 fn finite(value: f64, min: f64, max: f64, label: &str) -> Result<f64, String> {
     if !value.is_finite() || !(min..=max).contains(&value) {
         return Err(format!("{label} must be finite in {min}..={max}"));
@@ -36,6 +39,7 @@ fn finite(value: f64, min: f64, max: f64, label: &str) -> Result<f64, String> {
     Ok(value)
 }
 
+/// Maps inversion to native Invert and discloses any source/native transfer-space difference.
 fn invert(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, String> {
     allowed(effect, &[])?;
     let source_linear = matches!(effect.operation, "gegl:invert-linear" | "gegl:invert");
@@ -49,6 +53,7 @@ fn invert(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeM
     Ok(NativeMapping { filters: vec![native_filter("image.adjustments.invert", json!({}))], notes, ..Default::default() })
 }
 
+/// Builds native RGB-to-HSB value inversion or the explicit Gray equivalent, rejecting unsupported models.
 fn value_invert(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, String> {
     allowed(effect, &[])?;
     if context.mode == ColorMode::Grayscale {
@@ -68,6 +73,7 @@ fn value_invert(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<N
     ], notes:vec!["Source HSV value inversion becomes native RGB→HSB, editable blue-channel Invert curve, HSB→RGB; native clamping, intermediate precision and color interpretation may differ".into()], ..Default::default() })
 }
 
+/// Maps integer level counts to native Posterize, explicitly reporting the source-256/native-255 endpoint approximation.
 fn posterize(effect: &StoredEffect<'_>) -> Result<NativeMapping, String> {
     allowed(effect, &["levels"])?;
     let levels = finite(effect.number("levels")?.unwrap_or(3.0), 2.0, 256.0, "posterize levels")?;
@@ -86,6 +92,7 @@ fn posterize(effect: &StoredEffect<'_>) -> Result<NativeMapping, String> {
     Ok(NativeMapping { filters: vec![native_filter("image.adjustments.posterize", json!({"levels":native_levels}))], notes, ..Default::default() })
 }
 
+/// Authors selected-channel native interval transfers, including alpha-only coverage and Gray-to-RGB working contents where required.
 fn threshold(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, String> {
     allowed(effect, &["channel", "low", "high"])?;
     let channel = effect.enum_value("channel")?.unwrap_or(0);
@@ -147,6 +154,7 @@ fn threshold(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<Nati
     Ok(NativeMapping { filters, working_rgb, notes, ..Default::default() })
 }
 
+/// Translates local threshold intent to bounded native neighborhood and threshold controls with explicit algorithm differences.
 fn local_threshold(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping, String> {
     allowed(effect, &["radius", "aa-factor", "low", "high"])?;
     let radius = finite(effect.number("radius")?.unwrap_or(200.0), 0.0, 1000.0, "local threshold native radius")?;
@@ -190,6 +198,7 @@ fn local_threshold(effect: &StoredEffect<'_>, context: &MappingContext) -> Resul
     Ok(NativeMapping { filters, notes, ..Default::default() })
 }
 
+/// Finds one named scalar configuration form, rejecting duplicate or structurally invalid fields.
 fn scalar<'a>(values: &'a [ConfigExpr<'a>], name: &str) -> Result<Option<&'a ConfigExpr<'a>>, String> {
     let mut found = None;
     for form in values {
@@ -204,6 +213,7 @@ fn scalar<'a>(values: &'a [ConfigExpr<'a>], name: &str) -> Result<Option<&'a Con
     Ok(found)
 }
 
+/// Reads bounded structured numeric arrays without treating malformed or nonfinite values as valid curve samples.
 fn array<'a>(values: &'a [ConfigExpr<'a>], name: &str) -> Result<Option<&'a [ConfigExpr<'a>]>, String> {
     let mut found = None;
     for form in values {
@@ -236,6 +246,7 @@ struct Curve {
     note: Option<String>,
 }
 
+/// Converts a saved smooth or free curve into validated native points or pencil-map data.
 fn curve(values: &[ConfigExpr<'_>]) -> Result<Curve, String> {
     for form in values {
         if !matches!(form.head(), Some("curve-type" | "n-points" | "points" | "point-types" | "n-samples" | "samples")) {
@@ -352,6 +363,7 @@ fn native_alpha_curve(params: &Value) -> Result<Vec<f32>, String> {
     Ok(values)
 }
 
+/// Preserves ordered channel groups as ordinary native color or alpha curve stages rather than a live source evaluator.
 fn curves(effect: &StoredEffect<'_>) -> Result<NativeMapping, String> {
     allowed(effect, &["trc", "config"])?;
     if let Some(trc) = effect.enum_value("trc")?
@@ -452,6 +464,7 @@ fn curves(effect: &StoredEffect<'_>) -> Result<NativeMapping, String> {
 mod tests {
     use super::super::{Argument, ArgumentValue, parse_config};
     use super::*;
+    /// Supplies explicit RGB document state and allowances for independent transfer-function tests.
     fn context(mode: ColorMode) -> MappingContext<'static> {
         MappingContext {
             target_profile: None,
@@ -465,6 +478,7 @@ mod tests {
             native_filter_bounds: photocraft_geom::Rect::new(0, 0, 17, 17),
         }
     }
+    /// Checks inversion identities and value-only inversion use the intended ordinary native command chains.
     #[test]
     fn invert_identities_and_value_component_use_native_commands() {
         for operation in ["gegl:invert-gamma", "gegl:invert-linear", "gegl:invert"] {
@@ -482,6 +496,7 @@ mod tests {
         assert_eq!(native.filters[1].params, json!({"blue":[[0,255],[255,0]]}));
         assert_eq!(map(&source, &context(ColorMode::Grayscale)).unwrap().unwrap().filters.len(), 1);
     }
+    /// Verifies the level-count boundary is disclosed and malformed counts fail rather than being silently rounded.
     #[test]
     fn posterize_boundary_is_explicit_and_invalid_input_is_not_clamped() {
         for (levels, expected) in [(2, 2), (17, 17), (255, 255), (256, 255)] {
@@ -495,6 +510,7 @@ mod tests {
         let source = StoredEffect::test("gimp:posterize", vec![Argument { name: "levels", value: ArgumentValue::Float(f32::NAN) }]);
         assert!(map(&source, &context(ColorMode::Rgb)).unwrap().is_err());
     }
+    /// Checks native extraction and transfer data retain the selected channel and both source threshold endpoints.
     #[test]
     fn threshold_preserves_selected_channel_and_both_interval_bounds() {
         let source = StoredEffect::test(
@@ -520,6 +536,7 @@ mod tests {
         assert_eq!(local.filters[0].params, json!({"radius":200.0}));
         assert!(local.notes.iter().any(|note| note.contains("antialias factor 1")));
     }
+    /// Verifies crossed intervals become the explicit empty native transfer instead of silently swapping bounds.
     #[test]
     fn crossed_threshold_intervals_are_native_empty_transfers_without_reordering() {
         for operation in ["gimp:threshold", "gegl:local-threshold"] {
@@ -559,6 +576,7 @@ mod tests {
         assert_eq!(native.filters[0].params["values"], json!(vec![0.; 256]));
     }
 
+    /// Checks RGB-channel selection on a Gray owner uses ordinary RGB working contents and native persistence.
     #[test]
     fn gray_rgb_threshold_channels_use_native_working_contents_and_persist() {
         use crate::xcf::native_effects::{NativeEnvelope, NativeOwner};
@@ -620,6 +638,7 @@ mod tests {
         }
     }
 
+    /// Verifies alpha thresholds author native coverage transfers without depending on RGB-only color semantics.
     #[test]
     fn alpha_threshold_interval_is_native_coverage_data_for_every_document_model() {
         for mode in [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab] {
@@ -639,6 +658,7 @@ mod tests {
             assert!(mapped.notes[0].contains("Both inclusive interval bounds"));
         }
     }
+    /// Checks repeated curve groups retain order and per-channel identity in emitted native stages.
     #[test]
     fn ordered_curve_groups_become_independent_native_channel_stages() {
         let raw = "(trc perceptual) (channel value) (curve (curve-type smooth) (points 6 0 0 0.5 0.7 1 1) (point-types 3 smooth smooth smooth))
@@ -651,6 +671,7 @@ mod tests {
         assert_eq!(native.filters[0].params, json!({"red":[[0.0,25.5],[255.0,204.0]]}));
         assert_eq!(native.filters[1].params, json!({"points":[[0.0,0.0],[127.5,178.5],[255.0,255.0]]}));
     }
+    /// Verifies every saved free-curve sample becomes ordinary native pencil data with no source callback.
     #[test]
     fn free_curve_table_keeps_all_samples_without_source_evaluation() {
         let samples = (0..256).map(|i| ((255 - i) as f64 / 255.0).to_string()).collect::<Vec<_>>().join(" ");
@@ -666,6 +687,7 @@ mod tests {
             assert!((v.as_f64().unwrap() - (255 - i) as f64).abs() < 1e-10);
         }
     }
+    /// Rejects malformed channel and curve structures rather than applying them to a different native channel.
     #[test]
     fn malformed_curves_are_retained_instead_of_misassigned() {
         for raw in [
@@ -679,6 +701,7 @@ mod tests {
         }
     }
 
+    /// Compares smooth alpha conversion with native coverage behavior while preserving stored color and runtime depth.
     #[test]
     fn alpha_smooth_curve_is_a_native_transfer_preserving_stored_color_axes_and_depth() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -770,6 +793,7 @@ mod tests {
         assert_eq!(smart.smart_filters, native.filters);
     }
 
+    /// Checks alpha map sampling is independent of existing native RGB curve filters.
     #[test]
     fn free_alpha_curve_uses_native_map_sampling_and_keeps_rgb_filters_unchanged() {
         let samples = (0..256).map(|index| ((255 - index) as f64 / 255.).to_string()).collect::<Vec<_>>().join(" ");

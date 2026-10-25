@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 type Result<T> = std::result::Result<T, String>;
 
+/// Dispatches owned brightness, exposure and Levels identities to ordinary native tone conversions.
 pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext) -> MappingResult {
     Some(
         (match effect.operation {
@@ -17,6 +18,7 @@ pub(super) fn map(effect: &StoredEffect<'_>, context: &MappingContext) -> Mappin
         .map_err(Into::into),
     )
 }
+/// Rejects undeclared tone arguments before constructing native adjustment parameters.
 fn allowed(effect: &StoredEffect<'_>, names: &[&str]) -> Result<()> {
     for argument in &effect.arguments {
         if !names.contains(&argument.name) {
@@ -25,20 +27,24 @@ fn allowed(effect: &StoredEffect<'_>, names: &[&str]) -> Result<()> {
     }
     Ok(())
 }
+/// Requires finite values within a specific native conversion interval instead of silently moving endpoints.
 fn bounded(name: &str, value: f64, lo: f64, hi: f64) -> Result<f64> {
     if !value.is_finite() || !(lo..=hi).contains(&value) {
         return Err(format!("{name}={value} is outside supported native conversion range {lo}..{hi}"));
     }
     Ok(value)
 }
+/// Validates source scalars against their representable stored-F32 endpoints so valid boundary controls are not rejected by rounding.
 fn number(effect: &StoredEffect<'_>, name: &str, default: f64, lo: f64, hi: f64) -> Result<f64> {
     // Stock FILTER_PROP_FLOAT stores declared doubles as F32. Compare with the
     // representable stored endpoints, so a valid .1 endpoint is not rejected after rounding.
     bounded(name, effect.number(name)?.unwrap_or(default), f64::from(lo as f32), f64::from(hi as f32))
 }
+/// Packages one editable native adjustment with the conversion notes retained for the imported document.
 fn mapped(command: &str, params: Value, notes: Vec<String>) -> NativeMapping {
     NativeMapping { filters: vec![native_filter(command, params)], layer_effects: Vec::new(), notes, ..Default::default() }
 }
+/// Decomposes source gain and brightness into bounded native legacy contrast, optional Invert and additive brightness passes.
 fn direct_bc(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(effect, &["brightness", "contrast"])?;
     let brightness = number(effect, "brightness", 0.0, -3.0, 3.0)?;
@@ -66,6 +72,7 @@ fn direct_bc(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
     }
     Ok(NativeMapping {filters,layer_effects:Vec::new(),notes:vec!["GEGL linear brightness/contrast becomes bounded ordinary native legacy contrast, optional Invert and additive brightness filters. Native pivot, integer intermediate clipping, quantization and document encoding differ; source opacity applies once to the whole converted stage".into()],..Default::default()})
 }
+/// Moves source black subtraction into native exposure offsets, using two native stages when post-gain offset exceeds one control's range.
 fn exposure(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(effect, &["black-level", "exposure"])?;
     let exposure = number(effect, "exposure", 0.0, -20.0, 20.0)?;
@@ -86,6 +93,7 @@ fn exposure(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
             notes:vec!["Source black subtraction and exposure become two ordinary native Exposure filters to preserve offset range. Native integer intermediate clipping and transfer rules may differ; source opacity applies once to the compound stage".into()],..Default::default()})
     }
 }
+/// Encodes ordinary native Levels percentages only when endpoints and gamma meet the native editable constraints.
 fn level_record(low: f64, high: f64, gamma: f64, out_low: f64, out_high: f64) -> Result<Value> {
     let low = bounded("input black", low, 0.0, 253.0 / 255.0)?;
     let high = bounded("input white", high, 2.0 / 255.0, 1.0)?;
@@ -97,6 +105,7 @@ fn level_record(low: f64, high: f64, gamma: f64, out_low: f64, out_high: f64) ->
     let out_high = bounded("output white", out_high, 0.0, 1.0)?;
     Ok(json!({"inBlack":low*255.0,"inWhite":high*255.0,"gamma":gamma,"outBlack":out_low*255.0,"outWhite":out_high*255.0}))
 }
+/// Samples PhotoCraft's own Levels transfer into finite normalized curve or coverage data for otherwise narrow intervals.
 fn sampled_level_record([lo, hi, gamma, outlo, outhi]: [f64; 5]) -> Result<Vec<f32>> {
     use photocraft_doc::adjust::LevelsChannel;
     for (name, value) in [("input black", lo), ("input white", hi), ("output black", outlo), ("output white", outhi)] {
@@ -110,6 +119,7 @@ fn sampled_level_record([lo, hi, gamma, outlo, outhi]: [f64; 5]) -> Result<Vec<f
     }
     Ok(values)
 }
+/// Selects native Levels, sampled Curves or finite affine convolution according to the stored endpoint domain.
 fn direct_levels(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(effect, &["in-low", "in-high", "out-low", "out-high"])?;
     let record = [
@@ -135,6 +145,7 @@ fn direct_levels(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<
 
 // Endpoint controls describe an affine interval, represented only by ordinary
 // native matrix/Exposure data. No source range evaluator survives import.
+/// Represents signed, HDR or reversed intervals as native color-only convolution gain/bias with an explicit collapsed-span policy.
 fn affine_levels([lo, hi, _, outlo, outhi]: [f64; 5], mode: photocraft_color::ColorMode) -> Result<NativeMapping> {
     let collapsed = hi == lo;
     // The source's steep collapsed affine response is approximated by the
@@ -160,12 +171,14 @@ fn affine_levels([lo, hi, _, outlo, outhi]: [f64; 5], mode: photocraft_color::Co
     Ok(mapped("filter.other.convolution", json!({"kernel":kernel,"scale":1.,"offset":offset,"channels":channels,"alphaWeighted":false,"edge":"repeat"}), notes))
 }
 
+/// Requires exactly one configuration expression for a tone scalar field.
 fn scalar<'b, 'a>(values: &'b [ConfigExpr<'a>], name: &str) -> Result<&'b ConfigExpr<'a>> {
     match values {
         [value] => Ok(value),
         _ => Err(format!("tone config {name} needs one scalar")),
     }
 }
+/// Reads a unique numeric configuration field, rejecting repeated or nonnumeric forms.
 fn config_number(config: &Config<'_>, name: &str, default: f64) -> Result<f64> {
     let mut fields = config.fields(name);
     let Some(value) = fields.next() else { return Ok(default) };
@@ -174,6 +187,7 @@ fn config_number(config: &Config<'_>, name: &str, default: f64) -> Result<f64> {
     }
     scalar(value, name)?.as_number().ok_or_else(|| format!("tone config {name} is not numeric"))
 }
+/// Allows only effect-specific fields and established common configuration metadata; unknown forms remain unsupported.
 fn config_fields(config: &Config<'_>, names: &[&str]) -> Result<()> {
     for form in &config.forms {
         let name = form.head().ok_or("tone configuration contains an unnamed form")?;
@@ -183,6 +197,7 @@ fn config_fields(config: &Config<'_>, names: &[&str]) -> Result<()> {
     }
     Ok(())
 }
+/// Converts the saved core configuration to native brightness/contrast while retaining the explicit legacy choice.
 fn core_bc(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(effect, &["config"])?;
     let config = effect.config("config")?.ok_or("missing GimpBrightnessContrastConfig")?;
@@ -199,6 +214,7 @@ fn core_bc(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
         )],
     ))
 }
+/// Reads symbolic or quoted configuration names without interpreting arbitrary expressions as selectors.
 fn symbol<'a>(value: &'a ConfigExpr<'_>) -> Option<&'a str> {
     match value {
         ConfigExpr::Symbol(s) => Some(s),
@@ -206,6 +222,7 @@ fn symbol<'a>(value: &'a ConfigExpr<'_>) -> Option<&'a str> {
         _ => None,
     }
 }
+/// Preserves ordered channel groups as native Levels, pencil Curves or alpha transfers with validated configuration policies.
 fn core_levels(effect: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(effect, &["trc", "config"])?;
     if effect.enum_value("trc")?.is_some_and(|value| !(0..=2).contains(&value)) {
@@ -310,6 +327,7 @@ mod tests {
     use photocraft_color::{ColorMode, SampleType};
     use photocraft_doc::Adjustment;
     use photocraft_geom::Rect;
+    /// Provides an explicit native RGB context for independent tone parameter and persistence tests.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -323,18 +341,23 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Constructs a typed scalar argument for direct source tone operations.
     fn arg(name: &'static str, value: f32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Float(value) }
     }
+    /// Builds ordered configuration forms for testing the typed tone conversion path without reparsing wire text.
     fn config(forms: Vec<ConfigExpr<'static>>) -> Config<'static> {
         Config { raw: "independent wire forms", forms }
     }
+    /// Authors a numeric configuration expression without evaluating source syntax.
     fn numeric(name: &'static str, value: f64) -> ConfigExpr<'static> {
         ConfigExpr::List(vec![ConfigExpr::Symbol(name), ConfigExpr::Number(value)])
     }
+    /// Wraps named configuration fields while retaining their ordered structure for channel-group tests.
     fn named(name: &'static str, value: &'static str) -> ConfigExpr<'static> {
         ConfigExpr::List(vec![ConfigExpr::Symbol(name), ConfigExpr::Symbol(value)])
     }
+    /// Checks source gain-one and core contrast-zero use their distinct native neutral conversions.
     #[test]
     fn gegl_gain_neutral_is_not_core_contrast_neutral() {
         let source = StoredEffect::test("gegl:brightness-contrast", vec![]);
@@ -347,6 +370,7 @@ mod tests {
         assert_eq!(mapped.filters[0].params["brightness"], 0.0);
         assert_eq!(mapped.filters[1].params, json!({"brightness":127.5,"contrast":0.0,"legacy":true}));
     }
+    /// Verifies the full declared scalar range decomposes into valid native stages rather than dialog clamping.
     #[test]
     fn full_gegl_gain_and_brightness_domains_use_bounded_native_stages() {
         for gain in [-5.0, -1.0, 0.0, 0.5, 1.0, 5.0] {
@@ -367,6 +391,7 @@ mod tests {
             }
         }
     }
+    /// Checks a wide black-level/exposure combination uses two representable native offsets in the correct order.
     #[test]
     fn wide_postgain_offset_uses_two_valid_native_exposure_filters() {
         let source = StoredEffect::test("gegl:exposure", vec![arg("exposure", 4.0), arg("black-level", 0.1)]);
@@ -376,6 +401,7 @@ mod tests {
         assert!((converted.filters[0].params["offset"].as_f64().unwrap() + 0.1).abs() < 1e-7);
         assert_eq!(converted.filters[1].params, json!({"exposure":4.0,"offset":0.0,"gamma":1.0}));
     }
+    /// Compares black-level conversion against an independent native HDR Exposure adjustment.
     #[test]
     fn exposure_black_offset_matches_independently_constructed_native_hdr_adjustment() {
         let source = StoredEffect::test("gegl:exposure", vec![arg("exposure", 2.0), arg("black-level", 0.03)]);
@@ -399,6 +425,7 @@ mod tests {
             assert_eq!(pixel[3], alpha);
         }
     }
+    /// Verifies endpoint-only Levels data does not acquire a fabricated gamma or silently altered source interval.
     #[test]
     fn endpoints_are_native_levels_not_a_source_gamma_or_clamped_range() {
         let source = StoredEffect::test("gegl:levels", vec![arg("in-low", 0.125), arg("in-high", 0.875), arg("out-low", 0.25), arg("out-high", 0.75)]);
@@ -409,6 +436,7 @@ mod tests {
         assert_eq!(hdr.filters[0].params["kernel"][12], 2.);
         assert_eq!(hdr.filters[0].params["offset"], 0.);
     }
+    /// Checks core configuration values and the native legacy flag determine the emitted adjustment.
     #[test]
     fn core_bc_uses_config_and_explicit_legacy_choice_for_native_domain() {
         let source = StoredEffect::test(
@@ -419,6 +447,7 @@ mod tests {
         assert_eq!(mapped.filters[0].params, json!({"brightness":25.0,"contrast":-75.0,"legacy":true}));
         assert!(mapped.notes[0].contains("legacy"));
     }
+    /// Verifies repeated channel groups retain ordering and alpha records become native coverage controls.
     #[test]
     fn repeated_levels_channel_groups_preserve_native_channel_order_and_bind_native_alpha() {
         let source = StoredEffect::test(
@@ -451,6 +480,7 @@ mod tests {
         assert_eq!(mapped.filters[1].command, "filter.other.alphaCurve");
         assert_eq!(mapped.filters[1].params["values"].as_array().unwrap().len(), 256);
     }
+    /// Checks alpha Levels affects only coverage while hidden/HDR color samples and native persistence remain intact.
     #[test]
     fn alpha_levels_is_native_editable_coverage_at_every_depth_and_preserves_hidden_hdr_colors() {
         use photocraft_color::PixelFormat;
@@ -499,6 +529,7 @@ mod tests {
         let photocraft_doc::LayerContent::Smart(smart) = &restored.layers[0].content else { panic!("native smart") };
         assert_eq!(smart.smart_filters[0].params, filter.params);
     }
+    /// Exercises intervals and gamma endpoints outside dialog constraints using sampled native transfers.
     #[test]
     fn narrow_collapsed_levels_and_gamma_endpoint_use_native_sampled_curves() {
         for (low, high) in [(0.5, 0.5001), (0.5, 0.5), (1., 1.)] {
@@ -538,6 +569,7 @@ mod tests {
         assert_eq!(mapped.filters[0].params["red"][255], 255.);
         assert!(mapped.notes.iter().any(|note| note.contains("channel-then-master")));
     }
+    /// Checks real saved configuration syntax preserves supported policies and rejects invalid values explicitly.
     #[test]
     fn actual_config_syntax_retains_policies_and_rejects_invalid_policy_values() {
         for policy in ["(trc non-linear) (clamp-input yes) (clamp-output no)", "(linear no)"] {
@@ -555,10 +587,12 @@ mod tests {
             assert!(map(&source, &context()).unwrap().is_err(), "{raw}");
         }
     }
+    /// Verifies finite convolution endpoint policies with signed/HDR samples, preserved alpha and native save/reopen at each depth.
     #[test]
     fn signed_hdr_and_collapsed_levels_use_native_convolution_endpoints_alpha_depth_and_reopen() {
         use photocraft_color::PixelFormat;
         use photocraft_raster::{Interrupt, Surface};
+        /// Decodes emitted native convolution parameters for direct comparison with independently specified gain/bias expectations.
         fn options(p: &Value) -> photocraft_algo::convolution::Params {
             assert_eq!(p["edge"], "repeat");
             photocraft_algo::convolution::Params {
@@ -648,6 +682,7 @@ mod tests {
         assert!(photocraft_algo::convolution::validate(&options, 4).is_ok());
     }
 
+    /// Checks a valid subnormal endpoint reaches finite F64 native convolution data instead of being falsely rejected as zero-span.
     #[test]
     fn subnormal_f32_levels_endpoint_uses_finite_f64_kernel_without_false_range_rejection() {
         use photocraft_color::PixelFormat;
@@ -696,6 +731,7 @@ mod tests {
         }
     }
 
+    /// Requires invalid or unsupported controls to fail conversion explicitly rather than silently fitting native dialog bounds.
     #[test]
     fn unsafe_or_unmapped_params_are_retained_instead_of_native_clamping() {
         for source in [

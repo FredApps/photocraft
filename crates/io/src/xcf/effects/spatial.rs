@@ -10,10 +10,14 @@ use super::{ArgumentValue, MappingContext, MappingFailure, MappingResult, Native
 
 type Result<T> = std::result::Result<T, MappingFailure>;
 
+/// Classify malformed stored controls as invalid optional data rather than an intrinsic native capability
+/// limit.
 fn invalid(message: impl Into<String>) -> MappingFailure {
     MappingFailure { reason: ConversionReason::InvalidOptionalData, message: message.into() }
 }
 
+/// Read a finite value inside its declared source domain; malformed or out-of-domain controls return a
+/// classified failure.
 fn number(e: &StoredEffect<'_>, key: &str, default: f64, low: f64, high: f64) -> Result<f64> {
     let value = e.number(key).map_err(invalid)?.unwrap_or(default);
     if !value.is_finite() || !(low..=high).contains(&value) {
@@ -22,10 +26,12 @@ fn number(e: &StoredEffect<'_>, key: &str, default: f64, low: f64, high: f64) ->
     Ok(value)
 }
 
+/// Decode a typed optional flag while preserving invalid-optional-data classification on malformed input.
 fn boolean(e: &StoredEffect<'_>, key: &str) -> Result<Option<bool>> {
     e.boolean(key).map_err(invalid)
 }
 
+/// Require a finite integral value in the declared range before converting it to an unsigned count.
 fn integer(e: &StoredEffect<'_>, key: &str, default: u32, low: u32, high: u32) -> Result<u32> {
     let value = number(e, key, f64::from(default), f64::from(low), f64::from(high))?;
     if value.fract() != 0.0 {
@@ -34,6 +40,7 @@ fn integer(e: &StoredEffect<'_>, key: &str, default: u32, low: u32, high: u32) -
     Ok(value as u32)
 }
 
+/// Accept only the enumerated source choices, preventing unknown variants from inheriting a native default.
 fn choice(e: &StoredEffect<'_>, key: &str, default: i32, allowed: &[i32]) -> Result<i32> {
     let value = e.enum_value(key).map_err(invalid)?.unwrap_or(default);
     if !allowed.contains(&value) {
@@ -42,6 +49,8 @@ fn choice(e: &StoredEffect<'_>, key: &str, default: i32, allowed: &[i32]) -> Res
     Ok(value)
 }
 
+/// Require an unsigned stored seed so signed or unrelated argument representations cannot change
+/// deterministic noise behavior.
 fn seed(e: &StoredEffect<'_>) -> Result<u32> {
     match e.argument("seed").map_err(invalid)? {
         None => Ok(0),
@@ -50,6 +59,8 @@ fn seed(e: &StoredEffect<'_>) -> Result<u32> {
     }
 }
 
+/// Check an existing native dialog range and retain source configuration when a separate native construction
+/// would be required.
 fn native_range(value: f64, key: &str, low: f64, high: f64) -> Result<f64> {
     if !(low..=high).contains(&value) {
         return Err(format!(
@@ -60,18 +71,23 @@ fn native_range(value: f64, key: &str, low: f64, high: f64) -> Result<f64> {
     Ok(value)
 }
 
+/// Collect ordinary native filters with the policy describing their source-to-native translation.
 fn mapped(filters: Vec<SmartFilter>, note: impl Into<String>) -> NativeMapping {
     NativeMapping { filters, notes: vec![note.into()], ..Default::default() }
 }
 
+/// Package a single ordinary native filter and its conversion note without introducing source execution
+/// state.
 fn one(command: &str, params: Value, note: impl Into<String>) -> NativeMapping {
     mapped(vec![native_filter(command, params)], note)
 }
 
+/// Preserve zero-strength effects as native identity instead of forcing a positive native dialog minimum.
 fn identity() -> NativeMapping {
     mapped(Vec::new(), "The source spatial amount is zero; preserve native pixels without forcing a nonzero native dialog minimum")
 }
 
+/// Construct a native Gaussian using standard-deviation units inside the existing native radius range.
 fn gaussian(radius: f64) -> Result<SmartFilter> {
     native_range(radius, "Gaussian standard deviation", 0.1, 1000.0)?;
     Ok(native_filter("filter.blur.gaussianBlur", json!({"radius": radius})))
@@ -113,6 +129,7 @@ fn gaussian_map(e: &StoredEffect<'_>, context: &MappingContext) -> Result<Native
     ))
 }
 
+/// Translate normalized source-owner coordinates into the actual native filter frame, rejecting empty frames.
 fn center(e: &StoredEffect<'_>, context: &MappingContext) -> Result<[f64; 2]> {
     let (owner, native) = (context.owner_bounds, context.native_filter_bounds);
     if owner.is_empty() || native.is_empty() {
@@ -126,6 +143,8 @@ fn center(e: &StoredEffect<'_>, context: &MappingContext) -> Result<[f64; 2]> {
     ])
 }
 
+/// Factor a finite positive gain into bounded native Exposure passes without exceeding the native stack
+/// limit.
 fn native_gain(gain: f64) -> Result<Vec<SmartFilter>> {
     if !gain.is_finite() || gain <= 0. {
         return Err(invalid("native gain must be positive and finite"));
@@ -169,6 +188,8 @@ pub(super) fn gaussian_workspace(c: &MappingContext, sigma: f64, caches: usize) 
         .ok_or_else(|| MappingFailure::resource("native Gaussian cache size overflows"))?;
     super::residual_spatial::generation_bytes(c, cache)
 }
+/// Represent broad sharpening with bounded native branches or repeated thresholded passes, disclosing
+/// nonlinear support approximations.
 fn broad_unsharp(radius: f64, scale: f64, threshold: f64, c: &MappingContext) -> Result<NativeMapping> {
     use super::{NativeBranch, NativeStructure};
     if threshold != 0. {
@@ -217,6 +238,7 @@ fn broad_unsharp(radius: f64, scale: f64, threshold: f64, c: &MappingContext) ->
     Ok(NativeMapping{structure:Some(NativeStructure::Composite{branches:vec![NativeBranch{filters:native_gain(1.+scale)?,..Default::default()},NativeBranch{filters:blur,blend:photocraft_color::BlendMode::Subtract,clipped:true,..Default::default()}]}),notes:vec!["Broad sharpening becomes ordinary native Exposure/variance-split Gaussian branches implementing the input/base-detail gain intent. Native Exposure gains follow their own transfer policy rather than source encoded-channel arithmetic. Native clipped Subtract retains original coverage while native negative/HDR/channel clipping and alpha-weighted Gaussian boundaries replace source unsharp behavior. This path currently supports zero difference threshold only; no source kernel or threshold evaluator persists".into()],..Default::default()})
 }
 
+/// Approximate outward zoom with finite native transformed copies and explicit generation admission.
 fn zoom_copies(factor: f64, centre: [f64; 2], context: &MappingContext) -> Result<NativeMapping> {
     use super::{NativeBranch, NativeStructure};
     let b = context.native_filter_bounds;
@@ -239,6 +261,8 @@ fn zoom_copies(factor: f64, centre: [f64; 2], context: &MappingContext) -> Resul
     }
     Ok(NativeMapping{structure:Some(NativeStructure::Composite{branches}),notes:vec!["Native midpoint ray quadrature uses32 editable scaled source copies about the requested center, with conditional Normal opacities giving equal weights where copies are opaque. Positive source zoom samples inward; negative samples outward through native inverse placements. Native Free Transform interpolation, transparent transformed edges and partial-alpha/overlap composition differ from source radial sampling; no source evaluator or silently clamped native slider".into()],..Default::default()})
 }
+/// Translate rotation or zoom blur controls into native center, amount, and structural policies while
+/// preserving zero strength.
 fn radial(e: &StoredEffect<'_>, context: &MappingContext, zoom: bool) -> Result<NativeMapping> {
     let amount = if zoom {
         let factor = number(e, "factor", 0.1, -10.0, 1.0)?;
@@ -290,6 +314,8 @@ fn radial(e: &StoredEffect<'_>, context: &MappingContext, zoom: bool) -> Result<
     ))
 }
 
+/// Emit the requested bounded native denoise passes with a generation check before allocating their parameter
+/// stack.
 fn repeated_denoise(e: &StoredEffect<'_>, iterations: u32, context: &MappingContext) -> Result<NativeMapping> {
     if iterations == 0 {
         return Ok(identity());
@@ -318,6 +344,8 @@ fn repeated_denoise(e: &StoredEffect<'_>, iterations: u32, context: &MappingCont
     ))
 }
 
+/// Map signed neighborhood radius and independent color/alpha ranks to native Percentile, including rank
+/// reversal for negative radii.
 fn median(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     let signed = number(e, "radius", 3.0, -400.0, 400.0)?;
     if signed.fract() != 0.0 {
@@ -342,6 +370,8 @@ fn median(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     ))
 }
 
+/// Translate independent channel amplitudes and seed into native Channel Noise, disclosing native
+/// distribution and correlation policies.
 fn rgb_noise(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     let independent = boolean(e, "independent")?.unwrap_or(true);
     let correlated = boolean(e, "correlated")?.unwrap_or(false);
@@ -376,6 +406,8 @@ fn rgb_noise(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMap
     ))
 }
 
+/// Translate probability and repetitions into bounded native noise stages without fabricating absent random
+/// resources.
 fn neighbor_noise(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     let probability = number(e, "pct-random", 50.0, 0.0, 100.0)? / 100.0;
     let repeat = integer(e, "repeat", 1, 1, 100)?;
@@ -403,6 +435,8 @@ fn neighbor_noise(e: &StoredEffect<'_>, context: &MappingContext) -> Result<Nati
     ))
 }
 
+/// Map directional neighbor-noise intent through native orientation and bounded native stages, preserving
+/// deterministic seed data.
 fn slur(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     let probability = number(e, "pct-random", 50.0, 0.0, 100.0)? / 100.0;
     let repeat = integer(e, "repeat", 1, 1, 100)?;
@@ -432,6 +466,8 @@ fn slur(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping>
     Ok(mapping)
 }
 
+/// Construct ordered native Gaussian differences with explicit bias removal and a true zero result for equal
+/// radii.
 fn difference(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     let first = number(e, "radius1", 1.0, 0.0, 1000.0)?;
     let second = number(e, "radius2", 2.0, 0.0, 1000.0)?;
@@ -461,6 +497,8 @@ fn difference(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     ))
 }
 
+/// Build bounded native high-pass and contrast structures; broad support is an explicit native approximation
+/// rather than silent radius clipping.
 fn high_pass(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     let radius = number(e, "std-dev", 4.0, 0.0, 10000.0)?;
     let contrast = number(e, "contrast", 1.0, 0.0, 5.0)?;
@@ -527,6 +565,8 @@ fn high_pass(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMap
     Ok(mapping)
 }
 
+/// Create the native tone curve used to normalize a high-pass branch without changing source operation
+/// identity at runtime.
 fn high_pass_curve(gain: f64, bias: f64) -> Result<SmartFilter> {
     let mut outputs = Vec::new();
     outputs.try_reserve_exact(256).map_err(|_| MappingFailure::resource("native High Pass pencil curve allocation"))?;
@@ -536,6 +576,8 @@ fn high_pass_curve(gain: f64, bias: f64) -> Result<SmartFilter> {
     Ok(native_filter("image.adjustments.curves", json!({"pencil":true,"points":outputs})))
 }
 
+/// Translate edge-preserving blur controls into bounded native stacks, retaining unsupported domains instead
+/// of truncating the workload.
 fn edge_blur(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     let (radius, threshold, repeat, note) = match e.canonical_operation() {
         "gegl:bilateral-filter" => {
@@ -667,6 +709,8 @@ fn edge_blur(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMap
     Ok(mapping)
 }
 
+/// Translate supported aperture and radius controls to native Lens Blur and disclose the different native
+/// aperture policy.
 fn lens_blur(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     let radius = number(e, "radius", 10.0, 0.0, f64::MAX)?;
     let highlight = number(e, "highlight-factor", 0.0, 0.0, 1.0)?;
@@ -689,6 +733,7 @@ fn lens_blur(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     ))
 }
 
+/// Combine a native focus region with admitted blur support and preserve a genuinely empty focused region.
 fn focus_blur(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     let blur = number(e, "blur-radius", 25.0, 0.0, 1500.0)?;
     choice(e, "blur-type", 0, &[0, 1])?;
@@ -788,6 +833,7 @@ fn focus_blur(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMa
     Ok(mapping)
 }
 
+/// Append the admitted number of native focus passes without inventing a lower repetition cap.
 fn repeat_focus_passes(mapping: &mut NativeMapping, passes: usize, context: &MappingContext) -> Result<()> {
     if passes > 1 {
         let filter = mapping.filters.first().cloned().ok_or_else(|| invalid("missing native focus geometry"))?;
@@ -801,6 +847,8 @@ fn repeat_focus_passes(mapping: &mut NativeMapping, passes: usize, context: &Map
     Ok(())
 }
 
+/// Translate spread amount into bounded native displacement/filter data using the declared seed and native
+/// sampling rules.
 fn spread(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     let x = integer(e, "amount-x", 5, 0, 512)?;
     let y = integer(e, "amount-y", 5, 0, 512)?;
@@ -825,6 +873,7 @@ fn spread(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     ))
 }
 
+/// Build native component-blended noise stages with explicit color-space and alpha policies.
 fn component_noise(e: &StoredEffect<'_>, context: &MappingContext, lch: bool) -> Result<NativeMapping> {
     let holdness = integer(e, "holdness", 2, 1, 8)?;
     let hue = number(e, "hue-distance", 3.0, 0.0, 180.0)? / 180.0;
@@ -863,6 +912,8 @@ fn component_noise(e: &StoredEffect<'_>, context: &MappingContext, lch: bool) ->
     ))
 }
 
+/// Translate hurl probability and repetition into ordinary native seeded noise data with a declared
+/// distribution approximation.
 fn hurl(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     let probability = number(e, "pct-random", 50.0, 0.0, 100.0)? / 100.0;
     let repeat = integer(e, "repeat", 1, 1, 100)?;
@@ -891,6 +942,8 @@ fn hurl(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     ))
 }
 
+/// Dispatch only the owned frozen spatial identities; unowned effects remain available to other native
+/// adapters.
 pub(super) fn map(e: &StoredEffect<'_>, context: &MappingContext) -> MappingResult {
     if !matches!(
         e.canonical_operation(),
@@ -1029,6 +1082,7 @@ mod tests {
     use super::*;
     use photocraft_geom::Rect;
 
+    /// Provide a bounded owner/filter frame and resource allowances for spatial conversion fixtures.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -1042,20 +1096,27 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Construct a typed floating source argument for mapper-domain tests.
     fn float(name: &'static str, value: f32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Float(value) }
     }
+    /// Construct a signed stored integer for count, enum-adjacent, and invalid-domain fixtures.
     fn int(name: &'static str, value: i32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Int(value) }
     }
+    /// Construct a stored enum value without textual alias parsing.
     fn enm(name: &'static str, value: i32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Enum(value) }
     }
+    /// Require an accepted spatial mapping in fixtures so a retained failure cannot masquerade as successful
+    /// native output.
     fn mapped_effect(operation: &'static str, arguments: Vec<Argument<'static>>) -> NativeMapping {
         map(&StoredEffect::test(operation, arguments), &context()).unwrap().unwrap()
     }
 
     #[test]
+    /// Compare the declared deterministic Surface Blur replacement and retain explicit unsupported
+    /// native-range cases.
     fn snn_pair_estimator_is_superseded_by_deterministic_native_surface_blur() {
         use photocraft_color::{PixelFormat, SampleType};
         use photocraft_doc::{Document, Layer, LayerContent, SmartObject, SmartSource};
@@ -1121,6 +1182,8 @@ mod tests {
         }
     }
     #[test]
+    /// Reconcile the frozen spatial defaults with accepted native mappings and the single explicitly
+    /// unavailable resource case.
     fn exact_frozen_batch_has25_default_native_mappings_and_one_explicit_resource_gap() {
         let operations = [
             "bilateral-filter",
@@ -1170,6 +1233,8 @@ mod tests {
     }
 
     #[test]
+    /// Ensure the registered motion alias resolves to identical native parameters rather than a separate
+    /// behavioral path.
     fn registered_motion_alias_uses_same_native_mapping() {
         let canonical = mapped_effect("gegl:motion-blur-linear", vec![float("length", 12.), float("angle", 35.)]);
         let alias = mapped_effect("gegl:motion-blur", vec![float("length", 12.), float("angle", 35.)]);
@@ -1177,6 +1242,7 @@ mod tests {
         assert_eq!(canonical.notes, alias.notes);
     }
     #[test]
+    /// Check both source-axis variances contribute to the independently calculated native Gaussian sigma.
     fn gaussian_uses_both_axis_variances_and_native_sigma_units() {
         let result = mapped_effect("gegl:gaussian-blur", vec![float("std-dev-x", 3.0), float("std-dev-y", 4.0)]);
         assert_eq!(result.filters[0].command, "filter.blur.gaussianBlur");
@@ -1191,6 +1257,8 @@ mod tests {
     }
 
     #[test]
+    /// Verify zero spatial controls preserve native identity rather than introducing a visible minimum-radius
+    /// effect.
     fn zero_spatial_strengths_do_not_become_native_minimum_radius() {
         for (operation, arguments) in [
             ("gegl:box-blur", vec![int("radius", 0)]),
@@ -1214,6 +1282,8 @@ mod tests {
     }
 
     #[test]
+    /// Compare motion direction, center translation, and zoom span with independently derived native
+    /// conventions.
     fn motion_sign_centers_and_zoom_span_match_independent_native_conventions() {
         let linear = mapped_effect("gegl:motion-blur-linear", vec![float("angle", 45.0), float("length", 6.0)]);
         assert_eq!(linear.filters[0].params, json!({"angle": -45.0,"distance":6.0}));
@@ -1226,6 +1296,8 @@ mod tests {
     }
 
     #[test]
+    /// Assert difference ordering and variance conversion, including explicit removal of the native high-pass
+    /// midpoint bias.
     fn difference_preserves_order_variances_and_removes_native_highpass_bias() {
         let result = mapped_effect("gegl:difference-of-gaussians", vec![float("radius1", 3.0), float("radius2", 5.0)]);
         assert_eq!(
@@ -1240,6 +1312,7 @@ mod tests {
     }
 
     #[test]
+    /// Verify sharpening gain and contrast use ordinary native units and remain within admitted stack limits.
     fn unsharp_and_highpass_contrast_use_native_units_and_bounded_ordinary_stages() {
         let result = mapped_effect("gegl:unsharp-mask", vec![float("std-dev", 2.0), float("scale", 1.5), float("threshold", 0.25)]);
         assert_eq!(result.filters[0].params, json!({"radius":2.0,"amount":150.0,"threshold":63.75}));
@@ -1253,6 +1326,7 @@ mod tests {
     }
 
     #[test]
+    /// Check signed-radius rank inversion and preservation of independent coverage-percentile controls.
     fn median_inverts_negative_radius_ranks_and_never_discards_alpha_rank() {
         let maximum =
             mapped_effect("gegl:median-blur", vec![int("radius", -2), float("percentile", 0.0), float("alpha-percentile", 0.0), enm("neighborhood", 0)]);
@@ -1272,6 +1346,8 @@ mod tests {
     }
 
     #[test]
+    /// Validate amplitude and probability conversion against the recorded independent probe rather than
+    /// matching implementation constants alone.
     fn noise_uses_independent_source_amplitude_probe_and_explicit_probability_conversion() {
         let arguments = vec![float("red", 0.25), float("green", 0.25), float("blue", 0.25), Argument { name: "seed", value: ArgumentValue::UInt(u32::MAX) }];
         let noise = mapped_effect("gegl:noise-rgb", arguments);
@@ -1290,6 +1366,8 @@ mod tests {
     }
 
     #[test]
+    /// Require independent color and alpha amplitudes, relative-noise flags, and seed to remain explicit
+    /// native parameters.
     fn channel_noise_preserves_unequal_alpha_and_relative_controls_in_native_data() {
         let e = StoredEffect::test(
             "gegl:noise-rgb",
@@ -1316,6 +1394,7 @@ mod tests {
     }
 
     #[test]
+    /// Prove valid repetition counts remain represented when they fit the actual native admission limits.
     fn bounded_source_repetitions_are_preserved_above_the_old_arbitrary_cap() {
         for (operation, args, count) in [
             ("gegl:mean-curvature-blur", vec![int("iterations", 500)], 500),
@@ -1328,6 +1407,8 @@ mod tests {
     }
 
     #[test]
+    /// Check empty-focus handling and explicit native component blend modes instead of silently dropping
+    /// either control.
     fn focus_zero_region_uses_full_frame_blur_and_component_noise_keeps_native_blends() {
         let zero = mapped_effect("gegl:focus-blur", vec![float("radius", 0.0)]);
         assert_eq!(zero.filters[0].command, "filter.blur.gaussianBlur");
@@ -1339,6 +1420,8 @@ mod tests {
     }
 
     #[test]
+    /// Exercise the full blur domain through admitted native passes and verify parameters after native
+    /// persistence.
     fn zero_focus_full_sigma_domain_uses_bounded_native_variance_and_persists() {
         use photocraft_color::{PixelFormat, SampleType};
         use photocraft_doc::{Document, Layer, LayerContent, SmartObject, SmartSource};
@@ -1409,6 +1492,8 @@ mod tests {
         );
     }
     #[test]
+    /// Compare broad focus geometry and replay across depths, retaining the same editable structure after
+    /// native reopen.
     fn broad_focus_preserves_native_geometry_replay_depth_and_persistence() {
         use photocraft_color::{PixelFormat, SampleType};
         use photocraft_doc::{Document, Layer, LayerContent, SmartObject, SmartSource};
@@ -1491,6 +1576,8 @@ mod tests {
         assert!(focus_blur(&effect, &MappingContext { interrupt: Interrupt::cancel_only(&cancel), ..context() }).is_err());
     }
     #[test]
+    /// Verify the native normalized-difference construction and reject workloads exceeding the actual native
+    /// depth budget.
     fn broad_high_pass_uses_native_normalized_difference_and_retains_real_stack_limit() {
         use super::super::NativeStructure;
         use photocraft_color::{PixelFormat, SampleType};
@@ -1621,6 +1708,8 @@ mod tests {
         assert!(high_pass(&effect, &MappingContext { interrupt: Interrupt::cancel_only(&cancel), ..context() }).is_err());
     }
     #[test]
+    /// Exercise low and high edge domains through explicit native counterparts rather than arbitrary
+    /// conversion cutoffs.
     fn weak_gaussian_outward_zoom_and_large_sharpen_gain_have_bounded_native_counterparts() {
         let blur = mapped_effect("gegl:gaussian-blur", vec![float("std-dev-x", 0.01), float("std-dev-y", 0.01)]);
         assert_eq!(blur.filters[0].params["radius"], json!(0.1));
@@ -1658,6 +1747,8 @@ mod tests {
         }
     }
     #[test]
+    /// Check broad sharpening prices line workspace before construction and maintains the declared native
+    /// variance policy.
     fn broad_sharpen_prices_native_line_workspace_and_preserves_variance() {
         let c = MappingContext { native_filter_bounds: Rect::from_xywh(0, 0, 7, 5), ..context() };
         let m = broad_unsharp(1500., 3., 0., &c).unwrap();
@@ -1676,6 +1767,8 @@ mod tests {
     }
 
     #[test]
+    /// Compare thresholded native sharpening across depths and partial coverage, including native
+    /// save/reopen.
     fn broad_threshold_sharpening_uses_native_gates_depth_alpha_and_persistence() {
         use photocraft_color::{PixelFormat, SampleType};
         use photocraft_doc::{Document, Layer, LayerContent, SmartObject, SmartSource};
@@ -1777,6 +1870,8 @@ mod tests {
     }
 
     #[test]
+    /// Require malformed and currently unrepresented controls to fail explicitly without changing them to
+    /// native minima or maxima.
     fn invalid_or_unrepresented_domains_are_retained_without_silent_native_clamping() {
         for (operation, args, reason) in [
             ("gegl:gaussian-blur", vec![float("std-dev-x", f32::NAN)], ConversionReason::InvalidOptionalData),
@@ -1789,6 +1884,8 @@ mod tests {
         assert!(map(&duplicate, &context()).unwrap().is_err());
     }
     #[test]
+    /// Check the declared support and minimum-radius policies rather than pretending native and source edge
+    /// estimators match.
     fn edge_blur_broad_support_and_minimums_are_explicit_native_policies() {
         let mut c = context();
         c.native_filter_bounds = Rect::new(0, 0, 3, 2);
@@ -1826,6 +1923,8 @@ mod tests {
     }
 
     #[test]
+    /// Verify actual generation allowance and cancellation are checked before building large edge-blur
+    /// stacks.
     fn edge_blur_admits_bounded_native_stacks_before_allocating() {
         let mut c = context();
         c.native_filter_bounds = Rect::new(-1, -1, 1, 1);
@@ -1849,6 +1948,8 @@ mod tests {
     }
 
     #[test]
+    /// Compare broad edge-blur replay with an independent native counterpart and verify depth, coverage, and
+    /// reopen behavior.
     fn edge_blur_broad_native_counterpart_keeps_depth_coverage_and_persistence() {
         use photocraft_color::{PixelFormat, SampleType};
         use photocraft_doc::{Document, Layer, LayerContent, SmartObject, SmartSource};
