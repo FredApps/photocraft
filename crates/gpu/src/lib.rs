@@ -164,9 +164,9 @@ enum TexKind {
 impl TexKind {
     fn for_surface(role: Role, f: PixelFormat) -> Self {
         match role {
-            Role::Content | Role::Stroke if f == PixelFormat::RGBA8 => TexKind::Rgba8Direct,
-            Role::Content | Role::Stroke if f.sample == SampleType::U8 => TexKind::Rgba8,
-            Role::Content | Role::Stroke => TexKind::Rgba16F,
+            Role::Content | Role::Stroke | Role::MaskPaint(_) if f == PixelFormat::RGBA8 => TexKind::Rgba8Direct,
+            Role::Content | Role::Stroke | Role::MaskPaint(_) if f.sample == SampleType::U8 => TexKind::Rgba8,
+            Role::Content | Role::Stroke | Role::MaskPaint(_) => TexKind::Rgba16F,
             Role::Mask if f == PixelFormat::GRAY8 => TexKind::R8Direct,
             Role::Mask if f.sample == SampleType::F32 => TexKind::R32F,
             Role::Mask => TexKind::R16F,
@@ -528,8 +528,23 @@ pub const SHADER: &str = include_str!("compose.wgsl");
 
 /// Pass-level resources resolved for one page cell: resident pages (texture, mask) and effect
 /// maps (view and region) per pass.
+#[derive(Clone, Copy)]
+enum BoundMask {
+    Resident(ResidentRef),
+    Slot(plan::Slot),
+}
+
+impl BoundMask {
+    fn rect(self) -> Option<[i32; 4]> {
+        match self {
+            Self::Resident((_, rect)) => Some(rect),
+            Self::Slot(_) => None,
+        }
+    }
+}
+
 struct Bound {
-    views: Vec<(Option<ResidentRef>, Option<ResidentRef>)>,
+    views: Vec<(Option<ResidentRef>, Option<BoundMask>)>,
     keys: Vec<ResKey>,
     maps: Vec<Option<(wgpu::TextureView, Rect)>>,
 }
@@ -922,7 +937,13 @@ impl Compositor {
         let mut seen = std::collections::HashSet::new();
         let mut total = 0u64;
         for p in &plan.passes {
-            let sources = [p.tex.as_ref().map(|t| (t.layer, t.role, t.surface.get())), p.mask.as_ref().map(|m| (m.layer, Role::Mask, m.surface.get()))];
+            let sources = [
+                p.tex.as_ref().map(|t| (t.layer, t.role, t.surface.get())),
+                p.mask.as_ref().and_then(|m| {
+                    let plan::MaskSource::Surface(s) = &m.source else { return None };
+                    Some((m.layer, Role::Mask, s.get()))
+                }),
+            ];
             for (layer, role, s) in sources.into_iter().flatten() {
                 if seen.insert((layer, role)) {
                     let a = s.tile_bounds().intersect(&grid).intersect(&cells);
@@ -1530,7 +1551,17 @@ impl Compositor {
         let areas = plan
             .passes
             .iter()
-            .map(|p| (p.tex.as_ref().map_or(Rect::EMPTY, |t| area(t.surface.get())), p.mask.as_ref().map_or(Rect::EMPTY, |m| area(m.surface.get()))))
+            .map(|p| {
+                let mask = p
+                    .mask
+                    .as_ref()
+                    .and_then(|m| match &m.source {
+                        plan::MaskSource::Surface(s) => Some(area(s.get())),
+                        plan::MaskSource::Slot(_) => None,
+                    })
+                    .unwrap_or(Rect::EMPTY);
+                (p.tex.as_ref().map_or(Rect::EMPTY, |t| area(t.surface.get())), mask)
+            })
             .collect();
         let luts = plan.passes.iter().map(|p| p.lut.as_ref().map(|rows| lut_texture(device, queue, rows))).collect();
         let patterns = plan.passes.iter().map(|p| p.pattern.map(|pat| self.pattern_view(device, queue, pat))).collect();
@@ -1553,7 +1584,7 @@ impl Compositor {
         stats: &mut Stats,
     ) -> Bound {
         let cr = cell_rect(cell, self.page);
-        let mut views: Vec<(Option<ResidentRef>, Option<ResidentRef>)> = Vec::with_capacity(plan.passes.len());
+        let mut views: Vec<(Option<ResidentRef>, Option<BoundMask>)> = Vec::with_capacity(plan.passes.len());
         let mut keys: Vec<ResKey> = Vec::new();
         let mut maps = Vec::with_capacity(plan.passes.len());
         for (i, p) in plan.passes.iter().enumerate() {
@@ -1570,14 +1601,15 @@ impl Compositor {
                         (keys.len() - 1, r)
                     },
                 );
-            let mask = p
-                .mask
-                .as_ref()
-                .and_then(|m| self.sync(device, queue, encoder, doc, (m.layer, Role::Mask, cell), m.surface.get(), ma.intersect(&cr), stats))
-                .map(|(k, r)| {
-                    keys.push(k);
-                    (keys.len() - 1, r)
-                });
+            let mask = p.mask.as_ref().and_then(|m| match &m.source {
+                plan::MaskSource::Surface(surface) => {
+                    self.sync(device, queue, encoder, doc, (m.layer, Role::Mask, cell), surface.get(), ma.intersect(&cr), stats).map(|(k, r)| {
+                        keys.push(k);
+                        BoundMask::Resident((keys.len() - 1, r))
+                    })
+                }
+                plan::MaskSource::Slot(slot) => Some(BoundMask::Slot(*slot)),
+            });
             views.push((tex, mask));
             maps.push(p.map.and_then(|m| {
                 let f = plan.fx.get(m.fx)?;
@@ -1663,9 +1695,9 @@ impl Compositor {
             let run = runs.get(i).copied().unwrap_or(1);
             let w = if run > 1 {
                 let extras: Vec<_> = (i + 1..i + run).filter_map(|j| Some((plan.passes.get(j)?, bound.views.get(j).and_then(|v| v.0).map(|t| t.1)))).collect();
-                batch_op_words(p, tex.map(|t| t.1), mask.map(|m| m.1), &extras)
+                batch_op_words(p, tex.map(|t| t.1), mask.and_then(BoundMask::rect), &extras)
             } else {
-                op_words(p, tex.map(|t| t.1), mask.map(|m| m.1), map)
+                op_words(p, tex.map(|t| t.1), mask.and_then(BoundMask::rect), map)
             };
             let off = (op_base + i as u64 * STRIDE) as usize;
             data[off..][..w.len()].copy_from_slice(&w);
@@ -1691,7 +1723,10 @@ impl Compositor {
             let slot = |s: Option<u32>| s.map_or(dummy, |s| &self.pool[s as usize].1);
             let (tex, mask) = &bound.views[i];
             let tv = tex.map_or(slot(p.d), |(k, _)| resident_views[k]);
-            let mv = mask.map_or(dummy, |(k, _)| resident_views[k]);
+            let mv = mask.map_or(dummy, |m| match m {
+                BoundMask::Resident((k, _)) => resident_views[k],
+                BoundMask::Slot(slot) => &self.pool[slot as usize].1,
+            });
             let lv = fr.luts.get(i).and_then(Option::as_ref).map_or(dummy, |(_, v)| v);
             let map = bound.maps[i].as_ref().map_or(dummy, |(v, _)| v);
             let pat = fr.patterns.get(i).and_then(Option::as_ref).unwrap_or(dummy);
@@ -2358,10 +2393,15 @@ fn op_values(p: &plan::Pass<'_>, tex: Option<[i32; 4]>, mask: Option<[i32; 4]>, 
         flags |= 1;
         density = m.density;
         mdefault = m.default;
-        if let Some(r) = mask {
-            flags |= 2;
-            mo = [r[0], r[1]];
-            ms = [r[2], r[3]];
+        match &m.source {
+            plan::MaskSource::Slot(_) => flags |= plan::F_MASK_SLOT,
+            plan::MaskSource::Surface(_) => {
+                if let Some(r) = mask {
+                    flags |= 2;
+                    mo = [r[0], r[1]];
+                    ms = [r[2], r[3]];
+                }
+            }
         }
     }
     if p.gradient {
@@ -2413,7 +2453,9 @@ const BATCH: usize = 4;
 fn batch_runs(plan: &Plan<'_>) -> Vec<usize> {
     let passes = &plan.passes;
     let n = passes.len();
-    let reads = |p: &plan::Pass<'_>, s: plan::Slot| [p.a, p.b, p.c, p.d].contains(&Some(s));
+    let reads = |p: &plan::Pass<'_>, s: plan::Slot| {
+        [p.a, p.b, p.c, p.d].contains(&Some(s)) || p.mask.as_ref().is_some_and(|m| matches!(&m.source, plan::MaskSource::Slot(slot) if *slot == s))
+    };
     // feeds_next[i]: what pass i writes is read by pass i + 1 alone.
     let feeds_next: Vec<bool> = (0..n)
         .map(|i| {

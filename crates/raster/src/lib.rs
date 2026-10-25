@@ -318,6 +318,11 @@ impl Surface {
         decode_pixel(&self.format, &self.default_pixel)
     }
 
+    /// Change the value returned for untouched pixels. Existing tiles keep their stored samples.
+    pub fn set_default_pixel(&mut self, pixel: &[f32]) {
+        encode_pixel(&self.format, pixel, &mut self.default_pixel);
+    }
+
     /// Decode the default pixel, using dynamic storage only when the stack buffer is too small.
     fn default_samples<'a>(&self, stack: &'a mut [f32], heap: &'a mut Vec<f32>) -> &'a mut [f32] {
         let px = sample_buffer(self.channels(), stack, heap);
@@ -1585,6 +1590,21 @@ mod tests {
         let m = Surface::with_default(PixelFormat::GRAY8, &[1.0]);
         assert_eq!(m.pixel(123_456, -9), vec![1.0]);
         assert_eq!(m.tile_count(), 0);
+    }
+
+    #[test]
+    fn changing_default_preserves_tiles_and_is_copy_on_write() {
+        let mut surface = Surface::with_default(PixelFormat::GRAY8, &[0.25]);
+        surface.write_pixel(2, 3, &[0.75]);
+        let clone = surface.clone();
+
+        surface.set_default_pixel(&[0.5]);
+
+        assert_eq!(surface.pixel(2, 3), vec![191.0 / 255.0]);
+        assert_eq!(surface.pixel(300, 3), vec![128.0 / 255.0]);
+        assert_eq!(clone.pixel(2, 3), vec![191.0 / 255.0]);
+        assert_eq!(clone.pixel(300, 3), vec![64.0 / 255.0]);
+        assert_eq!(clone.default_pixel(), vec![64.0 / 255.0]);
     }
 
     #[test]

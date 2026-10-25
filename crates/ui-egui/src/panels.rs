@@ -168,6 +168,8 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                                     let key = egui::Id::new(("tool-slot", *slot_index));
                                     let tool = slot_tool(ui, app.ui.tool, slot, key);
                                     let sel = slot.contains(&app.ui.tool);
+                                    #[cfg(feature = "uv-workbench")]
+                                    let sel = sel && !app.ui.uv_workbench.select_shells;
                                     let tip = match crate::tool_shortcuts::shortcut(app, tool) {
                                         Some(sc) => format!("{}  ({})", tl!(tool.label()), crate::shortcuts::pretty(&sc)),
                                         None => tl!(tool.label()).to_string(),
@@ -306,6 +308,10 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                                     }
                                 }
                             });
+                            #[cfg(feature = "uv-workbench")]
+                            if row.iter().any(|(_, slot)| slot.contains(&Tool::RectMarquee)) {
+                                crate::uv_workspace::shell_tool(app, ui, bx);
+                            }
                         }
                     }
                     if icons::button(ui, "ellipsis", bx, false, tl!("Edit Toolbar…")).clicked() {
@@ -967,6 +973,21 @@ fn options_bar_height(pro: bool, narrow: bool) -> f32 {
 }
 
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    #[cfg(feature = "uv-workbench")]
+    if app.ui.workspace == "3D" && app.ui.uv_workbench.select_shells && app.session.uv.scene.is_some() {
+        egui::Panel::top("options_bar").exact_size(36.0).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.menu_button(tl!("UV shell selection"), |ui| {
+                    ui.set_max_width(360.0);
+                    crate::uv_ui::shell_settings(app, ui);
+                });
+                ui.separator();
+                ui.weak(tl!("Click to select · Shift to add · Alt in 2D / Ctrl in 3D to subtract"));
+            });
+        });
+        return;
+    }
+
     let t = Tokens::get(ui.ctx());
     let narrow = app.session.prefs().workspace.narrow_options_bar();
     egui::Panel::top("options_bar")
@@ -1806,10 +1827,14 @@ pub fn request_dock_width(ctx: &egui::Context, w: f32) {
 
 fn dock_panels(app: &mut PhotocraftApp, ui: &mut egui::Ui, p: &crate::state::Panels, t: &Tokens) {
     use crate::dock::Group;
-    // Floating in Studio, Properties docks only in Pro (Photoshop).
+    // The UV controls stay docked in Studio too; ordinary Properties retain its layout.
+    #[cfg(feature = "uv-workbench")]
+    let uv_docked = app.ui.workspace == "3D" && matches!(app.ui.dock_tabs.properties, 2 | 3);
+    #[cfg(not(feature = "uv-workbench"))]
+    let uv_docked = false;
     let shown: Vec<Group> = [
         (Group::Color, p.color),
-        (Group::Properties, t.pro && p.properties),
+        (Group::Properties, (t.pro || uv_docked) && p.properties),
         (Group::Character, p.character),
         (Group::Navigator, p.navigator),
         (Group::History, p.history),
@@ -1847,6 +1872,10 @@ pub(crate) fn dock_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, group: crate
         // (#6000); only the tab order differs between themes.
         (Group::Color, tab) if group.tabs(pro).get(tab) == Some(&"Color") => crate::color_panel_ui::panel(app, ui),
         (Group::Color, _) => crate::swatches_ui::panel(app, ui),
+        #[cfg(feature = "uv-workbench")]
+        (Group::Properties, 2) => crate::uv_ui::panel(app, ui),
+        #[cfg(feature = "uv-workbench")]
+        (Group::Properties, 3) => crate::uv_library::panel(app, ui),
         (Group::Properties, 0) => properties_body(app, ui),
         (Group::Properties, _) => adjustments_grid(app, ui),
         (Group::Character, tab) => crate::type_tool::character_panel(app, ui, tab == 1),
@@ -2550,6 +2579,10 @@ fn inactive_blend_rows(ui: &mut egui::Ui, pro: bool) {
 }
 
 fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    #[cfg(feature = "uv-workbench")]
+    if crate::uv_library::layers_drop(app, ui) {
+        ui.disable();
+    }
     // A new active layer opens its parent groups and is scrolled into view (#152).
     let reveal = crate::layer_reveal::track(app, ui.ctx());
     let Some(st) = app.session.active() else {
@@ -2731,6 +2764,16 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let row = RowSel { selected: selection.contains(&l.id), primary: active == Some(l.id), multi: selection.len() > 1 };
                 let top = ui.cursor().top();
                 drawn.push((l.id, layer_row(app, &ctx, ui, &doc, l, depth, row, &mut actions)));
+                #[cfg(feature = "uv-workbench")]
+                {
+                    let paint_top = ui.cursor().top();
+                    crate::uv_mask_paint::rows(app, ui, l, &mut actions);
+                    if ui.cursor().top() > paint_top
+                        && let Some((_, area)) = drawn.last_mut()
+                    {
+                        area.max.y = ui.cursor().top().max(area.max.y);
+                    }
+                }
                 if reveal == Some(l.id) {
                     crate::layer_reveal::scroll_to_row(ui, top);
                 }
@@ -2972,6 +3015,21 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             continue;
         }
         let _ = app.run(&id, p);
+        #[cfg(feature = "uv-workbench")]
+        if app.ui.workspace == "3D" {
+            if id == "uv.maskPaint.select" {
+                let levels = app.session.active().and_then(|st| st.active_layer.and_then(|id| st.doc.layer(id))).and_then(|layer| {
+                    let stack = layer.mask.as_ref()?.paint.as_ref()?;
+                    Some(matches!(
+                        &stack.layers.get(stack.active)?.kind,
+                        photocraft_doc::mask_paint::EffectKind::Levels { .. } | photocraft_doc::mask_paint::EffectKind::Fill { .. }
+                    ))
+                });
+                app.ui.dock_tabs.properties = if levels == Some(true) { 0 } else { 2 };
+            } else if id == "layer.select" {
+                app.ui.dock_tabs.properties = 2;
+            }
+        }
     }
 }
 
@@ -3359,18 +3417,24 @@ fn layer_row(
             actions.push((photocraft_engine::mask_view_cmds::ID.into(), json!({"layer": l.id.0, "mode": "off"})));
         }
         let content_less = matches!(l.content, LayerContent::Adjustment(_) | LayerContent::Fill(_));
+        let content_click = on_thumb || !row.primary;
+        #[cfg(feature = "uv-workbench")]
+        let content_click = if app.ui.workspace == "3D" { on_thumb } else { content_click };
+        let mask_by_row = content_less && l.mask.is_some() && !on_thumb;
+        #[cfg(feature = "uv-workbench")]
+        let mask_by_row = mask_by_row && app.ui.workspace != "3D";
         if on_vector {
             // The vector mask thumbnail targets the vector mask: the path tools edit it and the
             // Paths panel selects the layer's path.
             app.ui.selected_path = Some("layer".into());
             actions.push(("ui.vectorMaskTarget".into(), json!(true)));
-        } else if on_mask || (content_less && l.mask.is_some() && !on_thumb) {
+        } else if on_mask || mask_by_row {
             if on_mask {
                 // The mask thumbnail also switches Properties to the mask (#3369).
                 app.ui.properties_layer = None;
             }
             actions.push(("ui.maskTarget".into(), json!(true)));
-        } else if on_thumb || !row.primary {
+        } else if content_click {
             actions.push(("ui.maskTarget".into(), json!(false)));
         }
         // ⌥-click the layer thumbnail: fit the layer on screen, as Photoshop does.
@@ -3839,6 +3903,10 @@ fn snapshot_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, selected: Option<u6
 /// tabs: Properties (`properties_body`: document, layer, adjustment and mask properties) and
 /// Adjustments (`adjustments_grid`).
 pub fn properties_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    #[cfg(feature = "uv-workbench")]
+    if app.ui.workspace == "3D" && matches!(app.ui.dock_tabs.properties, 2 | 3) {
+        return;
+    }
     if app.ui.docking.is_some() {
         return;
     }
@@ -3869,7 +3937,7 @@ pub fn properties_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
             ui.set_width(width - 28.0);
             // Properties | Adjustments, as on the docked group (#7265).
             let group = crate::dock::Group::Properties;
-            let visible = app.ui.dock.visible_tabs(group, false);
+            let visible = crate::dock::visible_tabs(app, group, false);
             let indices: Vec<usize> = visible.iter().map(|(i, _)| *i).collect();
             let tabs: Vec<&str> = visible.iter().map(|(_, name)| *name).collect();
             let mut sel = indices.iter().position(|i| *i == app.ui.dock_tabs.properties).unwrap_or(0);
@@ -3975,6 +4043,10 @@ fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 
 fn properties_body_inner(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
+    #[cfg(feature = "uv-workbench")]
+    if crate::uv_mask_paint::levels_properties(app, ui) || crate::uv_mask_paint::fill_properties(app, ui) {
+        return;
+    }
     let Some(st) = app.session.active() else {
         empty(ui, tl!("No properties"));
         return;

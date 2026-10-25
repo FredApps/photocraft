@@ -137,6 +137,20 @@ pub use variables_cmds::{export_data_sets_with, import_data_sets_text};
 pub mod vector_cmds;
 mod video_cmds;
 pub use video_cmds::render_video_with;
+#[cfg(feature = "uv-workbench")]
+pub mod uv_asset_cmds;
+#[cfg(feature = "uv-workbench")]
+pub mod uv_cmds;
+#[cfg(feature = "uv-workbench")]
+pub mod uv_mask_paint_cmds;
+#[cfg(feature = "uv-workbench")]
+mod uv_reload_cmds;
+#[cfg(feature = "uv-workbench")]
+mod uv_texture_save_cmds;
+#[cfg(feature = "uv-workbench")]
+pub mod uv_workspace_cmds;
+#[cfg(feature = "uv-workbench")]
+mod uv_wrap_cmds;
 pub mod vp_cmds;
 pub mod warp_cmds;
 pub mod web_cmds;
@@ -468,6 +482,10 @@ pub const PRECHECKED: &[&str] = &["layer.new.layer", "layer.new.group", "layer.n
 
 #[derive(Default)]
 pub struct Session {
+    #[cfg(feature = "uv-workbench")]
+    pub uv: uv_cmds::UvState,
+    #[cfg(feature = "uv-workbench")]
+    pub uv_workspace: uv_workspace_cmds::Documents,
     docs: Vec<DocState>,
     active: Option<usize>,
     pub tools: ToolState,
@@ -631,7 +649,16 @@ impl Session {
     /// Identity-dependent callers must read the admitted document at the returned index.
     pub fn add_document(&mut self, mut doc: Document, path: Option<String>) -> usize {
         // Persisted IDs can overlap the allocator, so check every replacement too.
-        while self.docs.iter().any(|st| st.doc.id == doc.id) {
+        while self.docs.iter().any(|st| st.doc.id == doc.id) || {
+            #[cfg(feature = "uv-workbench")]
+            {
+                self.uv_workspace.parked.iter().any(|st| st.doc.id == doc.id)
+            }
+            #[cfg(not(feature = "uv-workbench"))]
+            {
+                false
+            }
+        } {
             doc.id = photocraft_doc::DocId::fresh();
         }
         let mut st = DocState::new(doc, path);
@@ -857,6 +884,14 @@ impl Session {
         let mut doc = (*before).clone();
         let mut active = st.active_layer;
         let r = f(&mut doc, &mut active)?;
+        // Experimental brush stacks keep the ordinary mask as the render/export cache.
+        let mask_ids: Vec<_> = doc.walk().iter().filter_map(|(_, _, l)| l.mask.as_ref().filter(|m| m.paint.is_some()).map(|_| l.id)).collect();
+        for id in mask_ids {
+            if let Some(mask) = doc.layer_mut(id).and_then(|l| l.mask.as_mut()) {
+                let old = before.layer(id).and_then(|l| l.mask.as_ref()).and_then(|m| m.paint.as_ref());
+                photocraft_compose::mask_paint::refresh_changes(mask, old);
+            }
+        }
         if let (Some(k), Some(id)) = (restrict, active) {
             channel_cmds::restrict_to_color(&before, &mut doc, id, k);
         }

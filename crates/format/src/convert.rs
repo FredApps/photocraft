@@ -172,6 +172,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
                 linked: m.linked,
                 density: m.density,
                 feather: m.feather,
+                paint: mask_paint_m(m, sink),
             }),
             warp: s.warp.clone(),
             stack_mode: s.stack_mode,
@@ -193,6 +194,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             linked: m.linked,
             density: m.density,
             feather: m.feather,
+            paint: mask_paint_m(m, sink),
         }),
         vector_mask: l.vector_mask.clone(),
         effects: EffectsM {
@@ -367,6 +369,68 @@ impl Loader<'_> {
         Ok(s)
     }
 
+    fn mask_paint(&mut self, m: &MaskM) -> Result<Option<photocraft_doc::mask_paint::Stack>> {
+        let Some(s) = &m.paint else { return Ok(None) };
+        if s.layers.len() > 256 || s.active >= s.layers.len() {
+            return Err(crate::FormatError::Corrupt("invalid mask paint stack".into()));
+        }
+        let base = self.surface(&s.base)?;
+        if base.channels() != 1 {
+            return Err(FormatError::corrupt("mask paint base must be grayscale"));
+        }
+        let mut layers = Vec::new();
+        for p in &s.layers {
+            let surface = self.surface(&p.surface)?;
+            if surface.format().mode != photocraft_color::ColorMode::Rgb
+                || !surface.format().alpha
+                || surface.format().sample != base.format().sample
+                || !p.opacity.is_finite()
+                || !(0.0..=1.0).contains(&p.opacity)
+            {
+                return Err(crate::FormatError::Corrupt("invalid mask paint layer".into()));
+            }
+            let kind = match p.kind.as_str() {
+                "paint" => photocraft_doc::mask_paint::EffectKind::Paint,
+                "fill" if p.value.is_finite() && (0.0..=1.0).contains(&p.value) => photocraft_doc::mask_paint::EffectKind::Fill { value: p.value },
+                "levels"
+                    if p.input_black.is_finite()
+                        && p.input_white.is_finite()
+                        && p.output_black.is_finite()
+                        && p.output_white.is_finite()
+                        && p.gamma.is_finite()
+                        && (0.0..=1.0).contains(&p.input_black)
+                        && (0.0..=1.0).contains(&p.input_white)
+                        && (0.0..=1.0).contains(&p.output_black)
+                        && (0.0..=1.0).contains(&p.output_white)
+                        && (0.01..=100.0).contains(&p.gamma)
+                        && p.input_black < p.input_white
+                        && p.output_black <= p.output_white =>
+                {
+                    photocraft_doc::mask_paint::EffectKind::Levels {
+                        input_black: p.input_black,
+                        gamma: p.gamma,
+                        input_white: p.input_white,
+                        output_black: p.output_black,
+                        output_white: p.output_white,
+                    }
+                }
+                _ => return Err(FormatError::corrupt("invalid mask paint effect")),
+            };
+            let fill_map = self.opt_surface(&p.fill_map)?;
+            layers.push(photocraft_doc::mask_paint::Paint {
+                name: p.name.clone(),
+                visible: p.visible,
+                opacity: p.opacity,
+                surface,
+                fill_map,
+                fill_map_size: p.fill_map_size,
+                fill_bounds: p.fill_bounds,
+                kind,
+            });
+        }
+        Ok(Some(photocraft_doc::mask_paint::Stack { base, layers, active: s.active }))
+    }
+
     fn opt_surface(&mut self, m: &Option<SurfaceM>) -> Result<Option<Surface>> {
         m.as_ref().map(|s| self.surface(s)).transpose()
     }
@@ -498,6 +562,7 @@ impl Loader<'_> {
                             linked: mm.linked,
                             density: mm.density,
                             feather: mm.feather,
+                            paint: self.mask_paint(mm)?,
                         }),
                         None => None,
                     },
@@ -508,9 +573,14 @@ impl Loader<'_> {
             }
         };
         let mask = match &m.mask {
-            Some(mm) => {
-                Some(LayerMask { surface: self.surface(&mm.surface)?, enabled: mm.enabled, linked: mm.linked, density: mm.density, feather: mm.feather })
-            }
+            Some(mm) => Some(LayerMask {
+                surface: self.surface(&mm.surface)?,
+                enabled: mm.enabled,
+                linked: mm.linked,
+                density: mm.density,
+                feather: mm.feather,
+                paint: self.mask_paint(mm)?,
+            }),
             None => None,
         };
         let fill_cache = match &m.fill_cache {
@@ -687,6 +757,42 @@ pub(crate) fn reserve_ids_through(max: u64) -> bool {
     }
     photocraft_doc::ensure_ids_above(max);
     true
+}
+
+fn mask_paint_m(m: &LayerMask, sink: &mut dyn Sink) -> Option<MaskPaintM> {
+    m.paint.as_ref().map(|s| MaskPaintM {
+        base: surface_m(&s.base, sink),
+        active: s.active,
+        layers: s
+            .layers
+            .iter()
+            .map(|p| {
+                let (kind, value, input_black, gamma, input_white, output_black, output_white) = match &p.kind {
+                    photocraft_doc::mask_paint::EffectKind::Paint => ("paint", 1.0, 0.0, 1.0, 1.0, 0.0, 1.0),
+                    photocraft_doc::mask_paint::EffectKind::Fill { value } => ("fill", *value, 0.0, 1.0, 1.0, 0.0, 1.0),
+                    photocraft_doc::mask_paint::EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
+                        ("levels", 1.0, *input_black, *gamma, *input_white, *output_black, *output_white)
+                    }
+                };
+                MaskPaintLayerM {
+                    name: p.name.clone(),
+                    visible: p.visible,
+                    opacity: p.opacity,
+                    surface: surface_m(&p.surface, sink),
+                    fill_map: p.fill_map.as_ref().map(|map| surface_m(map, sink)),
+                    fill_map_size: p.fill_map_size,
+                    fill_bounds: p.fill_bounds,
+                    kind: kind.into(),
+                    value,
+                    input_black,
+                    gamma,
+                    input_white,
+                    output_black,
+                    output_white,
+                }
+            })
+            .collect(),
+    })
 }
 
 #[cfg(test)]

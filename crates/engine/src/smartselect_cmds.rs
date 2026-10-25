@@ -911,6 +911,7 @@ mod tests {
                 feather: 3.5,
                 linked: false,
                 enabled: true,
+                paint: None,
             });
             Ok(())
         })

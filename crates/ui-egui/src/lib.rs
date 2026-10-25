@@ -248,6 +248,34 @@ pub mod type_panels_ui;
 pub mod type_tool;
 mod type_transform;
 pub mod updates_ui;
+#[cfg(feature = "uv-workbench")]
+mod uv_box;
+#[cfg(feature = "uv-workbench")]
+mod uv_clone;
+#[cfg(feature = "uv-workbench")]
+mod uv_damage;
+#[cfg(feature = "uv-workbench")]
+mod uv_gpu;
+#[cfg(feature = "uv-workbench")]
+mod uv_library;
+#[cfg(feature = "uv-workbench")]
+mod uv_lighting;
+#[cfg(feature = "uv-workbench")]
+mod uv_mask;
+#[cfg(feature = "uv-workbench")]
+mod uv_mask_paint;
+#[cfg(feature = "uv-workbench")]
+mod uv_mask_paint_preview;
+#[cfg(feature = "uv-workbench")]
+mod uv_mips;
+#[cfg(feature = "uv-workbench")]
+mod uv_paint;
+#[cfg(feature = "uv-workbench")]
+mod uv_project;
+#[cfg(feature = "uv-workbench")]
+pub mod uv_ui;
+#[cfg(feature = "uv-workbench")]
+mod uv_workspace;
 mod variables_ui;
 pub mod vector_ui;
 pub mod view_cmds;
@@ -690,6 +718,12 @@ pub(crate) type HistJob = (DocId, u64, std::sync::mpsc::Receiver<(DocId, f64, st
 type InfoSampleKey = (i32, i32, u64, u32);
 
 pub struct PhotocraftApp {
+    #[cfg(feature = "uv-workbench")]
+    pub(crate) uv_cache: uv_ui::Cache,
+    #[cfg(feature = "uv-workbench")]
+    pub(crate) uv_mask_paint_preview: Option<uv_mask_paint_preview::Preview>,
+    #[cfg(feature = "uv-workbench")]
+    pub(crate) uv_paint_key: Option<String>,
     pub session: Session,
     pub ui: UiState,
     pub services: Services,
@@ -1022,6 +1056,12 @@ impl PhotocraftApp {
     pub fn new(mut session: Session, mut services: Services) -> Self {
         session.updates.check = services.check_updates.take();
         let mut app = Self {
+            #[cfg(feature = "uv-workbench")]
+            uv_cache: Default::default(),
+            #[cfg(feature = "uv-workbench")]
+            uv_mask_paint_preview: None,
+            #[cfg(feature = "uv-workbench")]
+            uv_paint_key: None,
             session,
             ui: UiState::default(),
             services,
@@ -1214,6 +1254,13 @@ impl PhotocraftApp {
         };
         self.perf.gpu_info.canvas = "gpu".into();
         self.window_device = Some((rs.device.clone(), gpu.health().clone()));
+        #[cfg(feature = "uv-workbench")]
+        {
+            match uv_gpu::Renderer::new(rs.clone(), gpu.health().clone()) {
+                Ok(renderer) => self.uv_cache.gpu = Some(renderer),
+                Err(error) => log::warn!("3D GPU preview unavailable: {error}"),
+            }
+        }
         self.gpu = Some(gpu);
         self.prefs_rt.gpu_style = None;
     }
@@ -1222,6 +1269,25 @@ impl PhotocraftApp {
     /// the device was lost).
     pub fn gpu_active(&self) -> bool {
         self.gpu.is_some()
+    }
+
+    /// Attach only the optional 3D renderer (also useful for isolated, windowless validation).
+    #[cfg(feature = "uv-workbench")]
+    pub fn set_uv_wgpu(&mut self, rs: eframe::egui_wgpu::RenderState) -> Result<(), String> {
+        let health = self.gpu_health().unwrap_or_default();
+        self.uv_cache.gpu = Some(uv_gpu::Renderer::new(rs, health)?);
+        Ok(())
+    }
+
+    #[cfg(feature = "uv-workbench")]
+    pub fn uv_gpu_active(&self) -> bool {
+        self.uv_cache.gpu.is_some()
+    }
+
+    /// Actual resident map dimensions, ordered by material (colour, normal).
+    #[cfg(feature = "uv-workbench")]
+    pub fn uv_gpu_texture_sizes(&self) -> Vec<([u32; 2], [u32; 2])> {
+        self.uv_cache.gpu.as_ref().map_or_else(Vec::new, |g| g.texture_sizes())
     }
 
     /// The GPU canvas's device health flag (tests inject faults through it).
@@ -1267,6 +1333,26 @@ impl PhotocraftApp {
 
     /// Run an engine command, reporting errors in the status bar.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        #[cfg(feature = "uv-workbench")]
+        if matches!(id, "edit.undo" | "edit.redo") {
+            crate::uv_ui::finish_paint(self);
+        }
+
+        #[cfg(feature = "uv-workbench")]
+        if id == "uv.maskPaint.preview.cancel" {
+            self.uv_mask_paint_preview = None;
+            return Ok(Value::Null);
+        }
+
+        #[cfg(feature = "uv-workbench")]
+        let mut params = params;
+        #[cfg(feature = "uv-workbench")]
+        if id.starts_with("paint.")
+            && let Some(key) = &self.uv_paint_key
+            && let Some(params) = params.as_object_mut()
+        {
+            params.insert("coalesce".into(), json!(key));
+        }
         if let Some(result) = delete_layer_prompt::intercept(self, id, &params) {
             return result;
         }
@@ -1278,7 +1364,49 @@ impl PhotocraftApp {
         if gate.is_some() {
             self.session.authorize = gate;
         }
-        let result = self.run_command(id, params);
+        #[cfg(feature = "uv-workbench")]
+        let mut skip_command = false;
+        #[cfg(not(feature = "uv-workbench"))]
+        let skip_command = false;
+        let mut result = Ok(Value::Null);
+        #[cfg(feature = "uv-workbench")]
+        if let Some(commit) = crate::uv_mask_paint_preview::pending(self) {
+            let target = self.session.documents().iter().position(|st| st.doc.id == commit.doc);
+            if let Some(target) = target {
+                if self.session.documents().get(target).is_none_or(|st| st.revision != commit.revision) {
+                    result = Err("The mask Paint opacity preview is stale. Press Escape to discard it.".into());
+                    skip_command = true;
+                } else {
+                    let exact_ui_commit = id == "uv.maskPaint.modify"
+                        && params.get("layer").and_then(Value::as_u64) == Some(commit.layer.0)
+                        && params.get("index").and_then(Value::as_u64) == u64::try_from(commit.index).ok()
+                        && params.as_object().is_some_and(|object| object.len() == 3)
+                        && params.get("opacity").and_then(Value::as_f64).is_some_and(|value| (value as f32).to_bits() == commit.opacity.to_bits());
+                    let previous = self.session.active_index();
+                    if previous != Some(target) && !self.session.set_active(target) {
+                        result = Err("The mask Paint opacity preview document is unavailable".into());
+                        skip_command = true;
+                    } else {
+                        result = self.run_command("uv.maskPaint.modify", commit.params());
+                        if let Some(previous) = previous.filter(|previous| *previous != target) {
+                            self.session.set_active(previous);
+                        }
+                        if result.is_ok() {
+                            crate::uv_mask_paint_preview::clear(self, commit);
+                            skip_command = exact_ui_commit;
+                        } else {
+                            skip_command = true;
+                        }
+                    }
+                }
+            } else {
+                self.uv_mask_paint_preview = None;
+                log::warn!("canceled mask Paint opacity preview because its document was closed");
+            }
+        }
+        if !skip_command {
+            result = self.run_command(id, params);
+        }
         if gate.is_some() {
             self.session.authorize = None;
         }
@@ -1291,6 +1419,12 @@ impl PhotocraftApp {
                 self.ui.vector_mask_target = t == ChannelTarget::VectorMask;
             }
             self.sync_mask_targets();
+        }
+        #[cfg(feature = "uv-workbench")]
+        if result.is_ok() && id == "select.deselect" {
+            self.ui.uv_workbench.overlap.clear();
+            self.ui.uv_workbench.status.clear();
+            self.uv_cache.mask_settings_pending = false;
         }
         result
     }
@@ -2270,6 +2404,8 @@ impl eframe::App for PhotocraftApp {
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.cap_frame_rate();
+        #[cfg(feature = "uv-workbench")]
+        crate::uv_mask_paint_preview::cancel_stale_on_escape(self, ctx);
         i18n::set_current(i18n::Lang::from_pref(&self.session.prefs().interface.language));
         // Caps Lock state read from the OS once per frame (see `Services::caps_lock`): the canvas
         // cursor block needs it before the frame renders. `None` (Wayland/web) keeps `false`.
@@ -2347,8 +2483,15 @@ impl eframe::App for PhotocraftApp {
             ctx.request_repaint();
         }
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        #[cfg(feature = "uv-workbench")]
+        let mut dropped = dropped;
         if !dropped.is_empty() {
             let at = self.services.cursor_pos.as_mut().and_then(|f| f(ctx));
+            #[cfg(feature = "uv-workbench")]
+            {
+                uv_library::file_drop(self, ctx, at, &mut dropped);
+                uv_ui::texture_drop(self, ctx, at, &mut dropped);
+            }
             self.open_dropped(ctx, dropped, at);
             // Files dragged in from another app's window: PhotoCraft comes to the front and takes
             // the keyboard, as Photoshop does, instead of staying behind the source (#5687).
@@ -2479,6 +2622,7 @@ impl eframe::App for PhotocraftApp {
         gradient_ui::editor_window(self, &ctx);
         type_panels_ui::windows(self, &ctx);
         analysis_ui::windows(self, &ctx);
+
         timeline_ui::windows(self, &ctx);
         workspace_ui::windows(self, &ctx);
         palette::show(self, &ctx);
@@ -2487,6 +2631,8 @@ impl eframe::App for PhotocraftApp {
         rasterize_prompt::run_pending(self, &ctx);
         jobs_ui::dialog(self, &ctx);
         discard_ui::show(self, &ctx);
+        #[cfg(feature = "uv-workbench")]
+        uv_project::prompt(self, &ctx);
         tiff_options_ui::show(self, &ctx);
         targa_options_ui::show(self, &ctx);
         jpeg_options_ui::show(self, &ctx);

@@ -1355,7 +1355,7 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         dialogs.push(json!({"id": SHELL_DIALOG, "kind": kind, "title": crate::workspace_ui::title(kind), "fields": fields}));
     }
     dialogs.extend(crate::discard_ui::inspect(app));
-    json!({
+    let snapshot = json!({
         "window": {"width": screen.width(), "height": screen.height(), "pixelsPerPoint": ctx.pixels_per_point()},
         "tool": app.ui.tool,
         "toolOptions": app.ui.tool_options,
@@ -1418,7 +1418,35 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "distort": app.distort.describe(),
         "jobs": crate::jobs_ui::inspect(app),
         "cameraRaw": app.camera_raw.as_ref().map(|d| d.describe(&app.ui.camera_raw_scope, &app.ui.camera_raw_preview)),
-    })
+    });
+    #[cfg(feature = "uv-workbench")]
+    {
+        let mut snapshot = snapshot;
+        if let Some(object) = snapshot.as_object_mut() {
+            let viewport = app.uv_cache.gpu.as_ref().map_or_else(
+                || {
+                    json!({
+                        "rendererActive": false,
+                        "backend": Value::Null,
+                        "renderTargetSize": Value::Null,
+                        "samples": Value::Null,
+                        "pbrEnabled": app.ui.uv_workbench.lighting.pbr,
+                        "pbrActive": false,
+                        "channel": app.ui.uv_workbench.channel.label(),
+                        "mapCompositorActive": false,
+                        "maps": [],
+                    })
+                },
+                |renderer| renderer.diagnostics(app.ui.uv_workbench.channel),
+            );
+            object.insert("uvViewport".into(), viewport);
+        }
+        snapshot
+    }
+    #[cfg(not(feature = "uv-workbench"))]
+    {
+        snapshot
+    }
 }
 
 pub fn save_screenshot(app: &mut PhotocraftApp, image: &egui::ColorImage, path: Option<&str>) -> Value {
@@ -2014,6 +2042,21 @@ mod tests {
         let after = call(&mut app, &ctx, "ui.inspect", json!({}));
         assert_eq!(after.pointer("/result/view/show/selection_edges"), Some(&json!(false)));
         assert_eq!(after["result"]["view"], json!(app.ui.view));
+    }
+
+    #[cfg(feature = "uv-workbench")]
+    #[test]
+    fn ui_inspect_reports_uv_renderer_state_without_map_contents() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let ctx = egui::Context::default();
+        let inspected = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(inspected.pointer("/result/uvViewport/rendererActive"), Some(&json!(false)));
+        assert_eq!(inspected.pointer("/result/uvViewport/pbrEnabled"), Some(&json!(app.ui.uv_workbench.lighting.pbr)));
+        assert_eq!(inspected.pointer("/result/uvViewport/pbrActive"), Some(&json!(false)));
+        assert_eq!(inspected.pointer("/result/uvViewport/channel"), Some(&json!(app.ui.uv_workbench.channel.label())));
+        assert!(inspected.pointer("/result/uvViewport/maps").is_some());
+        assert!(inspected.pointer("/result/uvViewport/pixels").is_none());
+        assert!(inspected.pointer("/result/uvViewport/paths").is_none());
     }
 
     #[test]

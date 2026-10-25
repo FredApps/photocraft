@@ -190,6 +190,8 @@ pub struct MaskM {
     pub linked: bool,
     pub density: f32,
     pub feather: f32,
+    #[serde(default)]
+    pub paint: Option<MaskPaintM>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -410,4 +412,48 @@ mod shape_tests {
         let ContentM::Shape { density, feather, .. } = serde_json::from_value(old).unwrap() else { panic!("a shape") };
         assert_eq!((density, feather), (1.0, 0.0));
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MaskPaintM {
+    pub base: SurfaceM,
+    pub active: usize,
+    pub layers: Vec<MaskPaintLayerM>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MaskPaintLayerM {
+    pub name: String,
+    pub visible: bool,
+    pub opacity: f32,
+    pub surface: SurfaceM,
+    #[serde(default)]
+    pub fill_map: Option<SurfaceM>,
+    #[serde(default)]
+    pub fill_map_size: [u32; 2],
+    #[serde(default)]
+    pub fill_bounds: Option<[i32; 4]>,
+    #[serde(default = "mask_paint_kind_default")]
+    pub kind: String,
+    #[serde(default = "mask_paint_value_default")]
+    pub value: f32,
+    #[serde(default)]
+    pub input_black: f32,
+    #[serde(default = "mask_paint_one_default")]
+    pub gamma: f32,
+    #[serde(default = "mask_paint_one_default")]
+    pub input_white: f32,
+    #[serde(default)]
+    pub output_black: f32,
+    #[serde(default = "mask_paint_one_default")]
+    pub output_white: f32,
+}
+
+fn mask_paint_kind_default() -> String {
+    "paint".into()
+}
+fn mask_paint_value_default() -> f32 {
+    1.0
+}
+fn mask_paint_one_default() -> f32 {
+    1.0
 }
