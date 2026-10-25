@@ -103,7 +103,7 @@ fn deinterlace_support(keep: usize, orientation: usize, size: u32, context: &Map
     }
     // Two independent vector masks, four knots per missing row/column.
     if count.checked_mul(8).is_none_or(|n| n > 65_536) {
-        return Err("Native deinterlace field masks exceed65,536 bounded geometry knots".into());
+        return Err("Native deinterlace field masks exceed 65,536 bounded geometry knots".into());
     }
     let bytes = count
         .checked_mul(std::mem::size_of::<Subpath>() + 4 * std::mem::size_of::<Knot>())
@@ -139,7 +139,7 @@ fn deinterlace_support(keep: usize, orientation: usize, size: u32, context: &Map
             ],
         }),
         notes: vec![format!(
-            "Independently observed source block sizes2/3 retain alternating single fields; block size changes support, not row grouping. Source support{size}px becomes editable native Offset copies at+/-{size}px, restricted to missing single-row/column VectorMasks and averaged by native50% Normal blending. Native repeated-edge boundaries, interpolation and mask antialiasing apply. Native branch compositing approximates source premultiplied interpolation on semitransparent pixels; this is a native support-scale approximation, not source kernel emulation"
+            "Independently observed source block sizes 2/3 retain alternating single fields; block size changes support, not row grouping. Source support {size}px becomes editable native Offset copies at +/-{size}px, restricted to missing single-row/column VectorMasks and averaged by native 50% Normal blending. Native repeated-edge boundaries, interpolation and mask antialiasing apply. Native branch compositing approximates source premultiplied interpolation on semitransparent pixels; this is a native support-scale approximation, not source kernel emulation"
         )],
         ..Default::default()
     })
@@ -205,11 +205,11 @@ fn dither(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     Ok(mapped(
         filters,
         format!(
-            "Source RGB level counts become ordinary native256-sample pencil Curves; Gray uses a native Rec.709-weighted combination of channel transfer maps. Native piecewise-linear curve interpolation, document encoding and depth/HDR clipping apply; counts above256 are sampled approximations. Source dither method{method} uses {}. Native uniform pre-dither amount{noise}% derives from RMS quantizer steps: amount100 spans+/-0.5 and each desired half-step is0.5/(levels-1). Stored seed{seed} is used (native0 if absent); covariant nicks request native monochromatic noise. Floyd error propagation, Bayer/arithmetic threshold layouts and blue-noise spectra remain source metadata and are explicitly approximated by native stochastic dither. Source alpha-levels {alpha} becomes an ordinary native alphaCurve quantizer with256samples (default256 is native identity). Native piecewise-linear interpolation replaces hard source steps, with sampled approximations above256levels; alpha has no native stochastic pre-dither. Native depth and coverage clipping rules apply, while color/HDR channels remain independent",
+            "Source RGB level counts become ordinary native 256-sample pencil Curves; Gray uses a native Rec.709-weighted combination of channel transfer maps. Native piecewise-linear curve interpolation, document encoding and depth/HDR clipping apply; counts above 256 are sampled approximations. Source dither method {method} uses {}. Native uniform pre-dither amount {noise}% derives from RMS quantizer steps: amount 100 spans +/-0.5 and each desired half-step is 0.5/(levels-1). Stored seed {seed} is used (native 0 if absent); covariant nicks request native monochromatic noise. Floyd error propagation, Bayer/arithmetic threshold layouts and blue-noise spectra remain source metadata and are explicitly approximated by native stochastic dither. Source alpha-levels {alpha} becomes an ordinary native Alpha Curve quantizer with 256 samples (default 256 is native identity). Native piecewise-linear interpolation replaces hard source steps, with sampled approximations above 256 levels; alpha has no native stochastic pre-dither. Native depth and coverage clipping rules apply, while color/HDR channels remain independent",
             if method == 0 {
                 "no pre-dither"
             } else if noise < 0.1 {
-                "no forced noise because the derived amplitude is below native0.1% minimum"
+                "no forced noise because the derived amplitude is below native 0.1% minimum"
             } else {
                 "editable native seeded uniform Add Noise"
             }
@@ -253,7 +253,7 @@ fn drop_shadow(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeM
         }
         let count = if radius == 0.0 { 0.0 } else { (radius / 1000.0).powi(2).ceil().max(1.0) };
         if !count.is_finite() || count > (64 - usize::from(grow != 0.0)) as f64 {
-            return Err("Native shadow blur exceeds the64-filter variance-decomposition resource limit".into());
+            return Err("Native shadow blur exceeds the 64-filter variance-decomposition resource limit".into());
         }
         let bytes = count as usize * 2048 + 12288;
         super::residual_spatial::generation_bytes(context, bytes)?;
@@ -291,7 +291,7 @@ fn drop_shadow(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeM
         };
         return Ok(NativeMapping {
             structure: Some(NativeStructure::Composite { branches: vec![shadow, NativeBranch::default()] }),
-            notes: vec!["Independent editable native shadow copy uses translated owner data, Minimum/Maximum coverage morphology, variance-decomposed Gaussian and Color Overlay beneath the unchanged original. Negative growth is native erosion; large blur support is represented rather than capped to style250. Native round/square morphology replaces source circle/square/diamond, with diamond approximated by native roundness; native Free Transform, Gaussian/alpha boundaries, weak tiny-kernel strength and Normal overlap composition apply".into()],
+            notes: vec!["Independent editable native shadow copy uses translated owner data, Minimum/Maximum coverage morphology, variance-decomposed Gaussian and Color Overlay beneath the unchanged original. Negative growth is native erosion; large blur support is represented rather than capped to style 250. Native round/square morphology replaces source circle/square/diamond, with diamond approximated by native roundness; native Free Transform, Gaussian/alpha boundaries, weak tiny-kernel strength and Normal overlap composition apply".into()],
             ..Default::default()
         });
     }
@@ -366,7 +366,7 @@ fn sobel(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMap
     if signed {
         return Ok(mapped(
             vec![custom(kernel, 8.0, 127.5)],
-            "One source Sobel direction becomes a native signed Custom derivative centered at50% and normalized to the native 0..1 editing range; source negative/HDR output is explicitly remapped, not clipped silently",
+            "One source Sobel direction becomes a native signed Custom derivative centered at 50% and normalized to the native 0..1 editing range; source negative/HDR output is explicitly remapped, not clipped silently",
         ));
     }
     let outputs = (0..256).map(|i| ((f64::from(i) / 255.0 - 0.5) * 8.0).abs().min(1.0) * 255.0).collect::<Vec<_>>();
@@ -469,7 +469,7 @@ fn distance(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapp
     Ok(NativeMapping {
         structure: Some(NativeStructure::Composite { branches }),
         notes: vec![format!(
-            "Source threshold interval becomes a native 256-sample pencil ramp after native Rec.709-weighted monochrome Channel Mixer where RGB, followed by erosion radii0..{radius} and native Add branches. Averaging{averaging} uses a monotone midpoint-threshold average quantized to that count (zero uses a continuous ramp); source threshold sampling is approximated. Normalize{normalize} uses fixed weight{weight}, with every opaque shell color-scaled by native Curves; raw distance units retain HDR sums only at native float depth, while integer documents clip by native Add rules. Opaque binary channels sum nested surviving erosion shells into a bounded distance-like response. Native roundness approximates Euclidean; square support represents Chebyshev and explicitly approximates Manhattan diamond support. Distances beyond radius{radius} saturate; normalization uses this fixed bound rather than a source-content maximum. Source edge-handling{edge} becomes native repeated-edge boundaries; signed/HDR inputs follow native Curves endpoint extrapolation in32-bit RGB and normalized limits in other modes/depths and native document-encoding luminance replaces source transfer/profile weights. Native Add branch alpha compositing approximates semitransparent source coverage"
+            "Source threshold interval becomes a native 256-sample pencil ramp after native Rec.709-weighted monochrome Channel Mixer where RGB, followed by erosion radii 0..{radius} and native Add branches. Averaging {averaging} uses a monotone midpoint-threshold average quantized to that count (zero uses a continuous ramp); source threshold sampling is approximated. Normalize {normalize} uses fixed weight {weight}, with every opaque shell color-scaled by native Curves; raw distance units retain HDR sums only at native float depth, while integer documents clip by native Add rules. Opaque binary channels sum nested surviving erosion shells into a bounded distance-like response. Native roundness approximates Euclidean; square support represents Chebyshev and explicitly approximates Manhattan diamond support. Distances beyond radius {radius} saturate; normalization uses this fixed bound rather than a source-content maximum. Source edge-handling {edge} becomes native repeated-edge boundaries; signed/HDR inputs follow native Curves endpoint extrapolation in 32-bit RGB and normalized limits in other modes/depths and native document-encoding luminance replaces source transfer/profile weights. Native Add branch alpha compositing approximates semitransparent source coverage"
         )],
         ..Default::default()
     })
@@ -822,7 +822,7 @@ fn cubism(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
             (f64::from(bounds.x1), f64::from(bounds.y1)),
             (f64::from(bounds.x0), f64::from(bounds.y1)),
         ])])));
-        return Ok(NativeMapping{structure:Some(NativeStructure::Replace{layer:Box::new(layer),patterns:vec![]}),notes:vec!["Independent stock Cubism tile-size0 observations produce the actual background alone. Native expansion0 also chooses background alone because its editable tiles have zero area. Preserve these degenerate cases as an editable finite native Solid Fill, including its actual converted ICC color/alpha; absent default is transparent. No unrelated tile count or source pixel cache is substituted".into()],..Default::default()});
+        return Ok(NativeMapping{structure:Some(NativeStructure::Replace{layer:Box::new(layer),patterns:vec![]}),notes:vec!["Independent stock Cubism tile-size 0 observations produce the actual background alone. Native expansion 0 also chooses background alone because its editable tiles have zero area. Preserve these degenerate cases as an editable finite native Solid Fill, including its actual converted ICC color/alpha; absent default is transparent. No unrelated tile count or source pixel cache is substituted".into()],..Default::default()});
     }
     use photocraft_doc::{Fill, Path, Subpath, VectorMask};
     use photocraft_geom::{Affine, Rect};
@@ -834,7 +834,7 @@ fn cubism(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     let ny = (f64::from(bounds.height()) / size).ceil();
     if !nx.is_finite() || !ny.is_finite() || nx > 63. || ny > 63. || nx * ny > 63. {
         return Err(MappingFailure::resource(
-            "Native editable Cubism collage exceeds63 cells plus background; tiny/dense tiles remain retained rather than collapsing to a dialog tile count",
+            "Native editable Cubism collage exceeds 63 cells plus background; tiny/dense tiles remain retained rather than collapsing to a dialog tile count",
         ));
     }
     let count = (nx * ny) as usize;
@@ -923,7 +923,7 @@ fn cubism(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     Ok(NativeMapping {
         structure: Some(NativeStructure::Composite { branches }),
         notes: vec![format!(
-            "Source Cubism becomes an ordinary editable native cell collage over the actual CMS-converted background. Exact floating tile-size {size}px supplies grid spacing with no native1..99 tile-count collapse; native integer sampling frames average each visible input cell. The public source property calls tile-saturation expansion: {saturation} directly scales tile side lengths, creating real native gaps/overlap rather than color saturation. Actual seed {seed} selects independently authored deterministic ±45degree rotations and ±quarter-cell jitter. Native rectangular topology, visible-cell alpha-weighted means, bilinear affine placement, source-over overlap/alpha, antialiasing and owner-canvas clipping replace source tessellation. Actual63-cell+background, aggregate native source/frame/paint cache, metadata and cancellation allowances bound work; no source Cubism evaluator or saved source pixels are substituted"
+            "Source Cubism becomes an ordinary editable native cell collage over the actual CMS-converted background. Exact floating tile-size {size}px supplies grid spacing with no native 1..99 tile-count collapse; native integer sampling frames average each visible input cell. The public source property calls tile-saturation expansion: {saturation} directly scales tile side lengths, creating real native gaps/overlap rather than color saturation. Actual seed {seed} selects independently authored deterministic ±45 degree rotations and ±quarter-cell jitter. Native rectangular topology, visible-cell alpha-weighted means, bilinear affine placement, source-over overlap/alpha, antialiasing and owner-canvas clipping replace source tessellation. Actual 63-cell+background, aggregate native source/frame/paint cache, metadata and cancellation allowances bound work; no source Cubism evaluator or saved source pixels are substituted"
         )],
         ..Default::default()
     })
@@ -958,7 +958,7 @@ fn emboss(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMa
     let relief =
         vec![native_filter("filter.stylize.emboss", json!({"angle":angle,"height":depth,"amount":amount})), native_filter("image.adjustments.curves", curve)];
     let note = format!(
-        "Source azimuth and declared depth become native Emboss direction and height {depth}px. Elevation {elevation} degrees becomes an original Lambertian light projection: native relief amount 100*abs(cos elevation), azimuth reversed for negative cosine, and an editable native Curve shifts the flat 50% relief baseline to sin elevation through actual native target ICC. Native amount minimum1 is compensated by residual Curve gain near overhead light. Source flat-light observations establish the zero/peak orientation; native derivative, saturation, illumination response, working-space curves and quantization still approximate source lighting"
+        "Source azimuth and declared depth become native Emboss direction and height {depth}px. Elevation {elevation} degrees becomes an original Lambertian light projection: native relief amount 100*abs(cos elevation), azimuth reversed for negative cosine, and an editable native Curve shifts the flat 50% relief baseline to sin elevation through actual native target ICC. Native amount minimum 1 is compensated by residual Curve gain near overhead light. Source flat-light observations establish the zero/peak orientation; native derivative, saturation, illumination response, working-space curves and quantization still approximate source lighting"
     );
     if kind == 0 {
         return Ok(mapped(relief, note));
@@ -994,7 +994,7 @@ fn neon(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     Ok(mapped(
         filters,
         format!(
-            "Source radius{radius}px becomes native Gaussian edge scale followed by native Find Edges and Invert, producing a black-background editable edge response. Native gradient, transfer, alpha and boundary rules apply. Source intensity {amount} becomes observed relative gain 1 + 9*amount through at most10 ordinary native Channel Mixer passes, each coefficient at most200percent. Independent stock step probes establish that relative strength, not identical edge magnitudes. Native integer clipping, float coefficient quantization, alpha and working-channel rules replace source response"
+            "Source radius {radius}px becomes native Gaussian edge scale followed by native Find Edges and Invert, producing a black-background editable edge response. Native gradient, transfer, alpha and boundary rules apply. Source intensity {amount} becomes observed relative gain 1 + 9*amount through at most 10 ordinary native Channel Mixer passes, each coefficient at most 200 percent. Independent stock step probes establish that relative strength, not identical edge magnitudes. Native integer clipping, float coefficient quantization, alpha and working-channel rules replace source response"
         ),
     ))
 }
@@ -1016,7 +1016,7 @@ fn engrave(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     Ok(mapped(
         filters,
         format!(
-            "Source Engrave becomes native Halftone Pattern horizontal tone-adaptive ink lines, source row-height {height}px mapped by native spacing1.5+2*size (minimum3.5px). Limit {limit} selects native pre-Levels output endpoints 1/height and 1-1/height, retaining at least one light/dark stripe fraction; independent flat-source observations establish that endpoint policy. Source heights below2 are invalid; at height2 the limiting endpoints coincide at half tone. Native crisp ink contrast50, prefilter, phase, line antialias and alpha rules approximate the source line screen"
+            "Source Engrave becomes native Halftone Pattern horizontal tone-adaptive ink lines, source row-height {height}px mapped by native spacing 1.5+2*size (minimum 3.5px). Limit {limit} selects native pre-Levels output endpoints 1/height and 1-1/height, retaining at least one light/dark stripe fraction; independent flat-source observations establish that endpoint policy. Source heights below 2 are invalid; at height 2 the limiting endpoints coincide at half tone. Native crisp ink contrast 50, prefilter, phase, line antialias and alpha rules approximate the source line screen"
         ),
     ))
 }
@@ -1060,7 +1060,7 @@ fn fattal(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     Ok(mapped(
         filters,
         format!(
-            "Source beta{beta} contrast compression becomes an ordinary native global power pencil Curve with logarithmic slope beta; source saturation{saturation} becomes native Hue/Saturation where RGB. Native bounded curve range, encoding, interpolation and channel rules apply. Source alpha {alpha} and noise {noise} log-gradient thresholds use an explicit unit-reference contrast policy: fraction 1-exp(-g), scaled to native 0..255 contrast levels, not an assertion of equal units. Beta below1 adds native radius1 Unsharp detail with alpha threshold and amount100*(1-beta); native minimum amount1 is weighted by fractional filter opacity. Beta above1 selects native radius1 Surface Blur with alpha threshold and opacitymin(beta-1,1). Positive noise adds native radius1 edge-preserving Surface Blur before detail; noise0 adds no protection filter. Native Surface Blur minimum threshold2/255 is explicit. The finest-native-neighborhood and reference-contrast choices approximate local detail/noise protection; this does not reproduce source gradient-domain reconstruction or HDR range"
+            "Source beta {beta} contrast compression becomes an ordinary native global power pencil Curve with logarithmic slope beta; source saturation {saturation} becomes native Hue/Saturation where RGB. Native bounded curve range, encoding, interpolation and channel rules apply. Source alpha {alpha} and noise {noise} log-gradient thresholds use an explicit unit-reference contrast policy: fraction 1-exp(-g), scaled to native 0..255 contrast levels, not an assertion of equal units. Beta below 1 adds native radius 1 Unsharp detail with alpha threshold and amount 100*(1-beta); native minimum amount 1 is weighted by fractional filter opacity. Beta above 1 selects native radius 1 Surface Blur with alpha threshold and opacity min(beta-1,1). Positive noise adds native radius 1 edge-preserving Surface Blur before detail; noise 0 adds no protection filter. Native Surface Blur minimum threshold 2/255 is explicit. The finest-native-neighborhood and reference-contrast choices approximate local detail/noise protection; this does not reproduce source gradient-domain reconstruction or HDR range"
         ),
     ))
 }
@@ -1177,7 +1177,7 @@ mod tests {
         assert_eq!(run("gegl:dither", vec![]).unwrap().filters[0].command, "filter.noise.addNoise");
         assert!(
             run("gegl:dither", vec![arg("dither-method", ArgumentValue::Enum(0)), arg("alpha-levels", ArgumentValue::Int(2))]).unwrap().notes[0]
-                .contains("alpha-levels 2 becomes an ordinary native alphaCurve")
+                .contains("alpha-levels 2 becomes an ordinary native Alpha Curve")
         );
     }
 
@@ -1286,7 +1286,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(low.filters.len(), 1);
-        assert!(low.notes[0].contains("below native0.1% minimum"));
+        assert!(low.notes[0].contains("below native 0.1% minimum"));
         let covariant = run("gegl:dither", vec![arg("dither-method", ArgumentValue::Enum(4))]).unwrap();
         assert_eq!(covariant.filters[0].params["monochromatic"], true);
     }

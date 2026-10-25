@@ -128,7 +128,7 @@ fn whirl(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMap
     let passes = if angle == 0.0 { 0.0 } else { (angle.abs() / 999.0).ceil() };
     let maximum = context.remaining_metadata_bytes.min(context.remaining_generation_bytes).saturating_sub(4096) / 512;
     if passes + usize::from(pinch != 0.0) as f64 > maximum.min(64) as f64 {
-        return Err("Whirl exceeds the ordinary native64-filter chain or actual remaining parameter allowance".into());
+        return Err("Whirl exceeds the ordinary native 64-filter chain or actual remaining parameter allowance".into());
     }
     context.interrupt.check().map_err(|e| e.to_string())?;
     let mut filters = Vec::new();
@@ -140,7 +140,7 @@ fn whirl(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMap
     if pinch != 0.0 {
         filters.push(native_filter("filter.distort.pinch", json!({"amount":pinch*100.0})));
     }
-    let note = "Source positive whirl/pinch directions become ordinary native Twirl then Pinch filters. Native elliptic support, radial falloff and repeated bilinear sampling approximate the combined source deformation; angle passes are limited by the existing native64-filter chain and actual parameter allowance rather than an arbitrary16-pass cap";
+    let note = "Source positive whirl/pinch directions become ordinary native Twirl then Pinch filters. Native elliptic support, radial falloff and repeated bilinear sampling approximate the combined source deformation; angle passes are limited by the existing native 64-filter chain and actual parameter allowance rather than an arbitrary 16-pass cap";
     if radius == 1.0 {
         return Ok(NativeMapping { filters, notes: vec![note.into()], ..Default::default() });
     }
@@ -182,7 +182,7 @@ fn whirl(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMap
             ],
         }),
         notes: vec![format!(
-            "{note}. Source radius {radius} selects a centered native parentcanvas {width} by {height} pixels: input is translated into it before filtering and ordinary native Smart Object placement restores the frame origin. Editable complementary ellipse masks keep original pixels outside the affected region and the framed deformation inside. Native integer frame snapping, ellipse aspect, antialias alpha, transparent frame padding, interpolation and owner clipping differ from source radius rules"
+            "{note}. Source radius {radius} selects a centered native parent canvas {width} by {height} pixels: input is translated into it before filtering and ordinary native Smart Object placement restores the frame origin. Editable complementary ellipse masks keep original pixels outside the affected region and the framed deformation inside. Native integer frame snapping, ellipse aspect, antialias alpha, transparent frame padding, interpolation and owner clipping differ from source radius rules"
         )],
         ..Default::default()
     })
@@ -228,7 +228,7 @@ fn wind(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping>
         quarter_turns: if direction >= 2 { 1 } else { 0 },
         filters,
         notes: vec![format!(
-            "Source Wind/Blast and actual stored seed become native Wind. Source directions name destination: left→fromRight/right→fromLeft; vertical directions use a native quarter-turn sandwich with matching destination. Source strength {strength} selects an explicit native magnitude policy relative to source default10: strength/10 native passes, with the fractional final pass mixed through ordinary native filter opacity (at most10 passes). This increases native streak reach/intensity, not identical source length or random samples. Native streak lengths, absolute edge detector and threshold apply; source polarity edge{edge} and threshold{threshold} are superseded by ordinary native fixed absolute edge detection because native Wind has no directional sign/gradient threshold controls. An invert sandwich cannot restore polarity selection for an absolute detector"
+            "Source Wind/Blast and actual stored seed become native Wind. Source directions name destination: left→fromRight/right→fromLeft; vertical directions use a native quarter-turn sandwich with matching destination. Source strength {strength} selects an explicit native magnitude policy relative to source default 10: strength/10 native passes, with the fractional final pass mixed through ordinary native filter opacity (at most 10 passes). This increases native streak reach/intensity, not identical source length or random samples. Native streak lengths, absolute edge detector and threshold apply; source polarity edge {edge} and threshold {threshold} are superseded by ordinary native fixed absolute edge detection because native Wind has no directional sign/gradient threshold controls. An invert sandwich cannot restore polarity selection for an absolute detector"
         )],
         ..Default::default()
     })
@@ -241,7 +241,7 @@ fn scalar(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     let components = integer(e, "n-components", 2, 1, 16)?;
     let factor = number(e, "factor", 1.0, f64::from(f32::MIN_POSITIVE), f64::from(f32::MAX))?;
     if factor == 1.0 {
-        return Ok(NativeMapping { notes: vec!["Source scalar factor is1; all native color and alpha samples stay unchanged".into()], ..Default::default() });
+        return Ok(NativeMapping { notes: vec!["Source scalar factor is 1; all native color and alpha samples stay unchanged".into()], ..Default::default() });
     }
     if !matches!(context.mode, ColorMode::Rgb | ColorMode::Grayscale) {
         return Err("Scalar component conversion requires a native RGB/Gray channel interpretation".into());
@@ -274,7 +274,7 @@ fn scalar(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     Ok(NativeMapping {
         filters,
         notes: vec![format!(
-            "Source scalar factor{factor} becomes initial native color-component scaling on{applied} channels through diagonal Channel Mixer where coefficients fit, otherwise a bounded native256-sample pencil Curve. This is a native approximation of component intent; generic source component layout is not asserted identical to native RGB/Gray. Native document encoding, interpolation and gamut/HDR clipping apply. Requested components{components} beyond native color channels{color_channels} remain retained; generic data beyond the native color channels has no inferred alpha identity: native alpha remains unchanged, never replaced by layer opacity. Independent stock generic n-components4 conversion is not RGBA (a factor0.5 probe produced gray0.125 with alpha1 from RGB0.25/0.5/0.75), so component count cannot authorize an AlphaCurve"
+            "Source scalar factor {factor} becomes initial native color-component scaling on {applied} channels through diagonal Channel Mixer where coefficients fit, otherwise a bounded native 256-sample pencil Curve. This is a native approximation of component intent; generic source component layout is not asserted identical to native RGB/Gray. Native document encoding, interpolation and gamut/HDR clipping apply. Requested components {components} beyond native color channels {color_channels} remain retained; generic data beyond the native color channels has no inferred alpha identity: native alpha remains unchanged, never replaced by layer opacity. Independent stock generic n-components 4 conversion is not RGBA (a factor 0.5 probe produced gray 0.125 with alpha 1 from RGB 0.25/0.5/0.75), so component count cannot authorize an AlphaCurve"
         )],
         ..Default::default()
     })
@@ -300,7 +300,7 @@ pub(super) fn map(e: &StoredEffect<'_>, context: &MappingContext) -> MappingResu
             Ok(NativeMapping{filters:vec![native_filter(command,json!({"value":value}))],notes:vec![if e.operation=="gimp:set-alpha"{
                 "Source unary constant alpha replacement becomes ordinary native Set Alpha; no auxiliary source is required or invented. Native color samples, depth, and document editing/compositing semantics are preserved."
             }else{
-                "Source unary alpha threshold becomes ordinary native Threshold Alpha with explicit strict alpha>value rule (equality becomes0). Native color samples and document editing/compositing semantics are preserved; source scalar-layout differences remain an explicit native approximation."
+                "Source unary alpha threshold becomes ordinary native Threshold Alpha with explicit strict alpha > value rule (equality becomes 0). Native color samples and document editing/compositing semantics are preserved; source scalar-layout differences remain an explicit native approximation."
             }.into()],..Default::default()})
         }
         _ => return None,
@@ -616,7 +616,7 @@ mod tests {
             assert_eq!(actual.px, expected.px);
             assert!(actual.px.iter().zip(original).all(|(actual, original)| actual[3] == original[3]));
         }
-        assert!(mapping.notes[0].contains("generic n-components4 conversion is not RGBA"));
+        assert!(mapping.notes[0].contains("generic n-components 4 conversion is not RGBA"));
     }
     #[test]
     /// Require native Set Alpha semantics so replacement affects actual coverage instead of multiplying
@@ -639,6 +639,6 @@ mod tests {
                 assert_eq!(mapping.filters[0].opacity, 1.);
             }
         }
-        assert!(run("gimp:threshold-alpha", vec![]).unwrap().notes[0].contains("strict alpha>value"));
+        assert!(run("gimp:threshold-alpha", vec![]).unwrap().notes[0].contains("strict alpha > value"));
     }
 }

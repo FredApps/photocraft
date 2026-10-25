@@ -137,7 +137,7 @@ fn finite_f32(v: f64) -> Result<f32, MappingFailure> {
     let f = v as f32;
     if !f.is_finite() { Err(MappingFailure::resource("stock graph coordinates exceed native finite geometry")) } else { Ok(f) }
 }
-/// SVG 1.1 section7.6 transform-list data, translated into ordinary Affine.
+/// SVG 1.1 section 7.6 transform-list data, translated into ordinary Affine.
 /// https://www.w3.org/TR/SVG11/coords.html#TransformAttribute
 fn svg_matrix(raw: &str) -> Result<Affine, MappingFailure> {
     if raw.len() > 4096 {
@@ -149,7 +149,7 @@ fn svg_matrix(raw: &str) -> Result<Affine, MappingFailure> {
     while !rest.is_empty() {
         operations += 1;
         if operations > 64 {
-            return Err(MappingFailure::resource("SVG transform list exceeds64 native affine steps"));
+            return Err(MappingFailure::resource("SVG transform list exceeds 64 native affine steps"));
         }
         let (name, tail) = rest.split_once('(').ok_or("unsupported SVG transform syntax")?;
         let (inner, tail) = tail.split_once(')').ok_or("unterminated SVG transform")?;

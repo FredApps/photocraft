@@ -46,9 +46,9 @@ pub(super) struct Lowered {
 }
 /// Appends one native mask step within both the local finite-policy limit and shared global stage allowance.
 fn push(steps: &mut Vec<NativeStage>, next: usize, step: NativeStage) -> Result<usize, MappingFailure> {
-    let output = next.checked_add(steps.len()).filter(|n| *n <= 64).ok_or("native mask construction exceeds64 global stages")?;
+    let output = next.checked_add(steps.len()).filter(|n| *n <= 64).ok_or("native mask construction exceeds 64 global stages")?;
     if steps.len() >= 8 {
-        return Err("native mask policy exceeds8 finite construction steps".into());
+        return Err("native mask policy exceeds 8 finite construction steps".into());
     }
     steps.push(step);
     Ok(output)

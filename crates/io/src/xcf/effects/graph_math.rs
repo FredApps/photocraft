@@ -66,7 +66,7 @@ fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMappi
             let mut remaining = if e.operation == "gegl:subtract" { -value } else { value };
             if remaining.abs() > 64. || (remaining != 0. && remaining as f32 == 0.) {
                 filters.push(affine(c, 1., remaining));
-                notes.push("Scalar offset outside bounded native F32 Channel Mixer constants becomes one ordinary center-only native F64 Convolution gain1/bias. Color channels are selected and native owner alpha is excluded; native per-depth precision/clipping applies without discarding or silently rounding the source control at import.".into());
+                notes.push("Scalar offset outside bounded native F32 Channel Mixer constants becomes one ordinary center-only native F64 Convolution gain 1/bias. Color channels are selected and native owner alpha is excluded; native per-depth precision/clipping applies without discarding or silently rounding the source control at import.".into());
             } else {
                 for _ in 0..MAX_PASSES {
                     if remaining == 0. {
@@ -85,7 +85,7 @@ fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMappi
             }
             if remaining.abs() > 4_294_967_296. || (remaining != 0. && remaining as f32 == 0.) {
                 filters.push(affine(c, remaining, 0.));
-                notes.push("Scalar gain outside bounded native F32 Channel Mixer factors becomes one ordinary center-only native F64 Convolution coefficient with zero bias. Native color-channel arithmetic, depth clipping/precision and unchanged owner alpha apply; no32-pass or F32-constant cutoff is treated as intrinsic.".into());
+                notes.push("Scalar gain outside bounded native F32 Channel Mixer factors becomes one ordinary center-only native F64 Convolution coefficient with zero bias. Native color-channel arithmetic, depth clipping/precision and unchanged owner alpha apply; no 32-pass or F32-constant cutoff is treated as intrinsic.".into());
             } else {
                 for _ in 0..MAX_PASSES {
                     let step = remaining.clamp(-2., 2.);
@@ -118,7 +118,7 @@ fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMappi
                     points.push(y.clamp(0., 1.) * 255.);
                 }
                 filters.push(native_filter("image.adjustments.curves", json!({"pencil":true,"points":points})));
-                notes.push(format!("Scalar exponent {value} is outside ordinary native Exposure gamma controls and becomes editable native256-sample pencil Curves. Positive powers author a normalized0..1 transfer; native endpoint extrapolation in32-bit RGB, normalized limits in other modes/depths, piecewise-linear interpolation and depth quantization apply. Signed/HDR power behavior is explicitly replaced by native document tone rules. Zero exponent uses native constant white; negative exponents clip the positive normalized domain to white and their zero-input pole uses a finite native white endpoint, with no infinite sample computed. Original source scalar remains historical data."));
+                notes.push(format!("Scalar exponent {value} is outside ordinary native Exposure gamma controls and becomes editable native 256-sample pencil Curves. Positive powers author a normalized 0..1 transfer; native endpoint extrapolation in 32-bit RGB, normalized limits in other modes/depths, piecewise-linear interpolation and depth quantization apply. Signed/HDR power behavior is explicitly replaced by native document tone rules. Zero exponent uses native constant white; negative exponents clip the positive normalized domain to white and their zero-input pole uses a finite native white endpoint, with no infinite sample computed. Original source scalar remains historical data."));
             }
         }
         _ => return Err("unowned stock arithmetic".into()),

@@ -9,7 +9,7 @@ const MAX_NODES: usize = 64;
 const MAX_ARGUMENTS: usize = 256;
 const MAX_FILTERS: usize = 64;
 const MAX_DEPTH: usize = 8;
-const GRAPH_NOTICE: &str = "Bounded source syntax was lowered once to backward-indexed ordinary native stages and ordinary native layer joins. No source node names, text, callback or evaluator remains in executable data. F64 literals retain their precision until individual native controls convert them; native document profile/depth/alpha/compositing rules apply. The node vocabulary is the frozen182 identities/five aliases plus explicitly audited stock graph declarations, native compositors, generators and object/tone/placement adapters; unavailable resource/object values, unfinished binary-input adapters and historical/default provenance remain explicitly inventoried domains";
+const GRAPH_NOTICE: &str = "Bounded source syntax was lowered once to backward-indexed ordinary native stages and ordinary native layer joins. No source node names, text, callback or evaluator remains in executable data. F64 literals retain their precision until individual native controls convert them; native document profile/depth/alpha/compositing rules apply. The node vocabulary is the frozen 182 identities/five aliases plus explicitly audited stock graph declarations, native compositors, generators and object/tone/placement adapters; unavailable resource/object values, unfinished binary-input adapters and historical/default provenance remain explicitly inventoried domains";
 
 type Result<T> = std::result::Result<T, MappingFailure>;
 
@@ -113,7 +113,7 @@ fn color(value: &str) -> Result<([f32; 4], bool)> {
 /// Applies inert shell quoting and graph delimiters within byte/token limits; never expands variables or executes text.
 fn tokens(input: &str) -> Result<Vec<String>> {
     if input.len() > MAX_BYTES {
-        return Err("Finite native graph candidate requires at most32768 UTF-8 bytes".into());
+        return Err("Finite native graph candidate requires at most 32768 UTF-8 bytes".into());
     }
     let mut result = Vec::new();
     let mut cursor = 0;
@@ -130,7 +130,7 @@ fn tokens(input: &str) -> Result<Vec<String>> {
             continue;
         }
         if result.len() == MAX_TOKENS {
-            return Err("Finite native graph candidate exceeds2048 lexical items".into());
+            return Err("Finite native graph candidate exceeds 2048 lexical items".into());
         }
         if matches!(ch, '=' | '[' | ']') {
             result.push(ch.to_string());
@@ -243,7 +243,7 @@ impl<'a> Decoder<'a> {
     fn label(&mut self) -> Result<&'a str> {
         let label = self.take()?;
         if label.is_empty() || label.len() > 128 || label.chars().any(|ch| ch.is_whitespace() || ch.is_control() || matches!(ch, '=' | '[' | ']')) {
-            return Err("Native graph label must have1..128 UTF-8 bytes without whitespace, controls or structural delimiters".into());
+            return Err("Native graph label must have 1..128 UTF-8 bytes without whitespace, controls or structural delimiters".into());
         }
         Ok(label)
     }
@@ -254,7 +254,7 @@ impl<'a> Decoder<'a> {
         let operation = operation(token).ok_or_else(|| format!("Graph node {token} has no frozen native conversion"))?;
         self.nodes += 1;
         if self.nodes > MAX_NODES {
-            return Err("Native graph exceeds64 source nodes".into());
+            return Err("Native graph exceeds 64 source nodes".into());
         }
         let mut arguments = Vec::new();
         while self.tokens.get(self.cursor + 1) == Some(&"=") {
@@ -351,12 +351,12 @@ impl<'a> Decoder<'a> {
         }
         self.filters = self.filters.checked_add(mapping.filters.len()).ok_or("Native graph filter count overflow")?;
         if self.filters > MAX_FILTERS {
-            return Err("Native graph exceeds64 emitted top-level filters".into());
+            return Err("Native graph exceeds 64 emitted top-level filters".into());
         }
         self.admit(&mapping, context)?;
         self.steps.push(NativeStage::Apply { input, mapping: Box::new(mapping) });
         if self.steps.len() > MAX_NODES {
-            return Err("Native graph exceeds64 construction steps".into());
+            return Err("Native graph exceeds 64 construction steps".into());
         }
         Ok(self.steps.len())
     }
@@ -391,7 +391,7 @@ impl<'a> Decoder<'a> {
         };
         super::validate_stages(&steps, output)?;
         if self.steps.len().checked_add(steps.len()).is_none_or(|v| v > MAX_NODES) {
-            return Err("Flattened native construction exceeds64 global steps".into());
+            return Err("Flattened native construction exceeds 64 global steps".into());
         }
         self.admit(&mapping, context)?;
         self.notes.extend(mapping.notes);
@@ -450,7 +450,7 @@ impl<'a> Decoder<'a> {
     /// Helpers emit already-native global references, never source node names.
     fn append_native(&mut self, steps: Vec<NativeStage>, output: usize, notes: Vec<String>, context: &MappingContext<'_>) -> Result<usize> {
         if self.steps.len().checked_add(steps.len()).is_none_or(|count| count > MAX_NODES) {
-            return Err("Native auxiliary lowering exceeds64 global construction steps".into());
+            return Err("Native auxiliary lowering exceeds 64 global construction steps".into());
         }
         let notice = NativeMapping { notes, ..Default::default() };
         self.admit(&notice, context)?;
@@ -484,7 +484,7 @@ impl<'a> Decoder<'a> {
     /// Builds one finite graph block, preserving actual snapshots and named pads while rejecting invalid or unavailable bindings.
     fn block(&mut self, mut current: Option<usize>, depth: usize, context: &MappingContext<'_>) -> Result<usize> {
         if depth > MAX_DEPTH {
-            return Err("Finite native graph exceeds8 auxiliary nesting levels".into());
+            return Err("Finite native graph exceeds 8 auxiliary nesting levels".into());
         }
         while let Some(token) = self.peek() {
             context.interrupt.check().map_err(|e| e.to_string())?;
@@ -631,7 +631,7 @@ impl<'a> Decoder<'a> {
                 }
             }
             if self.steps.len() > MAX_NODES {
-                return Err("Native graph exceeds64 native construction steps".into());
+                return Err("Native graph exceeds 64 native construction steps".into());
             }
         }
         current.ok_or_else(|| "Native auxiliary graph has no resolved output".into())
@@ -640,7 +640,7 @@ impl<'a> Decoder<'a> {
 
 /// Appends an ordinary native construction step only within the shared global stage limit.
 fn native_push(steps: &mut Vec<NativeStage>, next: usize, stage: NativeStage) -> Result<usize> {
-    let output = next.checked_add(steps.len()).filter(|value| *value <= MAX_NODES).ok_or("Auxiliary native construction exceeds64 stages")?;
+    let output = next.checked_add(steps.len()).filter(|value| *value <= MAX_NODES).ok_or("Auxiliary native construction exceeds 64 stages")?;
     steps.push(stage);
     Ok(output)
 }

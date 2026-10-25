@@ -108,7 +108,7 @@ fn threshold(effect: &StoredEffect<'_>, context: &MappingContext) -> Result<Nati
         return Ok(NativeMapping {
             filters: vec![native_filter("filter.other.alphaCurve", json!({"values":values}))],
             notes: vec![format!(
-                "Source alpha interval [{low},{high}] becomes an ordinary native256-sample alpha transfer. Both inclusive interval bounds author the table; crossed bounds explicitly use the native empty-interval policy without reordering. Native piecewise-linear transition/depth quantization and clamped coverage apply. Existing native color/HDR samples are preserved rather than thresholded as RGB."
+                "Source alpha interval [{low},{high}] becomes an ordinary native 256-sample alpha transfer. Both inclusive interval bounds author the table; crossed bounds explicitly use the native empty-interval policy without reordering. Native piecewise-linear transition/depth quantization and clamped coverage apply. Existing native color/HDR samples are preserved rather than thresholded as RGB."
             )],
             ..Default::default()
         });

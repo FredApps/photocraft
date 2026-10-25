@@ -61,7 +61,7 @@ fn stress(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
                 NativeBranch { filters: base, blend: BlendMode::Subtract, clipped: true, ..Default::default() },
             ],
             format!(
-                "Large local contrast support becomes a native Gaussian base/detail document: source radius{r} uses an explicit three-sigma support policy, native Shadows/Highlights tones the base, and clipped Add/Subtract recombines original detail with half-strength Channel Mixer headroom. Source samples{samples}/iterations{iterations} remain disclosed algorithm differences. Native clipping, working-color/HDR, alpha-weighted Gaussian edges and ordinary native coverage apply; no dialog radius cap or source evaluator"
+                "Large local contrast support becomes a native Gaussian base/detail document: source radius {r} uses an explicit three-sigma support policy, native Shadows/Highlights tones the base, and clipped Add/Subtract recombines original detail with half-strength Channel Mixer headroom. Source samples {samples}/iterations {iterations} remain disclosed algorithm differences. Native clipping, working-color/HDR, alpha-weighted Gaussian edges and ordinary native coverage apply; no dialog radius cap or source evaluator"
             ),
         );
         result.filters.push(native_filter("image.adjustments.channelMixer", json!({"red":[200.,0.,0.,0.],"green":[0.,200.,0.,0.],"blue":[0.,0.,200.,0.]})));
@@ -71,7 +71,7 @@ fn stress(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         "image.adjustments.shadowsHighlights",
         json!({"shadowAmount":if shadows{50}else{35},"shadowTone":50,"shadowRadius":r,"highlightAmount":35,"highlightTone":50,"highlightRadius":r,"color":0,"midtone":0,"blackClip":0,"whiteClip":0}),
         format!(
-            "Source local radius becomes native Shadows/Highlights support. Explicit native tone-balancing policy uses35% both ways or50% shadow lifting when requested. Source stochastic samples{samples}/iterations{iterations} remain disclosed and never become native strength; native tone metric/ICC and alpha apply"
+            "Source local radius becomes native Shadows/Highlights support. Explicit native tone-balancing policy uses 35% both ways or 50% shadow lifting when requested. Source stochastic samples {samples}/iterations {iterations} remain disclosed and never become native strength; native tone metric/ICC and alpha apply"
         ),
     ))
 }
@@ -83,7 +83,7 @@ fn water_cells(size: i32, smooth: f64, regularity: i32, fill: i32, c: &MappingCo
     let ny = (b.height() as usize).div_ceil(size as usize);
     let count = nx.checked_mul(ny).ok_or_else(|| invalid("native cell count overflows"))?;
     if count > 64 {
-        return Err(MappingFailure::resource("native editable water cells exceed64 branches"));
+        return Err(MappingFailure::resource("native editable water cells exceed 64 branches"));
     }
     geometry_bytes(c, count, count * 4)?;
     let metadata = count * 8192;
@@ -158,7 +158,7 @@ fn water_cells(size: i32, smooth: f64, regularity: i32, fill: i32, c: &MappingCo
     Ok(composite(
         branches,
         format!(
-            "Large source water size{size} becomes at most64 native rectangular cells with shared jittered boundaries; regularization{regularity} controls native boundary regularity. Fill{fill} uses either framed native Gaussian(smoothness{smooth}) then native alpha-weighted Average, or deterministic random1x1 samples expanded by ordinary editable affine placements. Native rectangular cells replace watershed regions and native randomness replaces the source sequence. For random fill, source smoothing remains a disclosed sampling difference because the point frame has no neighboring pixels; no source prefilter evaluator persists. Regional native mean alpha or selected-point alpha, vector-mask antialiasing and native transparent-source behavior apply"
+            "Large source water size {size} becomes at most 64 native rectangular cells with shared jittered boundaries; regularization {regularity} controls native boundary regularity. Fill {fill} uses either framed native Gaussian(smoothness {smooth}) then native alpha-weighted Average, or deterministic random 1x1 samples expanded by ordinary editable affine placements. Native rectangular cells replace watershed regions and native randomness replaces the source sequence. For random fill, source smoothing remains a disclosed sampling difference because the point frame has no neighboring pixels; no source prefilter evaluator persists. Regional native mean alpha or selected-point alpha, vector-mask antialiasing and native transparent-source behavior apply"
         ),
     ))
 }
@@ -184,7 +184,7 @@ fn water(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     Ok(mapped(
         filters,
         format!(
-            "Source segmentation scale and smoothing become native Gaussian then Crystallize. Below native Gaussian0.1, (sigma/.1)^2 fractional filter strength is an explicit weak-kernel approximation. Native deterministic polygon cells replace watershed regularization{regularity} and fill-mode{fill}; native fixed seed0 is an explicit reproducibility policy because source has no seed property. Native center sampling approximates regional average/random fill, retaining source controls as disclosed data"
+            "Source segmentation scale and smoothing become native Gaussian then Crystallize. Below native Gaussian 0.1, (sigma/.1)^2 fractional filter strength is an explicit weak-kernel approximation. Native deterministic polygon cells replace watershed regularization {regularity} and fill-mode {fill}; native fixed seed 0 is an explicit reproducibility policy because source has no seed property. Native center sampling approximates regional average/random fill, retaining source controls as disclosed data"
         ),
     ))
 }
@@ -196,7 +196,7 @@ fn transparent_paper(c: &MappingContext, (width, height): (i32, i32), rate: f64,
     let ny = (f64::from(b.height()) / f64::from(height)).ceil() as usize;
     let cells = nx.checked_mul(ny).ok_or_else(|| invalid("paper tile count overflow"))?;
     if cells > 64 {
-        return Err("native editable paper copies exceed64 source tiles; a denser native map representation is required".into());
+        return Err("native editable paper copies exceed 64 source tiles; a denser native map representation is required".into());
     }
     let start_x = f64::from(b.x0) + if center { (f64::from(b.width()) - nx as f64 * f64::from(width)) * 0.5 } else { 0. };
     let start_y = f64::from(b.y0) + if center { (f64::from(b.height()) - ny as f64 * f64::from(height)) * 0.5 } else { 0. };
@@ -244,7 +244,7 @@ fn transparent_paper(c: &MappingContext, (width, height): (i32, i32), rate: f64,
     generate(&mut |_, _, _, _, _, _| {
         count = count.checked_add(1).ok_or_else(|| invalid("paper branch count overflow"))?;
         if count > 64 {
-            return Err("wrapped native paper copies exceed64 branches".into());
+            return Err("wrapped native paper copies exceed 64 branches".into());
         }
         Ok(())
     })?;
@@ -291,7 +291,7 @@ fn tile_paper(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping>
     let ny = (f64::from(b.height()) / f64::from(h)).ceil();
     let count = (nx * ny).sqrt();
     if !(1.0..=99.0).contains(&count) || rate > 99. {
-        return Err("source paper tile count/movement exceeds native Tiles count1..99 or maxOffset1..99 dialog domain".into());
+        return Err("source paper tile count/movement exceeds native Tiles count 1..99 or maxOffset 1..99 dialog domain".into());
     }
     Ok(one(
         "filter.stylize.tiles",
@@ -577,7 +577,7 @@ fn glass(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping
             let center_y = (v / height).floor() * height + height / 2.;
             (u + 0.5 * (center_x - u), v + 0.5 * (center_y - v))
         },
-        "Source rectangular glass-tile intent becomes an independently authored standard rectangular-cell lens coordinate resource feeding ordinary native Displace. Each source tile-width/height independently sets its native cell period across the full declared5..500 pixel domain; local source coordinates move half way toward the cell center (fixed native half-strength refraction). Native owner-origin alignment, U8 coordinate quantization, bilinear reconstruction, cell-edge discontinuities, alpha and native depth/color rules replace source refraction; no source glass processor remains. Displacement is at most125px per axis, inside native range; actual native map/hex/cache metadata and cancellation bound work rather than the Glass dialog period9..36",
+        "Source rectangular glass-tile intent becomes an independently authored standard rectangular-cell lens coordinate resource feeding ordinary native Displace. Each source tile-width/height independently sets its native cell period across the full declared 5..500 pixel domain; local source coordinates move half way toward the cell center (fixed native half-strength refraction). Native owner-origin alignment, U8 coordinate quantization, bilinear reconstruction, cell-edge discontinuities, alpha and native depth/color rules replace source refraction; no source glass processor remains. Displacement is at most 125px per axis, inside native range; actual native map/hex/cache metadata and cancellation bound work rather than the Glass dialog period 9..36",
     )?;
     for filter in &mut mapping.filters {
         filter.params["undefinedAreas"] = json!("repeat");
@@ -704,7 +704,7 @@ fn nova(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     Ok(replace(
         Layer::new("Imported native starburst", LayerContent::Group(Group { children, expanded: true, artboard: None })),
         format!(
-            "Source center/radius/spoke count/seed/color become finite editable native gradient-filled ray shapes. Native seeded angular/length variation and RGB-axis color rotation approximate random-hue{hue}; native finite ray extent, Screen overlap, gradient framing and attenuation differ from source light scattering. No imaginary source brightness field or baked starburst"
+            "Source center/radius/spoke count/seed/color become finite editable native gradient-filled ray shapes. Native seeded angular/length variation and RGB-axis color rotation approximate random-hue {hue}; native finite ray extent, Screen overlap, gradient framing and attenuation differ from source light scattering. No imaginary source brightness field or baked starburst"
         ),
     ))
 }
@@ -735,7 +735,7 @@ fn spiral(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
             Some(VectorMask::new(Path::new(vec![rect(0., 0., f64::from((width as u32).min(b.width())), f64::from((height as u32).min(b.height())))])));
         return Ok(replace(
             layer,
-            "Source logarithmic spiral base1 has independently observed spatially uniform output. Preserve both typed colors as editable native Solid Fill layers with explicit native source-over composition: color1 under color2 at opacity(1-balance)/2. Native ICC, color transfer, straight/premultiplied alpha and source-over semantics replace the source degenerate blend; the stock typed-color/alpha output is not asserted to be a raw midpoint. Center, radius, rotation and direction do not deform this uniform native boundary result. Source width/height define the editable finite extent; no source spiral evaluator remains",
+            "Source logarithmic spiral base 1 has independently observed spatially uniform output. Preserve both typed colors as editable native Solid Fill layers with explicit native source-over composition: color1 under color2 at opacity (1-balance)/2. Native ICC, color transfer, straight/premultiplied alpha and source-over semantics replace the source degenerate blend; the stock typed-color/alpha output is not asserted to be a raw midpoint. Center, radius, rotation and direction do not deform this uniform native boundary result. Source width/height define the editable finite extent; no source spiral evaluator remains",
         ));
     }
     let cx = f64::from(b.x0) + x * f64::from(b.width());
@@ -872,7 +872,7 @@ fn styles(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
             let radius = width.ceil() as usize;
             let count = radius.div_ceil(500);
             if count + usize::from(blur > 0.) > 64 {
-                return Err(MappingFailure::resource("native outline morphology exceeds64 bounded filter passes"));
+                return Err(MappingFailure::resource("native outline morphology exceeds 64 bounded filter passes"));
             }
             generation_bytes(c, count * 2048 + 8192)?;
             let mut filters = Vec::new();
@@ -998,7 +998,7 @@ fn styles(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
                 },
                 NativeBranch { layer_effects: effects, ..Default::default() },
             ],
-            "Square/diamond outline intent becomes ordinary native Maximum-square/Percentile-diamond morphology, native Color Overlay and placement, followed by original-input fill0 Shallow Knockout and the styled original. The native stage is isolated, so cutout cannot erase unrelated document layers; partial coverage follows native knockout/compositing. Fractional width rounds outward to native pixel growth; blur uses the native Gaussian minimum0.1px. Nondefault special-outline bevel acts on grown outer coverage before cutout, so its inner-edge lighting differs from the circle Stroke/post-Bevel construction. Inner-glow treatment percent maps to native Glow Range/contour. No source style renderer or baked source appearance",
+            "Square/diamond outline intent becomes ordinary native Maximum-square/Percentile-diamond morphology, native Color Overlay and placement, followed by original-input fill 0 Shallow Knockout and the styled original. The native stage is isolated, so cutout cannot erase unrelated document layers; partial coverage follows native knockout/compositing. Fractional width rounds outward to native pixel growth; blur uses the native Gaussian minimum 0.1px. Nondefault special-outline bevel acts on grown outer coverage before cutout, so its inner-edge lighting differs from the circle Stroke/post-Bevel construction. Inner-glow treatment percent maps to native Glow Range/contour. No source style renderer or baked source appearance",
         ));
     }
     if special_bevel {
@@ -1008,7 +1008,7 @@ fn styles(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
                 NativeBranch { layer_effects: effects, ..Default::default() },
                 NativeBranch { layer_effects: outline_effects, post_layer_effects: vec![post], fill_opacity: 0., ..Default::default() },
             ],
-            "Special outline bevel uses an ordinary fill0 Stroke/shadow style source layer, embedded as native outline pixels/data, then native Bevel on that outline alpha beside the styled original. Source bevel output levels become native custom gloss endpoints and CMS-converted HDR highlight paint; native contour/highlight response and profile clipping differ from source graph levels. Inner-glow treatment percent becomes native Glow Range with its native contour transfer. Native style order, outline morphology, offset/coverage and bevel sampling apply; no source style interpreter remains",
+            "Special outline bevel uses an ordinary fill 0 Stroke/shadow style source layer, embedded as native outline pixels/data, then native Bevel on that outline alpha beside the styled original. Source bevel output levels become native custom gloss endpoints and CMS-converted HDR highlight paint; native contour/highlight response and profile clipping differ from source graph levels. Inner-glow treatment percent becomes native Glow Range with its native contour transfer. Native style order, outline morphology, offset/coverage and bevel sampling apply; no source style interpreter remains",
         ));
     }
     Ok(NativeMapping{layer_effects:effects,notes:vec!["Enabled source styles become ordinary native overlay, stroke/offset shadow, drop shadow, inner glow and bevel. Bevel output levels use native custom gloss endpoints and CMS-converted HDR highlight paint, with native contour/color/profile behavior replacing source graph levels. Inner-glow treatment percent becomes native Glow Range with its native contour transfer. Native style order, morphology, lighting and alpha apply; GUI/source resource locators remain inert".into()],..Default::default()})
@@ -1083,7 +1083,7 @@ fn video(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         patterns: vec![pattern_data],
         layer_effects: vec![effect],
         notes: vec![format!(
-            "Native reusable F32 channel-gain pattern and ordinary Pattern Overlay preserve owner alpha and RGB video stripe/stagger intent, pattern selection{pattern}, rotation and additive flag. Additive uses selected native channel gain2/others1; replacement uses1/0. Independently specified finite cell layouts approximate source hardware patterns; Gray uses mean channel gain and native ICC/alpha/clipping govern. No source image, GIMP renderer or per-pixel runtime operation survives"
+            "Native reusable F32 channel-gain pattern and ordinary Pattern Overlay preserve owner alpha and RGB video stripe/stagger intent, pattern selection {pattern}, rotation and additive flag. Additive uses selected native channel gain 2/others 1; replacement uses 1/0. Independently specified finite cell layouts approximate source hardware patterns; Gray uses mean channel gain and native ICC/alpha/clipping govern. No source image, GIMP renderer or per-pixel runtime operation survives"
         )],
         ..Default::default()
     })
@@ -1153,7 +1153,7 @@ fn stretch(e: &StoredEffect<'_>, hsv: bool) -> Result<NativeMapping> {
         if keep { "image.autoContrast" } else { "image.autoTone" },
         json!({}),
         format!(
-            "Contrast-stretch intent uses existing native Auto {}, analyzed once from actual prepared native pixels and rewritten to fixed editable Levels before first display/save. Native 0.1% histogram clipping, display-bin analysis and ICC/color policy replace source {} component/transfer behavior (perceptual{perceptual}); no source operation or automatic action remains after native preparation",
+            "Contrast-stretch intent uses existing native Auto {}, analyzed once from actual prepared native pixels and rewritten to fixed editable Levels before first display/save. Native 0.1% histogram clipping, display-bin analysis and ICC/color policy replace source {} component/transfer behavior (perceptual {perceptual}); no source operation or automatic action remains after native preparation",
             if keep { "Contrast with shared channel endpoints" } else { "Tone with per-channel endpoints" },
             if hsv { "HSV value" } else { "RGB/Gray" }
         ),

@@ -66,7 +66,7 @@ pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> MappingResult
             "gegl:posterize" => {
                 let levels = number(e, "levels", 8.)?;
                 mapping.filters.push(native_filter("image.adjustments.posterize", json!({"levels":levels.max(2.)})));
-                mapping.notes.push(format!("Stock {levels} quantization levels become editable native Posterize. Source level1 uses native minimum2 explicitly; native rounding, depth, alpha and HDR behavior apply."));
+                mapping.notes.push(format!("Stock {levels} quantization levels become editable native Posterize. Source level 1 uses native minimum 2 explicitly; native rounding, depth, alpha and HDR behavior apply."));
             }
             "gegl:threshold" => {
                 let low = number(e, "value", 0.5)?;
@@ -96,7 +96,7 @@ pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> MappingResult
                     mapping.filters.push(native_filter("filter.blur.gaussianBlur", json!({"radius":sigma})));
                     variance = (variance - sigma * sigma).max(0.);
                 }
-                mapping.notes.push(format!("Stock wavelet radius {radius} pixels becomes ordinary native Gaussian smoothing at the same nominal native radius, factored into bounded native passes by variance above1000. Native Gaussian kernel, edge, alpha and document color behavior are an explicit approximation; no wavelet source kernel is reproduced."));
+                mapping.notes.push(format!("Stock wavelet radius {radius} pixels becomes ordinary native Gaussian smoothing at the same nominal native radius, factored into bounded native passes by variance above 1000. Native Gaussian kernel, edge, alpha and document color behavior are an explicit approximation; no wavelet source kernel is reproduced."));
             }
             _ => return Err("Stock tone identity has no native adapter".into()),
         }

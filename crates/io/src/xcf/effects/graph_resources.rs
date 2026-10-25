@@ -91,7 +91,7 @@ fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMappi
                 return Ok(NativeMapping {
                     filters: vec![native_filter("filter.other.setAlpha", json!({"value":0.}))],
                     notes: vec![format!(
-                        "Stock saved/reopened zero-level Piecewise Blend has zero visible contribution (partial-alpha outer Normal preview stays byte-identical to its original owner, unlike an input identity). This becomes ordinary native Set Alpha0, preserving native hidden colors/HDR rather than executing a source blend. Source gamma={gamma} and linear-mask={linear} are inactive without levels; native document alpha/compositing rules apply."
+                        "Stock saved/reopened zero-level Piecewise Blend has zero visible contribution (partial-alpha outer Normal preview stays byte-identical to its original owner, unlike an input identity). This becomes ordinary native Set Alpha 0, preserving native hidden colors/HDR rather than executing a source blend. Source gamma={gamma} and linear-mask={linear} are inactive without levels; native document alpha/compositing rules apply."
                     )],
                     ..Default::default()
                 });
@@ -120,7 +120,7 @@ pub(super) fn piecewise(
     next_global: usize,
 ) -> Result<(Vec<NativeStage>, usize, Vec<String>), MappingFailure> {
     if e.operation != "gegl:piecewise-blend" || next_global == 0 || next_global > 65 || main >= next_global || pads.len() > 16 {
-        return Err(invalid("Piecewise native lowering requires its exact operation, bounded earlier main input and at most16 named image pads"));
+        return Err(invalid("Piecewise native lowering requires its exact operation, bounded earlier main input and at most 16 named image pads"));
     }
     c.interrupt.check().map_err(|error| error.to_string())?;
     for argument in &e.arguments {
@@ -150,7 +150,7 @@ pub(super) fn piecewise(
     let unused = pads.iter().filter(|(pad, _)| *pad > levels).count();
     if levels == 0 {
         if next_global > 64 {
-            return Err(MappingFailure::resource("Piecewise zero coverage exceeds the64 native stage allowance"));
+            return Err(MappingFailure::resource("Piecewise zero coverage exceeds the 64 native stage allowance"));
         }
         let mapping = map_known(e, c)?;
         return Ok((
@@ -161,7 +161,7 @@ pub(super) fn piecewise(
     }
     let mut output = images.first().copied().flatten().ok_or_else(|| MappingFailure::resource("Missing actual first Piecewise image"))?;
     let note = format!(
-        "Piecewise{levels} uses only actual connected aux1..aux{levels} native images. One level selects that image directly. Multiple levels use native composite-channel capture (arithmetic color-channel mean), editable256-point pencil Curves cumulative membership ramps and static native pixel masks, then native Normal joins. Source gamma={gamma} becomes bounded native Exposure gamma{} in0.01..9.99; native clipping/evaluation applies. Source linear-mask={linear} is superseded by the actual native document/channel/profile policy, not a retained Babl transfer switch. Native partial-alpha layering differs from source weighted interpolation; no source kernel remains. {unused} higher declared pads are inactive.",
+        "Piecewise {levels} uses only actual connected aux1..aux{levels} native images. One level selects that image directly. Multiple levels use native composite-channel capture (arithmetic color-channel mean), editable 256-point pencil Curves cumulative membership ramps and static native pixel masks, then native Normal joins. Source gamma={gamma} becomes bounded native Exposure gamma {} in 0.01..9.99; native clipping/evaluation applies. Source linear-mask={linear} is superseded by the actual native document/channel/profile policy, not a retained Babl transfer switch. Native partial-alpha layering differs from source weighted interpolation; no source kernel remains. {unused} higher declared pads are inactive.",
         gamma.clamp(0.01, 9.99)
     );
     if levels == 1 {
@@ -177,7 +177,7 @@ pub(super) fn piecewise(
     let gamma_stage = usize::from(native_gamma != 1.);
     let count = 1 + gamma_stage + 3 * (levels - 1);
     if next_global.checked_sub(1).and_then(|used| used.checked_add(count)).is_none_or(|total| total > 64) {
-        return Err(MappingFailure::resource("Piecewise native channel/curve/mask/join plan exceeds the shared64 stage allowance"));
+        return Err(MappingFailure::resource("Piecewise native channel/curve/mask/join plan exceeds the shared 64 stage allowance"));
     }
     let table_entries = (levels - 1) * 256;
     let metadata = table_entries * 24 + 4096;

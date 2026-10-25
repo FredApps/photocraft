@@ -124,7 +124,7 @@ fn gaussian_map(e: &StoredEffect<'_>, context: &MappingContext) -> Result<Native
     Ok(mapped(
         filters,
         format!(
-            "Native Gaussian sigma {radius}px is the root mean square of source sigmas {x}/{y}px; unequal axes become isotropic. {passes} native passes at sigma {native_sigma}px preserve summed variance within dialog bounds. Below native sigma0.1, fractional native filter strength (sigma/.1)^2 is an explicit weak-kernel approximation rather than identity or silently full minimum blur. Native kernel, alpha, boundary extension and output extent apply; source FIR/IIR, abyss and clip choices are retained, not evaluated"
+            "Native Gaussian sigma {radius}px is the root mean square of source sigmas {x}/{y}px; unequal axes become isotropic. {passes} native passes at sigma {native_sigma}px preserve summed variance within dialog bounds. Below native sigma 0.1, fractional native filter strength (sigma/.1)^2 is an explicit weak-kernel approximation rather than identity or silently full minimum blur. Native kernel, alpha, boundary extension and output extent apply; source FIR/IIR, abyss and clip choices are retained, not evaluated"
         ),
     ))
 }
@@ -152,7 +152,7 @@ fn native_gain(gain: f64) -> Result<Vec<SmartFilter>> {
     let stops = gain.log2();
     let count = (stops.abs() / 20.).ceil().max(1.) as usize;
     if count > 64 {
-        return Err(MappingFailure::resource("native exposure decomposition exceeds64 filters"));
+        return Err(MappingFailure::resource("native exposure decomposition exceeds 64 filters"));
     }
     Ok((0..count).map(|_| native_filter("image.adjustments.exposure", json!({"exposure":stops/count as f64,"offset":0.,"gamma":1.}))).collect())
 }
@@ -161,7 +161,7 @@ fn native_gain(gain: f64) -> Result<Vec<SmartFilter>> {
 pub(super) fn gaussian_workspace(c: &MappingContext, sigma: f64, caches: usize) -> Result<()> {
     let b = c.native_filter_bounds;
     if b.is_empty() || !sigma.is_finite() || !(0.0..=1000.).contains(&sigma) {
-        return Err(invalid("native Gaussian workspace requires nonempty bounds and radius0..1000"));
+        return Err(invalid("native Gaussian workspace requires nonempty bounds and radius 0..1000"));
     }
     let w = b.width() as usize;
     let h = b.height() as usize;
@@ -221,7 +221,7 @@ fn broad_unsharp(radius: f64, scale: f64, threshold: f64, c: &MappingContext) ->
         return Ok(mapped(
             filters,
             format!(
-                "Broad threshold sharpening uses a fixed set of {count} ordinary editable native Unsharp passes at radius {component_radius}px, amount {amount}% and threshold {} native levels in every pass. Radius is partitioned by sqrt(pass count) and total high-frequency gain by (1+scale)^(1/pass count)-1; gains below1% use fractional native filter opacity. This is a native multiscale sharpening approximation: thresholded passes are nonlinear, their spatial response is not variance-equivalent to one broad Gaussian, and each pass gates its own per-channel difference rather than one original broad difference. Native alpha-weighted edges, intermediate integer clipping and HDR rules apply. Source radius/strength/threshold remain meaningful controls without expanding the native radius1000 or amount500 dialogs; no source evaluator persists",
+                "Broad threshold sharpening uses a fixed set of {count} ordinary editable native Unsharp passes at radius {component_radius}px, amount {amount}% and threshold {} native levels in every pass. Radius is partitioned by sqrt(pass count) and total high-frequency gain by (1+scale)^(1/pass count)-1; gains below 1% use fractional native filter opacity. This is a native multiscale sharpening approximation: thresholded passes are nonlinear, their spatial response is not variance-equivalent to one broad Gaussian, and each pass gates its own per-channel difference rather than one original broad difference. Native alpha-weighted edges, intermediate integer clipping and HDR rules apply. Source radius/strength/threshold remain meaningful controls without expanding the native radius 1000 or amount 500 dialogs; no source evaluator persists",
                 threshold * 255.
             ),
         ));
@@ -259,7 +259,7 @@ fn zoom_copies(factor: f64, centre: [f64; 2], context: &MappingContext) -> Resul
             photocraft_geom::Affine::translate(cx, cy).mul(&photocraft_geom::Affine::scale(scale)).mul(&photocraft_geom::Affine::translate(-cx, -cy));
         branches.push(NativeBranch { transform, opacity: 1. / (n + 1) as f32, ..Default::default() });
     }
-    Ok(NativeMapping{structure:Some(NativeStructure::Composite{branches}),notes:vec!["Native midpoint ray quadrature uses32 editable scaled source copies about the requested center, with conditional Normal opacities giving equal weights where copies are opaque. Positive source zoom samples inward; negative samples outward through native inverse placements. Native Free Transform interpolation, transparent transformed edges and partial-alpha/overlap composition differ from source radial sampling; no source evaluator or silently clamped native slider".into()],..Default::default()})
+    Ok(NativeMapping{structure:Some(NativeStructure::Composite{branches}),notes:vec!["Native midpoint ray quadrature uses 32 editable scaled source copies about the requested center, with conditional Normal opacities giving equal weights where copies are opaque. Positive source zoom samples inward; negative samples outward through native inverse placements. Native Free Transform interpolation, transparent transformed edges and partial-alpha/overlap composition differ from source radial sampling; no source evaluator or silently clamped native slider".into()],..Default::default()})
 }
 /// Translate rotation or zoom blur controls into native center, amount, and structural policies while
 /// preserving zero strength.
@@ -301,7 +301,7 @@ fn radial(e: &StoredEffect<'_>, context: &MappingContext, zoom: bool) -> Result<
                     .mul(&photocraft_geom::Affine::translate(-cx, -cy));
                 branches.push(NativeBranch { transform, opacity: 1. / (n + 1) as f32, ..Default::default() });
             }
-            return Ok(NativeMapping{structure:Some(NativeStructure::Composite{branches}),notes:vec!["Native angular midpoint quadrature uses32 editable rotated source copies over the requested symmetric spin arc and actual center. Conditional native Normal opacities give equal weights for opaque copies. Native Free Transform interpolation, transformed transparent edges and partial-alpha overlap differ from source angular sampling. Tiny and full-circle source angles remain meaningful without clamping to native Radial Blur dialog1..100".into()],..Default::default()});
+            return Ok(NativeMapping{structure:Some(NativeStructure::Composite{branches}),notes:vec!["Native angular midpoint quadrature uses 32 editable rotated source copies over the requested symmetric spin arc and actual center. Conditional native Normal opacities give equal weights for opaque copies. Native Free Transform interpolation, transformed transparent edges and partial-alpha overlap differ from source angular sampling. Tiny and full-circle source angles remain meaningful without clamping to native Radial Blur dialog 1..100".into()],..Default::default()});
         }
         // Native Radial Blur spin's amount is its arc in degrees (algo::blur::radial).
         native_range(angle, "native spin arc", 1.0, 100.0)?
@@ -400,7 +400,7 @@ fn rgb_noise(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMap
         "filter.noise.channelNoise",
         json!({"amounts":amounts,"distribution":if gaussian{"gaussian"}else{"uniform"},"monochromatic":!independent,"relative":correlated,"seed":seed}),
         format!(
-            "Source RGB and alpha amplitudes become independent native channel amounts (uniform halfwidth=amount/200; Gaussian sigma=amount/400). Source correlated={correlated} becomes declared native signal-relative value+value*noise; source independent={independent} chooses native random-channel correlation. Native coordinate hash/sequence and edited-alpha clamp0..1 apply; finite native HDR colors are retained. Source linear={linear}, native linear={}; native encoding is authoritative. Non-RGB native owners use explicit equal-channel RMS color amplitude rather than invent RGB axes",
+            "Source RGB and alpha amplitudes become independent native channel amounts (uniform halfwidth=amount/200; Gaussian sigma=amount/400). Source correlated={correlated} becomes declared native signal-relative value+value*noise; source independent={independent} chooses native random-channel correlation. Native coordinate hash/sequence and edited-alpha clamp 0..1 apply; finite native HDR colors are retained. Source linear={linear}, native linear={}; native encoding is authoritative. Non-RGB native owners use explicit equal-channel RMS color amplitude rather than invent RGB axes",
             context.linear
         ),
     ))
@@ -510,7 +510,7 @@ fn high_pass(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMap
         // Two more branch filters encode the normalized difference and alpha.
         if count > 62 {
             return Err(MappingFailure::resource(
-                "broad native High Pass needs more than62 Gaussian passes plus2 encoding filters; the native branch filter limit is64",
+                "broad native High Pass needs more than 62 Gaussian passes plus 2 encoding filters; the native branch filter limit is 64",
             ));
         }
         let sigma = radius / (count as f64).sqrt();
@@ -613,7 +613,7 @@ fn edge_blur(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMap
                 f64::from(r),
                 15.0,
                 1,
-                "Source square-neighborhood radius sets native smoothing support. Source pairs1/2 chooses symmetric-pair comparison, and its public declaration says higher pairs preserves more acute features. This visible estimator/feature response is superseded by deterministic native Surface Blur at the explicitly chosen standard threshold15; pairs is not inactive, a pass count or a strength multiplier. Native color-distance/edge preservation, alpha and neighborhood rules apply",
+                "Source square-neighborhood radius sets native smoothing support. Source pairs 1/2 chooses symmetric-pair comparison, and its public declaration says higher pairs preserves more acute features. This visible estimator/feature response is superseded by deterministic native Surface Blur at the explicitly chosen standard threshold 15; pairs is not inactive, a pass count or a strength multiplier. Native color-distance/edge preservation, alpha and neighborhood rules apply",
             )
         }
         _ => {
@@ -641,7 +641,7 @@ fn edge_blur(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMap
     let count = partitions.checked_mul(repeat as usize).ok_or_else(|| MappingFailure::resource("native Surface Blur pass count overflows"))?;
     if count > 62 {
         return Err(MappingFailure::resource(
-            "native edge smoothing exceeds62 Surface Blur passes plus2 surrounding filters within the native64 filter stack limit",
+            "native edge smoothing exceeds 62 Surface Blur passes plus 2 surrounding filters within the native 64 filter stack limit",
         ));
     }
     let native_radius = (radius / (partitions as f64).sqrt()).max(1.0);
@@ -704,7 +704,7 @@ fn edge_blur(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMap
         mapping.notes.push(format!("Broad support uses {partitions} ordinary native Surface Blur passes per source iteration, radius {native_radius}px, preserving {repeat} source iterations ({count} native passes). Radius is divided by sqrt(partition count) as a chosen multiscale support policy. Thresholded smoothing is nonlinear: repeated passes are not variance-equivalent to the source kernel or a single broad Surface Blur. Each pass uses native color-distance, intermediate-depth, coverage and boundary rules; original controls remain historical metadata"));
     }
     if radius < 1.0 || threshold < 2.0 {
-        mapping.notes.push("Positive source support/similarity below the native dialog minimum uses the explicit native minimum radius1px and threshold2 levels, without a hidden opacity multiplier. The native resolution loses subminimum source distinctions; original values remain historical metadata".into());
+        mapping.notes.push("Positive source support/similarity below the native dialog minimum uses the explicit native minimum radius 1px and threshold 2 levels, without a hidden opacity multiplier. The native resolution loses subminimum source distinctions; original values remain historical metadata".into());
     }
     Ok(mapping)
 }
@@ -780,7 +780,7 @@ fn focus_blur(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMa
         }
         return Ok(mapped(
             filters,
-            "Zero source focus radius leaves no focused region; full-frame ordinary native Gaussian filters preserve blur intent across the allowed0..1500 source sigma domain. Variance-split passes remain at most1000px sigma each; native sigma below0.1 uses fractional filter opacity(sigma/.1)^2. Actual native line/cache workspace, metadata and cancellation checks precede allocation. Native Gaussian, alpha and boundary rules replace source blur-type/lens highlights/midpoint and quality policies, without a minimum-radius artificial focus pin",
+            "Zero source focus radius leaves no focused region; full-frame ordinary native Gaussian filters preserve blur intent across the allowed 0..1500 source sigma domain. Variance-split passes remain at most 1000px sigma each; native sigma below 0.1 uses fractional filter opacity (sigma/.1)^2. Actual native line/cache workspace, metadata and cancellation checks precede allocation. Native Gaussian, alpha and boundary rules replace source blur-type/lens highlights/midpoint and quality policies, without a minimum-radius artificial focus pin",
         ));
     }
     let passes = (blur / 500.).powi(2).ceil().max(1.) as usize;
@@ -842,7 +842,7 @@ fn repeat_focus_passes(mapping: &mut NativeMapping, passes: usize, context: &Map
             super::residual_spatial::generation_check(context)?;
             mapping.filters.push(filter.clone());
         }
-        mapping.notes.push(format!("Broad focus uses {passes} ordinary native Gallery passes with identical focus geometry and variance-split maximum blur, each within the native500 slider. Spatially varying blur is nonlinear: repeated transitions and focused-edge leakage differ from a single broad source operation. Native Gaussian/alpha/boundary rules remain authoritative"));
+        mapping.notes.push(format!("Broad focus uses {passes} ordinary native Gallery passes with identical focus geometry and variance-split maximum blur, each within the native 500 slider. Spatially varying blur is nonlinear: repeated transitions and focused-edge leakage differ from a single broad source operation. Native Gaussian/alpha/boundary rules remain authoritative"));
     }
     Ok(())
 }
@@ -1002,7 +1002,7 @@ pub(super) fn map(e: &StoredEffect<'_>, context: &MappingContext) -> MappingResu
             Ok(one(
                 "filter.blur.motionBlur",
                 json!({"distance": distance, "angle": -angle}),
-                "Source clockwise image-space degrees become negative native mathematical degrees. Independently observed+45degree source impulse runs down-right; native angle sign is reversed. Native centered line sampling, alpha and edges apply",
+                "Source clockwise image-space degrees become negative native mathematical degrees. Independently observed+45 degree source impulse runs down-right; native angle sign is reversed. Native centered line sampling, alpha and edges apply",
             ))
         })(),
         "gegl:motion-blur-circular" => radial(e, context, false),
@@ -1065,7 +1065,7 @@ pub(super) fn map(e: &StoredEffect<'_>, context: &MappingContext) -> MappingResu
             Ok(one(
                 "filter.blur.smartBlur",
                 json!({"radius": if patch == 0 { 4 } else { 8 }, "threshold": sigma, "quality": "high", "mode": "normal"}),
-                "Source 8x8/16x16 patch support becomes native Smart Blur radius4/8. Source noise sigma supplies the native level-threshold policy, not an asserted equal DCT response. Native spatial edge-aware denoise replaces transform-domain shrinkage; all source configuration remains retained",
+                "Source 8x8/16x16 patch support becomes native Smart Blur radius 4/8. Source noise sigma supplies the native level-threshold policy, not an asserted equal DCT response. Native spatial edge-aware denoise replaces transform-domain shrinkage; all source configuration remains retained",
             ))
         })(),
         "gegl:noise-cie-lch" => component_noise(e, context, true),
@@ -1700,7 +1700,7 @@ mod tests {
         assert!(high_pass(&StoredEffect::test("gegl:high-pass", vec![float("std-dev", 1000.)]), &c).unwrap().structure.is_none());
         let too_large = high_pass(&StoredEffect::test("gegl:high-pass", vec![float("std-dev", 10000.)]), &c).unwrap_err();
         assert_eq!(too_large.reason, ConversionReason::ResourceUnavailable);
-        assert!(too_large.message.contains("limit is64"));
+        assert!(too_large.message.contains("limit is 64"));
         for context in [MappingContext { remaining_generation_bytes: 1, ..context() }, MappingContext { remaining_metadata_bytes: 1, ..context() }] {
             assert_eq!(high_pass(&effect, &context).unwrap_err().reason, ConversionReason::ResourceUnavailable);
         }
@@ -1811,7 +1811,7 @@ mod tests {
                 };
                 let original = source.read_region(bounds);
                 let gated = run(255.);
-                assert_eq!(gated, original, "all normalized differences below native threshold1");
+                assert_eq!(gated, original, "all normalized differences below native threshold 1");
                 let sharpened = run(25.5);
                 let mut mapped_output = source.clone();
                 for f in &mapping.filters {
