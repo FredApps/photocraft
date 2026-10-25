@@ -216,9 +216,9 @@ fn placement_matrix(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<Affi
         "gegl:scale-size-keepaspect" => {
             let x = number(e, "x", -1.)?;
             let y = number(e, "y", -1.)?;
-            // Native fit-to-box policy: negative dimensions are unspecified, both
+            // Native fit-to-box policy: nonpositive dimensions are unspecified, both
             // unspecified preserve input. Positive limits select the smaller ratio.
-            let scale = match (x >= 0., y >= 0.) {
+            let scale = match (x > 0., y > 0.) {
                 (true, true) => (x / f64::from(b.width())).min(y / f64::from(b.height())),
                 (true, false) => x / f64::from(b.width()),
                 (false, true) => y / f64::from(b.height()),
@@ -379,7 +379,7 @@ fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMappi
             Ok(composite(
                 vec![NativeBranch { transform, ..Default::default() }],
                 format!(
-                    "Stock placement becomes editable native Smart affine data. All admitted transforms are 2D affine with constant homogeneous z=1; declared near-z={near_z} in 0..1 is inactive under this native 2D policy, without introducing a 3D clipping evaluator. Native pixel-size fit, shear-factor units, frame-center rotation and canvas-target alignment use the fixed native input frame rather than inferred dynamic source content bounds; aspect fit treats negative dimensions as unspecified. Native resampling/clipping supersede source sampler and target discovery. SVG transform lists become bounded ordinary native Affine composition."
+                    "Stock placement becomes editable native Smart affine data. All admitted transforms are 2D affine with constant homogeneous z=1; declared near-z={near_z} in 0..1 is inactive under this native 2D policy, without introducing a 3D clipping evaluator. Native pixel-size fit, shear-factor units, frame-center rotation and canvas-target alignment use the fixed native input frame rather than inferred dynamic source content bounds; aspect fit treats nonpositive dimensions as unspecified. Native resampling/clipping supersede source sampler and target discovery. SVG transform lists become bounded ordinary native Affine composition."
                 ),
             ))
         }
@@ -559,6 +559,24 @@ mod tests {
         assert_eq!(svg_matrix("translate(1,2) scale(2,3)").unwrap().m, [2., 0., 0., 3., 1., 2.]);
         assert!(map(&StoredEffect::test("gegl:reflect", vec![]), &c).unwrap().is_err());
         assert!(map(&StoredEffect::test("gegl:scale-size", vec![number_arg("x", 9001.)]), &c).unwrap().is_err());
+    }
+    /// Treat unspecified dimensions as absent limits, preserving a nonempty native affine branch rather than a collapsed fill.
+    #[test]
+    fn aspect_fit_zero_dimensions_are_unspecified_and_positive_limits_keep_native_affines() {
+        let mut c = context();
+        c.owner_bounds = Rect::new(-3, 5, 17, 15);
+        for (x, y, expected_scale) in [(0., -1., 1.), (0., 15., 1.5), (40., 0., 2.), (0., 0., 1.), (-1., 0., 1.), (40., 15., 1.5)] {
+            let source = StoredEffect::test("gegl:scale-size-keepaspect", vec![number_arg("x", x), number_arg("y", y)]);
+            let mapping = map(&source, &c).unwrap().unwrap();
+            let Some(NativeStructure::Composite { branches }) = mapping.structure else {
+                panic!("unspecified dimensions must preserve editable native input, not replace it with a collapsed fill")
+            };
+            assert_eq!(branches.len(), 1);
+            let expected = Affine { m: [expected_scale, 0., 0., expected_scale, 0., 0.] };
+            assert_eq!(branches[0].transform, expected, "x={x}, y={y}");
+            assert!(branches[0].transform.m[0] > 0. && branches[0].transform.m[3] > 0.);
+            assert!(mapping.notes.iter().any(|note| note.contains("nonpositive dimensions as unspecified")));
+        }
     }
     #[test]
     /// Compare prepared editable rectangles with independently authored native geometry across depths and
