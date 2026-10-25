@@ -8,11 +8,13 @@ use photocraft_geom::{Rect, Size};
 use photocraft_raster::Surface;
 use serde_json::json;
 
+/// Read the pinned public channel fixture and give an actionable corpus-fetch error when it is unavailable.
 fn source() -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/gimp/channel.xcf");
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}; run cargo xtask corpus --gimp", path.display()))
 }
 
+/// Construct the expected editable native layers and channel data independently of the XCF importer.
 fn counterpart() -> Document {
     let mut doc = Document::new("channel.xcf", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
     doc.resolution_dpi = 300.0; // Resolution stored by the published GIMP-authored fixture.
@@ -34,6 +36,7 @@ fn counterpart() -> Document {
     doc
 }
 
+/// Require complete native Surface equality, using the union of content bounds only for a bounded mismatch diagnostic.
 fn same_surface(a: &Surface, b: &Surface, label: &str, bounds: Rect) {
     if a == b {
         return;
@@ -65,6 +68,8 @@ fn same_surface(a: &Surface, b: &Surface, label: &str, bounds: Rect) {
         b.tile_count()
     );
 }
+/// Compare document structure, channel metadata and composed pixels while ignoring fresh IDs and inert import
+/// provenance.
 fn compare(a: &Session, b: &Session, stage: &str) {
     let a = &a.active().unwrap().doc;
     let b = &b.active().unwrap().doc;
@@ -95,6 +100,8 @@ fn compare(a: &Session, b: &Session, stage: &str) {
 }
 
 #[test]
+/// Execute the same layer commands on imported and independently built native documents, including locks, undo and
+/// save/reopen.
 fn imported_layers_use_ordinary_editing_locks_and_history_then_native_reopen() {
     let mut imported = Session::new();
     imported.color.settings.ask_on_missing = false;
@@ -140,6 +147,7 @@ fn imported_layers_use_ordinary_editing_locks_and_history_then_native_reopen() {
 }
 
 #[test]
+/// Truncate a real fixture and require failed open to preserve both the current document and its undo label.
 fn damaged_xcf_open_preserves_the_current_document_and_history() {
     let mut session = Session::new();
     session.add_document(counterpart(), None);
@@ -154,6 +162,8 @@ fn damaged_xcf_open_preserves_the_current_document_and_history() {
 }
 
 #[test]
+/// Cancel an unpublished worker result, then verify a successful background import retains source protection and
+/// ordinary dirty tracking.
 fn background_xcf_open_is_atomic_cancellable_and_preserves_source_policy() {
     use photocraft_engine::jobs::{OpenSource, Started};
     use std::sync::Arc;

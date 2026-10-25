@@ -390,6 +390,8 @@ fn apply_smart_filter(f: &SmartFilter, cur: &Surface, canvas: Rect, extent: Rect
     apply_smart_filter_in(f, cur, canvas, extent, &photocraft_raster::Interrupt::NONE)
 }
 
+/// Replay an ordinary native filter with interruption, preserving unknown-filter fallback and native blend/opacity
+/// mixing.
 fn apply_smart_filter_in(f: &SmartFilter, cur: &Surface, canvas: Rect, extent: Rect, ctl: &photocraft_raster::Interrupt) -> Result<Surface> {
     let out = match crate::filters::apply_filter_to_surface_in(&f.command, &f.params, cur, canvas, None, extent, ctl)? {
         // Unknown ids (e.g. Photoshop filters we don't implement) leave the pixels alone.
@@ -637,6 +639,8 @@ pub(crate) fn add_smart_filter(doc: &mut Document, id: LayerId, sf: photocraft_d
     add_smart_filter_in(doc, id, sf, selection, &JobCtx::new())
 }
 
+/// Append and refresh a native Smart filter under the caller's job context, using checked cached-pixel replay when
+/// its source is unavailable.
 pub(crate) fn add_smart_filter_in(doc: &mut Document, id: LayerId, sf: photocraft_doc::SmartFilter, selection: Option<&Surface>, ctx: &JobCtx) -> Result<()> {
     ctx.check()?;
     let canvas = doc.bounds();

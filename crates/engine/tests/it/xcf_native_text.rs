@@ -8,6 +8,8 @@ use photocraft_engine::{Session, file_cmds::open_bytes_as, jobs::JobCtx};
 use photocraft_geom::{Affine, Rect, Size};
 use serde_json::json;
 
+/// Create the expected editable text through ordinary native data and preparation, independently of imported
+/// caches.
 fn counterpart() -> Document {
     let mut doc = Document::new("Native", Size::new(160, 60), ColorMode::Rgb, SampleType::U8);
     doc.resolution_dpi = 300.0;
@@ -38,6 +40,7 @@ fn counterpart() -> Document {
     doc
 }
 
+/// Compare complete native layer state and rendered pixels after normalizing only fresh layer identities.
 fn compare(imported: &Session, native: &Session) {
     let a = &imported.active().unwrap().doc;
     let b = &native.active().unwrap().doc;
@@ -51,6 +54,8 @@ fn compare(imported: &Session, native: &Session) {
 }
 
 #[test]
+/// Require imported text to prepare before first display and remain editable across history and source-free native
+/// reopen.
 fn first_open_text_prepares_edits_undoes_and_reopens_without_source() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/gimp/text.xcf");
     let bytes = std::fs::read(fixture).expect("run cargo xtask corpus --gimp");

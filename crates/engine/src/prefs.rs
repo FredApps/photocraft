@@ -1680,6 +1680,7 @@ pub fn bindable_items() -> impl Iterator<Item = (&'static str, &'static str, &'s
 
 #[cfg(test)]
 #[test]
+/// Check that engine-backed bindings replace shell fallbacks once while preserving the native Open shortcut.
 fn engine_commands_replace_shell_keyboard_fallbacks_once() {
     let items: Vec<_> = bindable_items().collect();
     let mut identities = std::collections::BTreeSet::new();

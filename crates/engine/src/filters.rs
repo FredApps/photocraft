@@ -14,6 +14,8 @@ use crate::commands::CommandSpec;
 use crate::{EngineError, Result, Session};
 
 mod validation;
+/// Route coverage and HDR requests to strict native decoders before applying the ordinary filter validation rules to
+/// other commands.
 pub(crate) fn validate_params(id: &str, p: &Value) -> Result<()> {
     if crate::coverage_cmds::owns(id) {
         crate::coverage_cmds::params(id, p).map(|_| ())
@@ -292,6 +294,8 @@ pub(crate) fn has_filterable_layer(s: &Session) -> std::result::Result<(), Strin
     }
 }
 
+/// Resolve session inputs, then apply an undoable cancellable native filter to the selected surface or editable Smart
+/// stack under effective locks.
 pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> {
     validate_params(id, p)?;
     // Session state some filters read (colours) becomes explicit params; external inputs resolve here.

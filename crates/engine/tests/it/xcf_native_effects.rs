@@ -11,35 +11,43 @@ use serde_json::json;
 const PIXELS: [u8; 24] = [40, 100, 180, 255, 180, 60, 30, 255, 90, 160, 50, 128, 20, 220, 150, 255, 230, 100, 10, 255, 120, 60, 200, 200];
 struct Wire(Vec<u8>);
 impl Wire {
+    /// Append a big-endian property word to the independently authored XCF fixture.
     fn word(&mut self, value: u32) {
         self.0.extend(value.to_be_bytes());
     }
+    /// Encode a 64-bit absolute XCF offset, independent of the native document serializer.
     fn pointer(&mut self, value: usize) {
         self.0.extend((value as u64).to_be_bytes());
     }
+    /// Reserve an offset field so later fixture sections can be placed without guessed addresses.
     fn slot(&mut self) -> usize {
         let at = self.0.len();
         self.pointer(0);
         at
     }
+    /// Resolve a reserved fixture offset to the current section's actual byte position.
     fn patch(&mut self, at: usize) {
         let value = self.0.len() as u64;
         self.0[at..at + 8].copy_from_slice(&value.to_be_bytes());
     }
+    /// Encode an XCF length-prefixed, NUL-terminated UTF-8 name or argument.
     fn text(&mut self, value: &str) {
         self.word(value.len() as u32 + 1);
         self.0.extend(value.as_bytes());
         self.0.push(0);
     }
+    /// Frame one source property with its explicit type and payload length.
     fn property(&mut self, kind: u32, value: &[u8]) {
         self.word(kind);
         self.word(value.len() as u32);
         self.0.extend(value);
     }
+    /// Terminate the current source property list without adding optional state.
     fn end(&mut self) {
         self.word(0);
         self.word(0);
     }
+    /// Attach one original pixel tile to a hierarchy and level using genuine pointer framing.
     fn hierarchy(&mut self, width: u32, height: u32, channels: u32, pixels: &[u8]) {
         self.word(width);
         self.word(height);
@@ -64,10 +72,12 @@ struct Step<'a> {
     arguments: Vec<(&'a str, u32, Vec<u8>)>,
 }
 impl<'a> Step<'a> {
+    /// Define an enabled full-opacity stored operation with no optional arguments or mask.
     fn new(operation: &'a str) -> Self {
         Self { operation, opacity: 1.0, visible: true, masked: false, malformed_mask: false, arguments: vec![] }
     }
 }
+/// Build a single stored-effect input with independently controlled opacity, visibility and coverage.
 fn source(operation: &str, opacity: f32, visible: bool, masked: bool) -> Vec<u8> {
     source_stack(&[Step { opacity, visible, masked, ..Step::new(operation) }])
 }
@@ -75,15 +85,19 @@ fn source(operation: &str, opacity: f32, visible: bool, masked: bool) -> Vec<u8>
 fn source_stack(steps: &[Step<'_>]) -> Vec<u8> {
     source_stack_with_owner(steps, 3, 2, &PIXELS)
 }
+/// Use supplied owner pixels and dimensions while preserving the fixture's RGB wire format.
 fn source_stack_with_owner(steps: &[Step<'_>], width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
     source_stack_with_format(steps, width, height, pixels, false)
 }
+/// Select RGB or Gray owner storage under the current supported XCF version.
 fn source_stack_with_format(steps: &[Step<'_>], width: u32, height: u32, pixels: &[u8], gray: bool) -> Vec<u8> {
     source_stack_with_format_version(steps, width, height, pixels, gray, 26)
 }
+/// Exercise version-dependent effect framing while keeping original pixels and native expectations separate.
 fn source_stack_with_format_version(steps: &[Step<'_>], width: u32, height: u32, pixels: &[u8], gray: bool, version: u32) -> Vec<u8> {
     source_stack_with_options(steps, width, height, pixels, (gray, version, false))
 }
+/// Write the original owner, reversed stored filter pointers and optional unaffected sibling for lifecycle tests.
 fn source_stack_with_options(steps: &[Step<'_>], width: u32, height: u32, pixels: &[u8], options: (bool, u32, bool)) -> Vec<u8> {
     let (gray, version, with_sibling) = options;
     assert!([20, 26].contains(&version));
@@ -161,6 +175,7 @@ fn source_stack_with_options(steps: &[Step<'_>], width: u32, height: u32, pixels
     }
     w.0
 }
+/// Create the expected editable result through ordinary native commands on the original pixels.
 fn native_counterpart(operation: &str, opacity: f32, visible: bool, masked: bool) -> Document {
     let mut local = Document::new("Native source", Size::new(3, 2), ColorMode::Rgb, SampleType::U8);
     local.icc_profile = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes());
@@ -199,6 +214,8 @@ fn native_counterpart(operation: &str, opacity: f32, visible: bool, masked: bool
 }
 
 #[test]
+/// Check first-render preparation, owner-local mask placement and one envelope application against a native
+/// compound counterpart.
 fn first_open_compound_stage_uses_native_preparation_whole_opacity_and_global_mask_placement() {
     for (operation, opacity, visible, masked) in [
         ("gegl:value-invert", 0.375, true, false),
@@ -239,6 +256,7 @@ fn first_open_compound_stage_uses_native_preparation_whole_opacity_and_global_ma
 /// mappings must also pass the current strict user-command parameter gate.
 fn assert_current_native_commands(document: &Document, operation: &str, depth: usize) {
     assert!(depth < 64, "{operation}: excessive native nesting");
+    /// Walk embedded native contents and reject commands that lack ordinary editable Smart-filter authority.
     fn layers(document: &Document, items: &[Layer], operation: &str, depth: usize) {
         for layer in items {
             match &layer.content {
@@ -510,6 +528,7 @@ fn finite_default_operations_prepare_and_reopen_or_report_retained_source() {
     }
 }
 
+/// Execute the expected command sequence independently, without consulting import output or conversion metadata.
 fn independently_native_chain(commands: &[(&str, serde_json::Value)]) -> Document {
     let mut local = Document::new("Independent native commands", Size::new(3, 2), ColorMode::Rgb, SampleType::U8);
     local.icc_profile = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes());
@@ -530,6 +549,7 @@ fn independently_native_chain(commands: &[(&str, serde_json::Value)]) -> Documen
 }
 
 #[test]
+/// Verify transparent full-strength paper output and the disclosed native underlay behavior at partial coverage.
 fn transparent_native_paper_replaces_full_stage_and_partial_stage_uses_native_underlay() {
     use photocraft_doc::import_conversion::{ConversionDisposition, ImportConversion};
     // A 3x2 owner contains no complete 100x100 tile. Native "omit partial tiles"
@@ -574,6 +594,7 @@ fn transparent_native_paper_replaces_full_stage_and_partial_stage_uses_native_un
 }
 
 #[test]
+/// Use order-sensitive native commands to detect reversed execution and accidental application of omitted siblings.
 fn noncommuting_stored_order_and_omitted_siblings_match_independent_native_commands() {
     use photocraft_doc::import_conversion::{ConversionDisposition, ImportConversion};
     for omitted in [false, true] {
@@ -619,6 +640,7 @@ fn noncommuting_stored_order_and_omitted_siblings_match_independent_native_comma
 }
 
 #[test]
+/// Prove stored alpha extraction produces an editable native filter and source-independent native persistence.
 fn source_alpha_extraction_becomes_an_ordinary_native_alpha_to_color_filter() {
     use photocraft_doc::import_conversion::{ConversionDisposition, ImportConversion};
     for invert in [false, true] {
@@ -654,6 +676,7 @@ fn source_alpha_extraction_becomes_an_ordinary_native_alpha_to_color_filter() {
 }
 
 #[test]
+/// Reject malformed optional stages as a whole while retaining their configuration and valid neighboring work.
 fn malformed_optional_effect_mask_and_unknown_component_are_retained_without_applying_stage() {
     use photocraft_doc::import_conversion::{ConversionDisposition, ConversionReason, ImportConversion};
     for unknown_component in [false, true] {
@@ -697,11 +720,15 @@ fn malformed_optional_effect_mask_and_unknown_component_are_retained_without_app
 fn nondefault_native_source_prepares_edits_and_reopens(step: Step<'_>, required_commands: &[&str], requires_mask: bool, required_frame: Option<Size>) {
     nondefault_native_source_in_mode(step, required_commands, requires_mask, required_frame, false);
 }
+/// Open a nondefault source, inspect its native structure, then edit, undo and reopen without the XCF.
 fn nondefault_native_source_in_mode(step: Step<'_>, required_commands: &[&str], requires_mask: bool, required_frame: Option<Size>, gray: bool) {
     use photocraft_doc::import_conversion::{ConversionDisposition, ImportConversion};
+    /// Collect native commands, masks and embedded frames used by a prepared nondefault counterpart.
     fn inspect(doc: &Document, commands: &mut Vec<String>, masks: &mut usize, frames: &mut Vec<Size>, depth: usize) {
         assert!(depth < 64);
         frames.push(doc.size);
+        /// Traverse nested Smart contents to verify required native stages without treating source metadata as
+        /// executable data.
         fn layers(items: &[Layer], commands: &mut Vec<String>, masks: &mut usize, frames: &mut Vec<Size>, depth: usize) {
             for layer in items {
                 *masks += usize::from(layer.mask.is_some()) + usize::from(layer.vector_mask.is_some());
@@ -786,18 +813,21 @@ fn nondefault_native_source_in_mode(step: Step<'_>, required_commands: &[&str], 
     assert_eq!(reopened.active().unwrap().doc.metadata.import_conversion, report);
 }
 #[test]
+/// Cover nonzero lens geometry and vignette through first-open native preparation and source-free reopen.
 fn nondefault_lens_distortion_source_prepares_native_radial_vignette_and_reopens_without_source() {
     let mut step = Step::new("gegl:lens-distortion");
     step.arguments = vec![("main", 3, 25f32.to_be_bytes().to_vec()), ("edge", 3, 10f32.to_be_bytes().to_vec()), ("brighten", 3, 50f32.to_be_bytes().to_vec())];
     nondefault_native_source_prepares_edits_and_reopens(step, &["filter.distort.displace", "filter.lensCorrection"], true, None);
 }
 #[test]
+/// Exercise inverse panorama mapping with the native displacement resource and clipping mask preserved.
 fn nondefault_inverse_panorama_source_prepares_native_map_mask_and_reopens_without_source() {
     let mut step = Step::new("gegl:panorama-projection");
     step.arguments = vec![("inverse", 2, 1u32.to_be_bytes().to_vec()), ("zoom", 3, 10f32.to_be_bytes().to_vec())];
     nondefault_native_source_prepares_edits_and_reopens(step, &["filter.distort.displace"], true, None);
 }
 #[test]
+/// Check that a declared panorama output frame survives native preparation and persistence.
 fn nondefault_panorama_output_frame_source_prepares_and_reopens_without_source() {
     let mut step = Step::new("gegl:panorama-projection");
     // FILTER_PROP_INT is kind1 in the actual decoder, not an inferred zero enum.
@@ -806,6 +836,7 @@ fn nondefault_panorama_output_frame_source_prepares_and_reopens_without_source()
 }
 
 #[test]
+/// Verify half-radius whirl uses an actual bounded native frame through first render, editing and reopen.
 fn whirl_half_radius_first_open_prepares_actual_native_frame_edits_undo_and_reopens() {
     let mut step = Step::new("gegl:whirl-pinch");
     step.arguments = vec![("radius", 3, 0.5f32.to_be_bytes().to_vec())];
@@ -813,6 +844,7 @@ fn whirl_half_radius_first_open_prepares_actual_native_frame_edits_undo_and_reop
 }
 
 #[test]
+/// Exercise broad unsharp's editable native branch construction beyond a single filter's dialog radius.
 fn broad_unsharp_first_open_prepares_native_branches_edits_undo_and_reopens() {
     let mut step = Step::new("gegl:unsharp-mask");
     step.arguments = vec![("std-dev", 3, 1500f32.to_be_bytes().to_vec()), ("threshold", 3, 0f32.to_be_bytes().to_vec())];
@@ -824,6 +856,8 @@ fn broad_unsharp_first_open_prepares_native_branches_edits_undo_and_reopens() {
 }
 
 #[test]
+/// Check large-radius local contrast prepares its native base/detail structure without retaining a source
+/// evaluator.
 fn large_stress_first_open_prepares_native_branches_edits_undo_and_reopens() {
     let mut step = Step::new("gegl:stress");
     step.arguments = vec![("radius", 1, 6000i32.to_be_bytes().to_vec())];
@@ -836,6 +870,7 @@ fn large_stress_first_open_prepares_native_branches_edits_undo_and_reopens() {
 }
 
 #[test]
+/// Verify large water cells use native framed sampling and remain editable after source removal.
 fn large_waterpixels_first_open_prepares_native_framed_samples_and_reopens() {
     for (size, fill) in [(301i32, 0i32), (i32::MAX, 1i32)] {
         let mut step = Step::new("gegl:waterpixels");
@@ -848,6 +883,7 @@ fn large_waterpixels_first_open_prepares_native_framed_samples_and_reopens() {
 }
 
 #[test]
+/// Cover ordinary and variance-composed native grayscale local contrast with source-independent persistence.
 fn native_c2g_local_contrast_prepares_small_and_broad_radii_and_reopens() {
     for radius in [6i32, 6000] {
         let mut step = Step::new("gegl:c2g");
@@ -857,6 +893,7 @@ fn native_c2g_local_contrast_prepares_small_and_broad_radii_and_reopens() {
 }
 
 #[test]
+/// Check native derivative axes and RGB working contents when the outer imported document is Gray.
 fn gradient_direction_rgb_and_gray_first_open_prepares_native_axes_edits_and_reopens() {
     for gray in [false, true] {
         let mut step = Step::new("gegl:image-gradient");
@@ -866,6 +903,8 @@ fn gradient_direction_rgb_and_gray_first_open_prepares_native_axes_edits_and_reo
 }
 
 #[test]
+/// Verify colored native screen plates survive preparation inside a Gray parent without collapsing their working
+/// channels.
 fn independent_newsprint_plates_prepare_rgb_working_contents_for_gray_and_reopen() {
     for gray in [false, true] {
         for model in [2i32, 3] {
@@ -877,6 +916,7 @@ fn independent_newsprint_plates_prepare_rgb_working_contents_for_gray_and_reopen
 }
 
 #[test]
+/// Exercise Gray-source normal-vector translation through native RGB working contents and later native reopen.
 fn normal_vectors_prepare_native_rgb_axes_for_gray_and_reopen() {
     for gray in [false, true] {
         nondefault_native_source_in_mode(
@@ -890,6 +930,7 @@ fn normal_vectors_prepare_native_rgb_axes_for_gray_and_reopen() {
 }
 
 #[test]
+/// Cover rectangular glass geometry and the zero-focus broad-blur boundary through ordinary preparation.
 fn rectangular_glass_and_zero_focus_broad_blur_prepare_and_reopen() {
     let mut glass = Step::new("gegl:tile-glass");
     glass.arguments = vec![("tile-width", 1, 5i32.to_be_bytes().to_vec()), ("tile-height", 1, 500i32.to_be_bytes().to_vec())];
@@ -903,6 +944,7 @@ fn rectangular_glass_and_zero_focus_broad_blur_prepare_and_reopen() {
 }
 
 #[test]
+/// Verify expanded native cell geometry remains editable across history and native serialization.
 fn expanded_native_cubism_cells_prepare_edit_undo_and_reopen() {
     let mut collage = Step::new("gegl:cubism");
     collage.arguments = vec![("tile-size", 3, 1.5f32.to_be_bytes().to_vec()), ("tile-saturation", 3, 1.25f32.to_be_bytes().to_vec())];
@@ -910,6 +952,7 @@ fn expanded_native_cubism_cells_prepare_edit_undo_and_reopen() {
 }
 
 #[test]
+/// Exercise the broad native high-pass blend construction rather than a source-specific filtering runtime.
 fn broad_highpass_prepares_native_encoded_blend_edits_and_reopens() {
     let mut highpass = Step::new("gegl:high-pass");
     highpass.arguments = vec![("std-dev", 3, 1500f32.to_be_bytes().to_vec())];
@@ -917,6 +960,8 @@ fn broad_highpass_prepares_native_encoded_blend_edits_and_reopens() {
 }
 
 #[test]
+/// Cover signed Levels, scalar component thresholds and literal colors through ordinary native preparation and
+/// persistence.
 fn signed_levels_gray_component_threshold_and_color_literal_prepare_and_reopen() {
     for high in [1.0f32, -1.0] {
         let mut levels = Step::new("gegl:levels");
@@ -944,6 +989,7 @@ fn signed_levels_gray_component_threshold_and_color_literal_prepare_and_reopen()
 
 // These independent wire/native tests verify local graph lowering. They do not
 // claim a saved GIMP graph witness or public corpus acceptance.
+/// Store graph syntax as inert typed source input for the one-time native graph translator.
 fn graph_step(text: &str) -> Step<'static> {
     let mut string = Wire(Vec::new());
     string.text(text);
@@ -951,15 +997,18 @@ fn graph_step(text: &str) -> Step<'static> {
     step.arguments.push(("string", 4, string.0));
     step
 }
+/// Encode the graph fixture in the requested source mode and historical/current effect framing.
 fn graph_source(steps: &[Step<'_>], gray: bool, version: u32) -> Vec<u8> {
     source_stack_with_options(steps, 3, 2, &graph_source_pixels(gray), (gray, version, true))
 }
+/// Add an independent visible pixel so graph tests can detect edits escaping the imported owner.
 fn graph_add_sibling(document: &mut Document) {
     let mut sibling = Layer::raster("Independent unaffected sibling", document.pixel_format());
     let samples = if document.mode == ColorMode::Grayscale { vec![77. / 255., 1.] } else { vec![17. / 255., 83. / 255., 201. / 255., 1.] };
     sibling.surface_mut().unwrap().write_pixel(6, 1, &samples);
     document.layers.insert(0, sibling);
 }
+/// Construct original native input pixels and profile without using the importer as an oracle.
 fn graph_native_input(gray: bool) -> Document {
     let mode = if gray { ColorMode::Grayscale } else { ColorMode::Rgb };
     let mut doc = Document::new("Original native graph pixels", Size::new(3, 2), mode, SampleType::U8);
@@ -970,9 +1019,11 @@ fn graph_native_input(gray: bool) -> Document {
     doc.layers.push(layer);
     doc
 }
+/// Choose original RGB or Gray source samples for independent graph wire fixtures.
 fn graph_source_pixels(gray: bool) -> Vec<u8> {
     if gray { PIXELS.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[3]]).collect() } else { PIXELS.to_vec() }
 }
+/// Embed a native counterpart document as an ordinary editable Smart layer with its own identity.
 fn graph_native_layer(input: &Document, name: &str) -> Layer {
     Layer::new(
         name,
@@ -986,15 +1037,18 @@ fn graph_native_layer(input: &Document, name: &str) -> Layer {
         )),
     )
 }
+/// Carry only native canvas, depth, mode and profile into a counterpart stage.
 fn graph_native_template(input: &Document) -> Document {
     let mut doc = Document::new("Independent native graph stage", input.size, input.mode, input.depth);
     doc.icc_profile = input.icc_profile.clone();
     doc
 }
+/// Run the normal engine preparation path before comparing a native counterpart's first pixels.
 fn graph_native_prepare(mut document: Document) -> Document {
     Session::new().prepare_imported_document(&mut document, &photocraft_engine::jobs::JobCtx::new()).unwrap();
     document
 }
+/// Apply ordinary native commands to a fresh counterpart while preserving editable embedded contents.
 fn graph_native_apply(input: &Document, commands: &[(&str, serde_json::Value)]) -> Document {
     let mut document = graph_native_template(input);
     document.layers.push(graph_native_layer(input, "Independent command input"));
@@ -1005,12 +1059,15 @@ fn graph_native_apply(input: &Document, commands: &[(&str, serde_json::Value)]) 
     }
     session.active().unwrap().doc.as_ref().clone()
 }
+/// Compose two independently prepared inputs with full-strength native Normal layer blending.
 fn graph_native_over(below: &Document, above: &Document) -> Document {
     graph_native_over_opacity(below, above, 1.)
 }
+/// Build the expected native Normal join with opacity applied to the upper layer once.
 fn graph_native_over_opacity(below: &Document, above: &Document, opacity: f32) -> Document {
     graph_native_blend(below, above, photocraft_color::BlendMode::Normal, opacity)
 }
+/// Create an independent two-layer native join using the requested blend and layer opacity.
 fn graph_native_blend(below: &Document, above: &Document, blend: photocraft_color::BlendMode, opacity: f32) -> Document {
     let mut document = graph_native_template(below);
     document.layers.push(graph_native_layer(below, "Original lower branch"));
@@ -1020,6 +1077,7 @@ fn graph_native_blend(below: &Document, above: &Document, blend: photocraft_colo
     document.layers.push(upper);
     graph_native_prepare(document)
 }
+/// Express the expected erase approximation using native Shallow Knockout and hidden fill.
 fn graph_native_erase(below: &Document, above: &Document) -> Document {
     let mut document = graph_native_template(below);
     document.layers.push(graph_native_layer(below, "Independent knockout backdrop"));
@@ -1053,6 +1111,8 @@ fn graph_native_aux_mask(input: &Document, auxiliary: &Document) -> Document {
     session.active().unwrap().doc.as_ref().clone()
 }
 
+/// Build the native channel-extraction counterpart from actual current pixels, not substituted source
+/// configuration.
 fn graph_native_aux_channel(input: &Document) -> Document {
     let masked = graph_native_aux_mask(input, input);
     let mask = masked.layers[0].mask.as_ref().unwrap();
@@ -1085,6 +1145,7 @@ fn graph_native_aux_displace_params(auxiliary: &Surface, bounds: Rect) -> serde_
     .unwrap()
 }
 
+/// Apply ordinary native Displace with a resource captured from the actual auxiliary pixels.
 fn graph_native_aux_displace(input: &Document, auxiliary: &Document) -> Document {
     let mut captured = Surface::new(auxiliary.pixel_format());
     let buffer = photocraft_compose::flatten(auxiliary);
@@ -1093,6 +1154,7 @@ fn graph_native_aux_displace(input: &Document, auxiliary: &Document) -> Document
     let params = graph_native_aux_displace_params(&captured, auxiliary.bounds());
     graph_native_apply(input, &[("filter.distort.displace", params)])
 }
+/// Create the native channel-mixer preparation used by the independently authored grain-merge counterpart.
 fn graph_native_grain_aux(input: &Document) -> Document {
     let mut working = graph_native_template(input);
     working.mode = ColorMode::Rgb;
@@ -1116,12 +1178,15 @@ fn graph_native_grain_aux(input: &Document) -> Document {
         result
     }
 }
+/// Apply the ordinary native Exposure adjustment to the current counterpart contents.
 fn graph_native_exposure(input: &Document, exposure: f64) -> Document {
     graph_native_apply(input, &[("image.adjustments.exposure", json!({"exposure":exposure,"offset":0.,"gamma":1.}))])
 }
+/// Apply native Invert to actual counterpart pixels rather than deriving expected pixels from source syntax.
 fn graph_native_invert(input: &Document) -> Document {
     graph_native_apply(input, &[("image.adjustments.invert", json!({}))])
 }
+/// Construct the native clipping counterpart with clipped Lighten/Darken solid Fill layers.
 fn graph_native_clip(input: &Document) -> Document {
     let mut document = graph_native_template(input);
     document.layers.push(graph_native_layer(input, "Original clip input"));
@@ -1134,6 +1199,7 @@ fn graph_native_clip(input: &Document) -> Document {
     }
     graph_native_prepare(document)
 }
+/// Create an ordinary native gradient Fill with independently specified handles, stops and profile conversion.
 fn graph_native_gradient(input: &Document) -> Document {
     let mut document = graph_native_template(input);
     let style = photocraft_doc::GradientStyle::Linear;
@@ -1147,6 +1213,8 @@ fn graph_native_gradient(input: &Document) -> Document {
     document.layers.push(Layer::new("Independent native gradient", LayerContent::Fill(fill)));
     graph_native_prepare(document)
 }
+/// Convert the counterpart's encoded red through the native target profile instead of assuming sRGB document
+/// samples.
 fn graph_native_red(input: &Document) -> photocraft_color::Color {
     let profile = photocraft_cms::Profile::parse(input.icc_profile.as_ref().unwrap()).unwrap();
     let transform =
@@ -1155,6 +1223,7 @@ fn graph_native_red(input: &Document) -> photocraft_color::Color {
     transform.convert_f32(&[1., 0., 0.], 3, &mut c, if input.mode == ColorMode::Grayscale { 1 } else { 3 }, false);
     photocraft_color::Color { mode: input.mode, c, alpha: 1. }
 }
+/// Create editable native text with ordinary layout, font fallback and document DPI semantics.
 fn graph_native_text(input: &Document) -> Document {
     use photocraft_doc::text::{ParagraphRun, ParagraphStyle, TextShape};
     let mut text = photocraft_doc::TextLayer {
@@ -1174,6 +1243,7 @@ fn graph_native_text(input: &Document) -> Document {
     document.layers.push(Layer::new("Independent editable text", LayerContent::Text(text)));
     graph_native_prepare(document)
 }
+/// Construct the independent native closed Bezier shape used to check graph-generated vector data.
 fn graph_native_path(input: &Document) -> Document {
     use photocraft_doc::{Knot, Path, ShapeLayer, Subpath};
     use photocraft_geom::Point;
@@ -1190,6 +1260,8 @@ fn graph_native_path(input: &Document) -> Document {
     document.layers.push(Layer::new("Independent editable cubic shape", LayerContent::Shape(shape)));
     graph_native_prepare(document)
 }
+/// Find editable text or shape objects inside bounded embedded native contents without requiring archive cache
+/// mutation.
 fn graph_prepared_object(document: &Document, text: bool, depth: usize) -> bool {
     assert!(depth < 64);
     document.layers.iter().any(|layer| match &layer.content {
@@ -1210,6 +1282,7 @@ fn graph_prepared_object(document: &Document, text: bool, depth: usize) -> bool 
         _ => false,
     })
 }
+/// Place the independent owner and unaffected sibling into the expected outer native document.
 fn graph_native_scene(input: &Document) -> Document {
     let mut scene = Document::new("Independent native scene", Size::new(8, 6), input.mode, input.depth);
     scene.icc_profile = input.icc_profile.clone();
@@ -1220,6 +1293,8 @@ fn graph_native_scene(input: &Document) -> Document {
     graph_add_sibling(&mut scene);
     graph_native_prepare(scene)
 }
+/// Compare prepared native pixels directly, preventing empty or stale imported caches from defining expected
+/// output.
 fn graph_pixels_match(actual: &Document, expected: &Document, label: &str) {
     let actual = photocraft_compose::flatten(actual);
     let expected = photocraft_compose::flatten(expected);
@@ -1227,6 +1302,7 @@ fn graph_pixels_match(actual: &Document, expected: &Document, label: &str) {
     let worst = actual.px.iter().zip(&expected.px).flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs())).fold(0f32, f32::max);
     assert!(worst <= 2. / 255., "{label}: maximum ordinary native difference {worst}");
 }
+/// Check edit/undo and source-independent native reopening while preserving inert conversion history.
 fn graph_lifecycle(mut session: Session, expected: &Document, label: &str) {
     let actual = photocraft_compose::flatten(&session.active().unwrap().doc).px;
     graph_pixels_match(&session.active().unwrap().doc, expected, label);
@@ -1250,6 +1326,8 @@ fn graph_lifecycle(mut session: Session, expected: &Document, label: &str) {
     assert!(photocraft_compose::flatten(&reopened.active().unwrap().doc).px == actual);
 }
 #[test]
+/// Compare finite graph forms with separately authored native documents through preparation and the editing
+/// lifecycle.
 fn finite_graph_chain_forks_and_structural_postfilters_prepare_against_independent_native_documents() {
     let cases = [
         "invert-linear",
@@ -1360,6 +1438,8 @@ fn finite_graph_chain_forks_and_structural_postfilters_prepare_against_independe
 }
 
 #[test]
+/// Verify auxiliary masks, piecewise curves and displacement capture actual prior native stages and survive source-
+/// history removal.
 fn actual_auxiliary_graph_mask_piecewise_and_displace_use_current_native_inputs_and_survive_source_history_removal() {
     let cases = [
         "id=in opacity value=0.5 aux=[ref=in invert-linear]",
@@ -1415,6 +1495,7 @@ fn actual_auxiliary_graph_mask_piecewise_and_displace_use_current_native_inputs_
     }
 }
 
+/// Write a stored scalar channel and its effect graph independently of native coverage conversion.
 fn graph_saved_channel_source(text: &str, pixels: &[u8]) -> Vec<u8> {
     let mut w = Wire(b"gimp xcf v026\0".to_vec());
     for value in [3, 2, 0, 150] {
@@ -1464,6 +1545,7 @@ fn graph_saved_channel_source(text: &str, pixels: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+/// Check saved-channel displacement against a native coverage counterpart through editable native persistence.
 fn actual_auxiliary_graph_displace_on_saved_scalar_channel_is_native_editable_and_source_independent() {
     let bounds = Rect::new(0, 0, 3, 2);
     let original = [0_u8, 64, 128, 192, 255, 64];
@@ -1507,6 +1589,7 @@ fn actual_auxiliary_graph_displace_on_saved_scalar_channel_is_native_editable_an
     assert_eq!(reopened.active().unwrap().doc.channels[0].surface.read_region(bounds), actual);
 }
 #[test]
+/// Verify graph-wide opacity and global coverage are applied once before source-independent native saving.
 fn finite_graph_whole_linear_envelope_and_global_mask_apply_once_before_native_save() {
     for version in [20, 26] {
         for (opacity, visible, masked) in [(0.375, true, false), (0.375, true, true), (0.375, false, true)] {
@@ -1526,6 +1609,7 @@ fn finite_graph_whole_linear_envelope_and_global_mask_apply_once_before_native_s
     }
 }
 #[test]
+/// Keep valid neighboring stages while reporting an invalid graph as unapplied, with no partial execution.
 fn invalid_graph_fields_preserve_native_neighbors_and_report_unapplied_without_partial_execution() {
     use photocraft_doc::import_conversion::{ConversionDisposition, ImportConversion};
     for text in [
@@ -1553,6 +1637,8 @@ fn invalid_graph_fields_preserve_native_neighbors_and_report_unapplied_without_p
 }
 
 #[test]
+/// Check a fork graph's native underlay and single outer mask/opacity envelope against independent native
+/// composition.
 fn finite_fork_graph_whole_envelope_uses_native_underlay_mask_and_opacity_once() {
     for version in [20, 26] {
         for (opacity, visible, masked) in [(0.375, true, false), (0.375, true, true), (0.375, false, true)] {

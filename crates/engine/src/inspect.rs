@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 use crate::{DocState, Session};
 
+/// Describe open-document identities, active state and toolbox colors without exposing document payloads.
 pub fn session(s: &Session) -> Value {
     json!({
         "active": s.active_index(),
@@ -25,6 +26,8 @@ pub fn session(s: &Session) -> Value {
     })
 }
 
+/// Expose editable native state and historical conversion summary for inspection without executing retained source
+/// data.
 pub fn document(d: &DocState) -> Value {
     let doc = &d.doc;
     let selected = d.selected_layers();

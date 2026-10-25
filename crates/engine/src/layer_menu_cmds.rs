@@ -45,6 +45,7 @@ fn has_raster(s: &Session) -> Enabled {
     }
 }
 
+/// Offer matting only for native raster or Smart content whose pixels can be edited or filtered.
 fn has_matte_target(s: &Session) -> Enabled {
     if matches!(active_layer(s)?.content, LayerContent::Raster(_) | LayerContent::Smart(_)) {
         Ok(())
@@ -979,6 +980,7 @@ macro_rules! spec {
     };
 }
 
+/// Register the remaining layer mask, matting, Smart stack, style and export commands with native target checks.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         spec!("layer.layerMask.apply", "Apply", ["Layer", "Layer Mask"], r##"{"layer":id?}"##, has_raster_with_mask, apply_mask),
@@ -1086,6 +1088,8 @@ mod native_matte_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
+    /// Compare checked matte output with the ordinary pixel equation in each native encoding and preserve sources after
+    /// cancellation.
     fn native_matte_checked_rows_keep_all_depths_models_alpha_and_cancel_atomically() {
         for mode in [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab] {
             for sample in SampleType::ALL {
@@ -1112,6 +1116,8 @@ mod native_matte_tests {
     }
 
     #[test]
+    /// Refuse direct and group-inherited pixel/all locks while preserving the exact document Arc, active target and
+    /// history length.
     fn smart_remove_black_matte_refuses_direct_and_inherited_pixel_locks_atomically() {
         for inherited in [false, true] {
             for all in [false, true] {
@@ -1154,6 +1160,8 @@ mod native_matte_tests {
         }
     }
     #[test]
+    /// Require matte removal to remain an editable native Smart filter with expected pixels, undo/redo and durable
+    /// native replay.
     fn existing_native_remove_black_matte_is_editable_smart_filter_with_undo_and_reopen() {
         let mut session = Session::new();
         session.execute("file.new", json!({"width":3,"height":3,"depth":32})).unwrap();

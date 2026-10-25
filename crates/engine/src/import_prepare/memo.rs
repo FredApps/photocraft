@@ -19,6 +19,7 @@ pub(super) struct Key {
     filters_enabled: bool,
 }
 
+/// Hash source/profile bytes in cancellable blocks for a bounded per-preparation reuse key.
 fn digest(bytes: &[u8], ctx: &JobCtx) -> Result<[u8; 32]> {
     let mut hash = blake3::Hasher::new();
     for chunk in bytes.chunks(HASH_BLOCK) {
@@ -29,6 +30,7 @@ fn digest(bytes: &[u8], ctx: &JobCtx) -> Result<[u8; 32]> {
     Ok(*hash.finalize().as_bytes())
 }
 
+/// Confirm hash candidates with cancellable exact byte equality before sharing prepared native work.
 fn equal_bytes(left: &[u8], right: &[u8], ctx: &JobCtx) -> Result<bool> {
     if left.len() != right.len() {
         return Ok(false);
@@ -44,6 +46,7 @@ fn equal_bytes(left: &[u8], right: &[u8], ctx: &JobCtx) -> Result<bool> {
 }
 
 impl Key {
+    /// Qualify only filter-free embedded native sources and include the parent render context and finite placement.
     pub(super) fn new(doc: &Document, object: &SmartObject, bytes: &[u8], ctx: &JobCtx) -> Result<Option<Self>> {
         let SmartSource::Embedded { file_name, .. } = &object.source else { return Ok(None) };
         if !file_name.rsplit_once('.').is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("pcraft"))
@@ -82,6 +85,7 @@ pub(super) struct Memo {
 }
 
 impl Memo {
+    /// Verify exact source/profile identity and charge owned map metadata before cloning shared native cache tiles.
     pub(super) fn get(
         &self,
         key: &Key,
@@ -105,6 +109,7 @@ impl Memo {
         Ok(Some((entry.original.clone(), entry.surface.clone())))
     }
 
+    /// Bound memo entries and admit insertion metadata without charging shared raster payloads a second time.
     pub(super) fn vacancy(&mut self, key: &Key, surface: &Surface, available: u64) -> Option<u64> {
         if self.entries.len() >= MAX_ENTRIES || self.entries.contains_key(key) {
             return None;
@@ -118,11 +123,13 @@ impl Memo {
         Some(bytes)
     }
 
+    /// Retain a successfully prepared raster source and COW cache only after insertion metadata is admitted.
     pub(super) fn insert(&mut self, key: Key, original: Arc<Vec<u8>>, profile: Option<Arc<Vec<u8>>>, surface: &Surface) {
         self.entries.insert(key, Entry { original, profile, surface: surface.clone() });
     }
 }
 
+/// Compute checked tile-map, default-pixel and fixed metadata cost for each native surface clone.
 pub(super) fn clone_bytes(surface: &Surface) -> Result<u64> {
     u64::try_from(surface.tile_count())
         .ok()
@@ -139,6 +146,7 @@ mod tests {
     use photocraft_doc::{LayerMask, SmartFilter};
     use photocraft_geom::{Affine, Size};
 
+    /// Provide a tiny raster-only native source with independent Smart identity for memo eligibility tests.
     fn fixture() -> (Document, SmartObject, Arc<Vec<u8>>) {
         let doc = Document::with_background("Memo fixture", Size::new(1, 1), ColorMode::Rgb, SampleType::U8, Color::BLACK);
         let bytes = Arc::new(smart_cmds::encode_source(&doc).unwrap());
@@ -147,6 +155,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensure mode, depth, profile, canvas, DPI/light and placement changes cannot reuse the same memo entry.
     fn memo_keys_qualify_complete_parent_context_and_geometry() {
         let (doc, object, bytes) = fixture();
         let ctx = JobCtx::new();
@@ -172,6 +181,8 @@ mod tests {
     }
 
     #[test]
+    /// Exclude filters, masks, projective data and external locators so memo hits cannot skip required native
+    /// preparation.
     fn memo_does_not_accept_stored_filter_masks_or_external_sources() {
         let (doc, object, bytes) = fixture();
         let ctx = JobCtx::new();
@@ -196,6 +207,7 @@ mod tests {
     }
 
     #[test]
+    /// Force equal lookup keys with different bytes/profiles and check cancellation before a hit clone.
     fn digest_collisions_still_require_exact_bytes_and_profile_and_obey_cancellation() {
         let (mut doc, object, bytes) = fixture();
         doc.icc_profile = Some(Arc::new(vec![1, 2, 3]));
@@ -226,6 +238,7 @@ mod tests {
     }
 
     #[test]
+    /// Bound unique memo entries and reject metadata insertion when no working allowance remains.
     fn memo_entry_count_and_extra_cow_metadata_are_bounded() {
         let (doc, object, bytes) = fixture();
         let key = Key::new(&doc, &object, &bytes, &JobCtx::new()).unwrap().unwrap();

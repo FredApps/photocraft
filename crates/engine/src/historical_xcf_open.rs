@@ -29,6 +29,7 @@ enum Read {
     Choice(Arc<Vec<u8>>, photocraft_io::HistoricalXcfSampleOrderRequest),
 }
 
+/// Start an open request with its source path identity and optional interactive historical sample-order handoff.
 pub(super) fn start(s: &mut Session, name: &str, source: OpenSource, interactive: bool) -> Result<Started> {
     let path = match &source {
         OpenSource::Path(path) => Some(path.clone()),
@@ -37,10 +38,13 @@ pub(super) fn start(s: &mut Session, name: &str, source: OpenSource, interactive
     run(s, Request { name: name.into(), source, path, interactive, order: None, held: None }, true)
 }
 
+/// Open on the selected execution path while allowing an explicit user choice for ambiguous historical sample bytes.
 pub(super) fn interactive(s: &mut Session, name: &str, source: OpenSource, path: Option<String>, background: bool) -> Result<Started> {
     run(s, Request { name: name.into(), source, path, interactive: true, order: None, held: None }, background)
 }
 
+/// Validate typed open/resume/cancel controls, consume held bytes on valid attempts and preserve invalid-choice
+/// retries.
 pub(crate) fn command(s: &mut Session, params: &Value) -> Result<Value> {
     let order = crate::file_cmds::historical_xcf_sample_order(params, OPEN_JOB)?;
     let cancel = match params.get("cancel") {
@@ -95,6 +99,8 @@ pub(crate) fn command(s: &mut Session, params: &Value) -> Result<Value> {
     }
 }
 
+/// Decode before installation or hold bounded encoded bytes for a required choice; cancellation and failure publish no
+/// partial document.
 fn run(s: &mut Session, request: Request, background: bool) -> Result<Started> {
     let Request { name, source, path, interactive, order, held } = request;
     let label = format!("Opening {name}");
@@ -193,6 +199,7 @@ fn run(s: &mut Session, request: Request, background: bool) -> Result<Started> {
 mod tests {
     use super::*;
 
+    /// Author a minimal v7 high-depth header whose sample order requires a choice without relying on a private corpus.
     fn source() -> Arc<Vec<u8>> {
         // Public XCF framing: v7, 16-bit nonlinear RGB, empty drawable lists.
         let mut bytes = b"gimp xcf v007\0".to_vec();
@@ -202,6 +209,8 @@ mod tests {
         Arc::new(bytes)
     }
 
+    /// Start the inline interactive fixture and extract its one-shot held-source identifier after verifying the
+    /// requested precision.
     fn hold(s: &mut Session) -> u64 {
         let Started::Done(value) = interactive(s, "source.bin", OpenSource::Bytes(source()), Some("source.bin".into()), false).unwrap() else {
             panic!("inline open started a job")
@@ -211,6 +220,8 @@ mod tests {
     }
 
     #[test]
+    /// Require an unanswered historical import to leave the active document intact and cancel to release its encoded
+    /// bytes exactly once.
     fn historical_choice_holds_original_without_installing_and_cancel_releases_it() {
         let mut s = Session::new();
         s.execute("file.new", json!({"width":2,"height":2})).unwrap();
@@ -228,6 +239,8 @@ mod tests {
     }
 
     #[test]
+    /// Exercise both explicit byte orders and verify native serialization removes the need for a repeated historical
+    /// choice.
     fn historical_explicit_choices_open_read_only_and_native_reopen_needs_no_choice() {
         for order in ["little-endian", "big-endian"] {
             let mut s = Session::new();
@@ -246,6 +259,7 @@ mod tests {
     }
 
     #[test]
+    /// Reject noninteractive ambiguity, malformed controls and excess held sources without installing a document.
     fn historical_headless_and_invalid_params_refuse_without_document_mutation() {
         let mut s = Session::new();
         assert!(
@@ -269,6 +283,7 @@ mod tests {
     }
 
     #[test]
+    /// Consume held bytes after a valid resume even when decoding fails or the inline job is cancelled.
     fn historical_failed_and_cancelled_resume_release_encoded_source() {
         for cancelled in [false, true] {
             let mut s = Session::new();
@@ -293,6 +308,8 @@ mod tests {
     }
 
     #[test]
+    /// Pin native path preservation, untitled template identity and protected import-only source identity for
+    /// registered open commands.
     fn registered_open_preserves_writable_path_template_identity_and_read_only_source() {
         let directory = tempfile::tempdir().unwrap();
         let mut seed = Session::new();

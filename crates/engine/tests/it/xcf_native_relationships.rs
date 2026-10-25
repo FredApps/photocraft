@@ -11,15 +11,18 @@ use serde_json::json;
 
 struct Files(PathBuf);
 impl Files {
+    /// Create a unique temporary resource directory for explicit native relink tests.
     fn new() -> Self {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let path = std::env::temp_dir().join(format!("pc-xcf-relationships-{}-{stamp}", std::process::id()));
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
+    /// Return the fixture's native resource path without granting the importer permission to read it.
     fn resource(&self) -> PathBuf {
         self.0.join("resource.pcraft")
     }
+    /// Save a one-pixel native document with a declared color so relink output has an independent pixel oracle.
     fn write_resource(&self, color: [f32; 4]) {
         let mut doc = Document::new("resource", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
         let mut layer = Layer::raster("Resource", doc.pixel_format());
@@ -29,12 +32,14 @@ impl Files {
     }
 }
 impl Drop for Files {
+    /// Remove the resource fixture and its directory without masking earlier assertion failures.
     fn drop(&mut self) {
         let _ = std::fs::remove_file(self.resource());
         let _ = std::fs::remove_dir(&self.0);
     }
 }
 
+/// Import the supplied source bytes with missing-profile prompts disabled for deterministic relationship checks.
 fn open(bytes: &[u8], name: &str) -> Session {
     let mut session = Session::new();
     session.color.settings.ask_on_missing = false;
@@ -45,30 +50,37 @@ fn open(bytes: &[u8], name: &str) -> Session {
 /// One-pixel drawables written directly from the public XCF field layout. No test-only
 /// production branch, private corpus path, source interpreter or source application involved.
 fn source(locator: &str) -> Vec<u8> {
+    /// Append a big-endian word to the independently authored relationship fixture.
     fn u32(bytes: &mut Vec<u8>, value: u32) {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
+    /// Append the modern fixture's 64-bit big-endian record address.
     fn ptr(bytes: &mut Vec<u8>, value: usize) {
         bytes.extend_from_slice(&(value as u64).to_be_bytes());
     }
+    /// Reserve an eight-byte null pointer and return its patch location.
     fn slot(bytes: &mut Vec<u8>) -> usize {
         let position = bytes.len();
         ptr(bytes, 0);
         position
     }
+    /// Replace a reserved pointer with the absolute address of its fixture record.
     fn patch(bytes: &mut [u8], position: usize, value: usize) {
         bytes[position..position + 8].copy_from_slice(&(value as u64).to_be_bytes());
     }
+    /// Write a NUL-terminated UTF-8 fixture string with its byte-length prefix.
     fn string(bytes: &mut Vec<u8>, value: &str) {
         u32(bytes, value.len() as u32 + 1);
         bytes.extend_from_slice(value.as_bytes());
         bytes.push(0);
     }
+    /// Wrap one source property payload with its kind and explicit byte length.
     fn property(bytes: &mut Vec<u8>, kind: u32, payload: &[u8]) {
         u32(bytes, kind);
         u32(bytes, payload.len() as u32);
         bytes.extend_from_slice(payload);
     }
+    /// Terminate a relationship fixture property list with two zero words.
     fn end(bytes: &mut Vec<u8>) {
         u32(bytes, 0);
         u32(bytes, 0);
@@ -131,11 +143,14 @@ fn source(locator: &str) -> Vec<u8> {
     bytes
 }
 
+/// Resolve a fixture layer by its deliberately unique source name for later native command assertions.
 fn layer<'a>(session: &'a Session, name: &str) -> &'a Layer {
     session.active().unwrap().doc.layers.iter().find(|layer| layer.name == name).unwrap()
 }
 
 #[test]
+/// Verify imported movement groups use ordinary translation and history while native reopen preserves pixels and inert
+/// provenance.
 fn imported_floating_and_legacy_links_use_native_movement_undo_and_reopen() {
     let bytes = source("../../unavailable-source.pcraft");
     let mut session = open(&bytes, "relationships.xcf");
@@ -174,8 +189,12 @@ fn imported_floating_and_legacy_links_use_native_movement_undo_and_reopen() {
 }
 
 #[test]
+/// Keep imported locators inert, then prove an authorized native relink alone can read and watch the independently
+/// saved resource.
 fn source_locator_does_not_authorize_reads_or_watch_but_explicit_native_relink_does() {
     static DENIED: AtomicUsize = AtomicUsize::new(0);
+    /// Reject explicit relink paths and count authorization calls to prove refused resource access is attempted only
+    /// through the command seam.
     fn deny_resource_path(id: &str, params: &serde_json::Value) -> photocraft_engine::Result<()> {
         if id == "layer.smartObjects.relinkToFile" && params.get("path").is_some() {
             DENIED.fetch_add(1, Ordering::Relaxed);

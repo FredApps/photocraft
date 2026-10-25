@@ -11,38 +11,47 @@ use serde_json::json;
 
 struct Wire(Vec<u8>);
 impl Wire {
+    /// Write a big-endian XCF field for the independently authored vector-layer fixture.
     fn word(&mut self, value: u32) {
         self.0.extend(value.to_be_bytes());
     }
+    /// Store a source float's exact bit pattern using XCF byte order.
     fn float(&mut self, value: f32) {
         self.word(value.to_bits());
     }
+    /// Encode a 64-bit section offset for current-version vector fixtures.
     fn ptr(&mut self, value: usize) {
         self.0.extend((value as u64).to_be_bytes());
     }
+    /// Reserve a pointer so vector and pixel sections can be emitted independently.
     fn slot(&mut self) -> usize {
         let at = self.0.len();
         self.ptr(0);
         at
     }
+    /// Resolve a fixture pointer to the actual current byte offset.
     fn patch(&mut self, at: usize) {
         let offset = self.0.len() as u64;
         self.0[at..at + 8].copy_from_slice(&offset.to_be_bytes());
     }
+    /// Encode source UTF-8 text with its explicit byte length and terminating NUL.
     fn text(&mut self, value: &str) {
         self.word(value.len() as u32 + 1);
         self.0.extend(value.as_bytes());
         self.0.push(0);
     }
+    /// Frame one image, layer or vector property with its stored length.
     fn property(&mut self, kind: u32, value: &[u8]) {
         self.word(kind);
         self.word(value.len() as u32);
         self.0.extend(value);
     }
+    /// Finish a source property list without inventing optional vector data.
     fn end(&mut self) {
         self.word(0);
         self.word(0);
     }
+    /// Write a portable solid sRGB paint with explicit alpha and no external resource identity.
     fn paint(&mut self, rgba: [u8; 4]) {
         self.word(0); // Solid paint.
         self.word(1); // Antialiased.
@@ -54,12 +63,14 @@ impl Wire {
     }
 }
 
+/// Define asymmetric off-canvas Bezier handles that expose coordinate or axis-order mistakes.
 fn knots() -> Vec<Knot> {
     vec![
         Knot { anchor: Point::new(-2.0, 3.0), in_ctrl: Point::new(-3.0, 1.0), out_ctrl: Point::new(2.0, 8.0), smooth: false },
         Knot { anchor: Point::new(12.0, 7.0), in_ctrl: Point::new(8.0, -2.0), out_ctrl: Point::new(15.0, 10.0), smooth: false },
     ]
 }
+/// Specify the independent native path, fill, dashed stroke and fill rule before importing any bytes.
 fn expected() -> ShapeLayer {
     ShapeLayer {
         path: Path { subpaths: vec![Subpath { knots: knots(), closed: true, op: PathOp::Combine }], fill_rule: FillRule::EvenOdd, inverted: false },
@@ -77,6 +88,7 @@ fn expected() -> ShapeLayer {
     }
 }
 
+/// Build original vector-layer bytes with controlled modified state, tattoo reference and coordinate-axis count.
 fn source(modified: bool, referenced_tattoo: u32, axes: u32) -> Vec<u8> {
     let mut w = Wire(b"gimp xcf v026\0".to_vec());
     for value in [16, 12, 0, 150] {
@@ -151,6 +163,7 @@ fn source(modified: bool, referenced_tattoo: u32, axes: u32) -> Vec<u8> {
     w.0
 }
 
+/// Create the expected ordinary native Shape and named path with independent profile and DPI data.
 fn counterpart() -> Document {
     let mut doc = Document::new("Original native shape", Size::new(16, 12), ColorMode::Rgb, SampleType::U8);
     doc.resolution_dpi = 72.0;
@@ -161,6 +174,7 @@ fn counterpart() -> Document {
     doc
 }
 
+/// Compare editable geometry, stroke, prepared pixels and native state while allowing only proven ICC roundoff.
 fn compare(imported: &Session, native: &Session) {
     let a = &imported.active().unwrap().doc;
     let b = &native.active().unwrap().doc;
@@ -192,6 +206,7 @@ fn compare(imported: &Session, native: &Session) {
 }
 
 #[test]
+/// Check a synthetic source becomes a real prepared native Shape through edits, duplication, transforms and reopen.
 fn synthetic_xcf_shape_first_open_edit_duplicate_transform_history_and_native_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let source_path = directory.path().join("original.xcf");

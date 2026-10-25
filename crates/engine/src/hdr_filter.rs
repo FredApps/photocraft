@@ -3,9 +3,12 @@ use crate::{EngineError, Result, Session, commands::CommandSpec};
 use photocraft_algo::tone::{HdrToning, checked_hdr};
 use serde_json::Value;
 pub const ID: &str = "filter.other.hdrToning";
+/// Preserve checked HDR cancellation as an engine cancellation and surface other failures as user-readable errors.
 pub(crate) fn error(e: checked_hdr::Error) -> EngineError {
     if e == checked_hdr::Error::Cancelled { EngineError::Cancelled } else { EngineError::Other(e.to_string()) }
 }
+/// Decode finite native HDR controls, bounded curve points and typed shared routing/coalescing keys without accepting
+/// unknown fields.
 pub(crate) fn params(p: &Value) -> Result<HdrToning> {
     let bad = |msg: &str| EngineError::BadParams { cmd: ID.into(), msg: msg.into() };
     let object = p.as_object().ok_or_else(|| bad("parameters must be an object"))?;
@@ -63,10 +66,12 @@ pub(crate) fn params(p: &Value) -> Result<HdrToning> {
     checked_hdr::validate(&result).map_err(|_| bad("native HDR control is outside its documented range"))?;
     Ok(result)
 }
+/// Validate native HDR controls before the common filter runner applies locks, history and Smart replay policy.
 fn run(s: &mut Session, p: &Value) -> Result<Value> {
     params(p)?;
     crate::filters::run_filter(s, ID, p)
 }
+/// Register the editable native HDR filter with its strict parameter contract and ordinary filterable-layer enablement.
 pub fn specs() -> Vec<CommandSpec> {
     vec![CommandSpec {
         id: ID,
@@ -84,6 +89,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
+    /// Accept native defaults while rejecting malformed controls, invalid curves and wrongly typed coalescing keys.
     fn strict_native_parameters() {
         assert_eq!(params(&json!({})).unwrap(), HdrToning::default());
         for value in [
@@ -102,6 +108,7 @@ mod tests {
         }
     }
     #[test]
+    /// Execute repeated HDR updates under one gesture key and verify one undo/redo step across native depths.
     fn native_hdr_drag_coalesces_execute_and_undo_at_every_depth() {
         for depth in [8, 16, 32] {
             let mut session = Session::new();
@@ -130,6 +137,8 @@ mod tests {
         }
     }
     #[test]
+    /// Check rendered native HDR pixels, retained alpha, Smart parameter editing and exact native save/reopen history
+    /// behavior.
     fn native_smart_replay_is_editable_persistent_and_undoable() {
         use photocraft_doc::LayerContent;
         use photocraft_geom::Rect;
@@ -170,6 +179,8 @@ mod tests {
         assert_ne!(crate::smart_cmds::render(&edited, &snapshot).unwrap().unwrap().pixel(1, 1), pixels.pixel(1, 1));
     }
     #[test]
+    /// Preserve ordinary Last Filter and lock behavior while keeping the existing image-level HDR flatten command
+    /// distinct.
     fn native_raster_last_filter_locks_and_existing_hdr_flatten_are_preserved() {
         use photocraft_doc::LayerContent;
         let mut s = Session::new();
@@ -201,6 +212,7 @@ mod tests {
         assert!(matches!(doc.layers[0].content, LayerContent::Raster(_)));
     }
     #[test]
+    /// Reject invalid stored HDR controls and cancelled replay without mutating an offset HDR surface.
     fn replay_refuses_bad_controls_and_cancellation() {
         use photocraft_color::{ColorMode, PixelFormat, SampleType};
         use photocraft_geom::Rect;

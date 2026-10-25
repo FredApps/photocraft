@@ -535,6 +535,8 @@ fn gray_tone_params(p: &Value) -> Value {
 // ---------- the table ----------
 
 #[allow(clippy::too_many_lines)]
+/// Assemble the shared command registry so UI, CLI and automation use the same validation, history and execution
+/// paths.
 fn build() -> Vec<CommandSpec> {
     let mut v = vec![
         // File

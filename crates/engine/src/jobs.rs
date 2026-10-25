@@ -548,10 +548,13 @@ impl Session {
         self.start_open_inner(name, source, true)
     }
 
+    /// Start a user open on a worker while retaining source-path identity and allowing an explicit historical
+    /// sample-order prompt.
     pub fn start_open_for_user_with_path(&mut self, name: &str, source: OpenSource, path: Option<String>) -> Result<Started> {
         historical_xcf_open::interactive(self, name, source, path, true)
     }
 
+    /// Use the same interactive open transaction synchronously and refuse an unexpected background-job result.
     pub fn open_for_user_inline(&mut self, name: &str, source: OpenSource, path: Option<String>) -> Result<Value> {
         match historical_xcf_open::interactive(self, name, source, path, false)? {
             Started::Done(value) => Ok(value),

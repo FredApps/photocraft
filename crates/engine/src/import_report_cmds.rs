@@ -10,6 +10,8 @@ use crate::{EngineError, Result, Session};
 
 const CMD: &str = "document.importReport";
 
+/// Expose disposition counts and schema information without returning retained payload bytes or executing report
+/// targets.
 pub fn summary(conversion: Option<&ImportConversion>) -> Value {
     match conversion {
         None => Value::Null,
@@ -38,10 +40,12 @@ pub fn summary(conversion: Option<&ImportConversion>) -> Value {
     }
 }
 
+/// Associate malformed report-query parameters with the report command's normal typed parameter error.
 fn bad(message: &str) -> EngineError {
     EngineError::BadParams { cmd: CMD.into(), msg: message.into() }
 }
 
+/// Read a nonnegative paging integer or its default, rejecting other JSON types instead of coercing them.
 fn integer(params: &Value, key: &str, default: u64) -> Result<u64> {
     match params.get(key) {
         None => Ok(default),
@@ -49,6 +53,8 @@ fn integer(params: &Value, key: &str, default: u64) -> Result<u64> {
     }
 }
 
+/// Validate bounded pagination and annotate historical targets against current IDs without granting them editing
+/// authority.
 fn page(session: &mut Session, params: &Value) -> Result<Value> {
     if !params.is_object() {
         return Err(bad("params must be an object"));
@@ -93,6 +99,7 @@ fn page(session: &mut Session, params: &Value) -> Result<Value> {
         "nextOffset": if end < report.entries.len() { Some(end) } else { None }, "entries": entries, "summary": summary(conversion)}))
 }
 
+/// Register the non-journaled report inspection command with bounded page size and normal active-document gating.
 pub fn specs() -> Vec<CommandSpec> {
     vec![CommandSpec {
         id: CMD,

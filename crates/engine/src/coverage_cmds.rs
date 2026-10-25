@@ -11,9 +11,12 @@ pub const FILL_HOLES: &str = "filter.other.fillHoles";
 pub const PERCENTILE: &str = "filter.other.percentile";
 pub const CHANNEL_NOISE: &str = "filter.noise.channelNoise";
 pub const CONVOLUTION: &str = "filter.other.convolution";
+/// Identify only the native coverage, rank, noise and convolution commands handled by this strict decoder.
 pub(crate) fn owns(id: &str) -> bool {
     matches!(id, SET_ALPHA | CLAMP_ALPHA | THRESHOLD_ALPHA | ALPHA_CURVE | ALPHA_TO_COLOR | FILL_HOLES | PERCENTILE | CHANNEL_NOISE | CONVOLUTION)
 }
+/// Decode command-specific controls and shared typed keys, refusing unknown fields, invalid enums and unsupported
+/// editing targets.
 pub(crate) fn params(id: &str, p: &Value) -> Result<FilterParams> {
     let bad = |msg: &str| EngineError::BadParams { cmd: id.into(), msg: msg.into() };
     if !p.is_object() {
@@ -220,6 +223,7 @@ pub(crate) fn params(id: &str, p: &Value) -> Result<FilterParams> {
         _ => Err(bad("unknown coverage filter")),
     }
 }
+/// Borrow the checked scalar coverage operation represented by supported native filter parameters.
 pub(crate) fn operation(fp: &FilterParams) -> Option<coverage::Operation<'_>> {
     match fp {
         FilterParams::AlphaToColor => Some(coverage::Operation::AlphaToColor),
@@ -231,9 +235,11 @@ pub(crate) fn operation(fp: &FilterParams) -> Option<coverage::Operation<'_>> {
         _ => None,
     }
 }
+/// Preserve cancellation as an engine cancellation and report other checked coverage failures as actionable errors.
 pub(crate) fn error(error: coverage::Error) -> EngineError {
     if error == coverage::Error::Cancelled { EngineError::Cancelled } else { EngineError::Other(error.to_string()) }
 }
+/// Enable layer-alpha commands only for a filterable layer whose effective pixel and transparency locks permit them.
 fn alpha_enabled(s: &Session) -> std::result::Result<(), String> {
     if crate::channel_cmds::edits_channel(s) {
         return Err("Alpha coverage filters work on layer pixels".into());
@@ -251,30 +257,37 @@ fn alpha_enabled(s: &Session) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Validate absolute alpha controls before entering the common undoable native filter runner.
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     params(SET_ALPHA, p)?;
     crate::filters::run_filter(s, SET_ALPHA, p)
 }
+/// Validate reconstruction controls before dispatching whole-owner hole filling through native filter history.
 fn fill(s: &mut Session, p: &Value) -> Result<Value> {
     params(FILL_HOLES, p)?;
     crate::filters::run_filter(s, FILL_HOLES, p)
 }
+/// Validate ordered alpha bounds before the common filter path handles locks, selection and history.
 fn clamp(s: &mut Session, p: &Value) -> Result<Value> {
     params(CLAMP_ALPHA, p)?;
     crate::filters::run_filter(s, CLAMP_ALPHA, p)
 }
+/// Validate strict alpha threshold controls before dispatching the ordinary native filter command.
 fn threshold(s: &mut Session, p: &Value) -> Result<Value> {
     params(THRESHOLD_ALPHA, p)?;
     crate::filters::run_filter(s, THRESHOLD_ALPHA, p)
 }
+/// Validate the bounded alpha transfer table before applying it through the shared native filter runner.
 fn curve(s: &mut Session, p: &Value) -> Result<Value> {
     params(ALPHA_CURVE, p)?;
     crate::filters::run_filter(s, ALPHA_CURVE, p)
 }
+/// Validate the layer-only coverage extraction request before creating its ordinary native filter result.
 fn to_color(s: &mut Session, p: &Value) -> Result<Value> {
     params(ALPHA_TO_COLOR, p)?;
     crate::filters::run_filter(s, ALPHA_TO_COLOR, p)
 }
+/// Register the native coverage commands with strict parameter contracts and layer-appropriate enablement.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
@@ -383,6 +396,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
+    /// Require declared edge, distribution and footprint enums rather than repairing missing or wrongly typed controls.
     fn native_enum_controls_require_explicit_valid_values() {
         let mut kernel = vec![0.; 25];
         kernel[12] = 1.;
@@ -404,6 +418,7 @@ mod tests {
     }
 
     #[test]
+    /// Execute two alpha updates under one gesture key and require one undo step restoring the original document.
     fn coverage_filter_drag_coalesces_and_undo_restores_original_document() {
         let mut session = Session::new();
         session.execute("file.new", json!({"width":2,"height":2,"depth":32})).unwrap();
@@ -423,6 +438,8 @@ mod tests {
     }
 
     #[test]
+    /// Verify RGB-only filters preserve Background identity and locked alpha, while alpha-selected variants fail
+    /// atomically at every depth.
     fn color_only_noise_and_convolution_preserve_background_and_transparency_locks() {
         let mut kernel = vec![0.; 25];
         kernel[12] = 0.5;
@@ -471,6 +488,7 @@ mod tests {
         }
     }
     #[test]
+    /// Reject malformed recorded coverage controls before they can reach native rendering or alter history.
     fn strict_recorded_parameters_refuse_hostile_values() {
         for (id, values) in [
             (
@@ -493,6 +511,7 @@ mod tests {
         }
     }
     #[test]
+    /// Apply absolute coverage to HDR pixels and verify exact color preservation through ordinary undo and redo.
     fn native_commands_are_atomic_and_undoable() {
         let mut s = Session::new();
         s.execute("file.new", json!({"width":3,"height":3,"depth":32})).unwrap();
@@ -516,6 +535,7 @@ mod tests {
         assert_eq!(pixel(&s)[3], 0.4);
     }
     #[test]
+    /// Dispatch hostile coverage requests without a document and require ordinary errors rather than escaped panics.
     fn empty_document_and_adversarial_dispatch_never_panic() {
         for id in [SET_ALPHA, CLAMP_ALPHA, THRESHOLD_ALPHA, ALPHA_CURVE, ALPHA_TO_COLOR, FILL_HOLES] {
             for p in [json!({}), json!(null), json!({"value":-1,"connectivity":999})] {
@@ -529,6 +549,8 @@ mod tests {
         }
     }
     #[test]
+    /// Check stored-filter validation and cancellation without changing source pixels, while preserving ordinary native
+    /// replay behavior.
     fn checked_smart_replay_preserves_errors_cancellation_and_native_filters() {
         use photocraft_color::{ColorMode, PixelFormat, SampleType};
         use photocraft_geom::Rect;
@@ -552,6 +574,7 @@ mod tests {
         assert_eq!(got.pixel(1, 1), vec![0.2, 0.4, 2., 1.]);
     }
     #[test]
+    /// Cancel an ordinary blur during replay and require a cancellation error with the HDR input unchanged.
     fn ordinary_blur_smart_replay_honors_mid_work_cancellation() {
         use photocraft_color::{ColorMode, PixelFormat, SampleType};
         use photocraft_geom::Rect;
@@ -570,6 +593,8 @@ mod tests {
         assert_eq!(source, before);
     }
     #[test]
+    /// Verify the full coverage stack remains editable native filter data across save/reopen with an actually rendered
+    /// cache.
     fn ordinary_smart_object_keeps_editable_native_coverage_filters() {
         let mut s = Session::new();
         s.execute("file.new", json!({"width":3,"height":3,"depth":32})).unwrap();
@@ -603,6 +628,7 @@ mod tests {
         assert!((sm.cache.as_ref().unwrap().pixel(1, 1).last().unwrap() - 1.0).abs() < 0.003);
     }
     #[test]
+    /// Require Last Filter to replay valid native coverage parameters as one additional history step.
     fn last_filter_repeats_strict_coverage_params() {
         let mut s = Session::new();
         s.execute("file.new", json!({"width":3,"height":3})).unwrap();
@@ -629,6 +655,8 @@ mod tests {
         }
     }
     #[test]
+    /// Pin selected-channel convolution pixels, invalid-request atomicity, undo and persistent editable Smart
+    /// parameters.
     fn convolution_strict_params_native_channel_history_and_smart_reopen() {
         let good = json!({"kernel":(0..25).map(|i|if i==12{1.}else{0.}).collect::<Vec<_>>(),"scale":1,"offset":0.25,"channels":[true,false,true,true],"alphaWeighted":true,"edge":"repeat"});
         for (key, bad) in [
@@ -684,6 +712,8 @@ mod tests {
         assert_eq!(restored.smart_filters, sm.smart_filters);
     }
     #[test]
+    /// Accept equivalent JSON integer-valued numbers while rejecting fractional, out-of-domain and wrongly typed
+    /// controls.
     fn generated_integer_parameter_representations_are_equivalent_and_strict() {
         for value in [json!(4), json!(4.0), json!(8), json!(8.0)] {
             assert!(matches!(params(FILL_HOLES, &json!({"connectivity":value})).unwrap(), FilterParams::FillHoles { connectivity: 4 | 8, .. }));
@@ -701,6 +731,8 @@ mod tests {
         }
     }
     #[test]
+    /// Require model-sized amplitudes, preserve HDR colors for alpha-only noise and round-trip its native Smart
+    /// parameters.
     fn channel_noise_strict_model_count_history_smart_reopen() {
         let good = json!({"amounts":[0,0,0,200],"distribution":"uniform","monochromatic":false,"relative":false,"seed":71});
         for bad in [
@@ -753,6 +785,8 @@ mod tests {
         assert_eq!(restored.smart_filters, sm.smart_filters);
     }
     #[test]
+    /// Check bitwise preservation of unselected channels and atomic refusal of locked alpha edits before Smart
+    /// persistence.
     fn percentile_channel_selection_respects_transparency_locks_and_native_smart_params() {
         let good = json!({"radius":1,"colorPercentile":0,"alphaPercentile":100,"shape":"square","channels":[true,false,false,false]});
         for mask in [json!(null), json!(true), json!([1, 0, 1, 0]), json!([true, true, true, true, true, true])] {
@@ -802,6 +836,8 @@ mod tests {
         assert_eq!(restored.smart_filters, sm.smart_filters);
     }
     #[test]
+    /// Compare rank-filter output and undo state with explicit native expectations, then preserve its editable stored
+    /// parameters.
     fn percentile_strict_dispatch_native_history_and_editable_reopen() {
         let good = json!({"radius":1,"colorPercentile":0,"alphaPercentile":100,"shape":"square"});
         let mut floating_radius = good.clone();
@@ -855,6 +891,7 @@ mod tests {
         assert_eq!(restored.smart_filters, sm.smart_filters);
     }
     #[test]
+    /// Reject invalid alpha bounds and verify clamp/threshold results undo back to the original coverage.
     fn clamp_threshold_strict_params_and_history() {
         for (id, bad) in [
             (CLAMP_ALPHA, json!({"low":0.8,"high":0.2})),
@@ -880,6 +917,8 @@ mod tests {
         }
     }
     #[test]
+    /// Use a separately authored native Levels transfer as the alpha oracle and verify strict tables, color
+    /// preservation and undo.
     fn alpha_transfer_strict_bounds_and_native_levels_authored_curve_are_undoable() {
         for p in [
             json!({}),

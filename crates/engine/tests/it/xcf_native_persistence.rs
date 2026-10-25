@@ -8,17 +8,20 @@ use serde_json::json;
 
 struct Files(PathBuf);
 impl Files {
+    /// Create a test-owned temporary directory for source copies and native outputs.
     fn new() -> Self {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let root = std::env::temp_dir().join(format!("pc-xcf-persistence-{}-{stamp}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         Self(root)
     }
+    /// Resolve each lifecycle artifact inside the directory owned by this fixture.
     fn path(&self, name: &str) -> PathBuf {
         self.0.join(name)
     }
 }
 impl Drop for Files {
+    /// Remove only the fixture's temporary artifacts after its source-protection checks finish.
     fn drop(&mut self) {
         for name in ["source.xcf", "source.xcf.gz", "source.xcf.bz2", "source.xcf.xz", "source.xcf.psd", "source.pcraft", "alias.pcraft", "converted.pcraft"] {
             let _ = std::fs::remove_file(self.path(name));
@@ -28,6 +31,8 @@ impl Drop for Files {
 }
 
 #[test]
+/// Preserve import-only protection across misleading suffixes and gzip while native reopening remains source
+/// independent.
 fn misnamed_and_gzip_inputs_keep_source_protection_and_native_reopen_independence() {
     use photocraft_engine::jobs::{OpenSource, Started};
     use std::io::Write;
@@ -83,6 +88,7 @@ fn misnamed_and_gzip_inputs_keep_source_protection_and_native_reopen_independenc
 }
 
 #[test]
+/// Discover compound XCF transports and choose a supported native copy instead of writing an XCF.
 fn batch_discovers_compound_names_and_same_format_writes_a_supported_copy() {
     let bytes = source();
     for name in ["source.xcf", "source.xcf.gz", "source.xcf.bz2", "source.xcf.xz"] {
@@ -104,11 +110,13 @@ fn batch_discovers_compound_names_and_same_format_writes_a_supported_copy() {
     }
 }
 
+/// Read the public pinned layered XCF oracle and fail explicitly when corpus setup is missing.
 fn source() -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/gimp/layers-8bit.xcf");
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}; run cargo xtask corpus --gimp", path.display()))
 }
 
+/// Open fixture bytes through the normal engine path with missing-profile questions disabled for the test.
 fn open(path: &Path, bytes: &[u8]) -> Session {
     let mut s = Session::new();
     s.color.settings.ask_on_missing = false;
@@ -117,6 +125,7 @@ fn open(path: &Path, bytes: &[u8]) -> Session {
 }
 
 #[test]
+/// Require native edits and persistence to work after the original XCF copy has been deleted.
 fn native_work_reopens_and_remains_editable_after_its_source_copy_is_removed() {
     let files = Files::new();
     let bytes = source();
@@ -148,6 +157,7 @@ fn native_work_reopens_and_remains_editable_after_its_source_copy_is_removed() {
 }
 
 #[test]
+/// Protect original XCF bytes from Save a Copy through both their path and existing file aliases.
 fn save_a_copy_cannot_replace_an_import_only_source_or_its_existing_alias() {
     let files = Files::new();
     let bytes = source();
@@ -182,6 +192,7 @@ fn save_a_copy_cannot_replace_an_import_only_source_or_its_existing_alias() {
 }
 
 #[test]
+/// Reject a batch destination alias even when its native suffix disguises the import-only source identity.
 fn batch_output_cannot_replace_an_import_only_input_through_a_native_suffix_alias() {
     let files = Files::new();
     let bytes = source();

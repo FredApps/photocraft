@@ -9,6 +9,7 @@ use photocraft_engine::Session;
 use photocraft_geom::Size;
 use serde_json::{Value, json};
 
+/// Build a native document with duplicate source names, multiple targets and retained data for report inspection tests.
 fn session() -> Session {
     let mut doc = Document::new("Native converted", Size::new(3, 2), ColorMode::Rgb, SampleType::U8);
     doc.layers.push(Layer::raster("Native one", doc.pixel_format()));
@@ -43,6 +44,7 @@ fn session() -> Session {
 }
 
 #[test]
+/// Require empty report inspection to remain explicit and no-document calls to return ordinary errors.
 fn report_absence_is_not_a_fidelity_claim_and_no_document_fails_normally() {
     let mut s = Session::new();
     assert!(s.execute("document.importReport", json!({})).is_err());
@@ -55,6 +57,7 @@ fn report_absence_is_not_a_fidelity_claim_and_no_document_fails_normally() {
 }
 
 #[test]
+/// Distinguish session write protection from persisted conversion history, including a fresh writable native reopen.
 fn inspection_reports_live_source_protection_independently_of_historical_conversion() {
     let mut s = session();
     assert_eq!(s.execute("document.inspect", json!({})).unwrap()["sourceReadOnly"], false);
@@ -73,6 +76,8 @@ fn inspection_reports_live_source_protection_independently_of_historical_convers
 }
 
 #[test]
+/// Page report entries by stable source ordinal and live target references without modifying native data or summary
+/// counts.
 fn duplicate_names_one_to_many_targets_and_stale_references_page_without_mutation() {
     let mut s = session();
     let summary = s.execute("document.inspect", json!({})).unwrap()["importConversion"].clone();
@@ -103,6 +108,7 @@ fn duplicate_names_one_to_many_targets_and_stale_references_page_without_mutatio
 }
 
 #[test]
+/// Reject malformed offsets/limits and safely return empty pages for very large valid offsets.
 fn report_paging_validates_types_and_bounds_without_overflow() {
     // `offset` must be a nonnegative integer; `limit` is 1-250, default 100.
     let mut s = session();
@@ -133,6 +139,7 @@ fn report_paging_validates_types_and_bounds_without_overflow() {
 }
 
 #[test]
+/// Preserve future report schemas as opaque metadata while exposing only safe summary fields and no payload bytes.
 fn future_opaque_reports_are_summarized_without_parsing_or_exposing_their_bytes() {
     let mut doc = Document::new("Future", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
     doc.metadata.import_conversion = Some(ImportConversion::Opaque {
@@ -152,6 +159,8 @@ fn future_opaque_reports_are_summarized_without_parsing_or_exposing_their_bytes(
 }
 
 #[test]
+/// Force encoded provenance past its allowance and require an atomic open failure before replacing the current
+/// document.
 fn mandatory_xcf_report_overflow_fails_before_publishing_a_document() {
     // Six references to one small record with a long escaped name exceed the independent
     // encoded-report allowance, while copied source names remain below their old 32 MiB cap.

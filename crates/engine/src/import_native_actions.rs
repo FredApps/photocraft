@@ -23,6 +23,7 @@ pub(crate) fn adjustment(surf: &Surface, area: Rect, kind: &str, ctx: &JobCtx) -
     ctx.check()?;
     Ok(Adjustment::Levels { master: LevelsChannel::default(), per_channel: per, space: Default::default(), black: LevelsChannel::default() })
 }
+/// Detect native one-time automatic actions even when a Smart layer already has a rendered cache.
 pub(crate) fn has_pending(layer: &Layer) -> bool {
     matches!(&layer.content,LayerContent::Smart(sm) if sm.smart_filters.iter().any(|f|matches!(f.command.as_str(),"image.autoTone"|"image.autoContrast")))
 }
@@ -126,9 +127,11 @@ mod tests {
     use serde_json::{Value, json};
     use std::sync::Arc;
 
+    /// Build an ordinary stored native filter fixture with default visible Normal blending.
     fn filter(command: &str) -> SmartFilter {
         SmartFilter { command: command.into(), params: json!({}), blend: BlendMode::Normal, opacity: 1.0, visible: true }
     }
+    /// Create original native pixels and a pending automatic action at the requested depth.
     fn fixture(depth: SampleType, command: &str) -> (Document, Layer, Surface) {
         let mut source = Document::new("native source", Size::new(16, 2), ColorMode::Rgb, depth);
         let mut pixels = Surface::new(source.pixel_format());
@@ -146,12 +149,15 @@ mod tests {
         let layer = Layer::new("editable native auto", LayerContent::Smart(object));
         (Document::new("parent", source.size, source.mode, source.depth), layer, pixels)
     }
+    /// Access the Smart fixture so tests can inspect rewritten native parameters and envelope state.
     fn object(layer: &Layer) -> &SmartObject {
         let LayerContent::Smart(object) = &layer.content else { panic!("expected ordinary Smart contents") };
         object
     }
 
     #[test]
+    /// Compare one-time analysis with normal native Auto commands and require fixed editable data after native
+    /// reopen.
     fn native_auto_matches_ordinary_commands_at_every_depth_and_reopens_as_fixed_levels() {
         for depth in SampleType::ALL {
             for command in ["image.autoTone", "image.autoContrast"] {
@@ -192,6 +198,7 @@ mod tests {
     }
 
     #[test]
+    /// Analyze the actual preceding native stages while retaining visibility, opacity, blend and mask semantics.
     fn automatic_analysis_uses_actual_native_prefix_and_preserves_hidden_envelope() {
         let (doc, mut layer, _) = fixture(SampleType::U8, "image.autoTone");
         let LayerContent::Smart(sm) = &mut layer.content else { panic!() };
@@ -211,6 +218,7 @@ mod tests {
     }
 
     #[test]
+    /// Exercise the public preparation hook for cached and nested actions before document admission.
     fn preparation_resolves_cached_and_nested_native_actions_atomically_before_install() {
         let (mut doc, mut cached, pixels) = fixture(SampleType::U8, "image.autoTone");
         let LayerContent::Smart(sm) = &mut cached.content else { panic!() };
@@ -250,18 +258,23 @@ mod tests {
         assert_eq!(reopened, before);
     }
 
+    /// Reject the nested automatic command to prove preparation reinstalls normal stored-command authority.
     fn deny_nested_auto(id: &str, _: &Value) -> Result<()> {
         if id == "image.autoContrast" { Err(EngineError::Other("nested source action denied".into())) } else { Ok(()) }
     }
 
+    /// Reject the automatic-analysis command without denying unrelated native work.
     fn deny_auto(id: &str, _: &Value) -> Result<()> {
         if id == "image.autoTone" { Err(EngineError::Other("auto denied".into())) } else { Ok(()) }
     }
+    /// Reject the fixed Levels replacement so automatic materialization cannot bypass native command authority.
     fn deny_levels(id: &str, _: &Value) -> Result<()> {
         if id == "image.adjustments.levels" { Err(EngineError::Other("fixed levels denied".into())) } else { Ok(()) }
     }
 
     #[test]
+    /// Check cancellation, short budgets, denied commands and invalid parameters preserve the complete pending
+    /// layer.
     fn cancellation_budget_authority_and_invalid_requests_leave_layer_unchanged() {
         let (doc, layer, _) = fixture(SampleType::U8, "image.autoTone");
         let ctx = JobCtx::new();
@@ -283,11 +296,13 @@ mod tests {
         assert_eq!(pending, before);
     }
 
+    /// Reject the fixed Curves fallback to test authority on uniform automatic-tone results.
     fn deny_curves(id: &str, _: &Value) -> Result<()> {
         if id == "image.adjustments.curves" { Err(EngineError::Other("fixed curves denied".into())) } else { Ok(()) }
     }
 
     #[test]
+    /// Verify uniform endpoint images use representable native Curves and remain stable after native save/reopen.
     fn opaque_uniform_auto_uses_valid_native_curves_and_reopens_at_every_depth() {
         for depth in SampleType::ALL {
             for value in [0., 1.] {
@@ -347,6 +362,7 @@ mod tests {
         }
     }
 
+    /// Read the materialized native filter parameters without deriving expectations from their imported source.
     fn filter_params(layer: &Layer) -> Value {
         object(layer).smart_filters[0].params.clone()
     }

@@ -73,29 +73,35 @@ struct Allowance {
     memo: memo::Memo,
 }
 
+/// Report preparation limits as open failures without implying a partially prepared document was installed.
 fn limit(what: &str) -> EngineError {
     EngineError::Other(format!("native import preparation exceeds {what}; the document was not opened"))
 }
 
 impl Allowance {
+    /// Debit the shared working allowance with checked subtraction, preserving the counter on failure.
     fn charge_bytes(remaining: &mut u64, bytes: u64) -> Result<()> {
         *remaining = remaining.checked_sub(bytes).ok_or_else(|| limit("its working-byte allowance"))?;
         Ok(())
     }
+    /// Charge each embedded archive encounter against the cumulative source-byte allowance.
     fn source(&mut self, bytes: usize) -> Result<()> {
         self.source_bytes = self.source_bytes.checked_sub(bytes).ok_or_else(|| limit("1 GiB of embedded source bytes"))?;
         Ok(())
     }
 
+    /// Admit one preparation item with checked subtraction from the remaining item count.
     fn item(&mut self) -> Result<()> {
         self.items = self.items.checked_sub(1).ok_or_else(|| limit("its preparation item count"))?;
         Ok(())
     }
 
+    /// Charge retained or temporary work against this preparation's cumulative byte allowance.
     fn bytes(&mut self, bytes: u64) -> Result<()> {
         Self::charge_bytes(&mut self.remaining_bytes, bytes)
     }
 
+    /// Look up an exact native preparation result and debit each returned Surface clone's metadata before cloning it.
     fn memo_hit(
         &mut self,
         key: &memo::Key,
@@ -107,11 +113,13 @@ impl Allowance {
         memo.get(key, bytes, profile, ctx, &mut |bytes| Self::charge_bytes(remaining_bytes, bytes))
     }
 
+    /// Compute the checked full-frame working reservation for native composition and source/result buffers.
     fn render_bytes(doc: &Document) -> Result<u64> {
         // Native composition uses RGBA float pixels; filters also keep source/result buffers.
         doc.size.area().checked_mul(32).ok_or_else(|| limit("its raster bounds"))
     }
 
+    /// Debit a full native render reservation and return its size for loader admission credit.
     fn render(&mut self, doc: &Document) -> Result<u64> {
         let bytes = Self::render_bytes(doc)?;
         self.bytes(bytes)?;
@@ -129,6 +137,8 @@ pub fn prepare_imported_document(doc: &mut Document, ctx: &JobCtx) -> Result<()>
     prepare_with_allowance(doc, ctx, &mut allowance)
 }
 
+/// Preflight hierarchy before cloning and publish the prepared clone only after all work and the final cancellation
+/// check succeed.
 fn prepare_with_allowance(doc: &mut Document, ctx: &JobCtx, allowance: &mut Allowance) -> Result<()> {
     ctx.check()?;
     // Check hierarchy before cloning: a malformed API-supplied group tree must not reach a
@@ -144,6 +154,8 @@ fn prepare_with_allowance(doc: &mut Document, ctx: &JobCtx, allowance: &mut Allo
     Ok(())
 }
 
+/// Walk bounded group depth iteratively and collect only missing or stale native caches, leaving ready documents
+/// outside the work-item ceiling.
 fn missing_caches(doc: &Document, ctx: &JobCtx, allowance: &mut Allowance) -> Result<Vec<LayerPath>> {
     // Keep one iterator per group depth, not one pointer per existing layer. Already-ready
     // native documents do not acquire a new layer-count ceiling or a metadata clone.
@@ -178,6 +190,7 @@ fn missing_caches(doc: &Document, ctx: &JobCtx, allowance: &mut Allowance) -> Re
     Ok(out)
 }
 
+/// Bound embedded-content recursion before discovering and preparing missing native caches.
 fn prepare(doc: &mut Document, ctx: &JobCtx, depth: usize, allowance: &mut Allowance) -> Result<bool> {
     if depth > MAX_CONTENT_DEPTH {
         return Err(limit("64 nested native contents"));
@@ -186,6 +199,8 @@ fn prepare(doc: &mut Document, ctx: &JobCtx, depth: usize, allowance: &mut Allow
     prepare_layers(doc, ids, ctx, depth, allowance)
 }
 
+/// Prepare text, shape and Smart caches under shared work/source limits; resolve only in-memory sources and retain
+/// stored-filter authorization.
 fn prepare_layers(doc: &mut Document, ids: Vec<LayerPath>, ctx: &JobCtx, depth: usize, allowance: &mut Allowance) -> Result<bool> {
     let changed = !ids.is_empty();
     for path in ids {
@@ -292,6 +307,7 @@ mod initial_view_tests {
     use serde_json::json;
 
     #[test]
+    /// Apply imported view hints without history or revision changes and verify native reopen does not replay them.
     fn native_initial_view_is_atomic_view_state_and_not_restored_by_reopen() {
         let mut session = Session::new();
         session.execute("file.new", json!({"width": 8, "height": 6})).unwrap();
@@ -314,6 +330,7 @@ mod initial_view_tests {
     }
 
     #[test]
+    /// Reject invalid view references and nonfinite samplers without changing document identity, selection or revision.
     fn invalid_native_initial_view_leaves_all_existing_state_unchanged() {
         let mut session = Session::new();
         session.execute("file.new", json!({"width": 8, "height": 6})).unwrap();
@@ -335,6 +352,8 @@ mod initial_view_tests {
     }
 
     #[test]
+    /// Keep the source view with a held import and verify taking it consumes the handoff exactly once without
+    /// installing a tab.
     fn held_native_initial_view_is_kept_until_taken_once() {
         let doc = Document::new("held", photocraft_geom::Size::new(8, 6), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8);
         let mut session = Session::new();

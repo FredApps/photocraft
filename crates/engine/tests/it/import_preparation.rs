@@ -5,11 +5,13 @@ use photocraft_doc::{Document, Layer, LayerContent, SmartFilter, SmartObject, Sm
 use photocraft_engine::{import_prepare::prepare_imported_document, jobs::JobCtx, smart_cmds};
 use photocraft_geom::{Affine, Rect, Size};
 
+/// Wrap a known red native document at the requested depth with an intentionally absent Smart render cache.
 fn smart_document(depth: SampleType) -> Document {
     let source = Document::with_background("Source", Size::new(4, 3), ColorMode::Rgb, depth, Color::rgb(1.0, 0.0, 0.0));
     wrap(&source)
 }
 
+/// Embed serialized native contents in a fresh ordinary Smart Object so preparation must reconstruct its pixels.
 fn wrap(source: &Document) -> Document {
     let mut doc = Document::new("Native smart", source.size, source.mode, source.depth);
     let object = SmartObject::new(
@@ -22,6 +24,8 @@ fn wrap(source: &Document) -> Document {
 }
 
 #[test]
+/// Require native Invert pixels at every depth before installation and preserve the prepared result across native
+/// serialization.
 fn missing_native_smart_filter_cache_is_ready_before_the_first_edit() {
     for depth in SampleType::ALL {
         let mut doc = smart_document(depth);
@@ -45,6 +49,7 @@ fn missing_native_smart_filter_cache_is_ready_before_the_first_edit() {
 }
 
 #[test]
+/// Keep an already valid native cache unchanged even when its stored source or filter cannot be resolved.
 fn valid_caches_with_unavailable_source_or_filter_are_preserved() {
     let mut doc = smart_document(SampleType::U8);
     let mut cache = photocraft_raster::Surface::new(doc.pixel_format());
@@ -66,6 +71,7 @@ fn valid_caches_with_unavailable_source_or_filter_are_preserved() {
 }
 
 #[test]
+/// Prepare nested native Smart archives and verify both the outer pixels and the innermost reconstructed cache.
 fn nested_native_contents_are_prepared_innermost_first() {
     let source = smart_document(SampleType::U16);
     let mut outer = wrap(&wrap(&source));
@@ -78,6 +84,7 @@ fn nested_native_contents_are_prepared_innermost_first() {
 }
 
 #[test]
+/// Reject an unavailable later source or cancelled job without exposing earlier partial preparation.
 fn preparation_failure_and_cancellation_do_not_partially_modify_pending_data() {
     let mut doc = smart_document(SampleType::U8);
     let mut unavailable = doc.layers[0].clone();
@@ -96,6 +103,7 @@ fn preparation_failure_and_cancellation_do_not_partially_modify_pending_data() {
 }
 
 #[test]
+/// Use a huge but sparse native archive to exercise bounds admission without allocating the claimed canvas.
 fn oversized_sparse_source_is_refused_before_native_composition_allocates() {
     let source = Document::new("Too large to prepare", Size::new(300_000, 300_000), ColorMode::Rgb, SampleType::F32);
     let mut doc = wrap(&source);
@@ -105,6 +113,7 @@ fn oversized_sparse_source_is_refused_before_native_composition_allocates() {
 }
 
 #[test]
+/// Require ready native Smart pixels on synchronous open and retain the existing tab after a later malformed open.
 fn synchronous_open_prepares_native_data_and_failed_open_preserves_the_session() {
     let mut session = photocraft_engine::Session::new();
     session.color.settings.ask_on_missing = false;
@@ -124,6 +133,7 @@ fn synchronous_open_prepares_native_data_and_failed_open_preserves_the_session()
 }
 
 #[test]
+/// Refresh stale Smart format and shape caches against ordinary native preparation expectations.
 fn stale_pixel_format_and_shapes_use_normal_native_preparation() {
     use photocraft_doc::{Fill, Path, ShapeLayer, Subpath};
     let mut doc = smart_document(SampleType::U16);
@@ -144,6 +154,7 @@ fn stale_pixel_format_and_shapes_use_normal_native_preparation() {
 }
 
 #[test]
+/// Verify the work-item ceiling applies to required preparation, not the number of already ready native layers.
 fn already_ready_native_documents_do_not_acquire_a_preparation_layer_count_limit() {
     let mut doc = Document::new("Many native layers", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
     for _ in 0..65_537 {
@@ -154,6 +165,8 @@ fn already_ready_native_documents_do_not_acquire_a_preparation_layer_count_limit
 }
 
 #[test]
+/// Require prepared red pixels and a clean document through direct background completion and held profile-choice
+/// installation.
 fn background_open_and_held_color_choice_use_the_same_native_preparation() {
     use photocraft_engine::jobs::{OpenSource, Started};
     let doc = smart_document(SampleType::U8);
@@ -181,6 +194,7 @@ fn background_open_and_held_color_choice_use_the_same_native_preparation() {
 }
 
 #[test]
+/// Compare reconstructed text cache and editable data to a separately refreshed ordinary native text layer.
 fn missing_native_text_cache_uses_the_normal_text_model_and_renderer() {
     use photocraft_doc::TextLayer;
     let mut doc = Document::new("Native text", Size::new(160, 48), ColorMode::Rgb, SampleType::U8);

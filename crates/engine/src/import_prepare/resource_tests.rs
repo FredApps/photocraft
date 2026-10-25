@@ -4,15 +4,18 @@ use photocraft_doc::{Layer, SmartFilter, SmartObject};
 use photocraft_geom::{Affine, Size};
 use std::cell::{Cell, RefCell};
 
+/// Create a fresh native preparation ledger with the production limits and an empty per-call memo.
 fn allowance() -> Allowance {
     Allowance { remaining_bytes: MAX_PREPARATION_BYTES, source_bytes: MAX_SOURCE_BYTES, items: MAX_ITEMS, memo: Default::default() }
 }
 
+/// Encode a tiny independently colored native raster source for actual preparation-path tests.
 fn source(color: Color) -> Arc<Vec<u8>> {
     let doc = Document::with_background("Original tiny native source", Size::new(1, 1), ColorMode::Rgb, SampleType::U8, color);
     Arc::new(smart_cmds::encode_source(&doc).unwrap())
 }
 
+/// Wrap immutable native bytes in a new editable Smart identity with no prepared cache.
 fn smart(bytes: Arc<Vec<u8>>) -> Layer {
     Layer::new(
         "Native smart",
@@ -20,6 +23,7 @@ fn smart(bytes: Arc<Vec<u8>>) -> Layer {
     )
 }
 
+/// Place supplied Smart layers into a small native parent without precomputing their appearance.
 fn document(layers: Vec<Layer>) -> Document {
     let mut doc = Document::new("Original pending data", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
     doc.layers = layers;
@@ -27,6 +31,7 @@ fn document(layers: Vec<Layer>) -> Document {
 }
 
 #[test]
+/// Exercise production source, item and working-byte debits at their exact limit and one unit beyond.
 fn actual_source_and_item_charge_limits_accept_exact_boundary_then_refuse_one_more() {
     let mut budget = allowance();
     assert_eq!(budget.source_bytes, 1 << 30);
@@ -48,6 +53,7 @@ fn actual_source_and_item_charge_limits_accept_exact_boundary_then_refuse_one_mo
 }
 
 #[test]
+/// Count only missing preparations and reject a short item allowance before changing the pending document.
 fn actual_preflight_counts_only_missing_items_and_refuses_before_mutating() {
     let bytes = source(Color::BLACK);
     let original = document(vec![smart(bytes.clone()), smart(bytes)]);
@@ -63,6 +69,7 @@ fn actual_preflight_counts_only_missing_items_and_refuses_before_mutating() {
 }
 
 #[test]
+/// Check sibling source charges share one allowance and a one-byte shortage preserves the original document.
 fn source_debit_is_shared_across_siblings_and_failure_is_transactional() {
     let bytes = source(Color::rgb(1.0, 0.0, 0.0));
     let original = document(vec![smart(bytes.clone()), smart(bytes.clone())]);
@@ -80,6 +87,8 @@ fn source_debit_is_shared_across_siblings_and_failure_is_transactional() {
 }
 
 #[test]
+/// Exercise the real recursive depth boundary, including the next embedded native load, without building huge
+/// documents.
 fn actual_native_content_depth_guard_accepts_64_and_rejects_65() {
     let mut empty = document(Vec::new());
     assert!(!prepare(&mut empty, &JobCtx::new(), MAX_CONTENT_DEPTH, &mut allowance()).unwrap());
@@ -99,6 +108,7 @@ thread_local! {
     static FIRST_FILTER_CHECKS: Cell<usize> = const { Cell::new(0) };
 }
 
+/// Observe the first native command and cancel during the second to test late rollback.
 fn cancel_second_filter(command: &str, _: &serde_json::Value) -> Result<()> {
     if command == "image.adjustments.invert" {
         FIRST_FILTER_CHECKS.with(|count| count.set(count.get() + 1));
@@ -114,6 +124,7 @@ fn cancel_second_filter(command: &str, _: &serde_json::Value) -> Result<()> {
 }
 
 #[test]
+/// Require late cancellation after real first-layer work to leave every pending layer unchanged.
 fn cancellation_during_second_native_layer_keeps_the_original_document() {
     let bytes = source(Color::rgb(0.2, 0.4, 0.6));
     let mut original = document(vec![smart(bytes.clone()), smart(bytes)]);
@@ -136,6 +147,7 @@ fn cancellation_during_second_native_layer_keeps_the_original_document() {
 }
 
 #[test]
+/// Verify exact source reuse shares COW payloads but still charges each hit's map metadata and editable identity.
 fn repeated_identical_filter_free_sources_share_only_completed_preparation_work() {
     let bytes = source(Color::rgb(0.8, 0.2, 0.4));
     let mut single = document(vec![smart(bytes.clone())]);
@@ -183,6 +195,7 @@ fn repeated_identical_filter_free_sources_share_only_completed_preparation_work(
 }
 
 #[test]
+/// Require the embedded-depth guard even when identical source work is already memoized.
 fn repeated_source_memo_does_not_bypass_native_depth_admission() {
     let bytes = source(Color::BLACK);
     let mut budget = allowance();
@@ -195,6 +208,7 @@ fn repeated_source_memo_does_not_bypass_native_depth_admission() {
 }
 
 #[test]
+/// Check memo hits preserve depth/HDR pixels while a later edit detaches tiles without changing the other alias.
 fn repeated_native_cache_hits_keep_each_depth_hdr_and_cow_edit_independence() {
     for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
         let color = if depth == SampleType::F32 { Color::rgba(-0.25, 0.5, 1.75, 0.75) } else { Color::rgba(0.2, 0.4, 0.6, 0.75) };
@@ -239,6 +253,7 @@ fn repeated_native_cache_hits_keep_each_depth_hdr_and_cow_edit_independence() {
     }
 }
 
+/// Create a sparse native bundle and obtain its real decoded-byte accounting for reservation-boundary tests.
 fn sparse_source(depth: SampleType) -> (Document, Arc<Vec<u8>>, u64) {
     let mut source = Document::new("Original sparse source", Size::new(256, 256), ColorMode::Rgb, depth);
     let mut layer = Layer::raster("Sparse pixels", source.pixel_format());
@@ -250,6 +265,7 @@ fn sparse_source(depth: SampleType) -> (Document, Arc<Vec<u8>>, u64) {
 }
 
 #[test]
+/// Prove same-extent loading consumes its existing render reservation once and preserves ordinary native pixels.
 fn native_canvas_admission_reuses_its_already_debited_same_extent_render_reservation() {
     for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
         let (source, bytes, decoded) = sparse_source(depth);
@@ -270,6 +286,7 @@ fn native_canvas_admission_reuses_its_already_debited_same_extent_render_reserva
 }
 
 #[test]
+/// Require the extra source extent's real debit and reject one-byte-short work before executing native filters.
 fn larger_native_source_requires_checked_extra_render_debit_before_composition() {
     for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
         let (source, bytes, decoded) = sparse_source(depth);

@@ -266,6 +266,8 @@ fn equalize(s: &mut Session, p: &Value) -> Result<Value> {
 fn has_average_target(s: &Session) -> std::result::Result<(), String> {
     if matches!(&active_layer(s)?.content, LayerContent::Smart(_)) { crate::filters::has_filterable_layer(s) } else { has_pixels(s) }
 }
+/// Route Smart content through native replay and replace raster colors with the selection-weighted mean using the
+/// ordinary pixel-edit path.
 fn average(s: &mut Session, p: &Value) -> Result<Value> {
     if matches!(&active_layer(s).map_err(EngineError::Other)?.content, LayerContent::Smart(_)) {
         return crate::filters::run_filter(s, "filter.blur.average", p);
@@ -763,6 +765,8 @@ pub(crate) fn rasterize_all(s: &mut Session) -> Result<Value> {
 
 // ---------- registry ----------
 
+/// Register auxiliary native editing, filter and layer-style commands with their existing menu identities and parameter
+/// contracts.
 pub fn specs() -> Vec<CommandSpec> {
     macro_rules! spec {
         ($id:expr, $label:expr, $menu:expr, $sc:expr, $params:expr, $enabled:expr, $run:expr) => {
@@ -1529,6 +1533,8 @@ mod tests {
     }
 
     #[test]
+    /// Compare editable Smart Average pixels to a separately executed raster command across depths, native reopen and
+    /// undo.
     fn native_average_smart_filter_matches_raster_undo_and_persistence() {
         for depth in [8, 16, 32] {
             let mut raster = session(depth);

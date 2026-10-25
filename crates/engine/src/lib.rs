@@ -279,6 +279,8 @@ impl DocState {
         self.history.pixel_bytes(&self.doc).saturating_add(self.history.extra_bytes(&self.doc, &snaps))
     }
 
+    /// Initialize a clean document tab with native layer selection/history and no inherited source protection or
+    /// transient import state.
     pub fn new(doc: Document, path: Option<String>) -> Self {
         let active_layer = doc.top_layer();
         let mut history = History::default();

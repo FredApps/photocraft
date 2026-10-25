@@ -124,6 +124,7 @@ fn openable_name(path: &str) -> bool {
     compound_xcf_name(&lower) || lower.rsplit_once('.').is_some_and(|(_, ext)| OPENABLE.contains(&ext))
 }
 
+/// Recognize supported XCF transport suffixes without treating arbitrary compressed archives as images.
 fn compound_xcf_name(lower: &str) -> bool {
     [".xcf.gz", ".xcf.bz2", ".xcf.xz"].iter().any(|suffix| lower.ends_with(suffix))
 }
@@ -353,6 +354,7 @@ pub(crate) fn import_opened(s: &Session, name: &str, bytes: &[u8]) -> Result<Doc
     import_at_raw_ppi(s.prefs().raw_defaults.resolution, name, bytes)
 }
 
+/// Apply raw-resolution policy and prepare native editable caches before returning an imported document.
 fn import_at_raw_ppi(raw_ppi: f64, name: &str, bytes: &[u8]) -> Result<Document> {
     let r = import_result(name, bytes)?;
     let mut doc = r.document;
@@ -668,6 +670,8 @@ fn revert(s: &mut Session) -> Result<Value> {
     Ok(json!({"path": path, "layers": st.doc.layers.len()}))
 }
 
+/// Export a protected-source-safe copy with explicit destructive-overwrite consent while preserving the open document's
+/// identity.
 fn save_a_copy(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path", "file.saveACopy")?.to_string();
     let d = s.active().ok_or(EngineError::NoDocument)?;
@@ -733,10 +737,13 @@ pub fn historical_xcf_sample_order(params: &Value, command: &str) -> Result<Opti
     }
 }
 
+/// Open bytes through the shared synchronous import path without choosing an ambiguous historical sample order.
 pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&str>, path: Option<String>) -> Result<Value> {
     open_bytes_as_with_sample_order(s, name, bytes, as_ext, path, None)
 }
 
+/// Decode with the optional explicit historical order, prepare native data and install color/view/source policy only
+/// after success.
 pub fn open_bytes_as_with_sample_order(
     s: &mut Session,
     name: &str,
@@ -782,6 +789,8 @@ pub fn open_bytes_as_with_sample_order(
     Ok(json!({"document": i, "color": color, "warnings": r.warnings, "importConversion": conversion}))
 }
 
+/// Read an explicit path and forward format override plus validated historical sample order to the shared byte-open
+/// path.
 fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path", "file.openAs")?.to_string();
     let bytes = read_file(&path)?;
@@ -1436,6 +1445,8 @@ fn same_format(path: &str) -> String {
 
 #[cfg(test)]
 #[test]
+/// Pin export-format choice for writable suffixes, import-only formats and extensionless names without mistaking folder
+/// dots for extensions.
 fn same_format_takes_the_file_names_extension() {
     assert_eq!(same_format("/in/a.PNG"), "png");
     assert_eq!(same_format("/in/IMG_0001.ARW"), "psd");
@@ -1454,6 +1465,7 @@ fn same_format_takes_the_file_names_extension() {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[test]
+/// Admit only supported XCF compound/short transport names and reject unrelated archives or trailing suffixes.
 fn batch_discovery_accepts_xcf_wrappers_without_claiming_unrelated_archives() {
     for source in ["a.XCF.GZ", "a.xcfgz", "a.XCF.BZ2", "a.xcfbz2", "a.xcf.xz", "a.xcfxz"] {
         assert!(openable_name(source), "{source}");
@@ -1463,6 +1475,8 @@ fn batch_discovery_accepts_xcf_wrappers_without_claiming_unrelated_archives() {
     }
 }
 
+/// Process independent scratch documents with raw defaults and source-safe destinations, returning per-file successes
+/// and errors.
 fn process_outputs<'a>(
     s: &Session,
     outputs: impl IntoIterator<Item = (&'a str, String)>,
@@ -2079,6 +2093,7 @@ fn clear_canvas_guides(s: &mut Session) -> Result<Value> {
 
 // ---------- registry ----------
 
+/// Register file, copy, batch and processor command contracts with their native enablement and dispatch callbacks.
 pub fn specs() -> Vec<CommandSpec> {
     macro_rules! spec {
         ($id:expr, $label:expr, $menu:expr, $sc:expr, $params:expr, $enabled:expr, $run:expr) => {
