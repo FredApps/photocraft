@@ -159,8 +159,12 @@ pub(super) fn image<'a>(
                         "exif-data" => {
                             let raw = data.strip_prefix(b"Exif\0\0").unwrap_or(&data);
                             // Native EXIF is a TIFF payload. Other legacy container layouts stay inert.
-                            if (raw.starts_with(b"II\x2a\0") || raw.starts_with(b"MM\0\x2a")) && charge(budget, raw.len()) {
-                                doc.metadata.exif = Some(std::sync::Arc::new(raw.to_vec()));
+                            if raw.starts_with(b"II\x2a\0") || raw.starts_with(b"MM\0\x2a") {
+                                if charge(budget, raw.len()) {
+                                    doc.metadata.exif = Some(std::sync::Arc::new(raw.to_vec()));
+                                } else {
+                                    metadata_incomplete = true;
+                                }
                             }
                         }
                         "gimp-image-metadata" | "gimp-metadata" => {

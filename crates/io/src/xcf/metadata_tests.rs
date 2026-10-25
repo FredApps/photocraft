@@ -355,3 +355,82 @@ fn ambiguous_xmp_types_namespaces_and_duplicate_scalars_remain_inert() {
     assert!(result.document.metadata.exif.is_none());
     assert_eq!(result.document.metadata.text.len(), 6);
 }
+
+/// Run the actual metadata charge path with a tiny injected allowance and the reader's separate inert parasite retention.
+fn legacy_exif_with_budget(record: &[u8], mut budget: usize) -> (photocraft_doc::Document, usize) {
+    use photocraft_doc::import_conversion::{ConversionDisposition, ConversionEntry, ConversionReason, NativeTargetRef};
+    let mut doc = photocraft_doc::Document::new("Bounded legacy Exif", photocraft_geom::Size::new(2, 2), ColorMode::Rgb, SampleType::U8);
+    let mut outcomes = conversion::Outcomes::new(11).unwrap();
+    let owner = outcomes
+        .push(ConversionEntry {
+            feature_code: "xcf.canvas".into(),
+            source: conversion::source("image", 0, 0, "", &[], None),
+            targets: vec![NativeTargetRef { label: "Document canvas".into(), ..Default::default() }],
+            disposition: ConversionDisposition::NativeEquivalent,
+            reason: ConversionReason::NativePolicy,
+            source_description: "Synthetic canvas".into(),
+            native_description: "Native canvas".into(),
+            attachments: Vec::new(),
+        })
+        .unwrap();
+    let props = [Prop { offset: 28, kind: 21, data: record }];
+    outcomes.parasites(owner, props[0].offset, record, &["icc-profile"]).unwrap();
+    metadata::image(&mut doc, &props, 11, &mut Default::default(), &mut outcomes, owner, &mut budget).unwrap();
+    doc.metadata.import_conversion = Some(Arc::new(outcomes.finish().unwrap()));
+    (doc, budget)
+}
+
+/// A valid legacy TIFF omitted by native metadata admission must disclose partial retention while preserving its exact inert source record.
+#[test]
+fn legacy_exif_tiff_budget_boundary_reports_omission_and_preserves_source_evidence() {
+    use photocraft_doc::import_conversion::{ConversionReason, ImportConversion};
+    for tiff in [b"II\x2a\0\x08\0\0\0\0\0\0\0\0\0".as_slice(), b"MM\0\x2a\0\0\0\x08\0\0\0\0\0\0".as_slice()] {
+        for prefixed in [false, true] {
+            let mut payload = if prefixed { b"Exif\0\0".to_vec() } else { Vec::new() };
+            payload.extend_from_slice(tiff);
+            let record = parasite("exif-data", &payload);
+            let (omitted, remaining) = legacy_exif_with_budget(&record, tiff.len() - 1);
+            assert!(omitted.metadata.exif.is_none());
+            assert_eq!(remaining, tiff.len() - 1, "a failed whole-packet charge consumes no metadata allowance");
+            let Some(ImportConversion::Report(report)) = omitted.metadata.import_conversion.as_deref() else { panic!("durable conversion report") };
+            let incomplete = report
+                .entries
+                .iter()
+                .find(|entry| entry.feature_code == "xcf.metadata_partial")
+                .expect("omitted valid TIFF needs the existing partial-metadata disclosure");
+            assert_eq!(incomplete.reason, ConversionReason::MissingMapping);
+            assert!(incomplete.source_description.contains("allowance exceeded"));
+            assert_eq!(report.attachments.len(), 1);
+            assert_eq!(report.attachments[0].bytes.as_slice(), record.as_slice(), "source evidence uses its separate bounded inert-retention allowance");
+            let encoded = photocraft_format::save_to_bytes(&omitted, &Default::default()).unwrap();
+            let reopened = photocraft_format::load_from_bytes(&encoded).unwrap();
+            assert!(reopened.metadata.exif.is_none());
+            assert_eq!(reopened.metadata.import_conversion, omitted.metadata.import_conversion);
+            let (accepted, remaining) = legacy_exif_with_budget(&record, tiff.len());
+            assert_eq!(remaining, 0);
+            assert_eq!(
+                accepted.metadata.exif.as_deref().map(Vec::as_slice),
+                Some(tiff),
+                "only TIFF bytes, excluding the optional Exif prefix, are charged and installed"
+            );
+            let Some(ImportConversion::Report(report)) = accepted.metadata.import_conversion.as_deref() else { panic!("durable conversion report") };
+            assert!(!report.entries.iter().any(|entry| entry.feature_code == "xcf.metadata_partial"));
+            assert_eq!(report.attachments[0].bytes.as_slice(), record.as_slice());
+        }
+    }
+}
+
+/// Unsupported legacy layouts remain inert even with no native metadata allowance; they must not be mislabeled as newly budget-omitted TIFF packets.
+#[test]
+fn legacy_non_tiff_exif_layout_remains_inert_without_budget_omission_disclosure() {
+    use photocraft_doc::import_conversion::ImportConversion;
+    for payload in [b"legacy unsupported Exif layout".as_slice(), b"Exif\0\0legacy unsupported layout".as_slice()] {
+        let record = parasite("exif-data", payload);
+        let (doc, remaining) = legacy_exif_with_budget(&record, 0);
+        assert_eq!(remaining, 0);
+        assert!(doc.metadata.exif.is_none());
+        let Some(ImportConversion::Report(report)) = doc.metadata.import_conversion.as_deref() else { panic!("durable conversion report") };
+        assert!(!report.entries.iter().any(|entry| entry.feature_code == "xcf.metadata_partial"));
+        assert_eq!(report.attachments[0].bytes.as_slice(), record.as_slice());
+    }
+}
