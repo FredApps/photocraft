@@ -43,6 +43,7 @@ pub struct State {
     pub horizontal: f64,
     pub vertical: f64,
     pub feather: f64,
+    pub padding: f64,
     pub open_borders: bool,
     pub shaded: bool,
     pub channel: Channel,
@@ -90,6 +91,7 @@ impl Default for State {
             horizontal: 0.0,
             vertical: 0.0,
             feather: 0.0,
+            padding: 3.0,
             open_borders: false,
             shaded: true,
             channel: Channel::Material,
@@ -654,6 +656,7 @@ fn pick_map_file(app: &mut PhotocraftApp, kind: &'static str, material: usize, c
                 app.ui.uv_workbench.horizontal = app.session.uv.horizontal;
                 app.ui.uv_workbench.vertical = app.session.uv.vertical;
                 app.ui.uv_workbench.feather = app.session.uv.feather;
+                app.ui.uv_workbench.padding = app.session.uv.padding;
                 app.ui.uv_workbench.open_borders = app.session.uv.open_borders;
                 app.ui.uv_workbench.uv_set = app.session.uv.uv_set;
                 // Reset scene resources, retaining the device attached at application startup.
@@ -701,19 +704,20 @@ pub(crate) fn shell_settings(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui.selectable_value(&mut state.shell_enclosed, false, tl!("Intersecting"));
         ui.selectable_value(&mut state.shell_enclosed, true, tl!("Fully enclosed"));
     });
-    let previous = (state.guard, state.horizontal, state.vertical, state.feather);
+    let previous = (state.guard, state.horizontal, state.vertical, state.feather, state.padding);
     for (label, value) in [
         (tl!("General margin, px"), &mut state.guard),
         (tl!("Horizontal margin, px"), &mut state.horizontal),
         (tl!("Vertical margin, px"), &mut state.vertical),
         (tl!("Inward feather, px"), &mut state.feather),
+        (tl!("Outward padding, px"), &mut state.padding),
     ] {
         ui.horizontal(|ui| {
             ui.label(label);
             ui.add(egui::DragValue::new(value).range(0.0..=1024.0));
         });
     }
-    if previous != (state.guard, state.horizontal, state.vertical, state.feather) && app.session.uv.scene.is_some() {
+    if previous != (state.guard, state.horizontal, state.vertical, state.feather, state.padding) && app.session.uv.scene.is_some() {
         let p = mask_params(&state);
         if command(app, &mut state, "uv.settings", p) {
             app.uv_cache.mask_settings_pending = true;
@@ -722,7 +726,7 @@ pub(crate) fn shell_settings(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     app.ui.uv_workbench = state;
 }
 fn mask_params(state: &State) -> serde_json::Value {
-    json!({"guard":state.guard,"horizontal":state.horizontal,"vertical":state.vertical,"feather":state.feather,"openBorders":state.open_borders})
+    json!({"guard":state.guard,"horizontal":state.horizontal,"vertical":state.vertical,"feather":state.feather,"openBorders":state.open_borders,"padding":state.padding})
 }
 fn flush_mask_settings(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // Dragging numbers must not rasterize a 4K selection on every mouse move.

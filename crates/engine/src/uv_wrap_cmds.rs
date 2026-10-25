@@ -122,7 +122,7 @@ fn stamp(s: &mut Session, p: &Value) -> Result<Value> {
     if s.uv.wrap_mesh.is_none() {
         s.uv.wrap_mesh = Some(Arc::new(photocraft_uv::wrap::Mesh::new(&scene).map_err(|e| bad(e.to_string()))?));
     }
-    let mesh = s.uv.wrap_mesh.as_ref().ok_or_else(|| bad("Missing wrap topology"))?;
+    let mesh = s.uv.wrap_mesh.as_ref().cloned().ok_or_else(|| bad("Missing wrap topology"))?;
     // Spacing is measured on the surface, not across the UV seam's empty atlas gap.
     let mut brush = stroke.brush.clone();
     brush.seed = brush.seed.wrapping_add(stroke.index);
@@ -170,8 +170,12 @@ fn stamp(s: &mut Session, p: &Value) -> Result<Value> {
     let mut visited = 0usize;
     let mut over_budget = false;
     for patch in patches {
+        let topology = s.uv.topology.as_ref().cloned().ok_or_else(|| bad("Missing UV topology"))?;
+        let shell = topology.triangle_shell.get(patch.triangle).copied().ok_or_else(|| bad("Missing UV shell ownership"))?;
+        let padding = s.uv.padding;
+        let apron = crate::uv_cmds::cached_padding(s, material, size[0], size[1], [0, 0], shell, padding)?;
         patch
-            .rasterize(&scene, size, reach, |x, y, at| {
+            .rasterize_with_padding(&scene, size, reach, Some(&apron), padding, |x, y, at| {
                 visited = visited.saturating_add(1);
                 if visited > 4_194_304 {
                     over_budget = true;

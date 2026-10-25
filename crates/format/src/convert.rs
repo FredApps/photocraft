@@ -383,12 +383,40 @@ impl Loader<'_> {
             let surface = self.surface(&p.surface)?;
             if surface.format().mode != photocraft_color::ColorMode::Rgb
                 || !surface.format().alpha
+                || surface.format().sample != base.format().sample
                 || !p.opacity.is_finite()
                 || !(0.0..=1.0).contains(&p.opacity)
             {
                 return Err(crate::FormatError::Corrupt("invalid mask paint layer".into()));
             }
-            layers.push(photocraft_doc::mask_paint::Paint { name: p.name.clone(), visible: p.visible, opacity: p.opacity, surface });
+            let kind = match p.kind.as_str() {
+                "paint" => photocraft_doc::mask_paint::EffectKind::Paint,
+                "fill" if p.value.is_finite() && (0.0..=1.0).contains(&p.value) => photocraft_doc::mask_paint::EffectKind::Fill { value: p.value },
+                "levels"
+                    if p.input_black.is_finite()
+                        && p.input_white.is_finite()
+                        && p.output_black.is_finite()
+                        && p.output_white.is_finite()
+                        && p.gamma.is_finite()
+                        && (0.0..=1.0).contains(&p.input_black)
+                        && (0.0..=1.0).contains(&p.input_white)
+                        && (0.0..=1.0).contains(&p.output_black)
+                        && (0.0..=1.0).contains(&p.output_white)
+                        && (0.01..=100.0).contains(&p.gamma)
+                        && p.input_black < p.input_white
+                        && p.output_black <= p.output_white =>
+                {
+                    photocraft_doc::mask_paint::EffectKind::Levels {
+                        input_black: p.input_black,
+                        gamma: p.gamma,
+                        input_white: p.input_white,
+                        output_black: p.output_black,
+                        output_white: p.output_white,
+                    }
+                }
+                _ => return Err(FormatError::corrupt("invalid mask paint effect")),
+            };
+            layers.push(photocraft_doc::mask_paint::Paint { name: p.name.clone(), visible: p.visible, opacity: p.opacity, surface, kind });
         }
         Ok(Some(photocraft_doc::mask_paint::Stack { base, layers, active: s.active }))
     }
@@ -728,7 +756,28 @@ fn mask_paint_m(m: &LayerMask, sink: &mut dyn Sink) -> Option<MaskPaintM> {
         layers: s
             .layers
             .iter()
-            .map(|p| MaskPaintLayerM { name: p.name.clone(), visible: p.visible, opacity: p.opacity, surface: surface_m(&p.surface, sink) })
+            .map(|p| {
+                let (kind, value, input_black, gamma, input_white, output_black, output_white) = match &p.kind {
+                    photocraft_doc::mask_paint::EffectKind::Paint => ("paint", 1.0, 0.0, 1.0, 1.0, 0.0, 1.0),
+                    photocraft_doc::mask_paint::EffectKind::Fill { value } => ("fill", *value, 0.0, 1.0, 1.0, 0.0, 1.0),
+                    photocraft_doc::mask_paint::EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
+                        ("levels", 1.0, *input_black, *gamma, *input_white, *output_black, *output_white)
+                    }
+                };
+                MaskPaintLayerM {
+                    name: p.name.clone(),
+                    visible: p.visible,
+                    opacity: p.opacity,
+                    surface: surface_m(&p.surface, sink),
+                    kind: kind.into(),
+                    value,
+                    input_black,
+                    gamma,
+                    input_white,
+                    output_black,
+                    output_white,
+                }
+            })
             .collect(),
     })
 }

@@ -1,7 +1,7 @@
 use photocraft_color::PixelFormat;
 use photocraft_doc::{
     LayerId, LayerMask,
-    mask_paint::{Paint, Stack},
+    mask_paint::{EffectKind, Paint, Stack},
 };
 use photocraft_raster::Surface;
 use serde_json::json;
@@ -19,7 +19,7 @@ fn app() -> (PhotocraftApp, LayerId) {
     let mut mask = LayerMask::hide_all();
     mask.paint = Some(Stack {
         base,
-        layers: vec![Paint { name: "Opacity".into(), visible: true, opacity: 1.0, surface: Surface::with_default(PixelFormat::RGBA8, &[1.0, 0.0, 0.0, 0.5]) }],
+        layers: vec![Paint { name: "Opacity".into(), visible: true, opacity: 1.0, surface: Surface::with_default(PixelFormat::RGBA8, &[1.0, 0.0, 0.0, 0.5]), kind: EffectKind::Paint }],
         active: 0,
     });
     std::sync::Arc::make_mut(&mut state.doc).layer_mut(id).unwrap().mask = Some(mask);
@@ -121,6 +121,7 @@ fn changing_preview_target_commits_previous_value_then_keeps_new_preview() {
             visible: true,
             opacity: 0.8,
             surface: Surface::with_default(PixelFormat::RGBA8, &[1.0, 0.0, 0.0, 0.5]),
+            kind: EffectKind::Paint,
         }],
         active: 0,
     });
@@ -145,6 +146,7 @@ fn changing_paint_index_commits_old_preview_and_refreshes_same_document_revision
         visible: true,
         opacity: 0.8,
         surface: paint.surface,
+        kind: EffectKind::Paint,
     });
     set(&mut app, layer, 0, 0.25);
 
@@ -175,6 +177,7 @@ fn stale_foreign_preview_is_retained_and_does_not_apply_new_target() {
             visible: true,
             opacity: 0.8,
             surface: Surface::with_default(PixelFormat::RGBA8, &[1.0, 0.0, 0.0, 0.5]),
+            kind: EffectKind::Paint,
         }],
         active: 0,
     });

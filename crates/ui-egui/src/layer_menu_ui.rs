@@ -147,6 +147,13 @@ pub fn show(app: &crate::PhotocraftApp, ui: &mut egui::Ui, l: &Layer, on_set: bo
     crate::widgets::menu_scroll(ui, |ui| {
         ui.set_min_width(220.0);
         let mut rename = false;
+        #[cfg(feature = "uv-workbench")]
+        if app.ui.workspace == "3D" && app.session.uv.scene.is_some() && l.mask.is_some() {
+            ui.push_id(("mask-effect-add", l.id.0), |ui| {
+                crate::uv_mask_paint::add_menu(ui, l.id.0, actions);
+            });
+            ui.separator();
+        }
         let has_selection = app.session.active().is_some_and(|s| s.doc.selection.is_some());
         items(app, ui, l, on_set, entries(l, on_set, has_selection), actions);
         ui.separator();
@@ -165,12 +172,9 @@ pub fn show_mask(app: &crate::PhotocraftApp, ui: &mut egui::Ui, l: &Layer, actio
     let Some(mask) = &l.mask else { return };
     #[cfg(feature = "uv-workbench")]
     if app.ui.workspace == "3D" && app.session.uv.scene.is_some() {
-        if ui.button(tl!("Add Paint layer")).clicked() {
-            actions.push(("layer.select".into(), json!({"layer":l.id.0})));
-            actions.push(("uv.maskPaint.add".into(), json!({"layer":l.id.0})));
-            actions.push(("ui.maskTarget".into(), json!(true)));
-            ui.close();
-        }
+        ui.push_id(("mask-effect-add", l.id.0), |ui| {
+            crate::uv_mask_paint::add_menu(ui, l.id.0, actions);
+        });
         ui.separator();
     }
     crate::widgets::menu_scroll(ui, |ui| {

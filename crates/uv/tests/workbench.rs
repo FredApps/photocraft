@@ -21,7 +21,30 @@ fn options(material: usize, shell: usize) -> MaskOptions {
         vertical: 0.0,
         feather: 0.0,
         open_borders: false,
+        padding: 0.0,
     }
+}
+
+#[test]
+fn outward_padding_fills_only_empty_space_around_the_selected_shell() {
+    let scene = fixture("two-shells.obj");
+    let topology = Topology::build(&scene).unwrap();
+    let shell = topology.pick_uv(&scene, [0.2, 0.5], topology.shells[0].material)[0];
+    let material = topology.shells[shell].material;
+    let occupancy = topology.occupancy_mask(&scene, 128, 128, material, [0, 0]).unwrap();
+    let padding = topology.outward_padding_mask(128, 128, material, [0, 0], shell, 3.0, &occupancy).unwrap();
+    let mut options = options(material, shell);
+    options.guard = 0.0;
+    options.padding = 3.0;
+    let mask = topology.mask_with_occupancy(&scene, &options, &occupancy).unwrap();
+    let mut added = 0usize;
+    padding.for_each(|x, y| {
+        assert!((0..128).contains(&x) && (0..128).contains(&y));
+        assert!(!occupancy.contains(x, y), "padding crossed onto occupied UV geometry at {x},{y}");
+        assert_eq!(mask[y as usize * 128 + x as usize], 1.0);
+        added += 1;
+    });
+    assert!(added > 0, "the shell should receive an exterior apron");
 }
 
 #[test]
@@ -396,4 +419,50 @@ fn tangent_chart_crosses_a_fold_and_uv_seam_without_touching_disconnected_faces(
     }
     assert!(left > 0 && right > 0, "wrap should reach both disjoint atlas islands");
     assert_eq!(outside, 0, "the empty UV gap is never painted");
+}
+
+#[test]
+fn tangent_chart_emits_only_cached_shell_apron_pixels_outside_its_uv_triangles() {
+    let scene = fixture("two-shells.obj");
+    let topology = Topology::build(&scene).unwrap();
+    let material = topology.shells[0].material;
+    let occupancy = topology.occupancy_mask(&scene, 128, 128, material, [0, 0]).unwrap();
+    let mesh = wrap::Mesh::new(&scene).unwrap();
+    let start = scene
+        .triangles
+        .iter()
+        .position(|t| {
+            t.corners.iter().all(|c| c.vertex < 4)
+                && topology::barycentric(
+                    [-0.02, 0.0],
+                    t.corners.map(|c| {
+                        let p = scene.positions[c.vertex];
+                        [p[0], p[1]]
+                    }),
+                )
+                .is_some()
+        })
+        .unwrap();
+    let shell = topology.triangle_shell[start];
+    let apron = topology.outward_padding_mask(128, 128, material, [0, 0], shell, 3.0, &occupancy).unwrap();
+    let patches = mesh.chart(&scene, start, [-0.02, 0.0, 0.0], [128, 128], 12.0).unwrap();
+    let (mut base, mut padded) = (BTreeSet::new(), BTreeSet::new());
+    for patch in patches {
+        patch
+            .rasterize(&scene, [128, 128], 12.0, |x, y, _| {
+                base.insert((x, y));
+            })
+            .unwrap();
+        patch
+            .rasterize_with_padding(&scene, [128, 128], 12.0, Some(&apron), 3.0, |x, y, _| {
+                padded.insert((x, y));
+            })
+            .unwrap();
+    }
+    let added: Vec<_> = padded.difference(&base).copied().collect();
+    assert!(!added.is_empty(), "wrapped brush coverage should extend over the shell border");
+    for (x, y) in added {
+        assert!(apron.contains(x, y));
+        assert!(!occupancy.contains(x, y), "wrap apron touched neighboring UV geometry");
+    }
 }

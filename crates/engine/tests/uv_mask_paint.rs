@@ -93,6 +93,33 @@ fn invalid_stack_edits_preserve_document() {
 }
 
 #[test]
+fn fill_and_levels_layers_compose_modify_undo_and_round_trip() {
+    let mut s = fixture(16);
+    s.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.25})).unwrap();
+    assert!((value(&s) - 0.25).abs() < 0.01);
+    s.execute("uv.maskPaint.add", json!({"kind":"levels","input_black":0.0,"gamma":1.0,"input_white":0.5,"output_black":0.0,"output_white":1.0})).unwrap();
+    assert!((value(&s) - 0.5).abs() < 0.01);
+    s.execute("uv.maskPaint.modify", json!({"index":1,"output_white":0.8,"opacity":0.5})).unwrap();
+    assert!((value(&s) - 0.325).abs() < 0.02);
+    let before_invalid = s.active().unwrap().doc.clone();
+    for params in [json!({"index":1,"gamma":0.0}), json!({"index":1,"input_black":0.8}), json!({"index":0,"gamma":2.0})] {
+        assert!(s.execute("uv.maskPaint.modify", params).is_err());
+        assert_eq!(s.active().unwrap().doc, before_invalid);
+    }
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!((value(&s) - 0.5).abs() < 0.01);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("effects.pcuv");
+    s.execute("uv.project.save", json!({"path":path})).unwrap();
+    let mut restored = Session::new();
+    restored.execute("uv.project.load", json!({"path":path})).unwrap();
+    assert!((value(&restored) - 0.5).abs() < 0.01);
+    let stack = restored.active().unwrap().doc.layer(restored.active().unwrap().active_layer.unwrap()).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap();
+    assert!(matches!(&stack.layers[0].kind, photocraft_doc::mask_paint::EffectKind::Fill { value } if (*value - 0.25).abs() < f32::EPSILON));
+    assert!(matches!(&stack.layers[1].kind, photocraft_doc::mask_paint::EffectKind::Levels { input_white, .. } if (*input_white - 0.5).abs() < f32::EPSILON));
+}
+
+#[test]
 fn opacity_drag_is_one_undo_and_does_not_rewrite_untouched_mask_tiles() {
     let mut s = fixture(16);
     let id = s.active().unwrap().active_layer.unwrap();

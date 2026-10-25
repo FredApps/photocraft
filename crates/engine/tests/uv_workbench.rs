@@ -301,7 +301,7 @@ fn fbx_normal_map_auto_opens_as_numeric_rgb_document() {
 fn margins_roundtrip_and_deselect_clears_both_map_selections() {
     let mut s = scene();
     choose(&mut s);
-    s.execute("uv.settings", json!({"guard":3,"horizontal":5,"vertical":7})).unwrap();
+    s.execute("uv.settings", json!({"guard":3,"horizontal":5,"vertical":7,"padding":4})).unwrap();
     s.execute("uv.mask.apply", json!({})).unwrap();
     let color = s.active().unwrap().doc.id;
     s.execute("uv.texture.create", json!({"channel":"normal","width":128,"height":128})).unwrap();
@@ -313,7 +313,7 @@ fn margins_roundtrip_and_deselect_clears_both_map_selections() {
     s.execute("uv.project.save", json!({"path":path})).unwrap();
     let mut restored = Session::new();
     restored.execute("uv.project.load", json!({"path":path})).unwrap();
-    assert_eq!((restored.uv.guard, restored.uv.horizontal, restored.uv.vertical), (3.0, 5.0, 7.0));
+    assert_eq!((restored.uv.guard, restored.uv.horizontal, restored.uv.vertical, restored.uv.padding), (3.0, 5.0, 7.0, 4.0));
     s.execute("select.deselect", json!({})).unwrap();
     assert!(s.uv.selected.is_empty());
     assert!(s.documents().iter().filter(|d| [color, normal].contains(&d.doc.id)).all(|d| d.doc.selection.is_none()));

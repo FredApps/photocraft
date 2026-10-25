@@ -6,7 +6,7 @@
 //! (`{"scattering": {"enabled": true}}`). Strokes are deterministic: the jitter seed is the `seed`
 //! param or a hash of the points, so a journaled command replays to identical pixels.
 
-use photocraft_doc::LayerContent;
+use photocraft_doc::{Document, LayerContent, LayerId, mask_paint::EffectKind};
 use photocraft_geom::Rect;
 use photocraft_paint::mixer::{MixerSettings, apply_mixer_stroke};
 use photocraft_paint::replace::{Limits, ReplaceMode, ReplaceSettings, Sampling, apply_color_replacement, color_replacement_effect};
@@ -16,6 +16,7 @@ use photocraft_paint::{
 };
 use photocraft_raster::Surface;
 use serde_json::{Value, json};
+use std::collections::{HashMap, VecDeque};
 
 use crate::commands::{CommandSpec, has_paintable, is_mask_target, paint_surface};
 use crate::{EngineError, Result, Session};
@@ -472,6 +473,119 @@ pub struct LiveStroke {
     points: Vec<StrokePoint>,
     /// The document and revision the stroke started on.
     base: (photocraft_doc::DocId, u64),
+    /// Unquantized prefixes below the active mask Paint layer, kept only for this live stroke.
+    mask_prefix: Option<MaskPrefixCache>,
+}
+
+/// Reuses the immutable portion of a mask stack while the active Paint surface changes.
+/// Each entry is one 32×32 f32 block (4 KiB); the FIFO cap bounds live-stroke memory at 2 MiB.
+struct MaskPrefixCache {
+    layer: LayerId,
+    active: usize,
+    blocks: HashMap<MaskPrefixBlock, Vec<f32>>,
+    order: VecDeque<MaskPrefixBlock>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct MaskPrefixBlock {
+    x: i32,
+    y: i32,
+}
+
+impl MaskPrefixBlock {
+    const SIDE: i32 = 32;
+
+    fn containing(x: i32, y: i32) -> Self {
+        Self { x: x.div_euclid(Self::SIDE), y: y.div_euclid(Self::SIDE) }
+    }
+
+    fn rect(self) -> Rect {
+        Rect::from_xywh(self.x.saturating_mul(Self::SIDE), self.y.saturating_mul(Self::SIDE), Self::SIDE as u32, Self::SIDE as u32)
+    }
+}
+
+impl MaskPrefixCache {
+    const MAX_BLOCKS: usize = 512;
+
+    fn begin(doc: &Document, layer: Option<LayerId>, params: &Value) -> Option<Self> {
+        if !is_mask_target(params) {
+            return None;
+        }
+        let layer = layer?;
+        let stack = doc.layer(layer)?.mask.as_ref()?.paint.as_ref()?;
+        let active = stack.active;
+        if !matches!(stack.layers.get(active)?.kind, EffectKind::Paint) {
+            return None;
+        }
+        Some(Self { layer, active, blocks: HashMap::new(), order: VecDeque::new() })
+    }
+
+    fn refresh(&mut self, doc: &mut Document, damage: Rect) -> bool {
+        if damage.is_empty() || damage.tile_count() > 64 {
+            return false;
+        }
+        let first = MaskPrefixBlock::containing(damage.x0, damage.y0);
+        let last = MaskPrefixBlock::containing(damage.x1.saturating_sub(1), damage.y1.saturating_sub(1));
+        let block_count = (i64::from(last.x) - i64::from(first.x) + 1) as u64 * (i64::from(last.y) - i64::from(first.y) + 1) as u64;
+        if block_count > Self::MAX_BLOCKS as u64 {
+            return false;
+        }
+        for y in first.y..=last.y {
+            for x in first.x..=last.x {
+                let block = MaskPrefixBlock { x, y };
+                let block_rect = block.rect();
+                let region = damage.intersect(&block_rect);
+                if region.is_empty() {
+                    continue;
+                }
+                if !self.blocks.contains_key(&block) {
+                    let prefix = {
+                        let Some(stack) = doc.layer(self.layer).and_then(|layer| layer.mask.as_ref()).and_then(|mask| mask.paint.as_ref()) else {
+                            return false;
+                        };
+                        if stack.active != self.active || !matches!(stack.layers.get(self.active).map(|layer| &layer.kind), Some(EffectKind::Paint)) {
+                            return false;
+                        }
+                        let Some(prefix) = photocraft_compose::mask_paint::compose_prefix(stack, self.active, block_rect) else { return false };
+                        prefix
+                    };
+                    while self.blocks.len() >= Self::MAX_BLOCKS {
+                        let Some(evicted) = self.order.pop_front() else { return false };
+                        self.blocks.remove(&evicted);
+                    }
+                    self.order.push_back(block);
+                    self.blocks.insert(block, prefix);
+                }
+                let Some(prefix) = self.blocks.get(&block) else { return false };
+                let Some(initial) = crop_mask_prefix(prefix, block_rect, region) else { return false };
+                let Some(mask) = doc.layer_mut(self.layer).and_then(|layer| layer.mask.as_mut()) else { return false };
+                if !photocraft_compose::mask_paint::refresh_from_prefix(mask, region, self.active, &initial) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
+fn crop_mask_prefix(prefix: &[f32], tile: Rect, region: Rect) -> Option<Vec<f32>> {
+    if !tile.contains_rect(&region) || region.is_empty() {
+        return None;
+    }
+    let width = usize::try_from(region.width()).ok()?;
+    let height = usize::try_from(region.height()).ok()?;
+    let stride = usize::try_from(tile.width()).ok()?;
+    if prefix.len() != stride.checked_mul(usize::try_from(tile.height()).ok()?)? {
+        return None;
+    }
+    let x0 = usize::try_from(region.x0.checked_sub(tile.x0)?).ok()?;
+    let y0 = usize::try_from(region.y0.checked_sub(tile.y0)?).ok()?;
+    let mut cropped = Vec::with_capacity(width.checked_mul(height)?);
+    for y in y0..y0.checked_add(height)? {
+        let start = y.checked_mul(stride)?.checked_add(x0)?;
+        cropped.extend_from_slice(prefix.get(start..start.checked_add(width)?)?);
+    }
+    Some(cropped)
 }
 
 /// A finished live stroke offered to its own commit ([`Session::offer_live_stroke`],
@@ -543,6 +657,7 @@ impl LiveStroke {
         let mirrors: Vec<_> = (0..symmetry.as_ref().map_or(0, |s| s.mirror_count())).map(|_| StrokeRenderer::new(&brush, Some(surf.format()), zoom)).collect();
         let mirror_distinct = vec![false; mirrors.len()];
         let pre = surf.clone();
+        let mask_prefix = MaskPrefixCache::begin(&doc, layer, p);
         let mut live = Self {
             doc: std::sync::Arc::new(doc),
             seed,
@@ -561,6 +676,7 @@ impl LiveStroke {
             cmyk: doc_cmyk_space(s),
             points: Vec::new(),
             base,
+            mask_prefix,
         };
         live.push(&pts)?;
         Ok(live)
@@ -589,6 +705,20 @@ impl LiveStroke {
     /// smoothing still catching up)? See `photocraft_paint::dynamics::DabGenerator::wants_time`.
     pub fn wants_time(&self) -> bool {
         self.renderer.wants_time()
+    }
+
+    fn refresh_mask_preview(&mut self, damage: Rect) {
+        if damage.is_empty() || !is_mask_target(&self.params) {
+            return;
+        }
+        let Some(id) = self.layer else { return };
+        let doc = std::sync::Arc::make_mut(&mut self.doc);
+        if self.mask_prefix.as_mut().is_some_and(|cache| cache.refresh(doc, damage)) {
+            return;
+        }
+        if let Some(mask) = doc.layer_mut(id).and_then(|layer| layer.mask.as_mut()) {
+            photocraft_compose::mask_paint::refresh(mask, Some(damage));
+        }
     }
 
     /// Render more points; returns the rectangle that changed. The doc shows the stroke as
@@ -630,11 +760,7 @@ impl LiveStroke {
                 dmg = dmg.union(&StrokeRenderer::composite_union_live(&mut renderers, &mut live, full, &self.pre, surf, self.sel.as_ref(), self.lock));
                 self.tail = old.union(&live.bounds());
                 self.union_live = Some((live, passes));
-                if let Some(id) = self.layer
-                    && let Some(mask) = std::sync::Arc::make_mut(&mut self.doc).layer_mut(id).and_then(|l| l.mask.as_mut())
-                {
-                    photocraft_compose::mask_paint::refresh(mask, Some(dmg));
-                }
+                self.refresh_mask_preview(dmg);
                 return Ok(dmg);
             }
             let mut dmg = Rect::EMPTY;
@@ -650,11 +776,7 @@ impl LiveStroke {
                 self.tail = tail.composite(&self.pre, surf, self.sel.as_ref(), self.lock, false);
                 dmg = dmg.union(&self.tail);
             }
-            if let Some(id) = self.layer
-                && let Some(mask) = std::sync::Arc::make_mut(&mut self.doc).layer_mut(id).and_then(|l| l.mask.as_mut())
-            {
-                photocraft_compose::mask_paint::refresh(mask, Some(dmg));
-            }
+            self.refresh_mask_preview(dmg);
             Ok(dmg)
         })
     }

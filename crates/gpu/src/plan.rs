@@ -574,6 +574,7 @@ impl<'a> Planner<'a> {
             base.adjust_kind = 0;
             base.tex = Some(TexUse { layer: layer.id, role: Role::Mask, surface: SurfaceRef::Doc(&stack.base) });
             base.color[0] = stack.base.default_pixel().first().copied().unwrap_or(1.0);
+            let mut default = base.color[0];
             let mut coverage = self.emit(base);
             for (index, paint) in stack.layers.iter().enumerate() {
                 if !paint.opacity.is_finite() || !(0.0..=1.0).contains(&paint.opacity) {
@@ -586,13 +587,51 @@ impl<'a> Planner<'a> {
                     return Err(Unsupported("Paint mask has too many layers for the GPU compositor".into()));
                 };
                 let mut p = Pass::new(Kernel::MaskStack, 0);
-                p.adjust_kind = 1;
                 p.a = Some(coverage);
                 p.opacity = paint.opacity;
-                for (dst, value) in p.color.iter_mut().zip(paint.surface.default_pixel().iter()) {
-                    *dst = *value;
+                match &paint.kind {
+                    photocraft_doc::mask_paint::EffectKind::Paint => {
+                        p.adjust_kind = 1;
+                        for (dst, value) in p.color.iter_mut().zip(paint.surface.default_pixel().iter()) {
+                            *dst = *value;
+                        }
+                        p.tex = Some(TexUse { layer: layer.id, role: Role::MaskPaint(index), surface: SurfaceRef::Doc(&paint.surface) });
+                        let source = paint.surface.default_pixel();
+                        let alpha = source.get(3).copied().unwrap_or(0.0) * paint.opacity;
+                        default = source.first().copied().unwrap_or(0.0) * alpha + default * (1.0 - alpha);
+                    }
+                    photocraft_doc::mask_paint::EffectKind::Fill { value } => {
+                        if !value.is_finite() || !(0.0..=1.0).contains(value) {
+                            return Err(Unsupported("Mask Fill contains an invalid value".into()));
+                        }
+                        p.adjust_kind = 3;
+                        p.color[0] = *value;
+                        default = *value * paint.opacity + default * (1.0 - paint.opacity);
+                    }
+                    photocraft_doc::mask_paint::EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
+                        if !input_black.is_finite()
+                            || !gamma.is_finite()
+                            || !input_white.is_finite()
+                            || !output_black.is_finite()
+                            || !output_white.is_finite()
+                            || !(0.0..=1.0).contains(input_black)
+                            || !(0.01..=100.0).contains(gamma)
+                            || !(0.0..=1.0).contains(input_white)
+                            || !(0.0..=1.0).contains(output_black)
+                            || !(0.0..=1.0).contains(output_white)
+                            || input_black >= input_white
+                            || output_black > output_white
+                        {
+                            return Err(Unsupported("Mask Levels contains invalid settings".into()));
+                        }
+                        p.adjust_kind = 4;
+                        p.params[0] = [*input_black, *gamma, *input_white, *output_black];
+                        p.params[1][0] = *output_white;
+                        let normalized = ((default - input_black) / (input_white - input_black)).clamp(0.0, 1.0);
+                        let adjusted = output_black + normalized.powf(1.0 / gamma) * (output_white - output_black);
+                        default = adjusted * paint.opacity + default * (1.0 - paint.opacity);
+                    }
                 }
-                p.tex = Some(TexUse { layer: layer.id, role: Role::MaskPaint(index), surface: SurfaceRef::Doc(&paint.surface) });
                 coverage = self.emit(p);
             }
             let mut quantize = Pass::new(Kernel::MaskStack, 0);
@@ -602,12 +641,7 @@ impl<'a> Planner<'a> {
                 quantize.params[0][0] = q;
             }
             let coverage = self.emit(quantize);
-            return Ok(Some(MaskUse {
-                layer: layer.id,
-                source: MaskSource::Slot(coverage),
-                density: m.density,
-                default: stack.base.default_pixel().first().copied().unwrap_or(1.0),
-            }));
+            return Ok(Some(MaskUse { layer: layer.id, source: MaskSource::Slot(coverage), density: m.density, default }));
         }
         if let Some(c) = photocraft_compose::masks::combined_mask(layer, self.cx.canvas) {
             let default = c.default_pixel().first().copied().unwrap_or(1.0);

@@ -1,6 +1,10 @@
-//! Incremental compositor for experimental mask brush layers.
-use photocraft_doc::{LayerMask, mask_paint::Stack};
+//! Incremental compositor for editable mask stack effects.
+use photocraft_doc::{
+    LayerMask,
+    mask_paint::{EffectKind, Stack},
+};
 use photocraft_geom::Rect;
+
 /// Refresh changed tiles after an edit; property/order changes rebuild the stack.
 pub fn refresh_changes(mask: &mut LayerMask, old: Option<&Stack>) {
     let Some(stack) = &mask.paint else { return };
@@ -8,31 +12,45 @@ pub fn refresh_changes(mask: &mut LayerMask, old: Option<&Stack>) {
         refresh(mask, None);
         return;
     };
-    if stack.base != old.base || stack.layers.iter().chain(&old.layers).any(|p| p.surface.default_pixel().get(3).is_some_and(|a| *a != 0.0)) {
+    if stack.base != old.base || stack.layers.len() != old.layers.len() {
         refresh(mask, None);
         return;
     }
-    if stack.layers.len() != old.layers.len() {
-        let mut tiles = std::collections::BTreeSet::new();
-        for paint in stack.layers.iter().chain(&old.layers) {
-            tiles.extend(paint.surface.tiles().map(|(c, _)| *c));
-        }
-        refresh_tiles(mask, tiles.into_iter().collect());
+    if stack
+        .layers
+        .iter()
+        .chain(&old.layers)
+        .any(|layer| matches!(&layer.kind, EffectKind::Paint) && layer.surface.default_pixel().get(3).is_some_and(|alpha| *alpha != 0.0))
+    {
+        refresh(mask, None);
         return;
     }
     let mut changed = std::collections::BTreeSet::new();
-    for (a, b) in stack.layers.iter().zip(&old.layers) {
-        if a.opacity != b.opacity || a.visible != b.visible {
-            changed.extend(a.surface.tiles().map(|(coord, _)| *coord));
-            changed.extend(b.surface.tiles().map(|(coord, _)| *coord));
+    for (now, before) in stack.layers.iter().zip(&old.layers) {
+        if now.surface.default_pixel() != before.surface.default_pixel() {
+            if !matches!(&now.kind, EffectKind::Paint) || !matches!(&before.kind, EffectKind::Paint) {
+                refresh(mask, None);
+                return;
+            }
+            changed.extend(now.surface.tiles().map(|(coord, _)| *coord));
+            changed.extend(before.surface.tiles().map(|(coord, _)| *coord));
         }
-        for (coord, tile) in a.surface.tiles() {
-            if b.surface.tile(*coord).is_none_or(|prior| !std::sync::Arc::ptr_eq(prior, tile)) {
+        if now.visible != before.visible || now.opacity != before.opacity || now.kind != before.kind {
+            // Fill and Levels can affect every pixel in the accumulated mask.
+            if !matches!(&now.kind, EffectKind::Paint) || !matches!(&before.kind, EffectKind::Paint) {
+                refresh(mask, None);
+                return;
+            }
+            changed.extend(now.surface.tiles().map(|(coord, _)| *coord));
+            changed.extend(before.surface.tiles().map(|(coord, _)| *coord));
+        }
+        for (coord, tile) in now.surface.tiles() {
+            if before.surface.tile(*coord).is_none_or(|prior| !std::sync::Arc::ptr_eq(prior, tile)) {
                 changed.insert(*coord);
             }
         }
-        for (coord, _) in b.surface.tiles() {
-            if a.surface.tile(*coord).is_none() {
+        for (coord, _) in before.surface.tiles() {
+            if now.surface.tile(*coord).is_none() {
                 changed.insert(*coord);
             }
         }
@@ -45,27 +63,20 @@ pub fn refresh_changes(mask: &mut LayerMask, old: Option<&Stack>) {
         refresh_tiles(mask, changed.into_iter().collect());
     }
 }
+
 /// Recompose only the damaged rectangle, in bounded scanline bands.
 pub fn refresh(mask: &mut LayerMask, region: Option<Rect>) {
     let Some(stack) = &mask.paint else { return };
-    let mut default = stack.base.default_pixel().first().copied().unwrap_or(1.0);
-    for paint in &stack.layers {
-        if !paint.visible || paint.opacity <= 0.0 {
-            continue;
-        }
-        let source = paint.surface.default_pixel();
-        let alpha = source.get(3).copied().unwrap_or(0.0) * paint.opacity;
-        let value = source.first().copied().unwrap_or(0.0);
-        default = value * alpha + default * (1.0 - alpha);
-    }
+    let default = composite_default(stack);
     mask.surface.set_default_pixel(&[default]);
     let Some(bounds) = region else {
-        // Sparse strokes can be far apart: never scan the empty atlas between them.
         let mut tiles = std::collections::BTreeSet::new();
         tiles.extend(mask.surface.tiles().map(|(c, _)| *c));
         tiles.extend(stack.base.tiles().map(|(c, _)| *c));
         for paint in &stack.layers {
-            tiles.extend(paint.surface.tiles().map(|(c, _)| *c));
+            if matches!(&paint.kind, EffectKind::Paint) {
+                tiles.extend(paint.surface.tiles().map(|(c, _)| *c));
+            }
         }
         refresh_tiles(mask, tiles.into_iter().collect());
         return;
@@ -78,58 +89,169 @@ pub fn refresh(mask: &mut LayerMask, region: Option<Rect>) {
         let end = y.saturating_add(32).min(bounds.y1);
         let band = Rect::new(bounds.x0, y, bounds.x1, end);
         let mut pixels = stack.base.read_region(band);
-        for p in &stack.layers {
-            if !p.visible || p.opacity <= 0.0 {
+        for layer in &stack.layers {
+            if !layer.visible || layer.opacity <= 0.0 {
                 continue;
             }
-            let source = p.surface.read_region(band);
-            for (dst, [value, _, _, alpha]) in pixels.iter_mut().zip(source.as_chunks::<4>().0) {
-                let a = *alpha * p.opacity;
-                *dst = *value * a + *dst * (1.0 - a);
+            match &layer.kind {
+                EffectKind::Paint => {
+                    let source = layer.surface.read_region(band);
+                    for (dst, px) in pixels.iter_mut().zip(source.as_chunks::<4>().0) {
+                        let alpha = px[3] * layer.opacity;
+                        *dst = px[0] * alpha + *dst * (1.0 - alpha);
+                    }
+                }
+                EffectKind::Fill { value } => {
+                    for dst in &mut pixels {
+                        *dst = *value * layer.opacity + *dst * (1.0 - layer.opacity);
+                    }
+                }
+                EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
+                    for dst in &mut pixels {
+                        let adjusted = levels(*dst, *input_black, *gamma, *input_white, *output_black, *output_white);
+                        *dst = adjusted * layer.opacity + *dst * (1.0 - layer.opacity);
+                    }
+                }
             }
         }
         mask.surface.write_region(band, &pixels);
         y = end;
     }
-    // Keep constant cache tiles: pruning the entire mask here would scan every
-    // previously touched tile on each live brush update.
 }
 
-/// Recompose independent cached tiles in parallel on native builds. Each tile is evaluated in
-/// f32 and encoded once into the destination mask format, matching the canonical CPU compositor.
+fn composite_default(stack: &Stack) -> f32 {
+    let mut value = stack.base.default_pixel().first().copied().unwrap_or(1.0);
+    for layer in &stack.layers {
+        if layer.visible && layer.opacity > 0.0 {
+            value = match &layer.kind {
+                EffectKind::Paint => {
+                    let source = layer.surface.default_pixel();
+                    let alpha = source.get(3).copied().unwrap_or(0.0) * layer.opacity;
+                    source.first().copied().unwrap_or(0.0) * alpha + value * (1.0 - alpha)
+                }
+                EffectKind::Fill { value: fill } => *fill * layer.opacity + value * (1.0 - layer.opacity),
+                EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
+                    let adjusted = levels(value, *input_black, *gamma, *input_white, *output_black, *output_white);
+                    adjusted * layer.opacity + value * (1.0 - layer.opacity)
+                }
+            };
+        }
+    }
+    value
+}
+
+fn levels(value: f32, input_black: f32, gamma: f32, input_white: f32, output_black: f32, output_white: f32) -> f32 {
+    let width = (input_white - input_black).max(f32::EPSILON);
+    let normalized = ((value - input_black) / width).clamp(0.0, 1.0);
+    let exponent = 1.0 / gamma.clamp(0.01, 100.0);
+    output_black + normalized.powf(exponent) * (output_white - output_black)
+}
+
+/// Composite the stack prefix into an unquantized grayscale buffer for one bounded region.
+/// `end_layer` is exclusive; tile-aligned regions are recommended for stroke preview caches.
+pub fn compose_prefix(stack: &Stack, end_layer: usize, region: Rect) -> Option<Vec<f32>> {
+    if end_layer > stack.layers.len() || region.is_empty() {
+        return None;
+    }
+    let count = usize::try_from(region.width()).ok()?.checked_mul(usize::try_from(region.height()).ok()?)?;
+    if count > 256 * 256 * 4 {
+        return None;
+    }
+    let pixels = stack.base.read_region(region);
+    Some(composite_layers(stack, 0, end_layer, region, pixels))
+}
+
+/// Apply stack layers from `start_layer` onward to a cached prefix buffer and write one region.
+/// `initial` must be an unquantized, row-major grayscale buffer matching `region` exactly.
+pub fn refresh_from_prefix(mask: &mut LayerMask, region: Rect, start_layer: usize, initial: &[f32]) -> bool {
+    if region.is_empty() {
+        return false;
+    }
+    let Some(stack) = mask.paint.as_ref() else { return false };
+    let Some(count) = usize::try_from(region.width()).ok().and_then(|w| usize::try_from(region.height()).ok().and_then(|h| w.checked_mul(h))) else {
+        return false;
+    };
+    if count != initial.len() || start_layer > stack.layers.len() || count > 256 * 256 * 4 {
+        return false;
+    }
+    let pixels = composite_layers(stack, start_layer, stack.layers.len(), region, initial.to_vec());
+    mask.surface.set_default_pixel(&[composite_default(stack)]);
+    mask.surface.write_region(region, &pixels);
+    true
+}
+
+fn composite_layers(stack: &Stack, start_layer: usize, end_layer: usize, region: Rect, mut pixels: Vec<f32>) -> Vec<f32> {
+    for layer in stack.layers.get(start_layer..end_layer).unwrap_or_default() {
+        if !layer.visible || layer.opacity <= 0.0 {
+            continue;
+        }
+        match &layer.kind {
+            EffectKind::Paint => {
+                composite_paint_region(&mut pixels, &layer.surface, region, layer.opacity);
+            }
+            EffectKind::Fill { value } => {
+                for dst in &mut pixels {
+                    *dst = *value * layer.opacity + *dst * (1.0 - layer.opacity);
+                }
+            }
+            EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
+                for dst in &mut pixels {
+                    let adjusted = levels(*dst, *input_black, *gamma, *input_white, *output_black, *output_white);
+                    *dst = adjusted * layer.opacity + *dst * (1.0 - layer.opacity);
+                }
+            }
+        }
+    }
+    pixels
+}
+
+fn composite_paint_region(dst: &mut [f32], surface: &photocraft_raster::Surface, region: Rect, opacity: f32) {
+    let tile = photocraft_geom::TILE_SIZE;
+    if region.width() == tile as u32 && region.height() == tile as u32 && region.x0.rem_euclid(tile) == 0 && region.y0.rem_euclid(tile) == 0 {
+        let coord = photocraft_geom::TileCoord::new(region.x0.div_euclid(tile), region.y0.div_euclid(tile));
+        if composite_rgba_tile_into_gray(dst, surface, coord, opacity) {
+            return;
+        }
+    }
+    let source = surface.read_region(region);
+    for (dst, px) in dst.iter_mut().zip(source.as_chunks::<4>().0) {
+        let alpha = px[3] * opacity;
+        *dst = px[0] * alpha + *dst * (1.0 - alpha);
+    }
+}
+
 fn refresh_tiles(mask: &mut LayerMask, coords: Vec<photocraft_geom::TileCoord>) {
     let Some(stack) = mask.paint.as_ref() else { return };
     if coords.is_empty() {
         return;
     }
-    let mut default = stack.base.default_pixel().first().copied().unwrap_or(1.0);
-    for paint in &stack.layers {
-        if !paint.visible || paint.opacity <= 0.0 {
-            continue;
-        }
-        let source = paint.surface.default_pixel();
-        let alpha = source.get(3).copied().unwrap_or(0.0) * paint.opacity;
-        let value = source.first().copied().unwrap_or(0.0);
-        default = value * alpha + default * (1.0 - alpha);
-    }
-    mask.surface.set_default_pixel(&[default]);
+    let default = [composite_default(stack)];
+    mask.surface.set_default_pixel(&default);
     let format = mask.surface.format();
     let default = mask.surface.default_pixel();
     let shared_default_tile = mask.surface.solid_tile(&default);
     let compose = |coord: &photocraft_geom::TileCoord| {
         let region = coord.rect();
         let mut pixels = stack.base.read_region(region);
-        for paint in &stack.layers {
-            if !paint.visible || paint.opacity <= 0.0 {
+        for layer in &stack.layers {
+            if !layer.visible || layer.opacity <= 0.0 {
                 continue;
             }
-            if composite_rgba_tile_into_gray(&mut pixels, &paint.surface, *coord, paint.opacity) {
-                continue;
-            }
-            let source = paint.surface.read_region(region);
-            for (dst, [value, _, _, alpha]) in pixels.iter_mut().zip(source.as_chunks::<4>().0) {
-                let a = *alpha * paint.opacity;
-                *dst = *value * a + *dst * (1.0 - a);
+            match &layer.kind {
+                EffectKind::Paint => {
+                    composite_paint_region(&mut pixels, &layer.surface, region, layer.opacity);
+                }
+                EffectKind::Fill { value } => {
+                    for dst in &mut pixels {
+                        *dst = *value * layer.opacity + *dst * (1.0 - layer.opacity);
+                    }
+                }
+                EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
+                    for dst in &mut pixels {
+                        let adjusted = levels(*dst, *input_black, *gamma, *input_white, *output_black, *output_white);
+                        *dst = adjusted * layer.opacity + *dst * (1.0 - layer.opacity);
+                    }
+                }
             }
         }
         let mut output = photocraft_raster::Surface::with_default(format, &default);
@@ -152,9 +274,7 @@ fn refresh_tiles(mask: &mut LayerMask, coords: Vec<photocraft_geom::TileCoord>) 
 }
 
 /// Blend the red channel of a straight RGBA Paint tile directly into its grayscale destination.
-/// Paint is single-channel data replicated for display, so decoding G/B and allocating a full
-/// RGBA f32 tile for each layer only adds memory traffic. Unsupported pixel layouts keep the
-/// canonical region-decoding fallback above.
+/// Other layouts keep the canonical region-decoding fallback.
 fn composite_rgba_tile_into_gray(dst: &mut [f32], surface: &photocraft_raster::Surface, coord: photocraft_geom::TileCoord, opacity: f32) -> bool {
     use photocraft_color::{ColorMode, SampleType};
     let format = surface.format();
@@ -174,25 +294,22 @@ fn composite_rgba_tile_into_gray(dst: &mut [f32], surface: &photocraft_raster::S
     match format.sample {
         SampleType::U8 => {
             for (out, px) in dst.iter_mut().zip(bytes.as_chunks::<4>().0.iter()) {
-                let value = f32::from(px[0]) / 255.0;
                 let a = f32::from(px[3]) / 255.0 * opacity;
-                *out = value * a + *out * (1.0 - a);
+                *out = f32::from(px[0]) / 255.0 * a + *out * (1.0 - a);
             }
         }
         SampleType::U16 => {
             for (out, px) in dst.iter_mut().zip(bytes.as_chunks::<8>().0.iter()) {
                 let value = f32::from(u16::from_ne_bytes([px[0], px[1]])) / 65535.0;
-                let alpha = f32::from(u16::from_ne_bytes([px[6], px[7]])) / 65535.0;
-                let a = alpha * opacity;
-                *out = value * a + *out * (1.0 - a);
+                let alpha = f32::from(u16::from_ne_bytes([px[6], px[7]])) / 65535.0 * opacity;
+                *out = value * alpha + *out * (1.0 - alpha);
             }
         }
         SampleType::F32 => {
             for (out, px) in dst.iter_mut().zip(bytes.as_chunks::<16>().0.iter()) {
                 let value = f32::from_ne_bytes([px[0], px[1], px[2], px[3]]);
-                let alpha = f32::from_ne_bytes([px[12], px[13], px[14], px[15]]);
-                let a = alpha * opacity;
-                *out = value * a + *out * (1.0 - a);
+                let alpha = f32::from_ne_bytes([px[12], px[13], px[14], px[15]]) * opacity;
+                *out = value * alpha + *out * (1.0 - alpha);
             }
         }
     }
@@ -204,159 +321,169 @@ mod tests {
     use super::*;
     use photocraft_color::PixelFormat;
     use photocraft_doc::mask_paint::Paint;
-    use photocraft_geom::{Rect, TileCoord};
+    use photocraft_geom::Rect;
     use photocraft_raster::Surface;
-    use std::sync::Arc;
+
+    fn layer(kind: EffectKind, opacity: f32) -> Paint {
+        Paint { name: "effect".into(), visible: true, opacity, surface: Surface::new(PixelFormat::RGBA8), kind }
+    }
 
     #[test]
-    fn many_tile_opacity_refresh_matches_default_and_preserves_untouched_cow_tiles() {
+    fn many_tile_opacity_refresh_preserves_untouched_cow_tiles() {
         let gray = PixelFormat::GRAY8;
         let rgba = PixelFormat::RGBA8;
         let mut mask = LayerMask::hide_all();
         mask.surface = Surface::with_default(gray, &[0.0]);
         let base = Surface::with_default(gray, &[0.2]);
-        let mut paint_surface = Surface::with_default(rgba, &[0.7, 0.1, 0.05, 0.0]);
+        let mut surface = Surface::with_default(rgba, &[0.7, 0.1, 0.05, 0.0]);
         for x in 0..40 {
             let x = x * photocraft_geom::TILE_SIZE;
-            paint_surface.write_region(Rect::new(x, 0, x + 1, 1), &[0.9, 0.2, 0.1, 0.75]);
+            surface.write_region(Rect::new(x, 0, x + 1, 1), &[0.9, 0.2, 0.1, 0.75]);
         }
         mask.paint = Some(Stack {
             base: base.clone(),
-            layers: vec![Paint { name: "parallel".into(), visible: true, opacity: 1.0, surface: paint_surface.clone() }],
+            layers: vec![Paint { name: "many tiles".into(), visible: true, opacity: 1.0, surface: surface.clone(), kind: EffectKind::Paint }],
             active: 0,
         });
         refresh(&mut mask, None);
+        let distant = photocraft_geom::TileCoord::new(50, 0);
         mask.surface.write_region(Rect::new(50 * photocraft_geom::TILE_SIZE, 0, 50 * photocraft_geom::TILE_SIZE + 1, 1), &[0.4]);
-        let untouched = mask.surface.tile(TileCoord::new(50, 0)).unwrap().clone();
-        let old = mask.paint.as_ref().unwrap().clone();
-        mask.paint.as_mut().unwrap().layers[0].opacity = 0.25;
-        refresh_changes(&mut mask, Some(&old));
-
-        let expected_default = Surface::with_default(gray, &[0.2]).default_pixel();
-        assert_eq!(mask.surface.default_pixel(), expected_default);
+        let untouched = mask.surface.tile(distant).cloned();
+        let old = mask.paint.as_ref().cloned();
+        if let Some(stack) = &mut mask.paint {
+            stack.layers[0].opacity = 0.25;
+        }
+        refresh_changes(&mut mask, old.as_ref());
+        assert_eq!(mask.surface.default_pixel(), Surface::with_default(gray, &[0.2]).default_pixel());
+        let tile = photocraft_geom::TileCoord::new(0, 0);
+        let expected = surface.read_region(Rect::new(0, 0, 1, 1));
         let base_value = base.read_region(Rect::new(0, 0, 1, 1))[0];
-        let source = paint_surface.read_region(Rect::new(0, 0, 1, 1));
-        let expected_pixel = Surface::with_default(gray, &[source[0] * source[3] * 0.25 + base_value * (1.0 - source[3] * 0.25)]).default_pixel();
-        assert_eq!(mask.surface.read_region(Rect::new(0, 0, 1, 1)), expected_pixel);
-        assert!(Arc::ptr_eq(&untouched, mask.surface.tile(TileCoord::new(50, 0)).unwrap()), "unaffected cache tiles retain COW storage");
+        assert_eq!(
+            mask.surface.read_region(Rect::new(0, 0, 1, 1)),
+            Surface::with_default(gray, &[expected[0] * expected[3] * 0.25 + base_value * (1.0 - expected[3] * 0.25)]).default_pixel()
+        );
+        assert!(std::sync::Arc::ptr_eq(untouched.as_ref().expect("test tile"), mask.surface.tile(distant).expect("preserved tile")));
+        assert!(mask.surface.tile(tile).is_some());
     }
 
     #[test]
-    fn direct_rgba_tile_blend_matches_region_compositor_for_all_sample_types() {
+    fn rgba_tile_kernel_matches_region_fallback_for_each_sample_type() {
+        use photocraft_geom::TileCoord;
         for sample in [photocraft_color::SampleType::U8, photocraft_color::SampleType::U16, photocraft_color::SampleType::F32] {
             let gray = photocraft_color::PixelFormat::new(photocraft_color::ColorMode::Grayscale, sample, false);
             let rgba = photocraft_color::PixelFormat::new(photocraft_color::ColorMode::Rgb, sample, true);
             let mut base = Surface::with_default(gray, &[0.23]);
-            let mut source = Surface::with_default(rgba, &[0.72, 0.13, 0.04, 0.0]);
+            let mut surface = Surface::with_default(rgba, &[0.72, 0.13, 0.04, 0.0]);
             let rect = Rect::new(7, 9, 19, 17);
-            let mut source_pixels = Vec::new();
-            let mut base_pixels = Vec::new();
+            let mut src = Vec::new();
+            let mut dst = Vec::new();
             for y in rect.y0..rect.y1 {
                 for x in rect.x0..rect.x1 {
                     let v = ((x * 13 + y * 7) % 31) as f32 / 31.0;
-                    source_pixels.extend_from_slice(&[0.1 + v * 0.8, 0.05 + v * 0.4, 0.02 + v * 0.2, 0.15 + v * 0.75]);
-                    base_pixels.push(0.1 + v * 0.7);
+                    src.extend_from_slice(&[0.1 + v * 0.8, 0.05 + v * 0.4, 0.02 + v * 0.2, 0.15 + v * 0.75]);
+                    dst.push(0.1 + v * 0.7);
                 }
             }
-            source.write_region(rect, &source_pixels);
-            base.write_region(rect, &base_pixels);
-            let mut fast = LayerMask::hide_all();
-            fast.surface = Surface::with_default(gray, &[0.0]);
-            fast.paint = Some(Stack {
-                base: base.clone(),
-                layers: vec![Paint { name: "source".into(), visible: true, opacity: 0.73, surface: source.clone() }],
-                active: 0,
-            });
-            let mut oracle = fast.clone();
-            refresh(&mut fast, None);
-            let tile = TileCoord::new(0, 0);
-            // The bounded scanline path remains an independent oracle for the tile-local kernel.
-            refresh(&mut oracle, Some(tile.rect()));
-            assert_eq!(fast.surface.default_pixel(), oracle.surface.default_pixel(), "default mismatch at {sample:?}");
-            assert_eq!(fast.surface.tile(tile).unwrap().bytes(), oracle.surface.tile(tile).unwrap().bytes(), "tile mismatch at {sample:?}");
+            surface.write_region(rect, &src);
+            base.write_region(rect, &dst);
+            let mut optimized = LayerMask::hide_all();
+            optimized.surface = Surface::with_default(gray, &[0.0]);
+            optimized.paint =
+                Some(Stack { base, layers: vec![Paint { name: "source".into(), visible: true, opacity: 0.73, surface, kind: EffectKind::Paint }], active: 0 });
+            let mut oracle = optimized.clone();
+            refresh(&mut optimized, None);
+            refresh(&mut oracle, Some(TileCoord::new(0, 0).rect()));
+            assert_eq!(
+                optimized.surface.tile(TileCoord::new(0, 0)).map(|t| t.bytes()),
+                oracle.surface.tile(TileCoord::new(0, 0)).map(|t| t.bytes()),
+                "sample {sample:?}"
+            );
         }
     }
 
     #[test]
-    fn direct_rgba_tile_blend_matches_defaults_and_negative_coordinates() {
+    fn rgba_tile_kernel_matches_defaults_and_negative_coordinates() {
+        use photocraft_geom::TileCoord;
         let gray = PixelFormat::GRAY8;
         let rgba = PixelFormat::RGBA8;
         let mut base = Surface::with_default(gray, &[0.3]);
-        let mut source = Surface::with_default(rgba, &[0.8, 0.2, 0.1, 0.4]);
+        let mut surface = Surface::with_default(rgba, &[0.8, 0.2, 0.1, 0.4]);
         let painted = Rect::new(-255, 2, -254, 3);
         base.write_region(painted, &[0.75]);
-        source.write_region(painted, &[0.1, 0.7, 0.2, 0.9]);
-        // A base-only tile exercises the non-allocated Paint tile with a nonzero RGBA default.
+        surface.write_region(painted, &[0.1, 0.7, 0.2, 0.9]);
         base.write_region(Rect::new(256, 0, 257, 1), &[0.6]);
         let mut optimized = LayerMask::hide_all();
         optimized.surface = Surface::with_default(gray, &[0.0]);
-        optimized.paint = Some(Stack { base, layers: vec![Paint { name: "default source".into(), visible: true, opacity: 0.65, surface: source }], active: 0 });
+        optimized.paint = Some(Stack {
+            base,
+            layers: vec![Paint { name: "negative source".into(), visible: true, opacity: 0.65, surface, kind: EffectKind::Paint }],
+            active: 0,
+        });
         let mut oracle = optimized.clone();
         refresh(&mut optimized, None);
         refresh(&mut oracle, Some(TileCoord::new(-1, 0).rect()));
         refresh(&mut oracle, Some(TileCoord::new(1, 0).rect()));
         assert_eq!(optimized.surface.default_pixel(), oracle.surface.default_pixel());
         for coord in [TileCoord::new(-1, 0), TileCoord::new(1, 0)] {
-            assert_eq!(optimized.surface.tile(coord).unwrap().bytes(), oracle.surface.tile(coord).unwrap().bytes(), "tile {coord:?}");
+            assert_eq!(optimized.surface.tile(coord).map(|tile| tile.bytes()), oracle.surface.tile(coord).map(|tile| tile.bytes()), "tile {coord:?}");
         }
     }
 
     #[test]
-    #[ignore = "dense 4K opacity refresh diagnostic; run with --ignored --nocapture"]
-    fn benchmark_dense_4k_ten_paint_mask_refresh_changes() {
-        const SIZE: i32 = 4096;
-        const TILE: i32 = photocraft_geom::TILE_SIZE;
-        let gray = PixelFormat::new(photocraft_color::ColorMode::Grayscale, photocraft_color::SampleType::U16, false);
-        let rgba = PixelFormat::RGBA16;
-        let mut base = Surface::with_default(gray, &[0.18]);
-        let mut paints = Vec::new();
-        for index in 0..10 {
-            let mut surface = Surface::with_default(rgba, &[0.75, 0.2, 0.05, 0.28 + index as f32 * 0.01]);
-            for y in (0..SIZE).step_by(TILE as usize) {
-                for x in (0..SIZE).step_by(TILE as usize) {
-                    let mut pixels = Vec::with_capacity(TILE as usize * TILE as usize * 4);
-                    for py in 0..TILE {
-                        for px in 0..TILE {
-                            let pattern = ((x + px) * 7 + (y + py) * 11 + index * 29).rem_euclid(257) as f32 / 257.0;
-                            pixels.extend_from_slice(&[0.18 + pattern * 0.55, 0.08 + pattern * 0.22, 0.04 + pattern * 0.12, 0.24 + pattern * 0.52]);
-                        }
-                    }
-                    surface.write_region(Rect::new(x, y, x + TILE, y + TILE), &pixels);
-                }
-            }
-            paints.push(Paint { name: format!("Paint {index}"), visible: true, opacity: 0.75, surface });
-        }
-        for y in (0..SIZE).step_by(TILE as usize) {
-            for x in (0..SIZE).step_by(TILE as usize) {
-                let mut pixels = Vec::with_capacity(TILE as usize * TILE as usize);
-                for py in 0..TILE {
-                    for px in 0..TILE {
-                        pixels.push(0.12 + (((x + px) * 3 + (y + py) * 5).rem_euclid(701) as f32) / 1400.0);
-                    }
-                }
-                base.write_region(Rect::new(x, y, x + TILE, y + TILE), &pixels);
-            }
-        }
+    fn changed_nonzero_paint_default_recomposes_sparse_tiles() {
+        let gray = PixelFormat::GRAY8;
+        let rgba = PixelFormat::RGBA8;
+        let base = Surface::with_default(gray, &[0.2]);
+        let mut surface = Surface::with_default(rgba, &[0.8, 0.2, 0.1, 0.4]);
+        surface.write_region(Rect::new(1, 1, 2, 2), &[0.1, 0.2, 0.3, 0.9]);
         let mut mask = LayerMask::hide_all();
         mask.surface = Surface::with_default(gray, &[0.0]);
-        mask.paint = Some(Stack { base, layers: paints, active: 9 });
+        mask.paint = Some(Stack {
+            base,
+            layers: vec![Paint { name: "default".into(), visible: true, opacity: 0.5, surface: surface.clone(), kind: EffectKind::Paint }],
+            active: 0,
+        });
         refresh(&mut mask, None);
+        let old = mask.paint.as_ref().cloned();
+        if let Some(stack) = &mut mask.paint {
+            stack.layers[0].surface.set_default_pixel(&[0.3, 0.2, 0.1, 0.6]);
+        }
+        refresh_changes(&mut mask, old.as_ref());
+        assert!((mask.surface.default_pixel()[0] - (0.3 * 0.6 * 0.5 + 0.2 * (1.0 - 0.6 * 0.5))).abs() < 0.02);
+    }
 
-        let old = mask.paint.as_ref().unwrap().clone();
-        let base_eq = std::time::Instant::now();
-        for _ in 0..20 {
-            std::hint::black_box(mask.paint.as_ref().unwrap().base == old.base);
-        }
-        let base_eq_ms = base_eq.elapsed().as_secs_f64() * 1000.0 / 20.0;
-        let mut samples = Vec::new();
-        for iteration in 0..5 {
-            let previous = mask.paint.as_ref().unwrap().clone();
-            mask.paint.as_mut().unwrap().layers[9].opacity = if iteration % 2 == 0 { 0.70 } else { 0.75 };
-            let start = std::time::Instant::now();
-            refresh_changes(&mut mask, Some(&previous));
-            samples.push(start.elapsed().as_secs_f64() * 1000.0);
-        }
-        samples.sort_by(f64::total_cmp);
-        println!("dense 4K/10 Paint mask refresh_changes ms={samples:?}; base Surface equality ms={base_eq_ms:.2} per compare");
+    #[test]
+    fn fill_and_levels_compose_in_order_and_respect_opacity() {
+        let mut mask = LayerMask::hide_all();
+        let base = Surface::with_default(PixelFormat::GRAY8, &[0.25]);
+        mask.surface = base.clone();
+        mask.paint = Some(Stack {
+            base,
+            layers: vec![
+                layer(EffectKind::Fill { value: 0.75 }, 0.5),
+                layer(EffectKind::Levels { input_black: 0.0, gamma: 1.0, input_white: 1.0, output_black: 0.0, output_white: 1.0 }, 0.5),
+            ],
+            active: 0,
+        });
+        refresh(&mut mask, None);
+        // Fill: .25 -> .5; Levels identity at 50% opacity remains .5.
+        assert!((mask.surface.read_region(Rect::new(0, 0, 1, 1))[0] - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn levels_adjustment_is_non_destructive_and_applies_at_stack_position() {
+        let mut mask = LayerMask::hide_all();
+        let gray16 = PixelFormat::new(photocraft_color::ColorMode::Grayscale, photocraft_color::SampleType::U16, false);
+        let base = Surface::with_default(gray16, &[0.25]);
+        mask.surface = base.clone();
+        mask.paint = Some(Stack {
+            base,
+            layers: vec![layer(EffectKind::Levels { input_black: 0.0, gamma: 1.0, input_white: 0.5, output_black: 0.0, output_white: 1.0 }, 1.0)],
+            active: 0,
+        });
+        refresh(&mut mask, None);
+        assert!((mask.surface.read_region(Rect::new(0, 0, 1, 1))[0] - 0.5).abs() < 0.001);
+        let stored_base = mask.paint.as_ref().map(|s| s.base.default_pixel()[0]);
+        assert!((stored_base.unwrap_or_default() - 0.25).abs() < 0.00002);
     }
 }

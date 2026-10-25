@@ -3,7 +3,7 @@
 
 use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::adjust::{CurvePoint, HueRange, LevelsChannel};
-use photocraft_doc::mask_paint::{Paint, Stack};
+use photocraft_doc::mask_paint::{EffectKind, Paint, Stack};
 use photocraft_doc::{Adjustment, Document, Fill, GradientStyle, Layer, LayerContent, LayerMask};
 use photocraft_geom::{Rect, Size, TILE_SIZE};
 use photocraft_gpu::{Compositor, render_to_vec};
@@ -239,9 +239,23 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
         mask.paint = Some(Stack {
             base,
             layers: vec![
-                Paint { name: "low".into(), visible: true, opacity: 0.63, surface: low },
-                Paint { name: "hidden".into(), visible: false, opacity: 1.0, surface: hidden },
-                Paint { name: "top".into(), visible: true, opacity: 0.74, surface: top },
+                Paint { name: "low".into(), visible: true, opacity: 0.63, surface: low, kind: EffectKind::Paint },
+                Paint { name: "hidden".into(), visible: false, opacity: 1.0, surface: hidden, kind: EffectKind::Paint },
+                Paint { name: "top".into(), visible: true, opacity: 0.74, surface: top, kind: EffectKind::Paint },
+                Paint {
+                    name: "fill".into(),
+                    visible: true,
+                    opacity: 0.55,
+                    surface: photocraft_raster::Surface::new(rgba),
+                    kind: EffectKind::Fill { value: 0.37 },
+                },
+                Paint {
+                    name: "levels".into(),
+                    visible: true,
+                    opacity: 0.67,
+                    surface: photocraft_raster::Surface::new(rgba),
+                    kind: EffectKind::Levels { input_black: 0.1, gamma: 0.8, input_white: 0.9, output_black: 0.03, output_white: 0.95 },
+                },
             ],
             active: 2,
         });
@@ -249,9 +263,19 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
         let stack = mask.paint.as_ref().unwrap();
         let mut expected_default = stack.base.default_pixel()[0];
         for paint in stack.layers.iter().filter(|paint| paint.visible) {
-            let source = paint.surface.default_pixel();
-            let alpha = source[3] * paint.opacity;
-            expected_default = source[0] * alpha + expected_default * (1.0 - alpha);
+            match &paint.kind {
+                EffectKind::Paint => {
+                    let source = paint.surface.default_pixel();
+                    let alpha = source[3] * paint.opacity;
+                    expected_default = source[0] * alpha + expected_default * (1.0 - alpha);
+                }
+                EffectKind::Fill { value } => expected_default = *value * paint.opacity + expected_default * (1.0 - paint.opacity),
+                EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
+                    let normalized = ((expected_default - *input_black) / (*input_white - *input_black)).clamp(0.0, 1.0);
+                    let adjusted = *output_black + normalized.powf(1.0 / *gamma) * (*output_white - *output_black);
+                    expected_default = adjusted * paint.opacity + expected_default * (1.0 - paint.opacity);
+                }
+            }
         }
         let expected = photocraft_raster::Surface::with_default(gray, &[expected_default]).default_pixel();
         assert_eq!(mask.surface.default_pixel(), expected, "flattened default {sample:?}");

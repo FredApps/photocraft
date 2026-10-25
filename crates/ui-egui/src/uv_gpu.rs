@@ -1604,7 +1604,7 @@ mod tests {
                         surface.write_region(photocraft_geom::Rect::new(x, y, x + tile_size, y + tile_size), &pixels);
                     }
                 }
-                photocraft_doc::mask_paint::Paint { name: format!("Paint {index}"), visible: true, opacity: 0.75, surface }
+                photocraft_doc::mask_paint::Paint { name: format!("Paint {index}"), visible: true, opacity: 0.75, surface, kind: photocraft_doc::mask_paint::EffectKind::Paint }
             })
             .collect();
         mask.paint = Some(photocraft_doc::mask_paint::Stack { base, layers, active: layer_count.saturating_sub(1) });

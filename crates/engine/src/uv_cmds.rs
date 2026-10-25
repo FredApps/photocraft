@@ -7,7 +7,7 @@ use photocraft_raster::Surface;
 use photocraft_uv::preview::Channel;
 use photocraft_uv::{
     Scene,
-    topology::{MaskOptions, Topology},
+    topology::{MaskOptions, OccupancyMask, PaddingMask, Topology},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -46,6 +46,10 @@ pub struct UvState {
     pub vertical: f64,
     pub feather: f64,
     pub open_borders: bool,
+    pub padding: f64,
+    padding_cache_scene: Option<Arc<Scene>>,
+    occupancy_cache: std::collections::HashMap<(usize, u32, u32, i32, i32), Arc<OccupancyMask>>,
+    padding_cache: std::collections::HashMap<(usize, u32, u32, i32, i32, usize, u64), Arc<PaddingMask>>,
     pub generation: u64,
 }
 
@@ -335,6 +339,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         map_bindings,
         material: active_material,
         guard: 8.0,
+        padding: 3.0,
         generation,
         ..Default::default()
     };
@@ -387,10 +392,11 @@ fn settings(s: &mut Session, p: &Value) -> Result<Value> {
     let horizontal = number(p, "horizontal", s.uv.horizontal)?;
     let vertical = number(p, "vertical", s.uv.vertical)?;
     let borders = boolean(p, "openBorders", s.uv.open_borders)?;
-    if [guard, horizontal, vertical, feather].iter().any(|v| !(0.0..=1024.0).contains(v)) {
-        return Err(err("guard and feather must be in 0..1024"));
+    let padding = number(p, "padding", s.uv.padding)?;
+    if [guard, horizontal, vertical, feather, padding].iter().any(|v| !(0.0..=1024.0).contains(v)) {
+        return Err(err("guard, feather and padding must be in 0..1024"));
     }
-    if (s.uv.guard, s.uv.horizontal, s.uv.vertical, s.uv.feather, s.uv.open_borders) != (guard, horizontal, vertical, feather, borders) {
+    if (s.uv.guard, s.uv.horizontal, s.uv.vertical, s.uv.feather, s.uv.open_borders, s.uv.padding) != (guard, horizontal, vertical, feather, borders, padding) {
         s.uv.generation = s.uv.generation.wrapping_add(1);
     }
     s.uv.guard = guard;
@@ -398,7 +404,8 @@ fn settings(s: &mut Session, p: &Value) -> Result<Value> {
     s.uv.vertical = vertical;
     s.uv.feather = feather;
     s.uv.open_borders = borders;
-    Ok(json!({"guard":guard,"horizontal":horizontal,"vertical":vertical,"feather":feather,"openBorders":borders}))
+    s.uv.padding = padding;
+    Ok(json!({"guard":guard,"horizontal":horizontal,"vertical":vertical,"feather":feather,"openBorders":borders,"padding":padding}))
 }
 fn material_visible(s: &mut Session, p: &Value) -> Result<Value> {
     let material = material(s, p)?;
@@ -508,38 +515,105 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"shells":s.uv.selected}))
 }
 
-fn selection_surface(s: &Session, p: &Value) -> Result<(DocId, Surface)> {
+fn cached_occupancy(s: &mut Session, material: usize, width: u32, height: u32, tile: [i32; 2]) -> Result<Arc<OccupancyMask>> {
+    let scene = s.uv.scene.as_ref().cloned().ok_or_else(|| err("No mesh"))?;
+    if s.uv.padding_cache_scene.as_ref().is_none_or(|cached| !Arc::ptr_eq(cached, &scene)) {
+        s.uv.padding_cache_scene = Some(scene.clone());
+        s.uv.occupancy_cache.clear();
+        s.uv.padding_cache.clear();
+    }
+    let key = (material, width, height, tile[0], tile[1]);
+    if let Some(cached) = s.uv.occupancy_cache.get(&key) {
+        return Ok(cached.clone());
+    }
+    let topology = s.uv.topology.as_ref().cloned().ok_or_else(|| err("No topology"))?;
+    let occupancy = Arc::new(topology.occupancy_mask(&scene, width, height, material, tile).map_err(|e| err(e.to_string()))?);
+    if s.uv.occupancy_cache.len() >= 4 {
+        if let Some(oldest) = s.uv.occupancy_cache.keys().next().copied() {
+            s.uv.occupancy_cache.remove(&oldest);
+        }
+    }
+    s.uv.occupancy_cache.insert(key, occupancy.clone());
+    Ok(occupancy)
+}
+
+pub(crate) fn cached_padding(
+    s: &mut Session,
+    material: usize,
+    width: u32,
+    height: u32,
+    tile: [i32; 2],
+    shell: usize,
+    padding: f64,
+) -> Result<Arc<PaddingMask>> {
+    let occupancy = cached_occupancy(s, material, width, height, tile)?;
+    let key = (material, width, height, tile[0], tile[1], shell, padding.to_bits());
+    if let Some(cached) = s.uv.padding_cache.get(&key) {
+        return Ok(cached.clone());
+    }
+    let topology = s.uv.topology.as_ref().cloned().ok_or_else(|| err("No topology"))?;
+    let mask = Arc::new(topology.outward_padding_mask(width, height, material, tile, shell, padding, &occupancy).map_err(|e| err(e.to_string()))?);
+    const CACHE_BUDGET: usize = 64 * 1024 * 1024;
+    let mask_bytes = mask.estimated_bytes();
+    if mask_bytes <= CACHE_BUDGET {
+        loop {
+            let used = s.uv.padding_cache.values().map(|cached| cached.estimated_bytes()).sum::<usize>();
+            if s.uv.padding_cache.len() < 64 && used.saturating_add(mask_bytes) <= CACHE_BUDGET {
+                break;
+            }
+            let Some(oldest) = s.uv.padding_cache.keys().next().copied() else { break };
+            s.uv.padding_cache.remove(&oldest);
+        }
+        s.uv.padding_cache.insert(key, mask.clone());
+    }
+    Ok(mask)
+}
+
+fn selection_surface(s: &mut Session, p: &Value) -> Result<(DocId, Surface)> {
     let material = material(s, p)?;
     let id = bindings(s).get(material).copied().flatten().ok_or_else(|| err("No texture document assigned"))?;
-    let doc = s.documents().iter().find(|d| d.doc.id == id).ok_or_else(|| err("The texture document is closed"))?;
+    let (width, height) =
+        s.documents().iter().find(|d| d.doc.id == id).map(|d| (d.doc.size.width, d.doc.size.height)).ok_or_else(|| err("The texture document is closed"))?;
     let guard = number(p, "guard", s.uv.guard)?;
     let feather = number(p, "feather", s.uv.feather)?;
     let horizontal = number(p, "horizontal", s.uv.horizontal)?;
     let vertical = number(p, "vertical", s.uv.vertical)?;
-    let mask =
-        s.uv.topology
-            .as_ref()
-            .ok_or_else(|| err("No topology"))?
-            .mask(
-                s.uv.scene.as_ref().ok_or_else(|| err("No mesh"))?,
-                &MaskOptions {
-                    width: doc.doc.size.width,
-                    height: doc.doc.size.height,
-                    material,
-                    tile: [0, 0],
-                    selected: s.uv.selected.clone(),
-                    guard,
-                    horizontal,
-                    vertical,
-                    feather,
-                    open_borders: boolean(p, "openBorders", s.uv.open_borders)?,
-                },
-            )
-            .map_err(|e| err(e.to_string()))?;
+    let padding = number(p, "padding", s.uv.padding)?;
+    let occupancy = cached_occupancy(s, material, width, height, [0, 0])?;
+    let scene = s.uv.scene.as_ref().cloned().ok_or_else(|| err("No mesh"))?;
+    let topology = s.uv.topology.as_ref().cloned().ok_or_else(|| err("No topology"))?;
+    let selected = s.uv.selected.clone();
+    let mut padding_masks = std::collections::BTreeMap::new();
+    if padding > 0.0 {
+        for shell in &selected {
+            padding_masks.insert(*shell, cached_padding(s, material, width, height, [0, 0], *shell, padding)?);
+        }
+    }
+    let mask = topology
+        .mask_with_padding_masks(
+            &scene,
+            &MaskOptions {
+                width,
+                height,
+                material,
+                tile: [0, 0],
+                selected,
+                guard,
+                horizontal,
+                vertical,
+                feather,
+                open_borders: boolean(p, "openBorders", s.uv.open_borders)?,
+                padding,
+            },
+            &occupancy,
+            Some(&padding_masks),
+        )
+        .map_err(|e| err(e.to_string()))?;
     // No selection means unrestricted editing in PhotoCraft. An empty UV selection MUST be
     // an explicit zero surface, otherwise selecting a tiny/protected shell would edit everything.
+    let bounds = s.documents().iter().find(|d| d.doc.id == id).ok_or_else(|| err("The texture document is closed"))?.doc.bounds();
     let mut surface = Surface::new(PixelFormat::GRAY8);
-    surface.write_region(doc.doc.bounds(), &mask);
+    surface.write_region(bounds, &mask);
     Ok((id, surface))
 }
 fn apply_mask(s: &mut Session, p: &Value) -> Result<Value> {
@@ -559,6 +633,7 @@ fn apply_mask(s: &mut Session, p: &Value) -> Result<Value> {
     s.uv.vertical = number(p, "vertical", s.uv.vertical)?;
     s.uv.feather = number(p, "feather", s.uv.feather)?;
     s.uv.open_borders = boolean(p, "openBorders", s.uv.open_borders)?;
+    s.uv.padding = number(p, "padding", s.uv.padding)?;
     Ok(json!({"selected":true,"guard":s.uv.guard}))
 }
 pub(crate) fn has_selection(s: &Session) -> bool {
@@ -612,7 +687,7 @@ fn inspect(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(
         json!({"source":s.uv.source,"triangles":scene.triangles.len(),"materials":scene.materials,"bindings":s.uv.bindings.iter().map(|d|d.map(|d|d.0)).collect::<Vec<_>>(),
         "shells":topology.shells.iter().enumerate().map(|(id,sh)|json!({"id":id,"material":sh.material,"neighbors":sh.neighbors,"triangles":sh.triangles.len()})).collect::<Vec<_>>(),
-        "normalBindings":s.uv.normal_bindings.iter().map(|d|d.map(|d|d.0)).collect::<Vec<_>>(),"hiddenMaterials":s.uv.hidden_materials,"normalChannel":s.uv.normal_channel,"channel":s.uv.current_channel().key(),"mapBindings":s.uv.map_bindings.iter().map(|(k,ids)|(k.key(),ids.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>())).collect::<std::collections::BTreeMap<_,_>>(),"guard":s.uv.guard,"horizontal":s.uv.horizontal,"vertical":s.uv.vertical,"warnings":scene.warnings,"nonManifoldEdges":topology.non_manifold_edges,"selected":s.uv.selected,"material":s.uv.material}),
+        "normalBindings":s.uv.normal_bindings.iter().map(|d|d.map(|d|d.0)).collect::<Vec<_>>(),"hiddenMaterials":s.uv.hidden_materials,"normalChannel":s.uv.normal_channel,"channel":s.uv.current_channel().key(),"mapBindings":s.uv.map_bindings.iter().map(|(k,ids)|(k.key(),ids.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>())).collect::<std::collections::BTreeMap<_,_>>(),"guard":s.uv.guard,"horizontal":s.uv.horizontal,"vertical":s.uv.vertical,"padding":s.uv.padding,"warnings":scene.warnings,"nonManifoldEdges":topology.non_manifold_edges,"selected":s.uv.selected,"material":s.uv.material}),
     )
 }
 
@@ -636,6 +711,8 @@ struct Project {
     vertical: f64,
     feather: f64,
     open_borders: bool,
+    #[serde(default = "default_uv_padding")]
+    padding: f64,
     documents: Vec<Option<String>>,
     #[serde(default)]
     normal_documents: Vec<Option<String>>,
@@ -659,6 +736,9 @@ struct Project {
     environment: Option<crate::uv_asset_cmds::Packed>,
     #[serde(default)]
     loose_documents: Vec<String>,
+}
+fn default_uv_padding() -> f64 {
+    3.0
 }
 fn validate_view(view: &Value) -> Result<()> {
     if !view.is_null() && !view.is_object() {
@@ -822,6 +902,7 @@ fn project_save(s: &mut Session, p: &Value) -> Result<Value> {
         vertical: s.uv.vertical,
         feather: s.uv.feather,
         open_borders: s.uv.open_borders,
+        padding: s.uv.padding,
         documents,
         normal_documents,
         hidden_materials: s.uv.hidden_materials.clone(),
@@ -893,6 +974,8 @@ fn project_load(s: &mut Session, p: &Value) -> Result<Value> {
         || !(0.0..=1024.0).contains(&project.guard)
         || !project.feather.is_finite()
         || !(0.0..=1024.0).contains(&project.feather)
+        || !project.padding.is_finite()
+        || !(0.0..=1024.0).contains(&project.padding)
     {
         return Err(err("Invalid UV project state"));
     }
@@ -1033,6 +1116,9 @@ fn project_load(s: &mut Session, p: &Value) -> Result<Value> {
         map_bindings,
         selected: project.selected,
         selection_masks: Default::default(),
+        padding_cache_scene: None,
+        occupancy_cache: Default::default(),
+        padding_cache: Default::default(),
         bindings,
         material: project.material,
         guard: project.guard,
@@ -1040,6 +1126,7 @@ fn project_load(s: &mut Session, p: &Value) -> Result<Value> {
         vertical: project.vertical,
         feather: project.feather,
         open_borders: project.open_borders,
+        padding: project.padding,
         generation: s.uv.generation.wrapping_add(1),
     };
     let slots = project
@@ -1068,7 +1155,13 @@ pub fn specs() -> Vec<CommandSpec> {
     let spec = |id, label, params, enabled, run| CommandSpec { id, label, params, enabled, run, menu: &[], shortcut: None, journal: id != "uv.inspect" };
     vec![
         spec("uv.model.import", "Import UV model", r#"{"path":string,"uvSet":int=0}"#, crate::commands::always, import),
-        spec("uv.settings", "UV seam protection settings", r#"{"guard":px,"horizontal":px,"vertical":px,"feather":px,"openBorders":bool}"#, mesh, settings),
+        spec(
+            "uv.settings",
+            "UV seam protection settings",
+            r#"{"guard":px,"horizontal":px,"vertical":px,"feather":px,"openBorders":bool,"padding":px=3}"#,
+            mesh,
+            settings,
+        ),
         spec(
             "uv.material.select",
             "Select material channel",
@@ -1100,7 +1193,13 @@ pub fn specs() -> Vec<CommandSpec> {
             texture_bind,
         ),
         spec("uv.shell.select", "Select UV shells", r#"{"shells":[int],"material":int,"mode":"replace|add|subtract|intersect"}"#, mesh, select),
-        spec("uv.mask.apply", "Apply protected UV selection", r#"{"material":int,"guard":px=8,"feather":px=0,"openBorders":bool=false}"#, mesh, apply_mask),
+        spec(
+            "uv.mask.apply",
+            "Apply protected UV selection",
+            r#"{"material":int,"guard":px=8,"feather":px=0,"openBorders":bool=false,"padding":px=3}"#,
+            mesh,
+            apply_mask,
+        ),
         spec(
             "uv.layer.create",
             "Create protected UV paint layer",

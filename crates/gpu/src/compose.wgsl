@@ -129,6 +129,21 @@ fn fs_mask_stack(in: VOut) -> @location(0) vec4<f32> {
         if (op.p0.x > 0.0) { value = floor(clamp(value, 0.0, 1.0) * op.p0.x + 0.5) / op.p0.x; }
         return vec4(value, value, value, value);
     }
+    if (op.kind == 3) {
+        let value = op.color.r * op.opacity + below * (1.0 - op.opacity);
+        return vec4(value, value, value, value);
+    }
+    if (op.kind == 4) {
+        let input_black = op.p0.x;
+        let gamma = max(op.p0.y, 0.01);
+        let input_white = op.p0.z;
+        let output_black = op.p0.w;
+        let output_white = op.p1.x;
+        let normalized = clamp((below - input_black) / max(input_white - input_black, 0.0000001), 0.0, 1.0);
+        let adjusted = output_black + pow(normalized, 1.0 / gamma) * (output_white - output_black);
+        let value = adjusted * op.opacity + below * (1.0 - op.opacity);
+        return vec4(value, value, value, value);
+    }
     var source = op.color;
     if ((op.flags & F_TEX) != 0u) {
         let q = d - op.tex_origin;

@@ -1,7 +1,13 @@
 //! UV shell connectivity and edge protection masks.
 
 use crate::{Error, MAX_PIXELS, Result, Scene, filled};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+const MAX_OCCUPANCY_PIXELS: usize = 16_384 * 16_384;
+const MAX_PADDING_CANDIDATES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct Shell {
@@ -23,6 +29,79 @@ pub struct Topology {
     pub triangle_shell: Vec<usize>,
     pub boundaries: Vec<Boundary>,
     pub non_manifold_edges: usize,
+}
+
+/// Compact atlas occupancy for collision checks. It is built once for a scene/material/texture
+/// size and reused by shell selection and wrapped painting.
+#[derive(Clone, Debug)]
+pub struct OccupancyMask {
+    width: u32,
+    height: u32,
+    material: usize,
+    tile: [i32; 2],
+    bits: Vec<u8>,
+}
+impl OccupancyMask {
+    fn insert(&mut self, x: usize, y: usize) {
+        let width = self.width as usize;
+        let Some(index) = y.checked_mul(width).and_then(|v| v.checked_add(x)) else { return };
+        if let Some(byte) = self.bits.get_mut(index / 8) {
+            *byte |= 1 << (index % 8);
+        }
+    }
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        if x < 0 || y < 0 || x >= i32::try_from(self.width).unwrap_or(i32::MAX) || y >= i32::try_from(self.height).unwrap_or(i32::MAX) {
+            return false;
+        }
+        let width = self.width as usize;
+        let Some(index) = (y as usize).checked_mul(width).and_then(|v| v.checked_add(x as usize)) else { return false };
+        self.bits.get(index / 8).is_some_and(|byte| byte & (1 << (index % 8)) != 0)
+    }
+}
+
+/// Sparse outward UV padding owned by a single shell. A row of 64 bits is stored only for atlas
+/// tiles touched by that shell's boundary, so a narrow apron does not allocate a full atlas mask.
+#[derive(Clone, Debug, Default)]
+pub struct PaddingMask {
+    tiles: BTreeMap<(i32, i32), Vec<u64>>,
+}
+impl PaddingMask {
+    fn insert(&mut self, x: i32, y: i32) {
+        if x < 0 || y < 0 {
+            return;
+        }
+        let key = (x.div_euclid(64), y.div_euclid(64));
+        let row = y.rem_euclid(64) as usize;
+        let bit = 1u64 << x.rem_euclid(64);
+        let rows = self.tiles.entry(key).or_insert_with(|| vec![0; 64]);
+        if let Some(value) = rows.get_mut(row) {
+            *value |= bit;
+        }
+    }
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        if x < 0 || y < 0 {
+            return false;
+        }
+        self.tiles
+            .get(&(x.div_euclid(64), y.div_euclid(64)))
+            .and_then(|rows| rows.get(y.rem_euclid(64) as usize))
+            .is_some_and(|row| row & (1u64 << x.rem_euclid(64)) != 0)
+    }
+    pub fn for_each(&self, mut visit: impl FnMut(i32, i32)) {
+        for ((tile_x, tile_y), rows) in &self.tiles {
+            for (row, bits) in rows.iter().copied().enumerate() {
+                let mut remaining = bits;
+                while remaining != 0 {
+                    let column = remaining.trailing_zeros() as i32;
+                    visit(tile_x * 64 + column, tile_y * 64 + row as i32);
+                    remaining &= remaining - 1;
+                }
+            }
+        }
+    }
+    pub fn estimated_bytes(&self) -> usize {
+        self.tiles.len().saturating_mul(64 * std::mem::size_of::<u64>() + 48)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -131,15 +210,124 @@ impl Topology {
     /// Rasterize the union first, then remove protected bands. Other selected islands cannot
     /// re-enable a protected seam. Distances use the actual width AND height of the texture.
     pub fn mask(&self, scene: &Scene, options: &MaskOptions) -> Result<Vec<f32>> {
+        let occupancy = self.occupancy_mask(scene, options.width, options.height, options.material, options.tile)?;
+        self.mask_with_occupancy(scene, options, &occupancy)
+    }
+
+    /// Rasterize all UV coverage for one material. Callers that repeatedly evaluate masks or
+    /// wrapped brush stamps should cache this by scene, material, tile and texture dimensions.
+    pub fn occupancy_mask(&self, scene: &Scene, width: u32, height: u32, material: usize, tile: [i32; 2]) -> Result<OccupancyMask> {
         scene.validate()?;
-        let MaskOptions { width, height, material, tile, selected, guard, horizontal, vertical, feather, open_borders } = options;
+        let (w, h) = (width as usize, height as usize);
+        let n = w
+            .checked_mul(h)
+            .filter(|n| *n > 0 && *n <= MAX_OCCUPANCY_PIXELS && width <= 16_384 && height <= 16_384)
+            .ok_or_else(|| Error("UV occupancy is limited to 16384 by 16384 pixels".into()))?;
+        if material >= scene.materials.len() {
+            return Err(Error("Material is out of range".into()));
+        }
+        let mut occupancy = OccupancyMask { width, height, material, tile, bits: filled(n.div_ceil(8), 0u8)? };
+        let point = |uv: [f64; 2]| [(uv[0] - f64::from(tile[0])) * w as f64, (1.0 - (uv[1] - f64::from(tile[1]))) * h as f64];
+        for triangle in scene.triangles.iter().filter(|t| t.material == material) {
+            let pts = triangle.corners.map(|c| point(c.uv));
+            let (x0, y0, x1, y1) = bounds(&pts, 0.0, w, h);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let covered = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
+                        .iter()
+                        .any(|(dx, dy)| barycentric([x as f64 + dx, y as f64 + dy], pts).is_some());
+                    if covered {
+                        occupancy.insert(x, y);
+                    }
+                }
+            }
+        }
+        Ok(occupancy)
+    }
+
+    /// Build a sparse exterior apron for a single shell. The apron follows only true shell
+    /// boundaries (never internal triangulation edges), stays inside the atlas, and excludes
+    /// every texel covered by another shell of the same material.
+    pub fn outward_padding_mask(
+        &self,
+        width: u32,
+        height: u32,
+        material: usize,
+        tile: [i32; 2],
+        shell_id: usize,
+        padding: f64,
+        occupancy: &OccupancyMask,
+    ) -> Result<PaddingMask> {
+        if !padding.is_finite() || !(0.0..=1024.0).contains(&padding) {
+            return Err(Error("Outward padding must be in 0..1024 pixels".into()));
+        }
+        if padding == 0.0 {
+            return Ok(PaddingMask::default());
+        }
+        if (occupancy.width, occupancy.height, occupancy.material, occupancy.tile) != (width, height, material, tile) {
+            return Err(Error("UV occupancy key does not match".into()));
+        }
+        self.shells.get(shell_id).filter(|shell| shell.material == material).ok_or_else(|| Error("Selected shell does not belong to this material".into()))?;
+        let (w, h) = (width as usize, height as usize);
+        let point = |uv: [f64; 2]| [(uv[0] - f64::from(tile[0])) * w as f64, (1.0 - (uv[1] - f64::from(tile[1]))) * h as f64];
+        let mut result = PaddingMask::default();
+        let radius = padding + std::f64::consts::FRAC_1_SQRT_2;
+        let scan_radius = radius + 0.5;
+        let diameter = (scan_radius.ceil() as usize).saturating_mul(2).saturating_add(1);
+        let mut candidates = 0usize;
+        for edge in self.boundaries.iter().filter(|edge| edge.shell == shell_id) {
+            let pts = edge.uv.map(point);
+            let length = (pts[1][0] - pts[0][0]).hypot(pts[1][1] - pts[0][1]);
+            let steps = length.ceil().max(1.0) as usize;
+            candidates = candidates.saturating_add(steps.saturating_add(1).saturating_mul(diameter.saturating_mul(diameter)));
+            if candidates > MAX_PADDING_CANDIDATES {
+                return Err(Error("UV shell padding exceeds the 16M candidate budget".into()));
+            }
+            for step in 0..=steps {
+                let t = step as f64 / steps as f64;
+                let center = [pts[0][0] + (pts[1][0] - pts[0][0]) * t, pts[0][1] + (pts[1][1] - pts[0][1]) * t];
+                let x0 = (center[0] - scan_radius).floor().clamp(0.0, w as f64) as i32;
+                let y0 = (center[1] - scan_radius).floor().clamp(0.0, h as f64) as i32;
+                let x1 = (center[0] + scan_radius).ceil().clamp(0.0, w as f64) as i32;
+                let y1 = (center[1] + scan_radius).ceil().clamp(0.0, h as f64) as i32;
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        if occupancy.contains(x, y) {
+                            continue;
+                        }
+                        if segment_delta([x as f64 + 0.5, y as f64 + 0.5], pts).iter().map(|v| v * v).sum::<f64>() <= radius * radius {
+                            result.insert(x, y);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    pub fn mask_with_occupancy(&self, scene: &Scene, options: &MaskOptions, occupancy: &OccupancyMask) -> Result<Vec<f32>> {
+        self.mask_with_padding_masks(scene, options, occupancy, None)
+    }
+
+    pub fn mask_with_padding_masks(
+        &self,
+        scene: &Scene,
+        options: &MaskOptions,
+        occupancy: &OccupancyMask,
+        cached_padding: Option<&BTreeMap<usize, Arc<PaddingMask>>>,
+    ) -> Result<Vec<f32>> {
+        scene.validate()?;
+        let MaskOptions { width, height, material, tile, selected, guard, horizontal, vertical, feather, open_borders, padding } = options;
         let (w, h) = (*width as usize, *height as usize);
         let n = w.checked_mul(h).filter(|n| *n > 0 && *n <= MAX_PIXELS).ok_or_else(|| Error("UV mask is limited to 16M pixels".into()))?;
         if *material >= scene.materials.len() || selected.iter().any(|i| self.shells.get(*i).is_none_or(|s| s.material != *material)) {
             return Err(Error("Selected shell does not belong to this material".into()));
         }
-        if [*guard, *horizontal, *vertical, *feather].iter().any(|v| !v.is_finite() || !(0.0..=1024.0).contains(v)) {
-            return Err(Error("Margins and inward feather must be in 0..1024 pixels".into()));
+        if (occupancy.width, occupancy.height, occupancy.material, occupancy.tile) != (*width, *height, *material, *tile) {
+            return Err(Error("UV occupancy key does not match".into()));
+        }
+        if [*guard, *horizontal, *vertical, *feather, *padding].iter().any(|v| !v.is_finite() || !(0.0..=1024.0).contains(v)) {
+            return Err(Error("Margins, inward feather and outward padding must be in 0..1024 pixels".into()));
         }
         let point = |uv: [f64; 2]| [(uv[0] - f64::from(tile[0])) * w as f64, (1.0 - (uv[1] - f64::from(tile[1]))) * h as f64];
         let mut samples = filled(n, 0u8)?;
@@ -196,6 +384,24 @@ impl Topology {
                 }
             }
         }
+        // Add the apron after inward protection so the existing guard remains an interior
+        // operation with unchanged semantics.
+        if *padding > 0.0 {
+            for shell_id in selected {
+                let generated;
+                let padding_mask = if let Some(cached) = cached_padding.and_then(|masks| masks.get(shell_id)) {
+                    cached
+                } else {
+                    generated = self.outward_padding_mask(*width, *height, *material, *tile, *shell_id, *padding, occupancy)?;
+                    &generated
+                };
+                padding_mask.for_each(|x, y| {
+                    if let Some(value) = mask.get_mut(y as usize * w + x as usize) {
+                        *value = 1.0;
+                    }
+                });
+            }
+        }
         Ok(mask)
     }
 }
@@ -211,9 +417,16 @@ pub struct MaskOptions {
     pub vertical: f64,
     pub feather: f64,
     pub open_borders: bool,
+    pub padding: f64,
 }
 
 pub fn barycentric(p: [f64; 2], t: [[f64; 2]; 3]) -> Option<[f64; 3]> {
+    let weights = barycentric_unbounded(p, t)?;
+    if weights.iter().all(|v| *v >= -1e-9) { Some(weights) } else { None }
+}
+
+/// Barycentric weights outside the triangle, used only to extrapolate a bounded UV apron.
+pub fn barycentric_unbounded(p: [f64; 2], t: [[f64; 2]; 3]) -> Option<[f64; 3]> {
     let [a, b, c] = t;
     let cross = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
     let area = cross(a, b, c);
@@ -223,7 +436,7 @@ pub fn barycentric(p: [f64; 2], t: [[f64; 2]; 3]) -> Option<[f64; 3]> {
     let v = cross(a, p, c) / area;
     let w = cross(a, b, p) / area;
     let u = 1.0 - v - w;
-    if u >= -1e-9 && v >= -1e-9 && w >= -1e-9 { Some([u, v, w]) } else { None }
+    Some([u, v, w])
 }
 
 fn bounds<const N: usize>(pts: &[[f64; 2]; N], pad: f64, w: usize, h: usize) -> (usize, usize, usize, usize) {

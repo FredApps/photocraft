@@ -426,4 +426,28 @@ pub struct MaskPaintLayerM {
     pub visible: bool,
     pub opacity: f32,
     pub surface: SurfaceM,
+    #[serde(default = "mask_paint_kind_default")]
+    pub kind: String,
+    #[serde(default = "mask_paint_value_default")]
+    pub value: f32,
+    #[serde(default)]
+    pub input_black: f32,
+    #[serde(default = "mask_paint_one_default")]
+    pub gamma: f32,
+    #[serde(default = "mask_paint_one_default")]
+    pub input_white: f32,
+    #[serde(default)]
+    pub output_black: f32,
+    #[serde(default = "mask_paint_one_default")]
+    pub output_white: f32,
+}
+
+fn mask_paint_kind_default() -> String {
+    "paint".into()
+}
+fn mask_paint_value_default() -> f32 {
+    1.0
+}
+fn mask_paint_one_default() -> f32 {
+    1.0
 }

@@ -301,7 +301,7 @@ mod tests {
         use photocraft_color::PixelFormat;
         use photocraft_doc::{
             LayerMask,
-            mask_paint::{Paint, Stack},
+            mask_paint::{EffectKind, Paint, Stack},
         };
         use photocraft_raster::Surface;
 
@@ -318,6 +318,7 @@ mod tests {
                 visible: true,
                 opacity: 1.0,
                 surface: Surface::with_default(PixelFormat::RGBA8, &[1.0, 0.0, 0.0, 0.5]),
+                kind: EffectKind::Paint,
             }],
             active: 0,
         });

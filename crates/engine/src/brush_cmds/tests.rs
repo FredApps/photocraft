@@ -20,6 +20,191 @@ fn same_pixels(a: &Surface, b: &Surface, r: Rect) -> bool {
 }
 
 #[test]
+fn live_mask_paint_reuses_stack_prefix_and_matches_canonical_refresh_at_every_depth() {
+    use photocraft_color::{PixelFormat, SampleType};
+    use photocraft_doc::{
+        LayerMask,
+        mask_paint::{EffectKind, Paint, Stack},
+    };
+
+    for sample in SampleType::ALL {
+        let mut s = session(512, 512);
+        let id = s.active().unwrap().active_layer.unwrap();
+        let gray = PixelFormat::new(photocraft_color::ColorMode::Grayscale, sample, false);
+        let rgba = PixelFormat::new(photocraft_color::ColorMode::Rgb, sample, true);
+        let lower = Surface::with_default(rgba, &[0.75, 0.75, 0.75, 0.45]);
+        let active = Surface::new(rgba);
+        let base = Surface::with_default(gray, &[0.3]);
+        s.edit("test mask stack", |doc, _| {
+            let mask = LayerMask {
+                surface: base.clone(),
+                enabled: true,
+                linked: true,
+                density: 1.0,
+                feather: 0.0,
+                paint: Some(Stack {
+                    base,
+                    layers: vec![
+                        Paint { name: "lower".into(), visible: true, opacity: 0.7, surface: lower, kind: EffectKind::Paint },
+                        Paint { name: "active".into(), visible: true, opacity: 0.8, surface: active, kind: EffectKind::Paint },
+                        Paint {
+                            name: "levels".into(),
+                            visible: true,
+                            opacity: 0.6,
+                            surface: Surface::new(rgba),
+                            kind: EffectKind::Levels { input_black: 0.05, gamma: 1.4, input_white: 0.9, output_black: 0.1, output_white: 0.8 },
+                        },
+                    ],
+                    active: 1,
+                }),
+            };
+            doc.layer_mut(id).ok_or_else(|| EngineError::NoLayer(id))?.mask = Some(mask);
+            Ok(())
+        })
+        .unwrap();
+
+        let params =
+            json!({"target":"mask","points":[[80.5,80.5,1.0]],"size":24,"color":"#000000","brush":{"hardness":0.8,"opacity":0.7,"flow":0.8},"seed":71});
+        let mut live = LiveStroke::begin(&s, &params).unwrap();
+        let expected = |live: &LiveStroke| {
+            let mut doc = (*live.doc).clone();
+            let mask = doc.layer_mut(id).unwrap().mask.as_mut().unwrap();
+            photocraft_compose::mask_paint::refresh(mask, None);
+            mask.surface.read_region(Rect::new(0, 0, 512, 512))
+        };
+        let actual = live.doc.layer(id).unwrap().mask.as_ref().unwrap().surface.read_region(Rect::new(0, 0, 512, 512));
+        assert_eq!(actual, expected(&live), "initial preview differs for {sample:?}");
+        assert!(live.mask_prefix.as_ref().is_some_and(|cache| !cache.blocks.is_empty()), "mask-target preview should cache its lower stack");
+
+        for points in [vec![StrokePoint::new(220.5, 180.5, 1.0)], vec![StrokePoint::new(270.5, 280.5, 1.0)]] {
+            live.push(&points).unwrap();
+            let actual = live.doc.layer(id).unwrap().mask.as_ref().unwrap().surface.read_region(Rect::new(0, 0, 512, 512));
+            assert_eq!(actual, expected(&live), "incremental preview differs for {sample:?}");
+        }
+    }
+}
+
+#[test]
+fn brush_does_not_write_to_a_flattened_mask_when_an_effect_is_selected() {
+    use photocraft_color::{ColorMode, PixelFormat, SampleType};
+    use photocraft_doc::{
+        LayerMask,
+        mask_paint::{EffectKind, Paint, Stack},
+    };
+
+    let mut s = session(32, 32);
+    let id = s.active().unwrap().active_layer.unwrap();
+    let base = Surface::with_default(PixelFormat::new(ColorMode::Grayscale, SampleType::U16, false), &[0.4]);
+    s.edit("test fill mask", |doc, _| {
+        doc.layer_mut(id).ok_or_else(|| EngineError::NoLayer(id))?.mask = Some(LayerMask {
+            surface: base.clone(),
+            enabled: true,
+            linked: true,
+            density: 1.0,
+            feather: 0.0,
+            paint: Some(Stack {
+                base,
+                layers: vec![Paint {
+                    name: "Fill".into(),
+                    visible: true,
+                    opacity: 1.0,
+                    surface: Surface::new(PixelFormat::RGBA16),
+                    kind: EffectKind::Fill { value: 0.8 },
+                }],
+                active: 0,
+            }),
+        });
+        Ok(())
+    })
+    .unwrap();
+    let before = s.active().unwrap().doc.layer(id).unwrap().mask.as_ref().unwrap().surface.clone();
+    assert!(s.execute("paint.stroke", json!({"target":"mask","points":[[16,16]],"size":8})).is_err());
+    let after = &s.active().unwrap().doc.layer(id).unwrap().mask.as_ref().unwrap().surface;
+    assert_eq!(after, &before, "a brush must not mutate the flattened cache for an effect layer");
+}
+
+fn dense_ten_paint_mask_session() -> Session {
+    use photocraft_color::{ColorMode, PixelFormat, SampleType};
+    use photocraft_doc::{
+        LayerMask,
+        mask_paint::{EffectKind, Paint, Stack},
+    };
+
+    let mut s = session(512, 512);
+    let id = s.active().unwrap().active_layer.unwrap();
+    let rect = Rect::new(0, 0, 512, 512);
+    let gray16 = PixelFormat::new(ColorMode::Grayscale, SampleType::U16, false);
+    let mut base = Surface::with_default(gray16, &[0.3]);
+    base.write_region(rect, &vec![0.3; 512 * 512]);
+    let mut layers = Vec::new();
+    for index in 0..10 {
+        let mut surface = Surface::with_default(PixelFormat::RGBA16, &[0.2, 0.2, 0.2, 0.25]);
+        let value = 0.15 + index as f32 * 0.055;
+        let pixels: Vec<_> = (0..512 * 512)
+            .flat_map(|pixel| {
+                let variation = (pixel % 31) as f32 / 310.0;
+                [value + variation, value, value * 0.8, 0.25 + variation]
+            })
+            .collect();
+        surface.write_region(rect, &pixels);
+        layers.push(Paint { name: format!("dense {index}"), visible: true, opacity: 0.8, surface, kind: EffectKind::Paint });
+    }
+    s.edit("dense mask benchmark", |doc, _| {
+        let layer = doc.layer_mut(id).ok_or_else(|| EngineError::NoLayer(id))?;
+        let mut pixels = Surface::new(PixelFormat::RGBA16);
+        pixels.write_region(rect, &vec![0.2; 512 * 512 * 4]);
+        *layer.surface_mut().ok_or_else(|| EngineError::Other("benchmark layer has no pixels".into()))? = pixels;
+        layer.mask =
+            Some(LayerMask { surface: base.clone(), enabled: true, linked: true, density: 1.0, feather: 0.0, paint: Some(Stack { base, layers, active: 9 }) });
+        Ok(())
+    })
+    .unwrap();
+    s
+}
+
+fn time_live_mask_events(size: f64, target: &str, regional_reference: bool) -> Vec<std::time::Duration> {
+    let s = dense_ten_paint_mask_session();
+    let params =
+        json!({"target":target,"points":[[100.5,256.5,1.0]],"size":size,"color":"#000000","brush":{"hardness":0.8,"opacity":0.7,"flow":0.8},"seed":91});
+    let mut live = LiveStroke::begin(&s, &params).unwrap();
+    if regional_reference {
+        live.mask_prefix = None;
+    }
+    let mut times = Vec::new();
+    for index in 0..8 {
+        let point = StrokePoint::new(240.5 + f64::from(index) * 4.0, 256.5, 1.0);
+        let start = std::time::Instant::now();
+        live.push(&[point]).unwrap();
+        times.push(start.elapsed());
+    }
+    times
+}
+
+#[test]
+#[ignore = "diagnostic A/B: dense 10-Paint live mask stroke, run explicitly with --ignored"]
+fn benchmark_live_mask_prefix_cache_vs_regional_refresh_and_pixels() {
+    for size in [32.0, 128.0] {
+        let old = time_live_mask_events(size, "mask", true);
+        let cached = time_live_mask_events(size, "mask", false);
+        let pixels = time_live_mask_events(size, "pixels", false);
+        let hot_median = |values: &[std::time::Duration]| {
+            let mut values: Vec<_> = values.iter().skip(1).copied().collect();
+            values.sort_unstable();
+            values[values.len() / 2]
+        };
+        println!(
+            "size={size:.0}px; old regional cold={:?} hot-median={:?}; prefix cache cold={:?} hot-median={:?}; ordinary pixels cold={:?} hot-median={:?}",
+            old[0],
+            hot_median(&old),
+            cached[0],
+            hot_median(&cached),
+            pixels[0],
+            hot_median(&pixels),
+        );
+    }
+}
+
+#[test]
 fn stroke_backwards_compatible() {
     let mut s = session(80, 40);
     let r = s.execute("paint.stroke", json!({"points": [[4, 20], [60, 20]], "size": 6, "color": "#0000ff"})).unwrap();

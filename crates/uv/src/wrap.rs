@@ -135,6 +135,21 @@ impl Patch {
     /// Tight UV bounds of the footprint intersection: zooming in never scans an
     /// entire atlas triangle for a tiny brush. No allocations depend on file extents.
     pub fn rasterize(&self, scene: &Scene, size: [u32; 2], reach: f64, mut emit: impl FnMut(i32, i32, [f64; 2])) -> Result<()> {
+        self.rasterize_with_padding(scene, size, reach, None, 0.0, &mut emit)
+    }
+
+    pub fn rasterize_with_padding(
+        &self,
+        scene: &Scene,
+        size: [u32; 2],
+        reach: f64,
+        padding_mask: Option<&crate::topology::PaddingMask>,
+        padding: f64,
+        mut emit: impl FnMut(i32, i32, [f64; 2]),
+    ) -> Result<()> {
+        if !padding.is_finite() || !(0.0..=1024.0).contains(&padding) {
+            return Err(Error("Invalid wrap padding".into()));
+        }
         let t = scene.triangles.get(self.triangle).ok_or_else(|| Error("Invalid wrap triangle".into()))?;
         let mut poly: Vec<DVec2> = self.plane.map(DVec2::from_array).to_vec();
         for (axis, sign) in [(0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0)] {
@@ -167,22 +182,34 @@ impl Patch {
         if !lo.is_finite() || !hi.is_finite() {
             return Ok(());
         }
-        let x0 = lo.x.floor().clamp(0.0, f64::from(size[0])) as i32;
-        let y0 = lo.y.floor().clamp(0.0, f64::from(size[1])) as i32;
-        let x1 = hi.x.ceil().clamp(0.0, f64::from(size[0])) as i32;
-        let y1 = hi.y.ceil().clamp(0.0, f64::from(size[1])) as i32;
+        let scan_padding = if padding_mask.is_some() && padding > 0.0 { padding + std::f64::consts::FRAC_1_SQRT_2 } else { 0.0 };
+        let base_x0 = lo.x.floor().clamp(0.0, f64::from(size[0])) as i32;
+        let base_y0 = lo.y.floor().clamp(0.0, f64::from(size[1])) as i32;
+        let base_x1 = hi.x.ceil().clamp(0.0, f64::from(size[0])) as i32;
+        let base_y1 = hi.y.ceil().clamp(0.0, f64::from(size[1])) as i32;
+        let x0 = (lo.x - scan_padding).floor().clamp(0.0, f64::from(size[0])) as i32;
+        let y0 = (lo.y - scan_padding).floor().clamp(0.0, f64::from(size[1])) as i32;
+        let x1 = (hi.x + scan_padding).ceil().clamp(0.0, f64::from(size[0])) as i32;
+        let y1 = (hi.y + scan_padding).ceil().clamp(0.0, f64::from(size[1])) as i32;
         if i64::from(x1 - x0) * i64::from(y1 - y0) > 4_194_304 {
             return Err(Error("Wrap footprint exceeds 4M texels; reduce brush size".into()));
         }
         for y in y0..y1 {
             for x in x0..x1 {
-                if let Some(w) = crate::topology::barycentric([f64::from(x) + 0.5, f64::from(y) + 0.5], uv) {
-                    if w.iter().any(|v| *v < -1e-8) {
+                let Some(w) = crate::topology::barycentric_unbounded([f64::from(x) + 0.5, f64::from(y) + 0.5], uv) else { continue };
+                // Match `topology::barycentric`'s existing edge tolerance; otherwise the
+                // padding path can emit a subpixel sliver outside the triangle without apron.
+                let inside = w.iter().all(|v| *v >= -1e-9);
+                if inside {
+                    // Preserve the old brush-clipped chart bounds for all interior pixels.
+                    if x < base_x0 || x >= base_x1 || y < base_y0 || y >= base_y1 {
                         continue;
                     }
-                    let p = std::array::from_fn(|axis| self.plane[0][axis] * w[0] + self.plane[1][axis] * w[1] + self.plane[2][axis] * w[2]);
-                    emit(x, y, p);
+                } else if !padding_mask.is_some_and(|mask| mask.contains(x, y)) {
+                    continue;
                 }
+                let p = std::array::from_fn(|axis| self.plane[0][axis] * w[0] + self.plane[1][axis] * w[1] + self.plane[2][axis] * w[2]);
+                emit(x, y, p);
             }
         }
         Ok(())

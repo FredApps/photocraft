@@ -4671,6 +4671,7 @@ shape	Appearance	Оформление
 	Horizontal margin, px	По горизонтали, px
 	Vertical margin, px	По вертикали, px
 	Inward feather, px	Растушёвка внутрь, px
+	Outward padding, px	Внешний отступ, px
 	Drop one file onto the texture slot	Перетащите один файл в карточку текстуры
 	Assigning a texture requires a local file	Для назначения текстуры нужен локальный файл
 	Choose a file or drop an image here	Выбрать файл или перетащить изображение сюда
@@ -4709,6 +4710,16 @@ shape	Appearance	Оформление
 	HDR / EXR…	HDR / EXR…
 	Reimport	Повторный импорт
 
+	Add Fill layer	Добавить слой-заливку
+	Add Levels layer	Добавить слой «Уровни»
 	Add Paint layer	Добавить Paint-слой
 
+	Delete Fill layer	Удалить слой-заливку
+	Delete Levels layer	Удалить слой «Уровни»
 	Delete Paint layer	Удалить Paint-слой
+	Fill	Заливка
+	Input Black	Входная чёрная точка
+	Input White	Входная белая точка
+	Output Black	Выходная чёрная точка
+	Output White	Выходная белая точка
+	Applied when you release the control	Применяется после отпускания элемента управления

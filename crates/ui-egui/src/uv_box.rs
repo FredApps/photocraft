@@ -92,7 +92,7 @@ pub(crate) fn select(
     };
     match app.run("uv.shell.select", serde_json::json!({"material":material,"shells":shells,"mode":mode})) {
         Ok(_) => {
-            if let Err(e) = app.run("uv.mask.apply", serde_json::json!({"guard":state.guard,"horizontal":state.horizontal,"vertical":state.vertical,"feather":state.feather,"openBorders":state.open_borders})) {
+            if let Err(e) = app.run("uv.mask.apply", serde_json::json!({"guard":state.guard,"horizontal":state.horizontal,"vertical":state.vertical,"feather":state.feather,"openBorders":state.open_borders,"padding":state.padding})) {
                 state.status = e;
             }
         }

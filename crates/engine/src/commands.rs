@@ -74,10 +74,21 @@ pub(crate) fn paint_surface<'a>(doc: &'a mut Document, id: LayerId, p: &Value) -
     }
     let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
     if is_mask_target(p) {
-        if l.mask.as_ref().and_then(|m| m.paint.as_ref()).and_then(|s| s.layers.get(s.active)).is_some_and(|p| !p.visible) {
-            return Err(EngineError::Other("Selected mask Paint layer is hidden".into()));
+        let mask = l.mask.as_mut().ok_or_else(|| EngineError::Other("layer has no mask".into()))?;
+        if let Some(stack) = &mask.paint {
+            let Some(active) = stack.layers.get(stack.active) else {
+                return Err(EngineError::Other("Selected mask effect is unavailable".into()));
+            };
+            if !active.visible {
+                return Err(EngineError::Other("Selected mask Paint layer is hidden".into()));
+            }
+            if !matches!(&active.kind, photocraft_doc::mask_paint::EffectKind::Paint) {
+                return Err(EngineError::Other("Select a Paint layer before painting on the mask".into()));
+            }
+            mask.active_paint_surface_mut().ok_or_else(|| EngineError::Other("Select a Paint layer before painting on the mask".into()))
+        } else {
+            Ok(&mut mask.surface)
         }
-        l.mask.as_mut().map(|m| m.paint_surface_mut()).ok_or_else(|| EngineError::Other("layer has no mask".into()))
     } else {
         l.surface_mut().ok_or_else(|| EngineError::Other("not a pixel layer".into()))
     }

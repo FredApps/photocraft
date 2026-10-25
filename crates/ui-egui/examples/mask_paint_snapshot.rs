@@ -16,6 +16,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     session.execute("uv.maskPaint.add", json!({"name":"Paint 1"}))?;
     session.execute("paint.stroke", json!({"target":"mask","points":[[30,30],[60,60]],"size":20,"color":"#000000"}))?;
     session.execute("uv.maskPaint.add", json!({"name":"Paint 2"}))?;
+    session.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.0}))?;
+    session.execute("uv.maskPaint.modify", json!({"index":2,"opacity":0.25}))?;
+    session.execute("uv.maskPaint.add", json!({"kind":"levels","input_black":0.1,"gamma":1.2,"input_white":0.9,"output_black":0.05,"output_white":0.95}))?;
     let mut h =
         egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_pixels_per_point(1.0).with_max_steps(64).wgpu().build_eframe(move |cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
