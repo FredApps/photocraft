@@ -12,6 +12,7 @@ pub(super) struct Budgets<'a> {
     pub metadata: &'a mut usize,
 }
 
+/// Read a native numeric parameter with its default, rejecting nonfinite values and values outside the command domain.
 fn number(p: &Value, name: &str, default: f32, lo: f32, hi: f32) -> std::result::Result<f32, String> {
     let value = match p.get(name) {
         None => default,
@@ -20,6 +21,8 @@ fn number(p: &Value, name: &str, default: f32, lo: f32, hi: f32) -> std::result:
     if value.is_finite() && (lo..=hi).contains(&value) { Ok(value) } else { Err(format!("native {name} is outside its supported range")) }
 }
 
+/// Decode the admitted native adjustment commands, including embedded-only lookup tables.
+/// Unknown commands or invalid native parameters return a mapping error rather than running source operations.
 pub(super) fn adjustment(command: &str, p: &Value) -> std::result::Result<Adjustment, String> {
     Ok(match command {
         "image.adjustments.invert" => Adjustment::Invert,
@@ -105,6 +108,7 @@ pub(super) fn adjustment(command: &str, p: &Value) -> std::result::Result<Adjust
     })
 }
 
+/// Require four finite native Channel Mixer percentages and convert them into normalized coefficients.
 fn mixer_row(value: &Value) -> std::result::Result<[f32; 4], String> {
     let values = value.as_array().filter(|row| row.len() == 4).ok_or("Native Channel Mixer needs four coefficients")?;
     let mut result = [0.; 4];
@@ -116,6 +120,7 @@ fn mixer_row(value: &Value) -> std::result::Result<[f32; 4], String> {
     Ok(result)
 }
 
+/// Decode one native Levels channel and enforce its minimum input interval before applying it to coverage.
 fn levels(p: &Value) -> std::result::Result<LevelsChannel, String> {
     let value = LevelsChannel {
         in_black: number(p, "inBlack", 0., 0., 253.)? / 255.,
@@ -129,6 +134,7 @@ fn levels(p: &Value) -> std::result::Result<LevelsChannel, String> {
     }
     Ok(value)
 }
+/// Validate bounded native curve points or the complete pencil table, rejecting unordered inputs and invalid coordinates.
 fn curve(value: &Value, pencil: bool) -> std::result::Result<Vec<CurvePoint>, String> {
     if value.is_null() {
         return Ok(Vec::new());
@@ -170,6 +176,8 @@ enum Operation {
     RemoveBlackMatte,
     Average,
 }
+/// Select an existing native algorithm or adjustment from its command parameters.
+/// Unimplemented adapters fail explicitly so the caller can retain the original coverage.
 fn operation(command: &str, p: &Value) -> std::result::Result<Operation, String> {
     use photocraft_algo::FilterParams as F;
     let filter = match command {
@@ -457,11 +465,14 @@ fn operation(command: &str, p: &Value) -> std::result::Result<Operation, String>
     Ok(Operation::Filter(filter))
 }
 
+/// Decode the bounded native channel-selection array, allowing an empty selection only where the caller permits it.
 fn native_channels(value: &Value, empty: bool) -> std::result::Result<Vec<bool>, String> {
     let input = value.as_array().filter(|v| v.len() <= 5 && (empty || !v.is_empty())).ok_or("Native channel selection has an invalid length")?;
     serde_json::from_value(Value::Array(input.clone())).map_err(|e| format!("Native channel selection: {e}"))
 }
 
+/// Reject alpha-dependent or channel-count mismatched operations for the actual surface.
+/// A scalar coverage plane never acquires invented layer alpha.
 fn native_channel_semantics(operation: &Operation, channels: usize) -> std::result::Result<(), effects::MappingFailure> {
     if channels == 1
         && matches!(
@@ -518,6 +529,7 @@ fn scalar_channel_selection(operation: &mut Operation, channels: usize) {
     }
 }
 
+/// Bound the live decoded displacement-map allowance against remaining workspace, including overflow checks.
 fn embedded_map_workspace(filters: &[photocraft_doc::SmartFilter], budget: usize) -> std::result::Result<usize, effects::MappingFailure> {
     let cost = filters.iter().try_fold(0usize, |sum, f| {
         let bytes = f.params.get("__displacePsd").and_then(Value::as_str).map_or(Some(0), |text| text.len().checked_mul(4).and_then(|n| n.checked_add(4096)));
@@ -525,6 +537,7 @@ fn embedded_map_workspace(filters: &[photocraft_doc::SmartFilter], budget: usize
     });
     cost.filter(|n| *n <= budget).ok_or_else(|| effects::MappingFailure::resource("embedded native coordinate maps exceed actual remaining coverage workspace"))
 }
+/// Preflight embedded maps and every component channel contract before materializing the native stack.
 fn native_filter_channel_semantics(
     filters: &[photocraft_doc::SmartFilter],
     channels: usize,
@@ -569,6 +582,7 @@ pub(in crate::xcf) fn raw_filter(
     Ok(pixels)
 }
 
+/// Replay a native component stack using coverage envelope semantics rather than the raw snapshot route.
 fn native_filters(
     surface: &Surface,
     bounds: Rect,
@@ -579,6 +593,8 @@ fn native_filters(
     native_filters_inner(surface, bounds, filters, budget, ctl, None)
 }
 
+/// Run checked native algorithms with admitted frame and map workspace.
+/// Raw snapshots omit component envelopes; coverage replay applies each admitted native component envelope.
 fn native_filters_inner(
     surface: &Surface,
     bounds: Rect,
@@ -756,6 +772,7 @@ fn native_filters_inner(
     Ok(Ok(processed))
 }
 
+/// Reject overflowed or oversized temporary allocations before invoking a native whole-frame algorithm.
 fn temporary_workspace(bytes: Option<u64>, budget: usize) -> Result<()> {
     if bytes.is_none_or(|n| n > budget as u64) {
         return Err(invalid("native coverage temporary workspace exceeds shared allowance"));
@@ -763,6 +780,8 @@ fn temporary_workspace(bytes: Option<u64>, budget: usize) -> Result<()> {
     Ok(())
 }
 
+/// Apply existing native Shadows/Highlights after bounding its whole-owner scratch space.
+/// Cancellation and nonfinite output prevent publication after the kernel returns.
 fn native_shadows(
     surface: &Surface,
     bounds: Rect,
@@ -808,6 +827,7 @@ fn native_shadows(
     Ok(output)
 }
 
+/// Apply ordinary native lens sampling in bounded output blocks, checking cancellation and finite output between blocks.
 fn native_lens(
     surface: &Surface,
     extent: Rect,
@@ -853,6 +873,7 @@ fn native_lens(
     Ok(output)
 }
 
+/// Reject nonfinite native output and clip only scalar coverage to its native zero-to-one domain, recording whether clipping occurred.
 fn native_scalar_commit(mut surface: Surface, bounds: Rect, ctl: &Interrupt<'_>) -> Result<(Surface, bool)> {
     let mut clipped = false;
     for y in bounds.y0..bounds.y1 {
@@ -956,6 +977,7 @@ fn native_filter_workspace(params: &photocraft_algo::FilterParams, area: Rect, b
     temporary_workspace(cost, budget)
 }
 
+/// Express affine placement as a native homography and use the same checked projective sampling path.
 fn native_warp(surface: &Surface, source: Rect, placement: photocraft_geom::Affine, destination: Rect, ctl: &Interrupt<'_>) -> Result<Surface> {
     let [a, b, c, d, e, f] = placement.m;
     let matrix = photocraft_algo::transform::Homography([a, c, e, b, d, f, 0., 0., 1.]);
@@ -999,6 +1021,7 @@ pub(in crate::xcf) fn native_projective_warp_full(
     Ok(pixels)
 }
 
+/// Use native bicubic projective placement, preserve the source format, and crop only to the requested destination extent.
 fn native_projective_warp(
     surface: &Surface,
     source: Rect,
@@ -1013,6 +1036,7 @@ fn native_projective_warp(
     Ok(photocraft_algo::resample::crop_surface(&output, destination))
 }
 
+/// Accept an optional native u32 seed with deterministic zero default; reject other types or oversized integers.
 fn seed(p: &Value) -> std::result::Result<u32, String> {
     match p.get("seed") {
         None => Ok(0),
@@ -1020,6 +1044,7 @@ fn seed(p: &Value) -> std::result::Result<u32, String> {
     }
 }
 
+/// Build an ordinary two-layer native document to apply visibility, blend, opacity and mask once to processed coverage.
 fn native_mix(input: &Surface, output: &Surface, bounds: Rect, envelope: super::native_effects::NativeEnvelope, ctl: &Interrupt<'_>) -> Result<Surface> {
     if !envelope.opacity.is_finite() || !(0.0..=1.0).contains(&envelope.opacity) {
         return Err(invalid("native coverage envelope opacity is invalid"));
@@ -1040,6 +1065,7 @@ fn native_mix(input: &Surface, output: &Surface, bounds: Rect, envelope: super::
     render_native(&doc, bounds, input.format(), ctl)
 }
 
+/// Compose bounded native bands and restore the caller frame coordinates while observing cancellation between bands.
 fn render_native(doc: &Document, bounds: Rect, format: photocraft_color::PixelFormat, ctl: &Interrupt<'_>) -> Result<Surface> {
     let mut output = Surface::new(format);
     photocraft_compose::render_bands(doc, doc.bounds(), 64, |mut band| -> Result<()> {
@@ -1051,6 +1077,7 @@ fn render_native(doc: &Document, bounds: Rect, format: photocraft_color::PixelFo
     Ok(output)
 }
 
+/// Require positive dimensions within the importer side limit before native snapshot allocation or geometry work.
 fn validate_native_frame(bounds: Rect) -> Result<()> {
     let width = i64::from(bounds.x1) - i64::from(bounds.x0);
     let height = i64::from(bounds.y1) - i64::from(bounds.y0);
@@ -1060,6 +1087,7 @@ fn validate_native_frame(bounds: Rect) -> Result<()> {
     Ok(())
 }
 
+/// Validate the native canvas and a finite positive DPI before using document-dependent preparation.
 fn validate_native_document(document: &Document) -> Result<()> {
     validate_native_frame(document.bounds())?;
     if !document.resolution_dpi.is_finite() || document.resolution_dpi <= 0. {
@@ -1068,6 +1096,7 @@ fn validate_native_document(document: &Document) -> Result<()> {
     Ok(())
 }
 
+/// Bound traversal and reject visible deferred content without prepared caches, preventing silent empty Smart, Text or Shape output.
 fn validate_prepared_layers(layers: &[Layer], depth: usize, nodes: &mut usize, ctl: &Interrupt<'_>) -> Result<()> {
     if depth > super::MAX_DEPTH {
         return Err(invalid("native snapshot prepared document exceeds group depth"));
@@ -1112,6 +1141,7 @@ pub(in crate::xcf) fn render_prepared_document(
     Ok(pixels)
 }
 
+/// Convert a composed RGBA band into the destination native pixel format before writing its original rectangle.
 fn encode(surface: &mut Surface, buffer: &photocraft_compose::Buffer) {
     let fmt = surface.format();
     let mut data = Vec::with_capacity(buffer.px.len().saturating_mul(fmt.channels()));
@@ -1170,6 +1200,7 @@ pub(in crate::xcf) fn reserve_native_frame(bounds: Rect, format: photocraft_colo
     Ok(())
 }
 
+/// Admit scalar working storage and the extra padded RGB tile cost atomically against the shared allowance.
 fn reserve_working_frame(bounds: Rect, budget: &mut usize, mode: ColorMode) -> Result<()> {
     let mut remaining = *budget;
     reserve_frame(bounds, &mut remaining)?;
@@ -1250,6 +1281,7 @@ fn rgb_to_native_gray(surface: &Surface, bounds: Rect, ctl: &Interrupt<'_>) -> R
     Ok(output)
 }
 
+/// Require finite zero-to-one coverage after an RGB working stage; invalid output leaves original coverage available to the caller.
 fn validate_scalar_coverage(surface: &Surface, bounds: Rect, ctl: &Interrupt<'_>) -> Result<()> {
     for y in bounds.y0..bounds.y1 {
         ctl.check().map_err(|_| IoError::Cancelled)?;
@@ -1261,6 +1293,7 @@ fn validate_scalar_coverage(surface: &Surface, bounds: Rect, ctl: &Interrupt<'_>
     Ok(())
 }
 
+/// Validate bounded native typography, lay it out at the actual document DPI, and publish its rendered cache only after budget and cancellation checks.
 fn prepare_native_text(text: &mut photocraft_doc::TextLayer, document: &Document, budget: &mut usize, ctl: &Interrupt<'_>) -> Result<()> {
     ctl.check().map_err(|_| IoError::Cancelled)?;
     if text.text.len() > 65_536
@@ -1325,6 +1358,8 @@ fn prepare_native_text(text: &mut photocraft_doc::TextLayer, document: &Document
     Ok(())
 }
 
+/// Prepare native Text and Shape caches recursively with bounded depth, nodes and workspace.
+/// Deferred Smart content and unsupported pattern preparation are rejected rather than flattened as empty.
 pub(in crate::xcf) fn prepare_direct_layer(
     layer: &mut Layer,
     document: &Document,
@@ -1918,6 +1953,7 @@ mod tests {
     use effects::{Argument, ArgumentValue, StoredEffect};
     use photocraft_color::PixelFormat;
 
+    /// Compare raw replay with an independently applied native adjustment across models and depths, preserving document ICC, DPI and alpha.
     #[test]
     fn snapshot_raw_native_filter_omits_component_envelope_and_preserves_actual_document_context() {
         for mode in [ColorMode::Grayscale, ColorMode::Rgb] {
@@ -1970,6 +2006,7 @@ mod tests {
         }
     }
 
+    /// Use an independent native document to verify resource-aware rendering and reject missing caches or mismatched formats without spending budget.
     #[test]
     fn snapshot_prepared_native_render_keeps_pattern_resources_profile_dpi_and_rejects_missing_caches() {
         use photocraft_doc::{Color, Fill, Pattern, TextLayer};
@@ -2016,6 +2053,7 @@ mod tests {
         assert_eq!(workspace, original);
     }
 
+    /// Compare full placement to the native projective primitive, retaining off-canvas pixels and rolling back allowance on rejection or cancellation.
     #[test]
     fn snapshot_full_native_projective_placement_retains_offcanvas_pixels_and_is_atomic() {
         use photocraft_algo::transform::Homography;
@@ -2040,6 +2078,7 @@ mod tests {
         }
     }
 
+    /// Exercise frame admission, raw replay and deferred-content rejection to prove failures cannot publish workspace deductions.
     #[test]
     fn snapshot_raw_replay_and_prepared_render_do_not_publish_budget_on_failure_or_cancel() {
         use photocraft_doc::{SmartObject, SmartSource};
@@ -2107,6 +2146,7 @@ mod tests {
         assert_eq!(source.read_region(bounds), original);
     }
 
+    /// Construct an independent native adjustment result for stage-plan tests instead of deriving the oracle from imported parameters.
     fn plan_adjustment_counterpart(surface: &Surface, bounds: Rect, adjustment: Adjustment) -> Surface {
         let channels = surface.channels();
         let raw = surface.read_region(bounds);
@@ -2127,6 +2167,7 @@ mod tests {
         result
     }
 
+    /// Prepare replacement typography through the native text engine and compare actual pixels across all native depths.
     #[test]
     fn native_text_replacement_renders_editable_model_instead_of_a_saved_cache_at_each_depth() {
         use photocraft_doc::{Color, TextLayer};
@@ -2170,6 +2211,7 @@ mod tests {
         }
     }
 
+    /// Verify native text uses frame DPI and that hostile text, insufficient workspace and cancellation leave allowance unchanged.
     #[test]
     fn native_text_preparation_obeys_frame_dpi_and_budget_cancel_atomicity() {
         use photocraft_doc::TextLayer;
@@ -2205,6 +2247,7 @@ mod tests {
         }
     }
 
+    /// Build a small independent native stage plan with explicit input references and component parameters for materialization tests.
     fn sample_native_plan() -> effects::NativeStructure {
         use effects::{NativeMapping, NativeStage, NativeStructure, native_filter};
         NativeStructure::Stages {
@@ -2230,6 +2273,7 @@ mod tests {
         }
     }
 
+    /// Compare a staged native plan with independently authored adjustment and blend results, applying the outer coverage envelope exactly once.
     #[test]
     fn native_stages_match_independent_adjustments_blend_and_one_outer_scalar_envelope() {
         use photocraft_doc::AlphaChannel;
@@ -2287,6 +2331,7 @@ mod tests {
         }
     }
 
+    /// Compare fractional Join strength with ordinary above-layer opacity, including invalid opacity rejection.
     #[test]
     fn native_stages_join_opacity_is_the_above_native_layers_opacity() {
         use effects::{NativeMapping, NativeStage};
@@ -2326,6 +2371,7 @@ mod tests {
         }
     }
 
+    /// Verify captured channel and mask stages against independently built native coverage data at every supported depth.
     #[test]
     fn native_stages_channel_and_mask_match_independent_native_data_at_each_depth() {
         use effects::{NativeMaskComponent, NativeStage};
@@ -2383,6 +2429,7 @@ mod tests {
         }
     }
 
+    /// Use displaced native content to prove alignment depends on referenced surface extents rather than guessed canvas bounds.
     #[test]
     fn native_stages_alignment_uses_actual_earlier_native_bounds() {
         use effects::{NativeMapping, NativeStage, NativeStructure};
@@ -2416,6 +2463,7 @@ mod tests {
         }
     }
 
+    /// Compare captured offset and position maps with an independently embedded native Displace map, including exact zero-axis behavior.
     #[test]
     fn native_stages_displacement_uses_captured_native_channel_and_ordinary_displace() {
         use effects::{NativeMapCoordinates, NativeMaskComponent, NativeStage};
@@ -2483,6 +2531,7 @@ mod tests {
         }
     }
 
+    /// Exercise invalid stage data, unavailable resources and cancellation while asserting original pixels and shared budgets remain unchanged.
     #[test]
     fn native_stages_channel_mask_and_displacement_failure_and_cancel_are_atomic() {
         use effects::{NativeMaskComponent, NativeStage};
@@ -2545,6 +2594,7 @@ mod tests {
         assert_eq!(source.read_region(bounds), original);
     }
 
+    /// Compare stage erasure with independently composed native shallow-knockout layers across all depths and fractional opacity.
     #[test]
     fn native_stages_knockout_matches_independent_native_layers_at_each_depth() {
         use effects::{NativeMapping, NativeStage, NativeStructure};
@@ -2615,6 +2665,7 @@ mod tests {
         }
     }
 
+    /// Reject insufficient knockout workspace, cancellation and hostile opacity without publishing budget changes.
     #[test]
     fn native_stages_knockout_budget_cancel_and_invalid_opacity_are_atomic() {
         use effects::NativeStage;
@@ -2646,6 +2697,7 @@ mod tests {
         assert_eq!(source.read_region(bounds), original);
     }
 
+    /// Reject forward, nested and invalid stage references before materialization and verify rollback after later failures.
     #[test]
     fn native_stages_validate_flat_references_and_rollback_workspace_on_any_failure() {
         use effects::{NativeMapping, NativeStage, NativeStructure};
@@ -2702,6 +2754,7 @@ mod tests {
         }
     }
 
+    /// Ensure an oversized native morphology neighborhood is rejected during admission rather than allocated or partially published.
     #[test]
     fn native_large_morphology_rejects_inflated_window_before_allocating_or_publishing() {
         let bounds = Rect::new(0, 0, 1, 1);
@@ -2747,6 +2800,7 @@ mod tests {
         assert_eq!(skinny_source.pixel(4000, 0), vec![0.5]);
     }
 
+    /// Compare alpha, hole-fill, HSB and matte adapters with existing native algorithms at each supported depth.
     #[test]
     fn ca04_native_alpha_holes_hsb_and_matting_match_existing_algorithms_at_all_depths() {
         use photocraft_algo::{FilterParams as F, HsbModel};
@@ -2806,6 +2860,7 @@ mod tests {
         }
     }
 
+    /// Verify whole-owner Shadows/Highlights and tiled lens replay match native counterparts without narrowing depth or duplicating alpha.
     #[test]
     fn native_whole_owner_shadows_and_tiled_lens_preserve_existing_pixels_depth_and_alpha() {
         let bounds = Rect::new(0, 0, 5, 3);
@@ -2839,6 +2894,7 @@ mod tests {
         }
     }
 
+    /// Distinguish native output clipping from invalid source coverage and prove rejected source data does not spend shared allowances.
     #[test]
     fn native_scalar_commit_clips_only_native_outputs_and_preserves_invalid_source_and_budgets() {
         let bounds = Rect::new(0, 0, 3, 1);
@@ -2866,6 +2922,7 @@ mod tests {
         assert_eq!(source.read_region(bounds), original);
     }
 
+    /// Verify scalar owners pass through the native joint-RGB working policy, retain their masks and identity, and survive native persistence.
     #[test]
     fn scalar_rgb_working_stage_uses_native_joint_colors_masks_channels_selection_and_persistence() {
         use photocraft_doc::AlphaChannel;
@@ -2954,6 +3011,7 @@ mod tests {
         }
     }
 
+    /// Reject invalid RGB-to-scalar coverage and interrupted or oversized working stages without changing source data or allowances.
     #[test]
     fn scalar_rgb_working_stage_budget_cancel_and_invalid_coverage_are_atomic() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2993,6 +3051,7 @@ mod tests {
         assert_eq!(gray - rgb, photocraft_geom::TILE_SIZE as usize * photocraft_geom::TILE_SIZE as usize * 8);
     }
 
+    /// Compare translated pixelization with the existing native Mosaic algorithm, preserving native depth and coverage behavior.
     #[test]
     fn canonical_pixelize_coverage_matches_existing_native_mosaic_with_alpha_at_each_depth() {
         for sample in [SampleType::U8, SampleType::U16, SampleType::F32] {
@@ -3051,6 +3110,7 @@ mod tests {
         assert!(operation("filter.pixelate.mosaic", &serde_json::json!({"cellSize":201})).is_err());
     }
 
+    /// Use an independent native weighted-average result to verify owner-domain analysis and single component envelope application.
     #[test]
     fn coverage_average_uses_native_weighted_mean_and_component_envelope() {
         let bounds = Rect::new(-2, 3, 1, 4);
@@ -3122,6 +3182,7 @@ mod tests {
         assert!(operation("filter.blur.average", &serde_json::json!({"invented":1})).is_err());
     }
 
+    /// Compare coverage Exposure to the ordinary native Gray adjustment at every native depth.
     #[test]
     fn coverage_exposure_matches_native_gray_adjustment_at_each_depth() {
         for sample in [SampleType::U8, SampleType::U16, SampleType::F32] {
@@ -3152,6 +3213,7 @@ mod tests {
         }
     }
 
+    /// Verify an unimplemented native adapter returns a mapping failure without modifying the original coverage surface.
     #[test]
     fn unknown_native_adapter_leaves_source_unchanged() {
         let bounds = Rect::new(0, 0, 1, 1);
@@ -3170,6 +3232,7 @@ mod tests {
         ));
     }
 
+    /// Compare Gaussian coverage replay with the native Gray filter and verify cancellation aborts publication.
     #[test]
     fn coverage_gaussian_uses_native_gray_filter_and_cancellation() {
         let bounds = Rect::new(0, 0, 3, 1);
@@ -3210,6 +3273,7 @@ mod tests {
         assert_eq!(source.read_region(bounds), vec![0., 1., 0.]);
     }
 
+    /// Check the admitted native pencil interval curve produces the expected scalar threshold coverage.
     #[test]
     fn native_interval_curve_translates_coverage_threshold() {
         let bounds = Rect::new(0, 0, 3, 1);
@@ -3225,6 +3289,7 @@ mod tests {
             apply(&source, bounds, &effect, None, false, &mut Budgets { workspace: &mut budget, metadata: &mut metadata }, &Interrupt::NONE).unwrap().unwrap();
         assert_eq!(got.read_region(bounds), vec![0., 1., 0.]);
     }
+    /// Compose an independent Gray reference document with explicit processed-layer opacity and optional mask for envelope tests.
     fn independent_native_mix(input: &Surface, result: &Surface, opacity: f32, mask: Option<&Surface>) -> Surface {
         let mut doc = Document::new(
             "Independent native Gray mix",
@@ -3240,6 +3305,7 @@ mod tests {
         photocraft_compose::flatten_to_surface(&doc, input.format(), None)
     }
 
+    /// Separate native component probability from the parent mask and opacity, proving each envelope is applied once.
     #[test]
     fn component_filter_probability_and_parent_coverage_apply_once_with_native_gray_rules() {
         let bounds = Rect::new(0, 0, 5, 2);
@@ -3285,6 +3351,7 @@ mod tests {
             assert_eq!(actual.read_region(bounds), expected.read_region(bounds), "{sample:?}");
         }
     }
+    /// Compare native bevel pixels with an independent styled layer before applying the parent coverage envelope.
     #[test]
     fn native_gray_bevel_is_composited_before_the_single_parent_mask_and_opacity() {
         use photocraft_doc::effects::{Bevel, BevelStyle, BevelTechnique, Contour, Effect, FxCommon};
@@ -3333,6 +3400,7 @@ mod tests {
             assert_eq!(actual.read_region(bounds), expected.read_region(bounds), "{sample:?}");
         }
     }
+    /// Verify rotate-filter-inverse placement and component strength against independently rotated native Wind output.
     #[test]
     fn native_quarter_turn_wind_preserves_gray_orientation_and_component_probability() {
         use photocraft_algo::transform::{Homography, Interp, warp_surface};
@@ -3374,6 +3442,7 @@ mod tests {
         }
     }
 
+    /// Compare resource-backed Pattern Fill replacement with an independent native document and single parent mask application.
     #[test]
     fn direct_native_pattern_replacement_keeps_resources_and_parent_mask_once() {
         use photocraft_doc::{Fill, Pattern};
@@ -3431,6 +3500,7 @@ mod tests {
         }
     }
 
+    /// Verify native branch placement, clipping and vector coverage remain ordered before postfilters and outer composition.
     #[test]
     fn native_composite_preserves_branch_clipping_vector_coverage_and_postfilter_order() {
         use photocraft_doc::{Color, Fill, VectorMask};
@@ -3497,6 +3567,7 @@ mod tests {
         assert!(processed.pixel(2, 0)[0] < actual.pixel(2, 0)[0]);
     }
 
+    /// Compare prepared native grouped Shapes with independent composition and reject insufficient preparation workspace.
     #[test]
     fn native_direct_group_shapes_prepare_native_caches_with_bounded_workspace() {
         use photocraft_doc::{Color, Fill, Group, Path, ShapeLayer, Subpath};
@@ -3544,6 +3615,7 @@ mod tests {
         assert!(empty.layers.is_empty());
     }
 
+    /// Compare typed scalar adapters with independently invoked checked native rank, noise and convolution kernels.
     #[test]
     fn scalar_typed_rank_noise_and_convolution_match_existing_checked_native_algorithms() {
         let bounds = Rect::new(0, 0, 3, 3);
@@ -3622,6 +3694,7 @@ mod tests {
         }
     }
 
+    /// Verify native affine Levels fallbacks preserve signed/HDR endpoint intent and leave unselected alpha unchanged.
     #[test]
     fn absent_disabled_alpha_levels_selection_preserves_scalar_signed_hdr_endpoints_and_native_alpha() {
         let bounds = Rect::new(-1, 2, 3, 3);
@@ -3696,6 +3769,7 @@ mod tests {
         }
     }
 
+    /// Reject layer-shaped channel controls on scalar coverage instead of dropping channels or inventing alpha, preserving both budgets.
     #[test]
     fn layer_alpha_channel_arrays_do_not_become_scalar_coverage_or_consume_shared_budget() {
         let bounds = Rect::new(0, 0, 3, 1);
@@ -3756,6 +3830,7 @@ mod tests {
         }
     }
 
+    /// Compare mixer and alpha-setting replay with ordinary native composition, including invalid coefficient rejection.
     #[test]
     fn channel_mixer_and_set_alpha_use_existing_native_rules_and_one_component_envelope() {
         let bounds = Rect::new(0, 0, 3, 1);
@@ -3806,6 +3881,7 @@ mod tests {
         }
     }
 
+    /// Use an independently authored native Hard Mix pattern document as the Gray newsprint conversion oracle.
     #[test]
     fn source_gray_newsprint_matches_independent_native_hard_mix_pattern_document() {
         use photocraft_doc::Pattern;
@@ -3864,6 +3940,7 @@ mod tests {
         }
     }
 
+    /// Verify rotated native screening against an independent transform-filter-inverse construction with matching coverage.
     #[test]
     fn arbitrary_screen_orientation_matches_native_alpha_transform_filter_inverse() {
         use photocraft_algo::transform::{Homography, Interp, warp_surface};
@@ -3928,6 +4005,7 @@ mod tests {
         }
     }
 
+    /// Compare translated ordered screening with native Pattern Fill and explicit Gray CMS conversion at each depth.
     #[test]
     fn source_bayer_coverage_uses_native_pattern_and_gray_cms_at_each_depth() {
         use photocraft_cms::{Builtin, Intent, Transform};
@@ -3967,6 +4045,7 @@ mod tests {
         }
     }
 
+    /// Check branch homographies against native projective sampling and reject invalid framed perspective without partial publication.
     #[test]
     fn native_projective_branch_uses_projective_placement_instead_of_affine_fallback() {
         use photocraft_algo::transform::{Homography, Interp, warp_surface};
@@ -4015,6 +4094,7 @@ mod tests {
         assert_eq!(source.pixel(0, 0), vec![0.1]);
     }
 
+    /// Derive independent native automatic Levels and verify the converted coverage expands its tonal endpoints at every depth.
     #[test]
     fn source_automatic_tone_coverage_matches_independent_native_levels_at_each_depth() {
         for sample in SampleType::ALL {
@@ -4054,6 +4134,7 @@ mod tests {
         }
     }
 
+    /// Compare translated HDR coverage with the checked native local-tone algorithm, including its ordinary native envelope.
     #[test]
     fn source_hdr_coverage_reuses_checked_native_local_adaptation_at_each_depth() {
         use photocraft_algo::tone::{HdrToning, checked_hdr};
@@ -4076,6 +4157,7 @@ mod tests {
         }
     }
 
+    /// Verify branch fill strength and shallow knockout survive materialization as ordinary native blending data.
     #[test]
     fn native_composite_carries_fill_opacity_and_advanced_knockout() {
         use photocraft_doc::{AdvancedBlending, Color, Fill, Knockout};
@@ -4112,6 +4194,7 @@ mod tests {
         assert!(actual.pixel(0, 0)[0] < 0.01);
     }
 
+    /// Reject alpha-only source curves on a scalar plane while leaving its original values untouched.
     #[test]
     fn source_alpha_curve_does_not_invent_alpha_for_a_scalar_coverage_plane() {
         let bounds = Rect::new(0, 0, 2, 1);
@@ -4128,6 +4211,7 @@ mod tests {
         assert_eq!(source.read_region(bounds), vec![0.2, 0.8]);
     }
 
+    /// Compare a branch with independent fill, style and post-style filtering in native composition order.
     #[test]
     fn native_branch_post_style_runs_after_inner_fill_and_style_before_outer_coverage() {
         use photocraft_doc::{
@@ -4183,6 +4267,7 @@ mod tests {
         assert!(budget < super::super::MAX_PIXEL_BYTES);
     }
 
+    /// Verify crop/frame coordinates precede native filters and restore placement before the single outer mask; reject unsupported framed perspective.
     #[test]
     fn native_filter_frame_precedes_filters_and_restores_outer_placement_and_mask_once() {
         use photocraft_algo::transform::{Homography, Interp, warp_surface};

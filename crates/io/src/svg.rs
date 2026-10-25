@@ -383,6 +383,8 @@ fn import_parsed(name: &str, parsed: Parsed, max_group_depth: usize) -> Result<I
     import_parsed_with_budget(name, parsed, max_group_depth, MAX_PIXEL_BYTES)
 }
 
+/// Converts a parsed SVG into native contents under group and retained-pixel limits, using explicit bounded
+/// raster fallbacks where needed.
 fn import_parsed_with_budget(name: &str, parsed: Parsed, max_group_depth: usize, pixel_budget: u64) -> Result<ImportResult, IoError> {
     let Parsed { tree, fontless_text } = parsed;
     let mut warnings = Vec::new();

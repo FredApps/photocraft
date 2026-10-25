@@ -7,6 +7,7 @@ use photocraft_doc::{AlphaChannel, ColorIndicates, Document};
 use super::{Prop, Result, be_f32, be_i32, be_u32, conversion, parasites};
 use crate::initial_view::{MAX_INITIAL_SAMPLERS, NativeInitialView};
 
+/// Decode the last matching metadata property as an unsigned word; malformed payloads yield no value.
 fn word(props: &[Prop<'_>], kind: u32) -> Option<u32> {
     props.iter().rev().find(|p| p.kind == kind).and_then(|p| be_u32(p.data))
 }
@@ -46,10 +47,12 @@ pub(super) fn channel_overlay(channel: &mut AlphaChannel, props: &[Prop<'_>]) ->
     handled
 }
 
+/// Recognize a source active-item marker only when its declared payload is empty.
 pub(super) fn active(props: &[Prop<'_>], kind: u32) -> bool {
     props.iter().any(|p| p.kind == kind && p.data.is_empty())
 }
 
+/// Interpret the last decodable metadata word as a nonzero flag without inventing an absent value.
 pub(super) fn flag(props: &[Prop<'_>], kind: u32) -> bool {
     word(props, kind).is_some_and(|v| v != 0)
 }
@@ -228,10 +231,12 @@ pub(super) fn image<'a>(
     Ok(())
 }
 
+/// Parse bounded optional metadata XML with the parser defaults that reject DTD processing.
 fn parse_xml(xml: &str) -> std::result::Result<roxmltree::Document<'_>, roxmltree::Error> {
     roxmltree::Document::parse_with_options(xml, roxmltree::ParsingOptions { nodes_limit: 4096, ..Default::default() })
 }
 
+/// Debit optional metadata bytes only when the complete requested amount fits.
 fn charge(budget: &mut usize, amount: usize) -> bool {
     let Some(remaining) = budget.checked_sub(amount) else {
         return false;
@@ -240,6 +245,7 @@ fn charge(budget: &mut usize, amount: usize) -> bool {
     true
 }
 
+/// Append a bounded native text-metadata entry while preserving meaningful duplicate values and shared-budget accounting.
 fn push_text(doc: &mut Document, key: &str, value: &str, budget: &mut usize) -> bool {
     if key.len() > super::MAX_STRING || value.len() > super::MAX_STRING || !charge(budget, key.len().saturating_add(value.len())) {
         return false;

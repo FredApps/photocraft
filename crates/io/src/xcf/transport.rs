@@ -16,17 +16,20 @@ struct Input<'a, 'b> {
 }
 
 impl BufRead for Input<'_, '_> {
+    /// Exposes remaining compressed input only after checking import cancellation.
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         self.ctl.check().map_err(io::Error::other)?;
         Ok(self.remaining.get(..self.remaining.len().min(CHUNK)).unwrap_or_default())
     }
 
+    /// Advances the compressed input slice safely without indexing beyond its remaining bytes.
     fn consume(&mut self, amount: usize) {
         self.remaining = self.remaining.get(amount..).unwrap_or_default();
     }
 }
 
 impl Read for Input<'_, '_> {
+    /// Copies a bounded portion of compressed input through the cancellation-aware buffered reader.
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         let input = self.fill_buf()?;
         let count = output.len().min(input.len());
@@ -38,10 +41,13 @@ impl Read for Input<'_, '_> {
     }
 }
 
+/// Recognizes supported compressed XCF wrappers and applies the standard inflated-size limit.
 pub(crate) fn decode(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Option<Vec<u8>>> {
     decode_with_limit(name, bytes, ctl, MAX_INFLATED)
 }
 
+/// Decodes a recognized wrapper under explicit output and decoder-memory limits, propagating cancellation and
+/// malformed streams.
 fn decode_with_limit(name: &str, bytes: &[u8], ctl: &Interrupt<'_>, limit: usize) -> Result<Option<Vec<u8>>> {
     let compression = if bytes.starts_with(&[0x1f, 0x8b]) {
         "gzip"
@@ -100,6 +106,7 @@ mod tests {
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Creates a small independent gzip wrapper used to exercise transport limits and header scanning.
     fn gzip(bytes: &[u8]) -> Vec<u8> {
         let mut writer = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         writer.write_all(bytes).unwrap();
@@ -107,6 +114,7 @@ mod tests {
     }
 
     #[test]
+    /// Checks inflated output is rejected before an oversized append can exceed the admitted buffer.
     fn inflated_limit_is_checked_before_appending_output() {
         let bytes = [MAGIC, &[0; 1024]].concat();
         let wrapped = gzip(&bytes);
@@ -115,6 +123,8 @@ mod tests {
     }
 
     #[test]
+    /// Verifies cancellation is honored even when gzip processing scans headers or empty members rather than
+    /// producing pixels.
     fn cancellation_is_checked_while_scanning_empty_members_and_long_headers() {
         let checks = AtomicUsize::new(0);
         let cancelled = || checks.fetch_add(1, Ordering::Relaxed) >= 10;

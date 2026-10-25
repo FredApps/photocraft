@@ -30,6 +30,7 @@ pub(super) struct VectorStyle {
     pub source_only: Vec<String>,
 }
 
+/// Require the two declared vector boolean values; reject other stored words.
 fn boolean(c: &mut Cursor<'_>) -> Result<bool> {
     match c.u32()? {
         0 => Ok(false),
@@ -38,6 +39,8 @@ fn boolean(c: &mut Cursor<'_>) -> Result<bool> {
     }
 }
 
+/// Decode portable vector paint and color data into native fill data.
+/// Unavailable patterns or ambiguous colors receive explicit approximations without resolving source locators.
 fn paint(c: &mut Cursor<'_>, notes: &mut Vec<String>) -> Result<Fill> {
     let style = c.u32()?;
     let aa = boolean(c)?;
@@ -131,6 +134,7 @@ pub(super) fn vector_style(data: &[u8]) -> Result<VectorStyle> {
     })
 }
 
+/// Read a bounded NUL-terminated UTF-8 path string, allowing the explicitly empty encoding.
 fn string(c: &mut Cursor<'_>) -> Result<String> {
     let length = count(c, super::MAX_STRING, "path string byte")?;
     if length == 0 {
@@ -141,6 +145,7 @@ fn string(c: &mut Cursor<'_>) -> Result<String> {
     std::str::from_utf8(raw).map(str::to_owned).map_err(|_| invalid("invalid UTF-8 path name"))
 }
 
+/// Bound a stored vector count before using it for allocation or record traversal.
 fn count(c: &mut Cursor<'_>, limit: usize, what: &str) -> Result<usize> {
     let n = c.u32()? as usize;
     if n > limit {
@@ -149,6 +154,7 @@ fn count(c: &mut Cursor<'_>, limit: usize, what: &str) -> Result<usize> {
     Ok(n)
 }
 
+/// Decode one finite source coordinate and enforce the native geometry magnitude limit.
 fn coordinate(c: &mut Cursor<'_>) -> Result<f64> {
     let v = f64::from(f32::from_bits(c.u32()?));
     if !v.is_finite() || v.abs() > MAX_COORD {
@@ -157,6 +163,7 @@ fn coordinate(c: &mut Cursor<'_>) -> Result<f64> {
     Ok(v)
 }
 
+/// Join all contours into one native even-odd component so holes remain holes instead of independently unioned fills.
 fn native_path(mut subpaths: Vec<Subpath>) -> Path {
     // GIMP's saved-path fill uses the even-odd rule across the whole path.
     // Native Join makes the subpaths one shape component (rather than unioning
@@ -167,6 +174,8 @@ fn native_path(mut subpaths: Vec<Subpath>) -> Path {
     Path { subpaths, fill_rule: FillRule::EvenOdd, inverted: false }
 }
 
+/// Decode bounded cubic handle/anchor triples into native knots.
+/// Unknown strokes and auxiliary pressure data remain source-only rather than authorizing paint behavior.
 fn strokes(c: &mut Cursor<'_>, n: usize, budget: &mut usize) -> Result<(Path, bool)> {
     let mut out = Vec::new();
     let mut source_only = false;
@@ -384,14 +393,17 @@ pub(super) fn standalone(c: &Cursor<'_>, offset: usize) -> Result<DecodedPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Append an independent structural big-endian word to a synthetic path record.
     fn u(out: &mut Vec<u8>, v: u32) {
         out.extend(v.to_be_bytes());
     }
+    /// Encode a NUL-terminated synthetic path name with its declared byte length.
     fn string(out: &mut Vec<u8>, s: &str) {
         u(out, s.len() as u32 + 1);
         out.extend(s.as_bytes());
         out.push(0);
     }
+    /// Author a small documented cubic stroke record for independent native path comparisons.
     fn stroke(out: &mut Vec<u8>, closed: bool, axes: u32) {
         for v in [1, u32::from(closed), axes, 6] {
             u(out, v);
@@ -405,6 +417,7 @@ mod tests {
             }
         }
     }
+    /// Compare legacy vector records with independently specified native anchors and control handles.
     #[test]
     fn old_vectors_preserve_independent_native_cubic_geometry() {
         let mut b = Vec::new();
@@ -429,6 +442,7 @@ mod tests {
         assert_eq!(k.out_ctrl, Point::new(6.0, 7.0));
         assert_eq!(p.named.path.control_bounds(), Some((-4.5, -3.0, 25.0, 9.0)));
     }
+    /// Verify standalone path records consume complete framing and reject every truncated prefix.
     #[test]
     fn standalone_is_framed_and_rejects_every_truncation() {
         let mut payload = Vec::new();
@@ -451,6 +465,7 @@ mod tests {
         b[offset..offset + 4].copy_from_slice(&f32::NAN.to_bits().to_be_bytes());
         assert!(standalone(&Cursor { b: &b, pos: 0, wide: false }, 0).is_err());
     }
+    /// Check historical path versions preserve native geometry and survive native persistence without source runtime state.
     #[test]
     fn legacy_versions_keep_native_geometry_and_native_save_reopen() {
         for version in [1, 2, 3] {
@@ -487,6 +502,7 @@ mod tests {
             assert_eq!(reopened.paths[0], path.named);
         }
     }
+    /// Resolve vector style references only to paths in the same image and verify native Shape content starts without a source raster cache.
     #[test]
     fn vector_layer_import_resolves_local_path_without_using_source_raster_cache() {
         use super::super::tests::{TestImage, TestLayer};
@@ -537,6 +553,7 @@ mod tests {
             assert_eq!(shape, reopened_shape);
         }
     }
+    /// Verify native fill, stroke and geometry fields translate while the source modified flag preserves raster-fallback eligibility.
     #[test]
     fn vector_style_maps_portable_paint_stroke_units_and_modified_flag() {
         let mut b = Vec::new();
@@ -577,6 +594,7 @@ mod tests {
         assert!(vector_style(&b).expect("modified").modified);
     }
 
+    /// Compare profiled and grayscale vector paints with the shared native CMS conversion and reject ambiguous encodings.
     #[test]
     fn portable_profiled_and_gray_vector_paints_use_native_cms() {
         let profile = photocraft_cms::Builtin::DisplayP3.profile().to_bytes();

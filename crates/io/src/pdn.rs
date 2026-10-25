@@ -121,6 +121,8 @@ fn pixels(reader: &mut Reader<'_>, length: usize, ctl: &Interrupt<'_>) -> Result
     Ok(data)
 }
 
+/// Decode bounded Paint.NET layer records and deferred pixel blocks into native raster layers.
+/// Invalid framing or layouts fail before publication; unsupported metadata is disclosed and the source stays read only.
 pub(super) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<ImportResult> {
     let mut reader = Reader { bytes, pos: 0 };
     if reader.take(4)? != b"PDN3" {

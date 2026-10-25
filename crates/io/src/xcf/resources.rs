@@ -10,6 +10,7 @@ pub(super) struct Link {
     pub height: u32,
 }
 
+/// Validate a complete bounded link record and retain its locator as data, never permission to open an external resource.
 pub(super) fn link(bytes: &[u8]) -> Result<Link> {
     let mut c = Cursor { b: bytes, pos: 0, wide: false };
     let flags = c.u32()?;
@@ -27,6 +28,7 @@ pub(super) struct Transform {
     pub matrix: [f32; 9],
 }
 
+/// Decode optional link placement with finite matrix coefficients and exact payload framing.
 pub(super) fn transform(bytes: &[u8]) -> Result<Transform> {
     let mut c = Cursor { b: bytes, pos: 0, wide: false };
     let offset = [i32::from_be_bytes(c.u32()?.to_be_bytes()), i32::from_be_bytes(c.u32()?.to_be_bytes())];
@@ -44,6 +46,7 @@ pub(super) fn transform(bytes: &[u8]) -> Result<Transform> {
     Ok(Transform { offset, interpolation, matrix })
 }
 
+/// Read one version-width floating-selection pointer and reject trailing attachment bytes.
 pub(super) fn attachment(bytes: &[u8], wide: bool) -> Result<usize> {
     let mut c = Cursor { b: bytes, pos: 0, wide };
     let attachment = c.ptr()?;
@@ -100,6 +103,7 @@ mod tests {
     use photocraft_geom::Rect;
     use photocraft_raster::Interrupt;
 
+    /// Encode independent source link metadata with fixed dimensions and a caller-supplied inert locator.
     fn source_link(locator: &str, flags: u32) -> Vec<u8> {
         let mut bytes = flags.to_be_bytes().to_vec();
         bytes.extend_from_slice(&(locator.len() as u32 + 1).to_be_bytes());
@@ -110,6 +114,7 @@ mod tests {
         bytes
     }
 
+    /// Build an independent offset and projective matrix record for one-time placement tests.
     fn source_transform() -> Vec<u8> {
         let mut bytes = (-3i32).to_be_bytes().to_vec();
         bytes.extend_from_slice(&7i32.to_be_bytes());
@@ -120,6 +125,7 @@ mod tests {
         bytes
     }
 
+    /// Exercise malformed link and transform payloads so optional metadata cannot cause unchecked reads or nonfinite native placement.
     #[test]
     fn link_configuration_is_bounded_and_validates_all_optional_fields() {
         let bytes = source_link("../../untrusted/source.png", 3);
@@ -154,6 +160,7 @@ mod tests {
         assert!(attachment(&73u32.to_be_bytes(), true).is_err());
     }
 
+    /// Verify floating pixels retain native off-canvas placement and attachment history through native save and reopen.
     #[test]
     fn floating_rgb_pixels_keep_negative_position_attachment_and_native_reopen() {
         for version in [0, 10, 11, 26] {
@@ -183,6 +190,7 @@ mod tests {
         }
     }
 
+    /// Check Gray floating coverage becomes an editable RGB layer while the document and attached owner remain independent.
     #[test]
     fn gray_floating_coverage_is_a_separate_rgb_layer_not_a_mode_change() {
         for alpha in [false, true] {
@@ -205,6 +213,7 @@ mod tests {
         }
     }
 
+    /// Verify legacy linked items become one native group without capturing unrelated siblings.
     #[test]
     fn legacy_link_flags_use_one_native_group_and_leave_unlinked_siblings_independent() {
         let mut image = TestImage::rgb8(2, 1);
@@ -219,6 +228,7 @@ mod tests {
         }
     }
 
+    /// Check stored linked pixels stay native raster data and their already-applied source placement is not repeated.
     #[test]
     fn linked_stored_pixels_are_inert_raster_and_transform_is_not_applied_twice() {
         for flags in [0, 1, 2, 3, u32::MAX] {
@@ -238,6 +248,7 @@ mod tests {
         }
     }
 
+    /// Ensure missing linked content and hostile placement produce conversion outcomes without fetching source locators.
     #[test]
     fn missing_link_pixels_and_invalid_optional_placement_are_reported_without_external_reads() {
         let mut image = TestImage::rgb8(1, 1);
@@ -253,6 +264,7 @@ mod tests {
         assert!(result.document.layers[0].surface().unwrap().content_bounds().is_empty());
     }
 
+    /// Reject invalid floating alpha and insufficient Gray-to-RGB allowance before publishing expanded native pixels.
     #[test]
     fn floating_coverage_validation_and_gray_expansion_obey_native_allocation_budget() {
         let pixels = Pixels { width: 1, height: 1, channels: 2, data: vec![0.5, 1.0], underflow: false };
@@ -269,6 +281,7 @@ mod tests {
             .to_string();
         assert!(error.contains("coverage") && error.contains("outside the range"), "{error}");
     }
+    /// Reject truncated buffers, invalid channel counts and overflowing dimensions before consuming workspace.
     #[test]
     fn gray_expansion_validates_complete_shapes_without_spending_budget() {
         for (width, height, channels, data) in [
@@ -286,6 +299,7 @@ mod tests {
             assert_eq!(budget, usize::MAX);
         }
     }
+    /// Exercise cancellation at each expansion phase and require the shared allowance to remain unchanged.
     #[test]
     fn gray_expansion_cancellation_is_transactional_before_during_and_at_end() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -303,6 +317,7 @@ mod tests {
             assert_eq!(checks.load(Ordering::Relaxed), limit + 1);
         }
     }
+    /// Verify Gray expansion repeats signed/HDR color samples exactly while preserving alpha, dimensions and tiny finite values.
     #[test]
     fn gray_expansion_preserves_native_hdr_alpha_dimensions_and_underflow() {
         for alpha in [false, true] {

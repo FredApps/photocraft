@@ -108,6 +108,8 @@ struct Precision {
 impl Precision {
     const GAMMA8: Precision = Precision { bytes: 1, float: false, linear: false, perceptual: false };
 
+    /// Interprets versioned precision codes into sample width, transfer encoding and native depth, rejecting
+    /// unknown combinations.
     fn from_header(version: u32, code: u32) -> Result<Precision> {
         let p = |bytes, float, linear| Ok(Precision { bytes, float, linear, perceptual: false });
         match version {
@@ -165,6 +167,8 @@ impl Precision {
         }
     }
 
+    /// Reports source storage wider than the chosen native representation so numerical-loss notices stay
+    /// scoped correctly.
     fn reduces_precision(self) -> bool {
         matches!((self.float, self.bytes), (false, 4) | (true, 8))
     }
@@ -679,6 +683,8 @@ impl<'a> Image<'a> {
         Ok(state)
     }
 
+    /// Publishes coverage conversion outcomes only after their native result is committed or explicitly
+    /// discarded.
     fn report_converted_coverage(
         &mut self,
         owner: usize,
@@ -726,6 +732,8 @@ impl<'a> Image<'a> {
         Ok(outcome)
     }
 
+    /// Applies stored coverage stages in order, preserving usable pixels and reporting optional stages that
+    /// cannot be mapped.
     fn apply_coverage_stack(
         &mut self,
         pointers: &[usize],
@@ -809,6 +817,8 @@ impl<'a> Image<'a> {
         Ok(())
     }
 
+    /// Resolves bounded auxiliary coverage references while detecting cycles and retaining unavailable
+    /// optional masks.
     fn coverage_auxiliary(
         &mut self,
         offset: usize,
@@ -841,6 +851,8 @@ impl<'a> Image<'a> {
         result
     }
 
+    /// Decodes and inventories nested coverage effects with owner identity, limits and deferred application
+    /// outcomes.
     fn report_coverage_effects_with(
         &mut self,
         owner: usize,
@@ -1021,6 +1033,8 @@ impl<'a> Image<'a> {
         Ok(())
     }
 
+    /// Records source samples lost below native precision without misclassifying their owner as fully
+    /// preserved.
     fn precision_underflow(&mut self, owner: usize, pixels: &Pixels) -> Result<()> {
         if pixels.underflow {
             self.outcomes.notice(
@@ -1119,6 +1133,7 @@ fn write_pixels(surface: &mut Surface, px: &Pixels, x: i32, y: i32) -> Result<()
     Ok(())
 }
 
+/// Parses legacy or numeric XCF version tags and rejects malformed header framing.
 fn read_version(c: &mut Cursor<'_>) -> Result<u32> {
     let tag = c.take(5)?;
     match tag {
@@ -1130,6 +1145,7 @@ fn read_version(c: &mut Cursor<'_>) -> Result<u32> {
     }
 }
 
+/// Checks nonzero dimensions and the shared canvas limits before document or pixel allocation.
 fn validate_canvas(w: u32, h: u32) -> Result<()> {
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
         return Err(invalid(format!("canvas {w}x{h} must be 1 to {MAX_SIDE} pixels a side")));
@@ -1140,6 +1156,7 @@ fn validate_canvas(w: u32, h: u32) -> Result<()> {
     Ok(())
 }
 
+/// Returns an explicit byte-order choice request for historically ambiguous high-depth storage.
 fn sample_order_request(version: u32, precision: Precision) -> Result<Option<crate::HistoricalXcfSampleOrderRequest>> {
     if (7..=11).contains(&version) && precision.bytes > 1 {
         let bits_per_sample = precision.bytes.checked_mul(8).and_then(|n| u32::try_from(n).ok()).ok_or_else(|| invalid("precision bit count overflows"))?;
@@ -1149,6 +1166,7 @@ fn sample_order_request(version: u32, precision: Precision) -> Result<Option<cra
     }
 }
 
+/// Inspects an XCF header for unresolved historical sample order without decoding its document pixels.
 pub(crate) fn historical_sample_order_request(bytes: &[u8]) -> Result<Option<crate::HistoricalXcfSampleOrderRequest>> {
     if !is_xcf(bytes) {
         return Err(invalid("not an XCF file"));
@@ -1173,6 +1191,8 @@ pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Im
     import_with_sample_order(name, bytes, None, ctl)
 }
 
+/// Imports XCF with an explicit historical sample-order decision, preserving native data and durable
+/// conversion outcomes.
 pub(crate) fn import_with_sample_order(
     name: &str,
     bytes: &[u8],
@@ -1759,6 +1779,8 @@ fn import_native_effects<'a>(document: &mut Document, image: &mut Image<'a>, ctl
 fn native_parameter_bytes(mapping: &effects::NativeMapping) -> Result<usize> {
     struct Count(usize);
     impl std::io::Write for Count {
+        /// Counts native filter parameter serialization without another JSON copy, rejecting overflow or
+        /// exhausted metadata allowance.
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             self.0 = self
                 .0
@@ -1767,6 +1789,7 @@ fn native_parameter_bytes(mapping: &effects::NativeMapping) -> Result<usize> {
                 .ok_or_else(|| std::io::Error::other("native effect parameters exceed the metadata allowance"))?;
             Ok(bytes.len())
         }
+        /// Completes the native parameter counting writer without buffering output.
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
@@ -1917,6 +1940,8 @@ fn unavailable_path<'a>(image: &mut Image<'a>, ordinal: usize, offset: usize, na
     Ok(())
 }
 
+/// Converts saved source paths to bounded editable native paths while retaining malformed optional records
+/// honestly.
 fn import_vectors(document: &mut Document, image: &mut Image<'_>, ctl: &Interrupt<'_>) -> Result<()> {
     for (id, outcome, mut vector) in std::mem::take(&mut image.pending_vectors) {
         ctl.check().map_err(|_| IoError::Cancelled)?;

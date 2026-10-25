@@ -90,6 +90,8 @@ fn encoded_preflight(doc: &Document, allowance: usize, ctl: &Interrupt<'_>) -> R
         ctl: &'a Interrupt<'b>,
     }
     impl Write for Admission<'_, '_> {
+        /// Counts serialized bundle metadata and indentation before allocation, rejecting cancellation or an
+        /// exhausted allowance.
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             if self.ctl.cancelled() {
                 return Err(std::io::Error::other("native bundle admission cancelled"));
@@ -101,35 +103,43 @@ fn encoded_preflight(doc: &Document, allowance: usize, ctl: &Interrupt<'_>) -> R
             self.left = self.left.checked_sub(cost).ok_or_else(|| std::io::Error::other("native bundle metadata exceeds remaining source allowance"))?;
             Ok(bytes.len())
         }
+        /// Completes the counting writer without emitting or buffering document bytes.
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }
     impl Admission<'_, '_> {
+        /// Debits native bundle admission atomically and propagates cancellation before serialization starts.
         fn charge(&mut self, bytes: usize) -> Result<()> {
             self.ctl.check().map_err(|_| crate::IoError::Cancelled)?;
             self.left =
                 self.left.checked_sub(bytes).ok_or_else(|| invalid("native bundle representation exceeds remaining source allowance before serialization"))?;
             Ok(())
         }
+        /// Reserves a conservative compressed-payload envelope, including archive and hash overhead, with
+        /// checked arithmetic.
         fn payload(&mut self, n: usize) -> Result<()> {
             // Existing native reader admits this conservative zstd frame bound;
             // fixed headroom includes ZIP entries/central records and blob hashes.
             let bytes = n.checked_add(n / 8).and_then(|n| n.checked_add(8192)).ok_or_else(|| invalid("native bundle payload admission overflows"))?;
             self.charge(bytes)
         }
+        /// Charges each shared encoded resource once by Arc identity, preventing alias duplication in the
+        /// admission estimate.
         fn blob(&mut self, bytes: &Arc<Vec<u8>>) -> Result<()> {
             if self.blobs.insert(Arc::as_ptr(bytes) as usize) {
                 self.payload(bytes.len())?;
             }
             Ok(())
         }
+        /// Includes an optional encoded resource in admission without charging an absent payload.
         fn optional_blob(&mut self, bytes: Option<&Arc<Vec<u8>>>) -> Result<()> {
             if let Some(bytes) = bytes {
                 self.blob(bytes)?;
             }
             Ok(())
         }
+        /// Admits tile metadata and distinct tile payloads before a native surface is serialized.
         fn surface(&mut self, surface: &Surface) -> Result<()> {
             self.charge(8192)?;
             for (_, tile) in surface.tiles() {
@@ -140,12 +150,15 @@ fn encoded_preflight(doc: &Document, allowance: usize, ctl: &Interrupt<'_>) -> R
             }
             Ok(())
         }
+        /// Admits the pixels of a present native layer mask; an absent mask adds no resource payload.
         fn mask(&mut self, mask: Option<&LayerMask>) -> Result<()> {
             if let Some(mask) = mask {
                 self.surface(&mask.surface)?;
             }
             Ok(())
         }
+        /// Traverses native layer contents and resources under explicit node and nesting limits before bundle
+        /// encoding.
         fn layers(&mut self, layers: &[Layer], depth: usize) -> Result<()> {
             if depth > super::MAX_DEPTH {
                 return Err(invalid("native bundle admission group depth exceeds limit"));
@@ -281,6 +294,8 @@ fn encoded_preflight(doc: &Document, allowance: usize, ctl: &Interrupt<'_>) -> R
     ctl.check().map_err(|_| crate::IoError::Cancelled)
 }
 
+/// Preflights an embedded native document, serializes it, and charges the shared source allowance only on
+/// success.
 fn encoded(doc: &Document, budget: &mut usize, ctl: &Interrupt<'_>) -> Result<Arc<Vec<u8>>> {
     encoded_preflight(doc, *budget, ctl)?;
     let bytes = photocraft_format::save_to_bytes(doc, &Default::default()).map_err(|e| invalid(format!("native effect contents: {e}")))?;
@@ -289,6 +304,7 @@ fn encoded(doc: &Document, budget: &mut usize, ctl: &Interrupt<'_>) -> Result<Ar
     Ok(Arc::new(bytes))
 }
 
+/// Totals stored default and tile bytes using checked arithmetic for generated native resources.
 fn surface_bytes(surface: &Surface) -> Result<usize> {
     surface.tiles().try_fold(surface.default_bytes().len(), |sum, (_, tile)| {
         sum.checked_add(tile.bytes().len()).ok_or_else(|| invalid("native structure surface allocation overflows"))
@@ -313,6 +329,7 @@ macro_rules! serialized_bytes {
     }};
 }
 
+/// Measures filter command and JSON parameter storage without retaining another parameter copy.
 fn parameter_bytes(filters: &[photocraft_doc::SmartFilter]) -> Result<usize> {
     filters.iter().try_fold(0usize, |sum, filter| {
         sum.checked_add(serialized_bytes!(&filter.params)?)
@@ -441,6 +458,8 @@ fn direct_text_bytes(text: &photocraft_doc::TextLayer, ctl: &Interrupt<'_>) -> R
     Ok(bytes)
 }
 
+/// Accounts direct replacement-layer data recursively so compressed bundles cannot conceal oversized native
+/// allocations.
 fn direct_layer_bytes(layer: &Layer, depth: usize, remaining_nodes: &mut usize, ctl: &Interrupt<'_>) -> Result<usize> {
     ctl.check().map_err(|_| crate::IoError::Cancelled)?;
     if depth > super::MAX_DEPTH {
@@ -500,6 +519,8 @@ pub(super) fn retained_mapping_bytes(mapping: &NativeMapping, ctl: &Interrupt<'_
         ctl: &'a Interrupt<'b>,
     }
     impl std::io::Write for Retained<'_, '_> {
+        /// Measures retained JSON metadata while enforcing cancellation and the document-wide metadata
+        /// ceiling.
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             if self.ctl.cancelled() {
                 return Err(std::io::Error::other("native retained metadata cancelled"));
@@ -511,11 +532,14 @@ pub(super) fn retained_mapping_bytes(mapping: &NativeMapping, ctl: &Interrupt<'_
                 .ok_or_else(|| std::io::Error::other("native retained metadata exceeds allowance"))?;
             Ok(bytes.len())
         }
+        /// Finishes the retained-metadata counter without a buffered output stream.
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }
     impl Retained<'_, '_> {
+        /// Adds retained native allocation bytes with checked arithmetic and the shared pixel-resource
+        /// ceiling.
         fn resource(&mut self, bytes: usize) -> Result<()> {
             self.ctl.check().map_err(|_| crate::IoError::Cancelled)?;
             self.resource = self
@@ -525,9 +549,12 @@ pub(super) fn retained_mapping_bytes(mapping: &NativeMapping, ctl: &Interrupt<'_
                 .ok_or_else(|| invalid("native retained resources exceed allowance"))?;
             Ok(())
         }
+        /// Charges vector capacity rather than only initialized elements when accounting retained native
+        /// allocations.
         fn vector<T>(&mut self, values: &Vec<T>) -> Result<()> {
             self.resource(values.capacity().checked_mul(std::mem::size_of::<T>()).ok_or_else(|| invalid("native retained vector overflows"))?)
         }
+        /// Walks retained JSON allocations with depth and node limits, including strings and object keys.
         fn json(&mut self, value: &serde_json::Value, depth: usize) -> Result<()> {
             if depth > 128 {
                 return Err(invalid("native retained parameter depth exceeds limit"));
@@ -554,6 +581,7 @@ pub(super) fn retained_mapping_bytes(mapping: &NativeMapping, ctl: &Interrupt<'_
             }
             Ok(())
         }
+        /// Admits bounded native filter commands, parameter allocations and serialized metadata together.
         fn filters(&mut self, filters: &Vec<photocraft_doc::SmartFilter>) -> Result<()> {
             if filters.len() > 64 {
                 return Err(invalid("native retained filter count exceeds limit"));
@@ -565,6 +593,7 @@ pub(super) fn retained_mapping_bytes(mapping: &NativeMapping, ctl: &Interrupt<'_
             }
             retained_metadata!(self, filters)
         }
+        /// Charges retained native surface defaults and tile storage independently of metadata allowance.
         fn surface(&mut self, surface: &Surface) -> Result<()> {
             self.resource(surface.default_bytes().len())?;
             for (_, tile) in surface.tiles() {
@@ -572,6 +601,7 @@ pub(super) fn retained_mapping_bytes(mapping: &NativeMapping, ctl: &Interrupt<'_
             }
             Ok(())
         }
+        /// Accounts retained pattern identifiers, names and pixels before native mappings are combined.
         fn patterns(&mut self, patterns: &[photocraft_doc::Pattern]) -> Result<()> {
             if patterns.len() > 1024 {
                 return Err(invalid("native retained patterns exceed limit"));
@@ -585,6 +615,7 @@ pub(super) fn retained_mapping_bytes(mapping: &NativeMapping, ctl: &Interrupt<'_
             }
             Ok(())
         }
+        /// Measures retained layer properties and nested native content under the existing traversal limits.
         fn layer_metadata(&mut self, layer: &Layer, depth: usize) -> Result<()> {
             if depth > super::MAX_DEPTH {
                 return Err(invalid("native retained layer depth exceeds limit"));
@@ -692,6 +723,7 @@ pub(super) fn retained_mapping_bytes(mapping: &NativeMapping, ctl: &Interrupt<'_
     Ok((count.resource, count.metadata))
 }
 
+/// Rejects coordinate translation that would overflow native rectangle endpoints.
 fn checked_translate(rect: Rect, dx: i32, dy: i32) -> Result<()> {
     for (value, delta) in [(rect.x0, dx), (rect.x1, dx), (rect.y0, dy), (rect.y1, dy)] {
         value.checked_add(delta).ok_or_else(|| invalid("native effect placement exceeds document coordinate range"))?;
@@ -699,6 +731,7 @@ fn checked_translate(rect: Rect, dx: i32, dy: i32) -> Result<()> {
     Ok(())
 }
 
+/// Moves native raster tile placement only after the translated bounds pass overflow checks.
 fn shift_surface(surface: &mut Surface, dx: i32, dy: i32) -> Result<()> {
     let bounds = surface.content_bounds();
     if !bounds.is_empty() {
@@ -708,6 +741,7 @@ fn shift_surface(surface: &mut Surface, dx: i32, dy: i32) -> Result<()> {
     Ok(())
 }
 
+/// Rebases editable native contents and masks into embedded-owner coordinates under bounded recursion.
 fn move_layer(layer: &mut Layer, dx: i32, dy: i32, depth: usize, ctl: &Interrupt<'_>) -> Result<()> {
     ctl.check().map_err(|_| crate::IoError::Cancelled)?;
     if depth > super::MAX_DEPTH {
@@ -767,6 +801,8 @@ fn move_layer(layer: &mut Layer, dx: i32, dy: i32, depth: usize, ctl: &Interrupt
 }
 
 impl NativeOwner {
+    /// Embeds one owner as native contents, preserving its outer state and admitting source bytes before
+    /// publication.
     pub(super) fn new(document: &Document, layer: &Layer, bounds: Rect, budget: &mut usize, ctl: &Interrupt<'_>) -> Result<Self> {
         ctl.check().map_err(|_| crate::IoError::Cancelled)?;
         let width = u32::try_from(i64::from(bounds.x1) - i64::from(bounds.x0)).map_err(|_| invalid("invalid native effect owner width"))?;
@@ -825,6 +861,8 @@ impl NativeOwner {
         self.combine(below, above, (BlendMode::Normal, opacity, true), budget, ctl)
     }
 
+    /// Combines compatible native owner snapshots into a bounded native composition without committing
+    /// partial state.
     fn combine(&mut self, below: &Self, above: &Self, settings: (BlendMode, f32, bool), budget: &mut usize, ctl: &Interrupt<'_>) -> Result<()> {
         let (blend, opacity, knockout) = settings;
         ctl.check().map_err(|_| crate::IoError::Cancelled)?;
@@ -1108,6 +1146,8 @@ impl NativeOwner {
         Ok(mapping.notes)
     }
 
+    /// Materializes backward-referenced native construction steps and publishes only a complete selected
+    /// result and envelope.
     fn push_stages(
         &mut self,
         stages: (Vec<NativeStage>, usize),
@@ -1273,6 +1313,7 @@ impl NativeOwner {
         Ok(notes)
     }
 
+    /// Builds editable replacement or branch structures with native resource, mask and depth admission.
     fn push_structure(
         &mut self,
         structure: NativeStructure,
@@ -1476,6 +1517,8 @@ impl NativeOwner {
         Ok(Vec::new())
     }
 
+    /// Serializes completed native structure contents and installs their ordinary Smart placement after
+    /// admission succeeds.
     fn encode_structure(
         &self,
         document: Document,
@@ -1539,6 +1582,7 @@ impl NativeOwner {
         super::native_snapshot::capture(&self.source, &self.template, budget, ctl)
     }
 
+    /// Returns the current embedded native Smart content for installation on the imported owner.
     pub(super) fn content(&self) -> LayerContent {
         LayerContent::Smart(SmartObject::new(
             SmartSource::Embedded { file_name: "native-contents.pcraft".into(), bytes: self.source.clone() },
@@ -1548,6 +1592,7 @@ impl NativeOwner {
     }
 }
 
+/// Returns exact quarter-turn placement and the corresponding native canvas dimensions.
 pub(super) fn orientation(size: Size, turns: u8) -> (Affine, Size) {
     let (w, h) = (f64::from(size.width), f64::from(size.height));
     match turns {
@@ -1558,6 +1603,7 @@ pub(super) fn orientation(size: Size, turns: u8) -> (Affine, Size) {
     }
 }
 
+/// Computes finite rotated canvas bounds and placement, rejecting geometry beyond native size limits.
 pub(super) fn arbitrary_orientation(size: Size, degrees: f64) -> Result<(Affine, Size)> {
     let rotation = Affine::rotate(degrees.to_radians());
     let corners = [(0.0, 0.0), (f64::from(size.width), 0.0), (f64::from(size.width), f64::from(size.height)), (0.0, f64::from(size.height))]
@@ -1645,6 +1691,7 @@ fn rotate_mask(mut mask: LayerMask, size: Size, turns: u8, ctl: &Interrupt<'_>) 
     Ok(mask)
 }
 
+/// Expands and scales ordinary native mask coverage under the remaining allocation allowance.
 fn scale_mask(mask: Option<LayerMask>, opacity: f32, allowance: usize, ctl: &Interrupt<'_>) -> Result<LayerMask> {
     ctl.check().map_err(|_| crate::IoError::Cancelled)?;
     if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
@@ -1711,12 +1758,14 @@ mod tests {
     use photocraft_doc::effects::{Effect, FxCommon};
     use serde_json::json;
 
+    /// Builds the small native document fixture used to inspect embedded content and resource behavior.
     fn document() -> Document {
         let mut doc = Document::new("Native", Size::new(40, 30), ColorMode::Rgb, SampleType::F32);
         doc.resolution_dpi = 144.0;
         doc.icc_profile = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes());
         doc
     }
+    /// Creates a native owner fixture with a fresh resource allowance for structural conversion tests.
     fn owner(doc: &Document) -> Layer {
         let mut layer = Layer::raster("Source owner", doc.pixel_format());
         layer.surface_mut().unwrap().write_region(Rect::new(-5, 7, -2, 9), &[0.2, 0.4, 0.7, 1.0].repeat(6));
@@ -1725,15 +1774,19 @@ mod tests {
         layer.mask = Some(LayerMask::hide_all());
         layer
     }
+    /// Wraps one ordinary native filter as a mapping fixture without source-operation execution.
     fn mapping(commands: &[&str]) -> NativeMapping {
         NativeMapping { filters: commands.iter().map(|id| native_filter(id, json!({}))).collect(), ..Default::default() }
     }
+    /// Loads an embedded native document so tests can inspect persisted editable structure independently.
     fn embedded(content: &LayerContent) -> Document {
         let LayerContent::Smart(smart) = content else { panic!("smart") };
         let SmartSource::Embedded { bytes, .. } = &smart.source else { panic!("embedded") };
         photocraft_format::load_from_bytes(bytes).unwrap()
     }
     #[test]
+    /// Checks that temporary RGB working contents preserve the Gray source and subsequent Gray stage through
+    /// native persistence.
     fn rgb_working_contents_keep_gray_input_and_following_gray_stage_native_on_reopen() {
         for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
             let mut doc = Document::new("Gray owner", Size::new(4, 3), ColorMode::Grayscale, depth);
@@ -1779,6 +1832,8 @@ mod tests {
         }
     }
     #[test]
+    /// Verifies failed RGB preparation and late cancellation leave the owner, template and resource ledger
+    /// unchanged.
     fn rgb_working_failure_and_late_cancel_preserve_budget_template_and_stages() {
         let doc = Document::new("Gray", Size::new(4, 3), ColorMode::Grayscale, SampleType::F32);
         let input = Layer::raster("Original", doc.pixel_format());
@@ -1811,6 +1866,8 @@ mod tests {
         assert!(owner.push(make(), envelope(), &mut rgb_budget, &Interrupt::NONE).is_err());
     }
     #[test]
+    /// Checks filter-frame rebasing and restoration while masks, blend and opacity remain on the intended
+    /// outer layer.
     fn native_filter_frame_rebases_parent_canvas_and_restores_outer_state_once() {
         use super::super::effects::NativeBranch;
         use photocraft_doc::effects::{Effect, FxCommon};
@@ -1904,6 +1961,8 @@ mod tests {
         assert_eq!(budget, before_budget);
     }
     #[test]
+    /// Verifies editable source placement is rebased while the imported owner's ordinary layer state survives
+    /// embedding.
     fn owner_embedding_rebases_content_and_preserves_outer_native_state() {
         let doc = document();
         let original = owner(&doc);
@@ -1927,6 +1986,8 @@ mod tests {
         assert_eq!(input.surface().unwrap().pixel(-5, 7), [0.0; 4]);
     }
     #[test]
+    /// Compares a compound native chain's single opacity envelope and checks its persisted structure after
+    /// reopen.
     fn compound_opacity_mixes_complete_chain_once_and_survives_native_reopen() {
         let doc = document();
         let source = owner(&doc);
@@ -1961,6 +2022,7 @@ mod tests {
         assert_eq!(photocraft_format::load_from_bytes(&saved).unwrap(), stage);
     }
     #[test]
+    /// Checks that mask defaults, density and enablement remain normal native mask properties.
     fn source_mask_density_default_and_disabled_state_are_native_data() {
         let mut source = LayerMask::reveal_all();
         source.density = 0.5;
@@ -1976,6 +2038,8 @@ mod tests {
         assert_eq!(scale_mask(Some(disabled), 0.25, super::super::MAX_PIXEL_BYTES, &Interrupt::NONE).unwrap().value(0, 0), 0.25);
     }
     #[test]
+    /// Verifies disabled filter stages retain their native styles and distinct coverage mask without becoming
+    /// active.
     fn disabled_stages_styles_and_separate_mask_are_preserved() {
         let doc = document();
         let source = owner(&doc);
@@ -2012,6 +2076,8 @@ mod tests {
         assert_eq!(common.opacity, 0.4);
     }
     #[test]
+    /// Exercises failing structure admission and proves that neither partial contents nor resource charges
+    /// escape.
     fn failures_preserve_builder_and_budget_and_do_not_publish_partial_stages() {
         let doc = document();
         let source = owner(&doc);
@@ -2061,6 +2127,8 @@ mod tests {
         assert_eq!(budget, saved_budget);
     }
     #[test]
+    /// Checks that already embedded native depth counts toward the same preparation limit as newly added
+    /// stages.
     fn existing_native_depth_is_counted_before_adding_more_source_stages() {
         let doc = document();
         let mut layer = owner(&doc);
@@ -2098,6 +2166,7 @@ mod tests {
         assert_eq!(budget, before_budget);
     }
     #[test]
+    /// Verifies exact quarter-turn masks and inverse placement without changing native default coverage.
     fn exact_native_quarter_turns_preserve_mask_defaults_coordinates_and_inverse_placement() {
         let mut mask = LayerMask::reveal_all();
         mask.surface = Surface::with_default(PixelFormat::new(ColorMode::Grayscale, SampleType::F32, false), &[0.4]);
@@ -2112,6 +2181,8 @@ mod tests {
         }
     }
     #[test]
+    /// Inspects rotated native contents to ensure a compound operation receives its mask and opacity only
+    /// once.
     fn oriented_compound_stage_places_mask_and_opacity_inside_rotated_native_contents() {
         let doc = document();
         let source = owner(&doc);
@@ -2141,6 +2212,7 @@ mod tests {
         assert_eq!(base.layers[0].surface().unwrap().pixel(0, 0), [0.2, 0.4, 0.7, 1.0]);
     }
     #[test]
+    /// Checks replacement output retains the original editable input and embeds the required native resource.
     fn fixed_native_replacement_preserves_editable_input_and_native_resource() {
         let doc = document();
         let source = owner(&doc);
@@ -2166,6 +2238,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies pattern resources remain local, deduplicated native data after save and reopen.
     fn composite_native_pattern_is_local_deduplicated_and_survives_reopen() {
         use super::super::effects::NativeBranch;
         let doc = document();
@@ -2206,6 +2279,7 @@ mod tests {
     }
 
     #[test]
+    /// Checks native branch ordering and confirms a disabled construction preserves its original input.
     fn native_composite_branches_are_explicit_bottom_to_top_and_disabled_stages_retain_input() {
         use super::super::effects::NativeBranch;
         for visible in [true, false] {
@@ -2242,6 +2316,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies a structural operation's envelope remains distinct from its unchanged native input.
     fn native_structural_envelopes_keep_coverage_opacity_blend_and_unchanged_input_separate() {
         use super::super::effects::NativeBranch;
         let doc = document();
@@ -2269,6 +2344,7 @@ mod tests {
     }
 
     #[test]
+    /// Checks that a helper's native component blend is not overwritten by a Normal source envelope.
     fn helper_component_blend_survives_normal_source_envelope() {
         let doc = document();
         let source = owner(&doc);
@@ -2294,6 +2370,7 @@ mod tests {
         assert_eq!(budget, saved_budget);
     }
     #[test]
+    /// Verifies transformed branches retain their ordinary native masks, styles and editable embedded source.
     fn transformed_branches_preserve_native_masks_styles_and_editable_source() {
         use super::super::effects::NativeBranch;
         let doc = document();
@@ -2333,6 +2410,7 @@ mod tests {
     }
 
     #[test]
+    /// Checks that post styles see the completed inner fill while outer coverage and admission remain atomic.
     fn post_branch_styles_embed_native_fill_stage_and_keep_outer_envelope_atomically() {
         use super::super::effects::NativeBranch;
         let doc = document();
@@ -2406,6 +2484,8 @@ mod tests {
         assert_eq!(exhausted.source, before);
     }
     #[test]
+    /// Verifies grouped editable replacements admit actual uncompressed pixel costs before committing
+    /// contents.
     fn grouped_replacements_stay_native_and_charge_uncompressed_pixels_atomically() {
         let doc = document();
         let source = owner(&doc);
@@ -2432,6 +2512,7 @@ mod tests {
         assert_eq!(document.layers[1], group);
     }
     #[test]
+    /// Checks post filters run after the native structure and before its single outer operation envelope.
     fn structural_post_filters_precede_one_complete_operation_envelope() {
         let doc = document();
         let source = owner(&doc);
@@ -2467,6 +2548,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies a native fill underlay remains editable and does not manufacture another source-image branch.
     fn native_fill_branch_is_an_editable_underlay_with_no_invented_source_copy() {
         use super::super::effects::NativeBranch;
         let doc = document();
@@ -2488,6 +2570,8 @@ mod tests {
         assert!(matches!(document.layers[2].content, LayerContent::Smart(_)));
     }
     #[test]
+    /// Checks arbitrary rotation uses bounded native canvas geometry, inverse placement and ordinary mask
+    /// sampling.
     fn arbitrary_native_rotation_uses_bounded_canvas_inverse_and_standard_mask_resampling() {
         let (placement, size) = arbitrary_orientation(Size::new(4, 2), 30.0).unwrap();
         assert_eq!(size, Size::new(5, 4));
@@ -2515,6 +2599,8 @@ mod tests {
     }
 
     #[test]
+    /// Exercises orientation admission failures and proves incomplete placements and budget changes are not
+    /// published.
     fn arbitrary_orientation_publishes_only_complete_native_placements_and_bounded_work() {
         let doc = document();
         let source = owner(&doc);
@@ -2547,6 +2633,7 @@ mod tests {
         assert_eq!(restored.size, Size::new(3, 2));
     }
     #[test]
+    /// Checks U8-to-native mask expansion is admitted before allocation and rolls back on failure.
     fn compound_u8_mask_expansion_preflights_remaining_allowance_and_is_atomic() {
         let doc = document();
         let original = owner(&doc);
@@ -2577,6 +2664,8 @@ mod tests {
     }
 
     #[test]
+    /// Verifies mask scaling accounts F32 tiles and scratch while respecting native defaults, density and
+    /// invalid-state rejection.
     fn scaled_mask_accounts_f32_tiles_scratch_defaults_density_and_invalid_state() {
         let mut mask = LayerMask::hide_all();
         mask.surface = Surface::with_default(PixelFormat::new(ColorMode::Grayscale, SampleType::U8, false), &[0.4]);
@@ -2600,6 +2689,8 @@ mod tests {
     }
 
     #[test]
+    /// Checks shared binary resources are admitted before compression and failed admission preserves the
+    /// caller's ledger.
     fn native_bundle_admission_counts_binary_aliases_before_zip_and_preserves_budget() {
         let mut doc = document();
         let shared = Arc::new(vec![0; 1 << 20]);
@@ -2627,6 +2718,7 @@ mod tests {
         assert_eq!(enough, before);
     }
     #[test]
+    /// Exercises bundle admission across pixel, mask, pattern, text and filter metadata resources.
     fn native_bundle_admission_covers_raster_mask_pattern_text_and_filter_metadata() {
         let mut doc = document();
         let mut pixels = Surface::new(PixelFormat::RGBA32F);
@@ -2655,14 +2747,18 @@ mod tests {
         assert!(encoded_preflight(&doc, 64 << 10, &Interrupt::NONE).is_err());
     }
 
+    /// Supplies a neutral native envelope for independent fork and join fixtures.
     fn fork_envelope() -> NativeEnvelope {
         NativeEnvelope { opacity: 1., blend: BlendMode::Normal, visible: true, mask: None }
     }
+    /// Constructs an ordinary native filter fixture for noncommuting fork comparisons.
     fn fork_native_filter(command: &str, params: serde_json::Value) -> NativeMapping {
         NativeMapping { filters: vec![native_filter(command, params)], ..Default::default() }
     }
     // Prepare only the ordinary native commands used by this independent builder
     // test. Production preparation remains the existing engine responsibility.
+    /// Prepares fixture-native contents through the ordinary native path before comparing visible fork
+    /// results.
     fn prepare_fork_native(doc: &mut Document, depth: usize) {
         assert!(depth < 16);
         let format = doc.pixel_format();
@@ -2704,6 +2800,7 @@ mod tests {
         }
     }
     #[test]
+    /// Compares joins of current fork prefixes with an independently assembled native blend counterpart.
     fn fork_join_uses_current_noncommuting_native_stages_and_matches_native_blend() {
         let mut doc = Document::new("Native fork", Size::new(2, 1), ColorMode::Rgb, SampleType::F32);
         doc.icc_profile = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes());
@@ -2761,6 +2858,7 @@ mod tests {
         assert_eq!(photocraft_compose::render(&reopened, reopened.bounds()).px, expected.px);
     }
     #[test]
+    /// Checks fork joins retain structural resources and styles without violating the Gray profile contract.
     fn fork_join_preserves_structural_resources_styles_and_gray_profile_contract() {
         let doc = document();
         let input = owner(&doc);
@@ -2831,6 +2929,7 @@ mod tests {
         assert_eq!(embedded(&gray_root.content()).mode, ColorMode::Grayscale);
     }
     #[test]
+    /// Verifies incompatible frame or profile joins fail without altering either owner or budget.
     fn fork_join_rejects_foreign_frame_profile_and_rolls_back_all_state() {
         let doc = document();
         let input = owner(&doc);
@@ -2883,6 +2982,7 @@ mod tests {
         assert_eq!((root.stages, root.added_depth, budget), state);
     }
     #[test]
+    /// Checks fan-out accounts distinct nested bundles and the deepest input before native composition.
     fn fork_join_fanout_charges_distinct_nested_bytes_and_max_input_depth() {
         let doc = document();
         let input = owner(&doc);
@@ -2917,12 +3017,15 @@ mod tests {
         }
     }
 
+    /// Creates a typed native Apply step for backward-reference construction fixtures.
     fn stage_apply(input: usize, mapping: NativeMapping) -> NativeStage {
         NativeStage::Apply { input, mapping: Box::new(mapping) }
     }
+    /// Wraps an explicit native stage list and selected result as a transient mapping fixture.
     fn stage_mapping(steps: Vec<NativeStage>, output: usize) -> NativeMapping {
         NativeMapping { structure: Some(NativeStructure::Stages { steps, output }), ..Default::default() }
     }
+    /// Creates an independent native pixel layer from a comparison buffer for stage-output oracles.
     fn stage_buffer_layer(buffer: &photocraft_compose::Buffer, format: PixelFormat) -> Layer {
         let mut surface = Surface::new(format);
         let mut samples = Vec::new();
@@ -2935,6 +3038,7 @@ mod tests {
         Layer::new("Independent native stage", LayerContent::Raster(surface))
     }
     #[test]
+    /// Compares full native mappings and verifies their outer mask, blend and opacity apply once.
     fn native_stages_apply_complete_mappings_and_outer_mask_blend_opacity_once() {
         let doc = Document::new("Native stages", Size::new(2, 1), ColorMode::Rgb, SampleType::F32);
         let mut input = Layer::raster("Original", doc.pixel_format());
@@ -3002,6 +3106,7 @@ mod tests {
         assert_eq!(photocraft_compose::render(&reopened, reopened.bounds()).px, actual_render.px);
     }
     #[test]
+    /// Checks selected construction results preserve editable structures, embedded resources and styles.
     fn native_stages_keep_structures_resources_styles_and_selected_output_native() {
         let doc = document();
         let input = owner(&doc);
@@ -3051,6 +3156,8 @@ mod tests {
         assert_eq!(bytes, &before);
     }
     #[test]
+    /// Exercises invalid references, later-stage failure and cancellation without publishing partial native
+    /// output.
     fn native_stages_invalid_topology_later_failure_and_cancel_are_atomic() {
         let doc = document();
         let input = owner(&doc);
@@ -3091,6 +3198,7 @@ mod tests {
     }
 
     #[test]
+    /// Checks retained resources accumulate across mappings while pixel payloads use the resource ledger.
     fn retained_mapping_resources_are_aggregate_without_charging_pixels_as_metadata() {
         let doc = document();
         let input = owner(&doc);
@@ -3113,6 +3221,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies both direct and branch allocations are counted and interrupted accounting does not succeed.
     fn retained_mapping_counts_direct_and_branch_native_data_and_is_cancellable() {
         let doc = document();
         let input = owner(&doc);
@@ -3142,6 +3251,7 @@ mod tests {
         assert!(retained_mapping_bytes(&nested, &Interrupt::NONE).is_err());
     }
     #[test]
+    /// Checks native text replacements remain editable after reopen and fail atomically at admission limits.
     fn editable_native_text_replacement_is_bounded_persistent_and_failure_atomic() {
         let doc = document();
         let input = owner(&doc);
@@ -3181,6 +3291,8 @@ mod tests {
         assert!(Arc::ptr_eq(&before, &builder.source));
     }
     #[test]
+    /// Compares actual knockout branches against independently built native layers and checks native
+    /// persistence.
     fn actual_native_knockout_branches_match_independent_native_documents_and_reopen() {
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
             for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
@@ -3255,6 +3367,7 @@ mod tests {
         }
     }
     #[test]
+    /// Exercises invalid or unaffordable knockout construction without altering native contents or budget.
     fn native_knockout_rejects_foreign_opacity_budget_depth_and_cancel_atomically() {
         let doc = document();
         let input = owner(&doc);
@@ -3290,6 +3403,7 @@ mod tests {
         assert!(Arc::ptr_eq(&above.source, &before));
     }
     #[test]
+    /// Verifies capture sees the current native prefix while leaving the editable owner unchanged.
     fn snapshot_reads_the_current_native_prefix_without_mutating_editable_builder() {
         let doc = document();
         let input = owner(&doc);
@@ -3325,6 +3439,7 @@ mod tests {
         assert!(Arc::ptr_eq(&before, &builder.source));
     }
     #[test]
+    /// Checks channel and mask captures use real prepared native pixels and persist as ordinary native data.
     fn captured_channel_and_auxiliary_mask_use_actual_native_pixels_and_persist() {
         use super::super::effects::NativeMaskComponent;
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
@@ -3411,6 +3526,8 @@ mod tests {
         }
     }
     #[test]
+    /// Verifies an actual auxiliary image becomes a self-contained displacement map on an editable native
+    /// filter.
     fn actual_auxiliary_displacement_captures_map_and_keeps_native_filter_editable() {
         use super::super::effects::NativeMapCoordinates;
         let doc = Document::new("Native auxiliary displacement", Size::new(3, 2), ColorMode::Rgb, SampleType::F32);

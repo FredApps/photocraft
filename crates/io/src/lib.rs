@@ -351,6 +351,7 @@ pub enum HistoricalXcfSampleOrder {
 }
 
 impl std::fmt::Display for HistoricalXcfSampleOrder {
+    /// Formats the explicit historical sample-order choice for user and agent diagnostics.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::BigEndian => "big-endian",
@@ -367,6 +368,7 @@ pub struct HistoricalXcfSampleOrderRequest {
 }
 
 impl std::fmt::Display for HistoricalXcfSampleOrderRequest {
+    /// Explains why a historical XCF needs an explicit sample-order decision before import.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -413,6 +415,8 @@ pub struct ImportOptions {
 }
 
 impl Default for ImportOptions {
+    /// Uses standard native import limits and demosaicing without guessing ambiguous historical XCF sample
+    /// order.
     fn default() -> Self {
         ImportOptions { max_group_depth: photocraft_doc::MAX_GROUP_DEPTH, demosaic: raw::Demosaic::default(), historical_xcf_sample_order: None }
     }
@@ -450,6 +454,8 @@ pub fn import_for_open_with(name: &str, bytes: &[u8], opts: &ImportOptions, ctl:
     Ok((result, damaged))
 }
 
+/// Loads recoverable PSD layers and merged data under native depth and cancellation checks, tracking
+/// damaged-source recovery.
 fn import_psd(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt, damaged: &mut bool) -> Result<ImportResult, IoError> {
     // A merged image the import reads is decoded with the parse: a ZIP one is inflated once.
     let (file, merged) = PsdFile::from_bytes_and_merged_recovering(

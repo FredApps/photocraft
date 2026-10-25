@@ -12,6 +12,8 @@ pub(super) struct Controls {
     pub margin_y: f64,
     pub snap: bool,
 }
+/// Build native affine alignment from actual prepared content extents, bounded controls and optional snapping.
+/// Empty targets fail explicitly; empty inputs remain empty without fabricated geometry.
 pub(super) fn mapping(input: &Surface, target: &Surface, frame: Rect, controls: Controls, ctl: &Interrupt<'_>) -> Result<NativeMapping, MappingFailure> {
     let check = || ctl.check().map_err(|_| MappingFailure::resource("native alignment cancelled"));
     check()?;
@@ -59,13 +61,16 @@ pub(super) fn mapping(input: &Surface, target: &Surface, frame: Rect, controls: 
 mod tests {
     use super::*;
     use photocraft_color::{ColorMode, PixelFormat, SampleType};
+    /// Create an independent alignment request with zero margins and no snapping for geometric oracle tests.
     fn controls(x: f64, y: f64) -> Controls {
         Controls { horizontal: x, vertical: y, margin_x: 0., margin_y: 0., snap: false }
     }
+    /// Extract the ordinary native branch transform and fail the test if alignment stops producing editable affine data.
     fn translation(m: NativeMapping) -> [f64; 6] {
         let Some(NativeStructure::Composite { branches }) = m.structure else { panic!("ordinary placement") };
         branches[0].transform.m
     }
+    /// Assert independently calculated edge, center, margin and snap translations across all native depths.
     #[test]
     fn actual_native_extents_justify_and_margin_each_depth_without_canvas_guessing() {
         let frame = Rect::new(-20, -20, 100, 80);
@@ -82,6 +87,7 @@ mod tests {
             assert_eq!(translation(mapping(&input, &target, frame, c, &Interrupt::NONE).unwrap()), [1., 0., 0., 1., 36., 20.]);
         }
     }
+    /// Reject absent target content, hostile controls and cancellation while preserving an empty input as an explicit native identity.
     #[test]
     fn empty_target_and_hostile_controls_are_explicit_and_cancel_is_checked() {
         let empty = Surface::new(PixelFormat::RGBA8);

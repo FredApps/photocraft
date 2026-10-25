@@ -26,6 +26,7 @@ struct Pending<'a> {
 
 struct Count(usize);
 impl Write for Count {
+    /// Count serialized report bytes with overflow and size limits without allocating an escaped JSON copy.
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0 = self
             .0
@@ -34,15 +35,18 @@ impl Write for Count {
             .ok_or_else(|| std::io::Error::other("XCF conversion report exceeds its separate 32 MiB allowance"))?;
         Ok(bytes.len())
     }
+    /// Complete the counting writer flush without performing external IO.
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
 impl<'a> Outcomes<'a> {
+    /// Borrow a validated conversion owner by index, rejecting missing report references.
     pub(super) fn entry(&self, index: usize) -> Result<&ConversionEntry> {
         self.report.entries.get(index).ok_or_else(|| invalid("missing XCF conversion owner"))
     }
+    /// Initialize the versioned XCF conversion report and account for its mandatory serialized structure.
     pub(super) fn new(version: u32) -> Result<Self> {
         let report = ConversionReport { source_format: "xcf".into(), source_version: Some(version), policy_version: 1, ..Default::default() };
         let mut count = Count(0);
@@ -50,6 +54,7 @@ impl<'a> Outcomes<'a> {
         Ok(Self { retained: report.source_format.len(), report, encoded: count.0, pending: Vec::new() })
     }
 
+    /// Admit a mandatory outcome against both retained-memory and encoded-JSON limits before publishing its index.
     pub(super) fn push(&mut self, entry: ConversionEntry) -> Result<usize> {
         if self.report.entries.len() >= MAX_CONVERSION_ENTRIES {
             return Err(invalid("XCF conversion report exceeds 65,536 entries"));
@@ -83,6 +88,7 @@ impl<'a> Outcomes<'a> {
         Ok(index)
     }
 
+    /// Attach a native-approximation disclosure to an existing source owner and its mapped native targets.
     pub(super) fn detail(&mut self, owner: usize, feature: &str, reason: ConversionReason, source: String, native: String) -> Result<()> {
         let entry = self.report.entries.get(owner).ok_or_else(|| invalid("missing XCF conversion owner"))?;
         let entry = ConversionEntry {
@@ -123,6 +129,7 @@ impl<'a> Outcomes<'a> {
         self.property_with_reason(owner, property, offset, bytes, ConversionReason::MissingMapping)
     }
 
+    /// Record optional source configuration as an explicit outcome and defer copying its bytes until mandatory reporting fits.
     pub(super) fn property_with_reason(&mut self, owner: usize, property: u32, offset: usize, bytes: &'a [u8], reason: ConversionReason) -> Result<()> {
         let owner = self.report.entries.get(owner).ok_or_else(|| invalid("missing XCF configuration owner"))?;
         let mut source = owner.source.clone();
@@ -145,6 +152,7 @@ impl<'a> Outcomes<'a> {
         Ok(())
     }
 
+    /// Skip already handled parasites and queue unknown records as inert data; malformed tails receive an invalid-optional-data reason.
     pub(super) fn parasites(&mut self, owner: usize, offset: usize, bytes: &'a [u8], handled: &[&str]) -> Result<()> {
         let mut cursor = super::Cursor { b: bytes, pos: 0, wide: false };
         while cursor.pos < bytes.len() {
@@ -175,6 +183,7 @@ impl<'a> Outcomes<'a> {
         Ok(())
     }
 
+    /// Validate mandatory outcomes, retain only optional attachments that fit both limits, and validate the final durable report.
     pub(super) fn finish(mut self) -> Result<ImportConversion> {
         self.report.validate().map_err(|e| invalid(e.to_string()))?;
         let mut payload_bytes = 0usize;
@@ -224,6 +233,7 @@ impl<'a> Outcomes<'a> {
     }
 }
 
+/// Build a stable source reference with bounded item-path history, record offset and optional tattoo identity.
 pub(super) fn source(kind: &str, ordinal: usize, offset: usize, name: &str, path: &[u32], tattoo: Option<u32>) -> SourceItemRef {
     SourceItemRef {
         kind: kind.into(),
@@ -239,6 +249,7 @@ pub(super) fn source(kind: &str, ordinal: usize, offset: usize, name: &str, path
 mod tests {
     use super::*;
 
+    /// Account for JSON escaping so control-character source names cannot make an accepted report exceed persistence limits.
     #[test]
     fn escaped_source_names_cannot_create_an_unpersistable_report() {
         let mut outcomes = Outcomes::new(11).unwrap();
@@ -259,6 +270,7 @@ mod tests {
         outcomes.finish().unwrap();
     }
 
+    /// Verify early optional payloads cannot starve later mandatory outcomes; omitted bytes retain an explicit retention-limit disposition.
     #[test]
     fn optional_bytes_wait_until_all_mandatory_outcomes_fit() {
         let bytes = vec![7; 16 << 20];
@@ -285,6 +297,7 @@ mod tests {
         assert_eq!((omitted.disposition, omitted.reason), (ConversionDisposition::SkippedNonessential, ConversionReason::RetentionLimit));
     }
 
+    /// Exercise the attachment-count ceiling and require excess optional records to remain visibly omitted in a valid report.
     #[test]
     fn attachment_count_is_capped_with_explicit_omission() {
         let mut outcomes = Outcomes::new(11).unwrap();

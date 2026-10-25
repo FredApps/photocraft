@@ -22,12 +22,14 @@ enum Value {
     List(Vec<Value>),
 }
 impl Value {
+    /// Expose an atom as UTF-8 text, rejecting lists and malformed source bytes.
     fn text(&self) -> Result<&str> {
         match self {
             Self::Atom(b) => std::str::from_utf8(b).map_err(|_| invalid("text configuration contains invalid UTF-8")),
             Self::List(_) => Err(invalid("expected text configuration scalar")),
         }
     }
+    /// Require a configuration list without interpreting its contents as expressions.
     fn list(&self) -> Result<&[Self]> {
         match self {
             Self::List(v) => Ok(v),
@@ -42,6 +44,7 @@ struct Parser<'a> {
     nodes: usize,
 }
 impl Parser<'_> {
+    /// Skip ASCII whitespace and line comments while keeping the bounded parser cursor inside the input.
     fn space(&mut self) {
         loop {
             while self.bytes.get(self.at).is_some_and(u8::is_ascii_whitespace) {
@@ -55,6 +58,7 @@ impl Parser<'_> {
             }
         }
     }
+    /// Parse one data-only configuration value with bounded nesting and node count, validating quoted byte escapes and complete list framing.
     fn value(&mut self, depth: usize) -> Result<Value> {
         self.space();
         self.nodes += 1;
@@ -131,6 +135,7 @@ impl Parser<'_> {
     }
 }
 
+/// Find one named configuration field and reject duplicate occurrences instead of choosing an arbitrary value.
 fn field<'a>(fields: &'a [Value], name: &str) -> Result<Option<&'a [Value]>> {
     let mut found = None;
     for f in fields {
@@ -145,6 +150,7 @@ fn field<'a>(fields: &'a [Value], name: &str) -> Result<Option<&'a [Value]>> {
     }
     Ok(found)
 }
+/// Deduplicate native-policy disclosures and cap their count so repeated markup cannot amplify report strings.
 fn note(notes: &mut Vec<String>, message: String) {
     // Repeated markup nodes must not multiply the same disclosure or create
     // unbounded report strings. The raw original is retained separately.
@@ -152,6 +158,7 @@ fn note(notes: &mut Vec<String>, message: String) {
         notes.push(message);
     }
 }
+/// Estimate a materialized native character style, including owned font, language, feature and variation strings.
 fn style_allocation(style: &CharStyle) -> usize {
     std::mem::size_of::<CharStyle>()
         .saturating_add(style.font_family.len())
@@ -162,6 +169,7 @@ fn style_allocation(style: &CharStyle) -> usize {
         .saturating_add(style.variations.iter().map(|variation| std::mem::size_of_val(variation).saturating_add(variation.axis.len())).sum::<usize>())
 }
 
+/// Decode supported hexadecimal markup colors and optional alpha; malformed widths or digits fail rather than becoming a default color.
 fn hex_color(text: &str) -> Result<Color> {
     let text = text.strip_prefix('#').ok_or_else(|| crate::IoError::Unsupported("named markup colors need an explicit native color-name mapping".into()))?;
     let alpha = if text.len() == 8 {
@@ -224,6 +232,7 @@ fn markup_color(text: &str) -> Result<Color> {
     let [r, g, b] = rgb.map(|sample| f32::from(sample) / 255.);
     Ok(Color::rgb(r, g, b))
 }
+/// Require exactly one UTF-8 atom for an optional named text field.
 fn scalar<'a>(fields: &'a [Value], name: &str) -> Result<Option<&'a str>> {
     field(fields, name)?
         .map(|v| {
@@ -234,6 +243,7 @@ fn scalar<'a>(fields: &'a [Value], name: &str) -> Result<Option<&'a str>> {
         })
         .transpose()
 }
+/// Read a bounded finite text scalar, applying the default only when the field is absent.
 fn number(fields: &[Value], name: &str, default: f64, min: f64, max: f64) -> Result<f64> {
     let n = scalar(fields, name)?.map(str::parse::<f64>).transpose().map_err(|_| invalid(format!("invalid text number {name}")))?.unwrap_or(default);
     if !n.is_finite() || !(min..=max).contains(&n) {
@@ -241,6 +251,7 @@ fn number(fields: &[Value], name: &str, default: f64, min: f64, max: f64) -> Res
     }
     Ok(n)
 }
+/// Translate supported source text units into native point sizes at the supplied DPI; unknown units remain unsupported.
 fn unit_scale(unit: &str, dpi: f64) -> Result<f64> {
     match unit {
         "pixels" => Ok(72.0 / dpi),
@@ -263,6 +274,7 @@ pub(super) struct DecodedText {
 /// pixel profile. Convert them once after the native document profile is known.
 pub(super) fn convert_colors(document: &mut photocraft_doc::Document) -> Result<()> {
     use photocraft_cms::{Builtin, Intent, Profile, Transform, TransformOptions};
+    /// Detect native Text or Shape content through groups before allocating a document color transform.
     fn has_special(layers: &[photocraft_doc::Layer]) -> bool {
         layers.iter().any(|layer| match &layer.content {
             photocraft_doc::LayerContent::Text(_) | photocraft_doc::LayerContent::Shape(_) => true,
@@ -283,7 +295,9 @@ pub(super) fn convert_colors(document: &mut photocraft_doc::Document) -> Result<
         TransformOptions { intent: Intent::RelativeColorimetric, bpc: false, precise_float: true },
     )
     .map_err(|e| invalid(format!("text color conversion: {e}")))?;
+    /// Convert native text-run and solid vector paints recursively into the assigned document color model.
     fn visit(layers: &mut [photocraft_doc::Layer], transform: &Transform, mode: photocraft_color::ColorMode) {
+        /// Use the native CMS transform for the literal color channels while retaining the color object alpha.
         fn color(value: &mut Color, transform: &Transform, mode: photocraft_color::ColorMode) {
             let mut converted = [0.0; 4];
             transform.convert_f32(&value.c[..3], 3, &mut converted, if mode == photocraft_color::ColorMode::Grayscale { 1 } else { 3 }, false);
@@ -656,6 +670,7 @@ pub(super) fn decode_gdyntext(data: &[u8], dpi: f32, offset: (i32, i32)) -> Resu
     Ok(DecodedText { layer, source_only: notes, native_policy })
 }
 
+/// Translate stored font names, weight and slant into a native font request without loading bundled font resources.
 fn requested_font(fields: &[Value], style: &mut CharStyle) -> Result<()> {
     style.font_family = scalar(fields, "fullname")?.or(scalar(fields, "family")?).unwrap_or("").into();
     style.font_style = scalar(fields, "style")?.unwrap_or("").into();
@@ -678,6 +693,7 @@ fn requested_font(fields: &[Value], style: &mut CharStyle) -> Result<()> {
     Ok(())
 }
 
+/// Convert explicit points or Pango-scaled lengths into finite bounded native point values.
 fn pango_points(text: &str) -> Result<f32> {
     let value = if let Some(points) = text.strip_suffix("pt") { points.parse::<f32>() } else { text.parse::<f32>().map(|value| value / 1024.) }
         .map_err(|_| invalid("invalid markup point length"))?;
@@ -686,6 +702,7 @@ fn pango_points(text: &str) -> Result<f32> {
     }
     Ok(value)
 }
+/// Parse bounded OpenType feature settings, validate four-character tags and resolve repeated tags to their final values.
 fn features(text: &str) -> Result<Vec<FontFeature>> {
     let mut result = Vec::new();
     for entry in text.split(',').map(str::trim).filter(|entry| !entry.is_empty()) {
@@ -853,6 +870,8 @@ fn font_description(source: &str, style: &mut CharStyle, dpi: f64, apply_size: b
     Ok(())
 }
 
+/// Translate bounded XML markup into UTF-8 text and native style runs.
+/// DTD, namespaced reinterpretation and materialized style amplification are rejected.
 fn markup_runs(markup: &str, base: &CharStyle, fonts: &HashMap<String, CharStyle>, dpi: f64, notes: &mut Vec<String>) -> Result<(String, Vec<TextRun>)> {
     let xml =
         roxmltree::Document::parse_with_options(markup, roxmltree::ParsingOptions { allow_dtd: false, nodes_limit: MAX_NODES as u32, ..Default::default() })
@@ -1040,6 +1059,7 @@ fn markup_runs(markup: &str, base: &CharStyle, fonts: &HashMap<String, CharStyle
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Verify independently observed Pango color-name facts, including CSS overrides and numbered X11 variants, without broadening the accepted syntax.
     #[test]
     fn pango_named_markup_colors_use_css_precedence_and_numbered_x11_facts() {
         for (name, expected) in [
@@ -1103,6 +1123,7 @@ mod tests {
         }
     }
 
+    /// Check named-color aliases retain alpha and that XML namespaces cannot silently change the admitted formatting meaning.
     #[test]
     fn named_markup_aliases_preserve_alpha_and_reject_namespaced_reinterpretation() {
         let base = CharStyle { color: Color::rgba(0.2, 0.3, 0.4, 0.3), ..Default::default() };
@@ -1127,6 +1148,7 @@ mod tests {
         }
     }
 
+    /// Compare cached text-color conversion with an independent uncached CMS transform and native rendering after persistence at each depth.
     #[test]
     fn named_markup_native_cms_matches_uncached_transform_and_render_reopen_each_depth() {
         use photocraft_cms::{Builtin, Intent, Profile, Transform};
@@ -1174,6 +1196,7 @@ mod tests {
         }
     }
 
+    /// Verify Unicode text, unit conversion and editable native box/style data can be prepared through the native text engine.
     #[test]
     fn unicode_units_styles_box_and_native_cache() {
         let config = br#"(markup "<markup>h&#233;<b>&#955;</b>\n<span style=\"italic\">&#28450;&#23383;</span></markup>")
@@ -1194,6 +1217,7 @@ mod tests {
         }
         assert_eq!(t.shape, TextShape::Box { x: 0.0, y: 0.0, width: 120.0, height: 60.0 });
     }
+    /// Exercise malformed, deeply nested and expression-like text configuration as inert input that must fail safely.
     #[test]
     fn hostile_text_is_rejected_without_evaluation() {
         for config in [
@@ -1209,6 +1233,7 @@ mod tests {
         let deep = format!("{}0{}", "(".repeat(40), ")".repeat(40));
         assert!(decode(deep.as_bytes(), 72.0, (0, 0)).is_err());
     }
+    /// Check font requests, text placement and stored color bytes translate to native data without treating source resource identities as file access.
     #[test]
     fn markup_font_resources_matrix_and_byte_color_are_data_only() {
         let config = br##"(markup "<markup><span font=\"font7\" size=\"18432\" foreground=\"#c04020\">h&#233;</span></markup>"
@@ -1227,6 +1252,7 @@ mod tests {
         assert_eq!(base.layer.color, Color::rgb(64.0 / 255.0, 128.0 / 255.0, 1.0));
     }
 
+    /// Verify markup spacing, baselines, feature settings and sizes retain correct UTF-8 run boundaries in native text.
     #[test]
     fn native_markup_baseline_spacing_features_and_sizes_preserve_utf8_runs() {
         let parsed=decode(br##"(markup "<markup><span size=\"20pt\" rise=\"3pt\" letter_spacing=\"2048\" variant=\"small-caps\" stretch=\"condensed\" font_features=\"liga=0, dlig on, -kern\" foreground=\"#c0402080\">h&#233;<span size=\"200%\">&#955;</span></span><sub>x</sub><sup>y</sup></markup>") (font-size 20) (line-spacing 4)"##,144.,(0,0)).unwrap();
@@ -1252,6 +1278,7 @@ mod tests {
             assert!(run.style.size_pt.is_finite());
         }
     }
+    /// Compare portable typed/profiled colors with the shared native color conversion, including grayscale document output.
     #[test]
     fn typed_text_profile_and_gray_colors_use_shared_native_cms() {
         let profile = photocraft_cms::Builtin::DisplayP3.profile().to_bytes();
@@ -1275,6 +1302,7 @@ mod tests {
         assert!((gray.layer.color.c[0] - gray.layer.color.c[1]).abs() < 0.00001);
         assert_eq!(gray.layer.color.alpha, 64. / 255.);
     }
+    /// Verify legacy XLFD requests and Unicode become native editable typography that survives native save and reopen.
     #[test]
     fn historical_gdyntext_maps_xlfd_unicode_native_style_and_reopens() {
         let config = br"GDT10{h\303\251\316\273}{1}{1}{0}{2}{c04020}{0}{-misc-fixed-bold-i-normal--20-120-75-75-p-100-iso8859-1}";
@@ -1298,6 +1326,7 @@ mod tests {
             "é"
         );
     }
+    /// Ensure malformed or unsupported typography is reported to the caller so source raster fallback remains available.
     #[test]
     fn invalid_extended_markup_and_legacy_fields_leave_fallback_to_caller() {
         for config in [
@@ -1323,6 +1352,7 @@ mod tests {
             Err(crate::IoError::Unsupported(_))
         ));
     }
+    /// Pin independently observed placement and rotation rules without adding inactive source offsets twice.
     #[test]
     fn observed_stock_text_placement_keeps_inactive_offsets_and_legacy_rotation() {
         for (x, y) in [(3.25, -2.5), (20., 10.)] {
@@ -1344,6 +1374,7 @@ mod tests {
             assert!(decode(source, 72., (0, 0)).is_err());
         }
     }
+    /// Reject inherited-style expansion that would exceed the bounded materialized native text allowance.
     #[test]
     fn inherited_markup_styles_cannot_amplify_native_run_allocations() {
         let markup = format!("<markup><span font_family=\"{}\">{}</span></markup>", "A".repeat(40_000), "<b>x</b>".repeat(1000));
@@ -1353,6 +1384,7 @@ mod tests {
         assert!(matches!(decode(config.as_bytes(), 72., (0, 0)), Err(crate::IoError::Unsupported(_))));
     }
 
+    /// Check historical font strings and markup font descriptions preserve requested native family, style and supported feature settings.
     #[test]
     fn historical_font_descriptions_and_markup_font_requests_keep_native_styles() {
         let parsed = decode(

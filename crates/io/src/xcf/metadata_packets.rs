@@ -16,6 +16,7 @@ enum Shape {
     Alt,
 }
 
+/// Resolve only the finite admitted XMP tag schemas and their native RDF container shapes; unknown namespaces remain unmapped.
 fn schema(key: &str) -> Option<(&str, &str, Shape)> {
     let tail = key.strip_prefix("Xmp.")?;
     let (prefix, name) = tail.split_once('.')?;
@@ -47,6 +48,7 @@ fn schema(key: &str) -> Option<(&str, &str, Shape)> {
     Some((uri, tail, shape))
 }
 
+/// Append packet text only when the checked resulting length stays inside the packet bound.
 fn append(out: &mut String, text: &str) -> Option<()> {
     if out.len().checked_add(text.len())? > MAX_PACKET {
         return None;
@@ -54,6 +56,7 @@ fn append(out: &mut String, text: &str) -> Option<()> {
     out.push_str(text);
     Some(())
 }
+/// Encode XML-sensitive characters through the same bounded packet writer, failing before oversized escaped output is committed.
 fn escape(out: &mut String, text: &str) -> Option<()> {
     for ch in text.chars() {
         match ch {
@@ -70,6 +73,7 @@ fn escape(out: &mut String, text: &str) -> Option<()> {
     }
     Some(())
 }
+/// Validate a stored language-alternative prefix or choose the native default-language entry for unqualified text.
 fn language(value: &str) -> Option<(&str, &str)> {
     if let Some(value) = value.strip_prefix("lang=\"") {
         let (lang, text) = value.split_once("\" ")?;
@@ -268,6 +272,7 @@ mod tests {
     use super::*;
     use photocraft_color::{ColorMode, SampleType};
     use photocraft_geom::Size;
+    /// Verify synthesized EXIF/XMP packets respect the shared allowance and never overwrite already present native packets.
     #[test]
     fn native_packets_obey_shared_budget_and_existing_packet_priority() {
         let source = r#"<metadata><tag name="Xmp.xmp.Label">Label</tag><tag name="Exif.Image.Artist">AB</tag></metadata>"#;
@@ -284,6 +289,7 @@ mod tests {
         assert_eq!(translate(&mut doc, &tree, &mut budget), (false, false));
         assert_eq!((doc.metadata.xmp, doc.metadata.exif, budget), before);
     }
+    /// Reject oversized escaped XMP and malformed language labels instead of publishing partial RDF packets.
     #[test]
     fn oversized_escaped_xmp_and_invalid_language_never_create_partial_packets() {
         let value = "&lt;".repeat(MAX_PACKET / 2);

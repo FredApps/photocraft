@@ -3,6 +3,7 @@
 use photocraft_algo::{FilterParams as F, GalleryEffect, GalleryFilter, LensType, SpherizeMode, UndefinedAreas};
 use serde_json::Value;
 
+/// Reads a finite geometry scalar within the native command's bounds, defaulting only missing keys.
 fn number(p: &Value, key: &str, default: f64, low: f64, high: f64) -> Result<f64, String> {
     let v = match p.get(key) {
         None => default,
@@ -10,18 +11,22 @@ fn number(p: &Value, key: &str, default: f64, low: f64, high: f64) -> Result<f64
     };
     if v.is_finite() && (low..=high).contains(&v) { Ok(v) } else { Err(format!("Native {key} is outside its finite range")) }
 }
+/// Reads optional native text without coercing malformed present values into defaults.
 fn text<'a>(p: &'a Value, key: &str, default: &'a str) -> Result<&'a str, String> {
     match p.get(key) {
         None => Ok(default),
         Some(v) => v.as_str().ok_or_else(|| format!("Native {key} is not text")),
     }
 }
+/// Reads a native Boolean with explicit missing-value behavior and type rejection.
 fn flag(p: &Value, key: &str, default: bool) -> Result<bool, String> {
     match p.get(key) {
         None => Ok(default),
         Some(v) => v.as_bool().ok_or_else(|| format!("Native {key} is not boolean")),
     }
 }
+/// Rejects external geometry resource locators so coverage replay cannot resolve files or document
+/// references.
 fn local(p: &Value) -> Result<(), String> {
     if !p.is_object() {
         return Err("Native geometry parameters must be an object".into());
@@ -33,6 +38,7 @@ fn local(p: &Value) -> Result<(), String> {
     }
     Ok(())
 }
+/// Maps the native undefined-area text choice to its exact existing sampling policy.
 fn undefined(p: &Value, default: &str) -> Result<UndefinedAreas, String> {
     match text(p, "undefinedAreas", default)? {
         "wrap" => Ok(UndefinedAreas::Wrap),
@@ -41,6 +47,7 @@ fn undefined(p: &Value, default: &str) -> Result<UndefinedAreas, String> {
         _ => Err("Native undefinedAreas choice is invalid".into()),
     }
 }
+/// Reads the native deterministic seed as a bounded unsigned integer.
 fn seed(p: &Value) -> Result<u32, String> {
     match p.get("seed") {
         None => Ok(0),
@@ -48,6 +55,8 @@ fn seed(p: &Value) -> Result<u32, String> {
     }
 }
 
+/// Recognizes owned native geometry commands and decodes their controls, returning errors for unusable
+/// resources or domains.
 pub(super) fn filter(command: &str, p: &Value) -> Option<Result<F, String>> {
     if !matches!(
         command,
@@ -205,12 +214,15 @@ mod tests {
     use photocraft_raster::{Interrupt, Surface};
     use serde_json::json;
 
+    /// Builds a deterministic native surface with nonuniform samples for geometry adapter comparisons.
     fn source(sample: SampleType) -> Surface {
         let mut s = Surface::new(PixelFormat::new(ColorMode::Grayscale, sample, false));
         s.write_region(Rect::new(0, 0, 12, 9), &(0..108).map(|v| ((v * 17) % 107) as f32 / 106.).collect::<Vec<_>>());
         s
     }
     #[test]
+    /// Compares decoded controls and transformed coverage against independent native geometry operators at
+    /// each depth.
     fn decoders_match_independent_native_parameters_and_coverage_at_all_depths() {
         let mut texture = GalleryEffect::new(GalleryFilter::Texturizer);
         texture.set("relief", 7.);
@@ -261,6 +273,8 @@ mod tests {
         }
     }
     #[test]
+    /// Verifies Lens Flare uses established native defaults and explicit controls without a source-resource
+    /// lookup.
     fn lens_decodes_native_defaults_and_resolved_parameters_without_source_resources() {
         use photocraft_algo::lens::{EdgeMode, LensCorrection};
         assert_eq!(lens_correction(&json!({})).unwrap(), LensCorrection::default());
@@ -279,6 +293,8 @@ mod tests {
         }
     }
     #[test]
+    /// Checks unavailable locators and hostile geometry values fail before native replay can silently
+    /// substitute defaults.
     fn rejects_external_resources_malformed_types_and_nonfinite_or_outside_native_domains() {
         assert!(filter("unrecognized", &json!({})).is_none());
         for (id, params) in [

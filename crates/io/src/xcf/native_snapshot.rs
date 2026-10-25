@@ -13,11 +13,14 @@ struct Admission {
     nodes: usize,
 }
 impl Admission {
+    /// Debits the capture allowance with checked arithmetic before native preparation allocates additional
+    /// data.
     fn charge(&mut self, bytes: usize) -> Result<()> {
         self.remaining = self.remaining.checked_sub(bytes).ok_or_else(|| invalid("native snapshot exceeds its remaining capture allowance"))?;
         Ok(())
     }
 }
+/// Propagates an interrupted native capture as the importer's cancellation error.
 fn check(ctl: &Interrupt<'_>) -> Result<()> {
     ctl.check().map_err(|_| IoError::Cancelled)
 }
@@ -36,6 +39,8 @@ pub(super) fn capture(bytes: &[u8], target: &Document, budget: &mut usize, ctl: 
     *budget = admission.remaining;
     Ok(pixels)
 }
+/// Recognizes admitted native archives without resolving external source locators or exceeding inspection
+/// memory.
 fn native_kind(bytes: &[u8], budget: usize, ctl: &Interrupt<'_>) -> Result<bool> {
     check(ctl)?;
     if bytes.get(..2) != Some(b"PK") {
@@ -51,6 +56,8 @@ fn native_kind(bytes: &[u8], budget: usize, ctl: &Interrupt<'_>) -> Result<bool>
     Ok(native)
 }
 
+/// Loads and prepares bounded embedded native contents recursively, then renders their ordinary native
+/// pixels.
 fn render_bytes(bytes: &[u8], depth: usize, admission: &mut Admission, ctl: &Interrupt<'_>) -> Result<(Document, Surface)> {
     check(ctl)?;
     if depth > 64 {
@@ -96,6 +103,7 @@ fn render_bytes(bytes: &[u8], depth: usize, admission: &mut Admission, ctl: &Int
     finite(&surface, document.bounds(), ctl)?;
     Ok((document, surface))
 }
+/// Prepares native text, shape, group and Smart contents while enforcing capture depth and node limits.
 fn prepare_layer(layer: &mut Layer, document: &Document, depth: usize, groups: usize, admission: &mut Admission, ctl: &Interrupt<'_>) -> Result<()> {
     check(ctl)?;
     if groups > super::MAX_DEPTH {
@@ -135,6 +143,7 @@ fn prepare_layer(layer: &mut Layer, document: &Document, depth: usize, groups: u
     }
     check(ctl)
 }
+/// Admits native style workspace before rendering effects on the captured layer.
 fn admit_styles(layer: &Layer, document: &Document, budget: &mut usize) -> Result<()> {
     if !layer.opacity.is_finite() || !(0.0..=1.0).contains(&layer.opacity) || !layer.fill_opacity.is_finite() || !(0.0..=1.0).contains(&layer.fill_opacity) {
         return Err(invalid("native snapshot layer opacity is invalid"));
@@ -152,6 +161,7 @@ fn admit_styles(layer: &Layer, document: &Document, budget: &mut usize) -> Resul
     }
     Ok(())
 }
+/// Applies ordinary native Smart placement to prepared pixels under the capture workspace allowance.
 fn place(surface: &Surface, bounds: Rect, smart: &SmartObject, budget: &mut usize, ctl: &Interrupt<'_>) -> Result<Surface> {
     if smart.stack_mode.is_some() {
         return Err(invalid("native snapshot stack statistics need bounded native frame preparation; no source substitution is allowed"));
@@ -183,6 +193,8 @@ fn place(surface: &Surface, bounds: Rect, smart: &SmartObject, budget: &mut usiz
     let matrix = photocraft_algo::transform::Homography(smart.perspective.unwrap_or([a, c, e, b, d, f, 0., 0., 1.]));
     coverage::native_projective_warp_full(surface, bounds, &matrix, budget, ctl)
 }
+/// Replays only admitted native Smart Filter parameters through existing native algorithms, preserving native
+/// envelope rules.
 fn replay_smart(placed: &Surface, smart: &SmartObject, document: &Document, budget: &mut usize, ctl: &Interrupt<'_>) -> Result<Surface> {
     if !smart.filters_enabled || !smart.smart_filters.iter().any(|f| f.visible) {
         return Ok(placed.clone());
@@ -221,6 +233,7 @@ fn replay_smart(placed: &Surface, smart: &SmartObject, document: &Document, budg
     }
     Ok(current)
 }
+/// Mixes the complete native filter result with its base using ordinary mask density and coverage semantics.
 fn filter_mask(base: &Surface, filtered: &Surface, mask: &LayerMask, budget: &mut usize, ctl: &Interrupt<'_>) -> Result<Surface> {
     let area = base.content_bounds().union(&filtered.content_bounds());
     let fmt = base.format();
@@ -255,6 +268,7 @@ fn filter_mask(base: &Surface, filtered: &Surface, mask: &LayerMask, budget: &mu
     }
     Ok(output)
 }
+/// Rejects nonfinite prepared samples before they can become stored native channels or masks.
 fn finite(surface: &Surface, bounds: Rect, ctl: &Interrupt<'_>) -> Result<()> {
     for y in bounds.y0..bounds.y1 {
         check(ctl)?;
@@ -318,6 +332,7 @@ fn project_source(surface: &Surface, source: &Document, target: PixelFormat, bud
     finite(&current, bounds, ctl)?;
     Ok(current)
 }
+/// Projects prepared pixels into the target Gray format through the supplied native CMS transform.
 fn cms_gray(source: &Surface, target: PixelFormat, transform: &photocraft_cms::Transform, bounds: Rect, ctl: &Interrupt<'_>) -> Result<Surface> {
     let mut output = Surface::new(target);
     let from = source.format();
@@ -372,6 +387,7 @@ mod tests {
     use photocraft_doc::{Affine, Fill, Path, ShapeLayer, SmartFilter, Subpath};
     use photocraft_geom::Size;
     use std::sync::Arc;
+    /// Builds a small native raster document at the requested mode and depth for snapshot comparisons.
     fn raster(mode: ColorMode, depth: SampleType) -> Document {
         let mut doc = Document::new("Native snapshot input", Size::new(3, 2), mode, depth);
         let mut layer = Layer::raster("Native actual pixels", doc.pixel_format());
@@ -380,14 +396,19 @@ mod tests {
         doc.layers.push(layer);
         doc
     }
+    /// Serializes a native fixture document so capture tests exercise the real embedded-data boundary.
     fn bytes(doc: &Document) -> Vec<u8> {
         photocraft_format::save_to_bytes(doc, &Default::default()).unwrap()
     }
+    /// Compares complete native surface regions with bounded diagnostics instead of relying on cache
+    /// identity.
     fn assert_pixels(a: &Surface, b: &Surface, bounds: Rect) {
         assert_eq!(a.format(), b.format());
         assert_eq!(a.read_region(bounds), b.read_region(bounds));
     }
     #[test]
+    /// Compares captured Smart strength and mask behavior with independent native output, including alpha
+    /// preservation.
     fn snapshot_replays_native_smart_strength_and_filter_mask_without_doubling_alpha() {
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
             for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
@@ -438,6 +459,7 @@ mod tests {
         }
     }
     #[test]
+    /// Checks capture uses native projection, depth and profile rules while preserving prepared geometry.
     fn snapshot_uses_native_projection_depth_profile_and_retains_prepared_geometry() {
         let source = raster(ColorMode::Rgb, SampleType::U8);
         let mut doc = source.clone();
@@ -491,6 +513,8 @@ mod tests {
         assert_eq!(shape.layers[0].name, "Native vector");
     }
     #[test]
+    /// Verifies capture never follows external locators and failed admission leaves the caller's budget
+    /// unchanged.
     fn snapshot_never_resolves_external_locators_and_failure_budget_is_atomic() {
         let source = raster(ColorMode::Rgb, SampleType::F32);
         let original = bytes(&source);
@@ -524,6 +548,7 @@ mod tests {
         assert_eq!(bytes(&source), original);
     }
     #[test]
+    /// Checks filter-mask mixing across tiles against native density, HDR and default-coverage behavior.
     fn tiled_filter_mask_matches_native_density_hdr_and_tile_boundary_policy() {
         let bounds = Rect::new(255, 0, 258, 1);
         for alpha in [false, true] {

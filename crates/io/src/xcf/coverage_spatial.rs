@@ -5,6 +5,7 @@ use serde_json::Value;
 
 type Result<T> = std::result::Result<T, String>;
 
+/// Rejects unknown native spatial keys so malformed parameters cannot silently replay command defaults.
 fn fields(p: &Value, allowed: &[&str]) -> Result<()> {
     let object = p.as_object().ok_or("native spatial params must be an object")?;
     if let Some(key) = object.keys().find(|k| !allowed.contains(&k.as_str())) {
@@ -12,14 +13,17 @@ fn fields(p: &Value, allowed: &[&str]) -> Result<()> {
     }
     Ok(())
 }
+/// Reads a finite native spatial scalar within its command domain, using the default only when absent.
 fn number(p: &Value, key: &str, default: f32, min: f64, max: f64) -> Result<f32> {
     let Some(v) = p.get(key) else { return Ok(default) };
     let n = v.as_f64().filter(|n| n.is_finite() && *n >= min && *n <= max).ok_or_else(|| format!("native {key} must be finite in {min}..{max}"))?;
     Ok(n as f32)
 }
+/// Reads an optional native Boolean and rejects present values of another type.
 fn boolean(p: &Value, key: &str, default: bool) -> Result<bool> {
     p.get(key).map_or(Ok(default), |v| v.as_bool().ok_or_else(|| format!("native {key} must be boolean")))
 }
+/// Validates a native text choice against the command's explicit accepted values.
 fn choice<'a>(p: &'a Value, key: &str, default: &'a str, choices: &[&str]) -> Result<&'a str> {
     let s = match p.get(key) {
         None => default,
@@ -27,6 +31,7 @@ fn choice<'a>(p: &'a Value, key: &str, default: &'a str, choices: &[&str]) -> Re
     };
     if choices.contains(&s) { Ok(s) } else { Err(format!("unknown native {key} choice {s}")) }
 }
+/// Reads a bounded native unsigned parameter without accepting fractional or signed alternatives.
 fn unsigned(p: &Value, key: &str, default: u32, min: u32, max: u32) -> Result<u32> {
     match p.get(key) {
         None => Ok(default),
@@ -37,6 +42,8 @@ fn unsigned(p: &Value, key: &str, default: u32, min: u32, max: u32) -> Result<u3
             .ok_or_else(|| format!("native {key} must be an integer in {min}..{max}")),
     }
 }
+/// Decodes a native hexadecimal or numeric paint value, preserving finite HDR color and normalized alpha
+/// constraints.
 fn color(p: &Value, key: &str, default: [f32; 4]) -> Result<[f32; 4]> {
     let Some(v) = p.get(key) else { return Ok(default) };
     if let Some(s) = v.as_str() {
@@ -61,6 +68,7 @@ fn color(p: &Value, key: &str, default: [f32; 4]) -> Result<[f32; 4]> {
     }
     Ok(result)
 }
+/// Decodes an ordinary native Iris Blur pin with separate top-level and nested parameter names.
 fn iris(p: &Value, nested: bool) -> Result<algo::IrisPin> {
     if nested {
         fields(p, &["x", "y", "radiusX", "radiusY", "angle", "roundness", "feather", "blur"])?;
@@ -245,6 +253,8 @@ pub(super) fn filter(command: &str, p: &Value) -> Option<Result<FilterParams>> {
     })())
 }
 
+/// Decodes native Shadows/Highlights controls for the existing tone helper instead of approximating them with
+/// another filter.
 pub(super) fn shadows_highlights(p: &Value) -> Result<algo::tone::ShadowsHighlights> {
     fields(
         p,
@@ -273,6 +283,7 @@ mod tests {
     use photocraft_raster::{Interrupt, Surface};
     use serde_json::json;
 
+    /// Defines independent native command/typed-parameter pairs for the supported spatial coverage adapters.
     fn cases() -> Vec<(&'static str, Value, FilterParams)> {
         vec![
             (
@@ -352,6 +363,8 @@ mod tests {
     }
 
     #[test]
+    /// Compares decoded spatial controls and resulting pixels with independently authored native operators
+    /// across depths.
     fn native_spatial_parameters_and_pixels_match_independent_typed_counterparts() {
         let bounds = Rect::new(-1, 2, 4, 5);
         for (command, p, expected) in cases() {
@@ -377,6 +390,8 @@ mod tests {
     }
 
     #[test]
+    /// Checks native defaults match engine behavior while malformed present values are rejected rather than
+    /// defaulted.
     fn native_defaults_match_engine_and_bad_data_never_becomes_defaults() {
         assert_eq!(
             filter("filter.blur.radialBlur", &json!({})).unwrap().unwrap(),
@@ -414,6 +429,8 @@ mod tests {
     }
 
     #[test]
+    /// Verifies Shadows/Highlights decoding feeds the ordinary native tone operation with the expected
+    /// controls.
     fn shadows_highlights_parameters_use_existing_native_tone_helper() {
         let p = json!({"shadowAmount":65,"shadowTone":35,"shadowRadius":2,"highlightAmount":20,"highlightTone":60,"highlightRadius":1,"color":-15,"midtone":10,"blackClip":0,"whiteClip":0});
         let actual = shadows_highlights(&p).unwrap();

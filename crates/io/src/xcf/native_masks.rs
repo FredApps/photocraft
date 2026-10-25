@@ -7,10 +7,13 @@ use photocraft_doc::LayerMask;
 use photocraft_geom::Rect;
 use photocraft_raster::{Interrupt, Surface};
 
+/// Propagates cancellation before static native channel or mask extraction continues.
 fn check(ctl: &Interrupt<'_>) -> Result<()> {
     ctl.check().map_err(|_| super::IoError::Cancelled)
 }
 
+/// Copies an actual native alpha or composite component into admitted native output, applying normalized
+/// inversion and scale.
 fn extract(
     source: &Surface,
     bounds: Rect,
@@ -104,6 +107,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
+    /// Checks channel selection against independent native color-plane means and alpha values across depths.
     fn components_match_native_color_plane_mean_and_transparency_at_all_depths() {
         let bounds = Rect::new(-2, 3, 2, 5);
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
@@ -149,6 +153,8 @@ mod tests {
     }
 
     #[test]
+    /// Verifies alpha-less data is opaque and HDR composite selection is normalized only after the native
+    /// mean is computed.
     fn missing_alpha_is_opaque_and_hdr_mean_is_normalized_after_native_selection() {
         let bounds = Rect::new(0, 0, 2, 1);
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
@@ -170,6 +176,7 @@ mod tests {
     }
 
     #[test]
+    /// Checks failed admission, invalid samples and cancellation preserve source pixels and resource ledgers.
     fn budget_invalid_data_and_cancellation_leave_original_inputs_and_ledgers_unchanged() {
         let bounds = Rect::new(0, 0, 513, 1);
         let mut source = Surface::new(PixelFormat::new(ColorMode::Rgb, SampleType::F32, true));

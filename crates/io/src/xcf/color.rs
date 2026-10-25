@@ -11,6 +11,8 @@ use photocraft_color::ColorMode;
 
 use super::{Precision, Result, invalid};
 
+/// Combines source sample encoding with assigned primaries into a usable native ICC profile, rejecting
+/// incompatible profiles or inseparable transfer-curve rewrites.
 pub(super) fn profile(mode: ColorMode, precision: Precision, assigned: Option<Vec<u8>>) -> Result<Arc<Vec<u8>>> {
     let expected = if mode == ColorMode::Grayscale { ColorSpace::Gray } else { ColorSpace::Rgb };
     let implicit = assigned.is_none();
@@ -59,6 +61,8 @@ mod tests {
     use super::*;
 
     #[test]
+    /// Checks perceptual encoding codes do not accidentally alter source storage width or native depth
+    /// selection.
     fn perceptual_precision_codes_preserve_storage_width_and_native_depth() {
         use photocraft_color::SampleType;
         for (code, bytes, float, depth) in [
@@ -80,6 +84,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies implicit encodings select canonical native profile bytes rather than resampled equivalents.
     fn implicit_sample_encodings_use_exact_canonical_native_profiles() {
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
             for code in [100, 150, 175, 600, 650, 675] {
@@ -111,6 +116,8 @@ mod tests {
     }
 
     #[test]
+    /// Checks assigned colorants survive source transfer-curve interpretation for both linear and perceptual
+    /// samples.
     fn assigned_primaries_survive_linear_and_perceptual_encoding() {
         for source in [Builtin::DisplayP3, Builtin::AdobeRgbCompat, Builtin::ProPhotoCompat] {
             for (code, expected) in [(600, Curve::Identity), (675, photocraft_cms::curve::srgb_trc())] {
@@ -130,6 +137,8 @@ mod tests {
     }
 
     #[test]
+    /// Verifies nonlinear assigned profiles keep their bytes while unassigned source color meaning becomes
+    /// explicit native metadata.
     fn nonlinear_preserves_assigned_bytes_and_implicit_profiles_are_explicit() {
         let original = Builtin::AdobeRgbCompat.profile().to_bytes();
         assert_eq!(profile(ColorMode::Rgb, Precision::GAMMA8, Some(original.as_ref().clone())).unwrap(), original);
@@ -145,6 +154,7 @@ mod tests {
     }
 
     #[test]
+    /// Checks Gray transfer interpretation preserves its independently assigned white point.
     fn gray_assigned_curve_and_white_point_are_interpreted_separately() {
         let original = Profile::parse(&Builtin::GrayGamma22.profile().to_bytes()).unwrap();
         for (code, expected) in [(650, 0.5f64.powf(2.2)), (600, 0.5), (675, 0.21404114)] {
@@ -156,6 +166,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies invalid or wrong-model ICC data is rejected rather than relabeled as a usable native profile.
     fn invalid_and_mismatched_assigned_profiles_fail_without_relabeling() {
         assert!(profile(ColorMode::Rgb, Precision::GAMMA8, Some(vec![1, 2, 3])).unwrap_err().to_string().contains("assigned ICC"));
         for (mode, source) in [(ColorMode::Rgb, Builtin::SGray), (ColorMode::Grayscale, Builtin::DisplayP3)] {
@@ -175,6 +186,8 @@ mod tests {
     }
 
     #[test]
+    /// Checks cached native CMS validation preserves valid profile meaning and still rejects later invalid
+    /// inputs.
     fn repeated_profile_validation_preserves_profiles_and_rejects_invalid_inputs_after_cache_warmup() {
         let original = Builtin::DisplayP3.profile().to_bytes();
         for code in [600, 650, 675] {
@@ -203,6 +216,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies signed/HDR samples and assigned colorants remain native data through import and save/reopen.
     fn import_preserves_hdr_samples_with_assigned_colorants_and_native_persistence() {
         use crate::xcf::tests::{TestImage, TestLayer};
         use photocraft_doc::LayerContent;

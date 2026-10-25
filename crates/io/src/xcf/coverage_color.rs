@@ -7,21 +7,25 @@ type Result<T> = std::result::Result<T, String>;
 const RANGES: [&str; 6] = ["reds", "yellows", "greens", "cyans", "blues", "magentas"];
 const BW_DEFAULTS: [f32; 6] = [40., 60., 40., 60., 20., 80.];
 
+/// Treat absent and null native parameters alike, matching the ordinary native adjustment defaults.
 fn field<'a>(p: &'a Value, key: &str) -> Option<&'a Value> {
     p.get(key).filter(|v| !v.is_null())
 }
+/// Decode a finite native parameter and apply the native field bounds; wrong types and nonfinite values fail.
 fn number(p: &Value, key: &str, default: f32, lo: f32, hi: f32) -> Result<f32> {
     match field(p, key) {
         None => Ok(default.clamp(lo, hi)),
         Some(v) => v.as_f64().filter(|v| v.is_finite()).map(|v| (v as f32).clamp(lo, hi)).ok_or_else(|| format!("Native {key} must be a finite number")),
     }
 }
+/// Read a native boolean with its default while rejecting supplied values of other types.
 fn boolean(p: &Value, key: &str, default: bool) -> Result<bool> {
     match field(p, key) {
         None => Ok(default),
         Some(v) => v.as_bool().ok_or_else(|| format!("Native {key} must be boolean")),
     }
 }
+/// Require exactly the declared number of finite native coefficients and apply the adapter magnitude bound.
 fn array<const N: usize>(v: &Value, key: &str) -> Result<[f32; N]> {
     let input = v.as_array().filter(|a| a.len() == N).ok_or_else(|| format!("Native {key} needs exactly {N} numbers"))?;
     let mut output = [0.; N];
@@ -30,6 +34,7 @@ fn array<const N: usize>(v: &Value, key: &str) -> Result<[f32; N]> {
     }
     Ok(output)
 }
+/// Accept native hexadecimal or numeric RGB paint parameters, validating their shape and applying native color-component bounds.
 fn color(p: &Value, key: &str, default: [f32; 3]) -> Result<[f32; 3]> {
     let Some(v) = field(p, key) else { return Ok(default) };
     if let Some(text) = v.as_str() {
@@ -144,9 +149,11 @@ mod tests {
     use photocraft_geom::Rect;
     use serde_json::json;
 
+    /// Require a successful owned color-adjustment adapter when constructing the unit-test subject.
     fn decode(id: &str, params: Value) -> Adjustment {
         adjustment(id, &params).unwrap().unwrap()
     }
+    /// Compare all five color adapters with independently authored native adjustment data and rendered output at each depth.
     #[test]
     fn five_native_color_adapters_match_independently_authored_native_adjustments_at_all_depths() {
         let mut ranges = HueRange::defaults();
@@ -195,6 +202,7 @@ mod tests {
             }
         }
     }
+    /// Check null/default handling and bounded native colorize fields match the ordinary native parameter policy.
     #[test]
     fn ordinary_defaults_nulls_colorize_and_native_field_clamping_are_preserved() {
         assert_eq!(decode("image.adjustments.blackWhite", json!({})), Adjustment::BlackWhite { weights: BW_DEFAULTS, tint: None });
@@ -213,6 +221,7 @@ mod tests {
         };
         assert_eq!(shadows, [-100., 20., 100.]);
     }
+    /// Reject malformed owned parameters while leaving commands outside this adapter available to their proper owner.
     #[test]
     fn malformed_native_parameters_fail_and_unowned_commands_are_not_claimed() {
         for id in ["blackWhite", "colorBalance", "hueSaturation", "photoFilter", "vibrance"] {

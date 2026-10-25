@@ -15,6 +15,8 @@ pub(super) struct Controls {
     pub metadata_limit: usize,
 }
 
+/// Converts an actual captured native coordinate image into an admitted embedded native Displace map and
+/// ordinary filter parameters.
 pub(super) fn mapping(surface: &Surface, bounds: Rect, controls: Controls, budget: &mut usize, ctl: &Interrupt<'_>) -> Result<NativeMapping> {
     let Controls { coordinates, scale, wrap, metadata_limit } = controls;
     ctl.check().map_err(|_| IoError::Cancelled)?;
@@ -96,6 +98,8 @@ mod tests {
     use super::*;
     use photocraft_color::{ColorMode, PixelFormat, SampleType};
     #[test]
+    /// Checks independently specified map endpoints and zero-displacement axes decode to the expected native
+    /// resource values.
     fn typed_native_embedded_map_endpoints_and_zero_axes() {
         let bounds = Rect::new(-2, -1, 1, 1);
         for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
@@ -137,6 +141,8 @@ mod tests {
         }
     }
     #[test]
+    /// Verifies absolute coordinates become static native resources and failed map admission preserves the
+    /// budget.
     fn positions_are_one_time_native_resources_and_admission_is_atomic() {
         let bounds = Rect::new(-2, -1, 1, 1);
         let mut source = Surface::new(PixelFormat::new(ColorMode::Rgb, SampleType::F32, true));
