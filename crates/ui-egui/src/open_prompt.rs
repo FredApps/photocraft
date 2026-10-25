@@ -79,6 +79,10 @@ pub struct Held {
     /// The Color Settings policy was already applied (a background open added it before it had
     /// to wait); otherwise opening applies it.
     pub policy_applied: bool,
+    /// Private worker-time policy snapshot; never persisted in the document or public result.
+    pub color_settings: Option<photocraft_engine::color_cmds::ColorSettings>,
+    /// Worker-time EXIF preference for a deferred policy-only open.
+    pub ignore_exif_profile_tag: Option<bool>,
 }
 
 /// Whether a file that just finished reading has to wait: one earlier in the queue does.
@@ -366,7 +370,21 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
     if held.damage_pending {
         return Err("damaged PSD cannot be opened before confirmation".into());
     }
-    let Held { mut doc, initial_view, read_only, damage_pending: _, name, path, warnings, bytes, slot, question, policy_applied } = held;
+    let Held {
+        mut doc,
+        initial_view,
+        read_only,
+        damage_pending: _,
+        name,
+        path,
+        warnings,
+        bytes,
+        slot,
+        question,
+        policy_applied,
+        color_settings,
+        ignore_exif_profile_tag,
+    } = held;
     if let Some(view) = &initial_view
         && let Err(error) = view.validate(&doc)
     {
@@ -374,13 +392,23 @@ fn open(app: &mut PhotocraftApp, held: Held, action: Option<&str>) -> Result<Val
         app.open_failed(&name, &error);
         return Err(error);
     }
+    let captured_color = color_settings.map(|settings| {
+        let mut color = photocraft_engine::color_cmds::ColorState::default();
+        color.settings = settings;
+        color
+    });
     let previous_active = app.session.active_index();
-    let index = if question.is_some() || policy_applied {
+    let index = if question.is_some() || policy_applied || captured_color.is_some() {
+        let color = captured_color.as_ref().unwrap_or(&app.session.color);
         if let Some(action) = action
-            && let Err(e) = app.session.color.resolve_open(&mut doc, action)
+            && let Err(e) = color.resolve_open(&mut doc, action)
         {
             app.open_failed(&name, &e.to_string());
             return Err(e.to_string());
+        }
+        if action.is_none() && question.is_none() && !policy_applied {
+            let ignore_exif = ignore_exif_profile_tag.unwrap_or_else(|| app.session.prefs().file_handling.ignore_exif_profile_tag);
+            color.open_policy(&mut doc, ignore_exif);
         }
         if let Err(e) = app.session.prepare_imported_document(&mut doc, &photocraft_engine::jobs::JobCtx::new()) {
             app.open_failed(&name, &e.to_string());

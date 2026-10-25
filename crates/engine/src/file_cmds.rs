@@ -702,7 +702,12 @@ fn save_a_copy(s: &mut Session, p: &Value) -> Result<Value> {
 /// linear) — the working space ACES render pipelines write. Only the io default is
 /// replaced; an embedded or EXIF-declared profile is kept untouched.
 pub(crate) fn tag_exr_colorspace(s: &Session, name: &str, doc: &mut Document) {
-    if !name.to_ascii_lowercase().ends_with(".exr") || !s.prefs.get().file_handling.exr_aces_cg {
+    tag_exr_colorspace_with_policy(s.prefs.get().file_handling.exr_aces_cg, name, doc);
+}
+
+/// Apply a captured EXR preference before worker-side color conversion, preserving declared profiles.
+pub(crate) fn tag_exr_colorspace_with_policy(exr_aces_cg: bool, name: &str, doc: &mut Document) {
+    if !name.to_ascii_lowercase().ends_with(".exr") || !exr_aces_cg {
         return;
     }
     let linear = photocraft_cms::Builtin::LinearSrgb.profile().to_bytes();
@@ -718,7 +723,8 @@ pub fn raw_defaults(s: &Session, warnings: &[String], doc: &mut Document) {
     raw_resolution(s.prefs().raw_defaults.resolution, warnings, doc);
 }
 
-fn raw_resolution(ppi: f64, warnings: &[String], doc: &mut Document) {
+/// Apply a captured raw-resolution preference only to developed raw imports and finite values.
+pub(crate) fn raw_resolution(ppi: f64, warnings: &[String], doc: &mut Document) {
     if ppi.is_finite() && warnings.iter().any(|w| w.contains(photocraft_io::raw::DEVELOPED_NOTE)) {
         doc.resolution_dpi = ppi.clamp(1.0, 10_000.0) as f32;
     }

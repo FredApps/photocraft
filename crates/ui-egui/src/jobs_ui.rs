@@ -227,6 +227,9 @@ pub(crate) fn resume_historical(app: &mut PhotocraftApp, held: &crate::open_prom
         Started::Job(job) => {
             app.jobs.opens.push(OpenTab { job, name: held.name.clone(), path: held.path.clone(), slot: held.slot, order: None });
             app.jobs.focus = Some(job);
+            app.ui.chrome.home = None;
+            app.ui.status = crate::i18n::fmt(tl!("Opening {name}…"), &[("name", &held.name)]);
+            app.ui.status_error = false;
             Ok(json!({"job":job.0,"pending":true}))
         }
     }
@@ -579,7 +582,7 @@ pub(crate) fn finish_open(app: &mut PhotocraftApp, name: &str, path: Option<&str
     }
     let warnings: Vec<String> =
         v.get("warnings").and_then(Value::as_array).map(|a| a.iter().filter_map(|w| w.as_str().map(str::to_string)).collect()).unwrap_or_default();
-    let held = |doc, read_only, initial_view, question, policy_applied| crate::open_prompt::Held {
+    let held = |doc, read_only, initial_view, question, policy_applied, color_settings, ignore_exif_profile_tag| crate::open_prompt::Held {
         doc,
         initial_view,
         read_only,
@@ -591,11 +594,24 @@ pub(crate) fn finish_open(app: &mut PhotocraftApp, name: &str, path: Option<&str
         slot,
         question,
         policy_applied,
+        color_settings,
+        ignore_exif_profile_tag,
     };
     // Held back for the profile prompt (Ask When Opening).
     if let Some(id) = v.get("held").and_then(Value::as_u64) {
-        let (doc, read_only, initial_view) = app.session.take_held_open_with_view(id).ok_or("the open job's document is gone")?;
-        crate::open_prompt::arrive(app, held(doc, read_only, initial_view, v.get("color").filter(|q| !q.is_null()).cloned(), false));
+        let pending = app.session.take_held_open_with_policy(id).ok_or("the open job's document is gone")?;
+        crate::open_prompt::arrive(
+            app,
+            held(
+                pending.document,
+                pending.source_read_only,
+                pending.initial_view,
+                v.get("color").filter(|q| !q.is_null()).cloned(),
+                false,
+                pending.color_settings,
+                pending.ignore_exif_profile_tag,
+            ),
+        );
         return Ok(());
     }
     // poll_jobs applies all ready jobs before the shell handles their events. An earlier
@@ -621,7 +637,7 @@ pub(crate) fn finish_open(app: &mut PhotocraftApp, name: &str, path: Option<&str
             show_layer_mask: st.channel_view.layer_mask.is_some(),
         });
         let doc = Arc::try_unwrap(st.doc).unwrap_or_else(|d| (*d).clone());
-        crate::open_prompt::arrive(app, held(doc, read_only, initial_view, None, true));
+        crate::open_prompt::arrive(app, held(doc, read_only, initial_view, None, true, None, None));
         return Ok(());
     }
     if let Some(slot) = slot {

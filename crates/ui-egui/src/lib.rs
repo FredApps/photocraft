@@ -1687,6 +1687,8 @@ impl PhotocraftApp {
                 slot: None,
                 question,
                 policy_applied: false,
+                color_settings: None,
+                ignore_exif_profile_tag: None,
             },
         );
         Ok(warnings)
@@ -1739,18 +1741,36 @@ impl PhotocraftApp {
             view.validate(&doc).map_err(|e| e.to_string())?;
         }
         self.session.prepare_imported_document(&mut doc, &photocraft_engine::jobs::JobCtx::new()).map_err(|e| e.to_string())?;
-        // The caller records the path it read from.
-        self.session.add_document(doc, None);
-        self.session.apply_import_initial_view(initial_view).map_err(|e| e.to_string())?;
-        if let Some(st) = self.session.active_mut() {
-            st.source_read_only = source_read_only;
-        }
+        self.admit_automation_document(doc, initial_view, source_read_only)?;
         self.sync_views();
         file_open::apply_initial_path(self);
         self.ui.status = crate::i18n::fmt(tl!("Opened {name}"), &[("name", name)]);
         self.ui.status_error = false;
         notices::import_warnings(self, &crate::i18n::fmt(tl!("Opened {name}"), &[("name", name)]), &warnings);
         Ok(warnings)
+    }
+
+    /// Admit prepared automation data with source protection, rolling back only the new tab if view application fails.
+    fn admit_automation_document(
+        &mut self,
+        doc: Document,
+        initial_view: Option<photocraft_io::NativeInitialView>,
+        source_read_only: bool,
+    ) -> Result<(), String> {
+        let previous_active = self.session.active_index();
+        // The caller records the path it read from after this transaction succeeds.
+        let index = self.session.add_document(doc, None);
+        if let Some(state) = self.session.active_mut() {
+            state.source_read_only = source_read_only;
+        }
+        if let Err(error) = self.session.apply_import_initial_view(initial_view) {
+            let _ = self.session.close(index);
+            if let Some(previous) = previous_active {
+                self.session.set_active(previous);
+            }
+            return Err(error.to_string());
+        }
+        Ok(())
     }
 
     /// Save the active document to `path`, or to a path chosen in the save dialog (which

@@ -25,8 +25,111 @@ struct Request {
 }
 
 enum Read {
-    Decoded(Box<photocraft_io::ImportResult>, bool, JobCtx),
-    Choice(Arc<Vec<u8>>, photocraft_io::HistoricalXcfSampleOrderRequest),
+    Decoded(Box<photocraft_io::ImportResult>, Decision, JobCtx),
+    Choice(Arc<Vec<u8>>, photocraft_io::HistoricalXcfSampleOrderRequest, JobCtx),
+}
+
+enum Decision {
+    Held { question: Option<Value>, damaged: bool, color_settings: Box<crate::color_cmds::ColorSettings>, ignore_exif: bool },
+    Prepared { color: Value },
+}
+
+/// Immutable request-time policy inputs; worker preparation never borrows the live session.
+struct WorkerPolicy {
+    color: crate::color_cmds::ColorSettings,
+    ignore_exif: bool,
+    exr_aces_cg: bool,
+    raw_resolution: f64,
+    authorize: Option<fn(&str, &Value) -> Result<()>>,
+}
+
+impl WorkerPolicy {
+    /// Snapshot only settings used by native open policy and preparation authority.
+    fn capture(s: &Session) -> Self {
+        Self {
+            color: s.color.settings.clone(),
+            ignore_exif: s.prefs().file_handling.ignore_exif_profile_tag,
+            exr_aces_cg: s.prefs().file_handling.exr_aces_cg,
+            raw_resolution: s.prefs().raw_defaults.resolution,
+            authorize: s.authorize,
+        }
+    }
+
+    /// Finish color policy and native caches on the execution thread, or retain an unprepared color/damage hold.
+    fn prepare(self, name: &str, mut imported: photocraft_io::ImportResult, damaged: bool, interactive: bool, ctx: &JobCtx) -> Result<Read> {
+        ctx.check()?;
+        crate::file_cmds::tag_exr_colorspace_with_policy(self.exr_aces_cg, name, &mut imported.document);
+        crate::file_cmds::raw_resolution(self.raw_resolution, &imported.warnings, &mut imported.document);
+        if let Some(view) = &imported.initial_view {
+            view.validate(&imported.document).map_err(|error| EngineError::Other(error.to_string()))?;
+        }
+        let mut color = crate::color_cmds::ColorState::default();
+        color.settings = self.color.clone();
+        let raw = imported.warnings.iter().any(|warning| warning.contains(photocraft_io::raw::DEVELOPED_NOTE));
+        let question = color.open_question(&imported.document).filter(|_| !raw);
+        let damaged = interactive && damaged;
+        let decision = if damaged || question.is_some() {
+            // The eventual answer must use the working spaces described by the
+            // captured question, even if live settings change before UI polling.
+            Decision::Held { question, damaged, color_settings: Box::new(self.color), ignore_exif: self.ignore_exif }
+        } else {
+            ctx.progress(0.95, "Preparing layers");
+            let report = color.open_policy(&mut imported.document, self.ignore_exif);
+            ctx.check()?;
+            if crate::type_extra_cmds::has_type_layers(&imported.document) {
+                ctx.progress(0.95, "Loading fonts");
+                let _ = photocraft_text::shared();
+                ctx.check()?;
+            }
+            // The job runner already carries inherited authority. Do not replace
+            // that scope with None when a nested caller has no session-local gate.
+            let _authority = self.authorize.map(|gate| crate::jobs::render_authorization_scope(Some(gate)));
+            crate::import_prepare::prepare_imported_document(&mut imported.document, ctx)?;
+            super::warm_layer_bounds(&imported.document, || ctx.check())?;
+            if let Some(view) = &imported.initial_view {
+                view.validate(&imported.document).map_err(|error| EngineError::Other(error.to_string()))?;
+            }
+            Decision::Prepared { color: report }
+        };
+        ctx.check()?;
+        Ok(Read::Decoded(Box::new(imported), decision, ctx.clone()))
+    }
+}
+
+/// Install already-prepared data with source protection before any fallible view handoff; rollback keeps the old tab active.
+fn install_prepared(
+    s: &mut Session,
+    document: photocraft_doc::Document,
+    path: Option<String>,
+    source_read_only: bool,
+    view: Option<photocraft_io::NativeInitialView>,
+    ctx: &JobCtx,
+) -> Result<(usize, photocraft_doc::DocId)> {
+    ctx.check()?;
+    if let Some(view) = &view {
+        view.validate(&document).map_err(|error| EngineError::Other(error.to_string()))?;
+    }
+    let previous = s.active_index();
+    let index = s.add_document(document, path.clone().filter(|_| !source_read_only));
+    if let Some(state) = s.active_mut() {
+        state.source_read_only = source_read_only;
+        state.protected_import_source = path.filter(|_| source_read_only);
+    }
+    let result = (|| {
+        ctx.check()?;
+        s.apply_import_initial_view(view)?;
+        ctx.check()?;
+        let id = s.documents().get(index).ok_or(EngineError::NoDocument)?.doc.id;
+        Ok((index, id))
+    })();
+    if result.is_err() {
+        let _ = s.close(index);
+        if let Some(previous) = previous {
+            s.set_active(previous);
+        }
+        s.sync_tools_mask_target();
+    }
+    result
 }
 
 /// Start an open request with its source path identity and optional interactive historical sample-order handoff.
@@ -107,6 +210,7 @@ fn run(s: &mut Session, request: Request, background: bool) -> Result<Started> {
     let name_w = name.clone();
     let mut options = super::import_options(s.prefs());
     options.historical_xcf_sample_order = order;
+    let policy = WorkerPolicy::capture(s);
     let work = move |ctx: &JobCtx| {
         ctx.progress(0., "Reading");
         let bytes = match source {
@@ -117,22 +221,19 @@ fn run(s: &mut Session, request: Request, background: bool) -> Result<Started> {
         ctx.progress(0.02, "Decoding");
         let imported = match ctx.stage(0.02, 0.95, "Decoding", |ctl| photocraft_io::import_for_open_with(&name_w, &bytes, &options, ctl)) {
             Ok(result) => result,
-            Err(photocraft_io::IoError::HistoricalXcfSampleOrderRequired(question)) if interactive => return Ok(Read::Choice(bytes, question)),
+            Err(photocraft_io::IoError::HistoricalXcfSampleOrderRequired(question)) if interactive => {
+                ctx.check()?;
+                return Ok(Read::Choice(bytes, question, ctx.clone()));
+            }
             Err(photocraft_io::IoError::Cancelled) => return Err(EngineError::Cancelled),
             Err(error) => return Err(EngineError::Other(error.to_string())),
         };
-        ctx.progress(0.95, "Preparing layers");
-        super::warm_layer_bounds(&imported.0.document, || ctx.check())?;
-        if crate::type_extra_cmds::has_type_layers(&imported.0.document) {
-            ctx.progress(0.97, "Loading fonts");
-            let _ = photocraft_text::shared();
-            ctx.check()?;
-        }
-        Ok(Read::Decoded(Box::new(imported.0), imported.1, ctx.clone()))
+        policy.prepare(&name_w, imported.0, imported.1, interactive, ctx)
     };
     let apply = move |s: &mut Session, result: Read| {
-        let Read::Decoded(imported, damaged, ctx) = result else {
-            let Read::Choice(bytes, question) = result else { return Err(EngineError::Other("invalid historical open result".into())) };
+        let Read::Decoded(imported, decision, ctx) = result else {
+            let Read::Choice(bytes, question, ctx) = result else { return Err(EngineError::Other("invalid historical open result".into())) };
+            ctx.check()?;
             let retained = s
                 .jobs
                 .historical_xcf
@@ -145,13 +246,16 @@ fn run(s: &mut Session, request: Request, background: bool) -> Result<Started> {
             let id = s.jobs.next_historical_xcf.checked_add(1).ok_or_else(|| EngineError::Other("historical source identity limit reached".into()))?;
             s.jobs.next_historical_xcf = id;
             s.jobs.historical_xcf.push(Held { id, name: name.clone(), path, bytes });
+            if let Err(error) = ctx.check() {
+                s.jobs.historical_xcf.retain(|pending| pending.id != id);
+                return Err(error);
+            }
             return Ok(
                 json!({"heldHistoricalXcfOpen":id,"name":name,"historicalXcfSampleOrderRequired":{"version":question.version,"bitsPerSample":question.bits_per_sample}}),
             );
         };
+        ctx.check()?;
         let mut imported = *imported;
-        crate::file_cmds::tag_exr_colorspace(s, &name, &mut imported.document);
-        crate::file_cmds::raw_defaults(s, &imported.warnings, &mut imported.document);
         let path = match crate::file_cmds::template_name(s, &name) {
             Some(untitled) => {
                 imported.document.name = untitled;
@@ -162,24 +266,17 @@ fn run(s: &mut Session, request: Request, background: bool) -> Result<Started> {
                 path
             }
         };
-        if let Some(view) = &imported.initial_view {
-            view.validate(&imported.document).map_err(|error| EngineError::Other(error.to_string()))?;
-        }
-        let raw = imported.warnings.iter().any(|warning| warning.contains(photocraft_io::raw::DEVELOPED_NOTE));
-        let damaged = interactive && damaged;
-        let question = s.color.open_question(&imported.document).filter(|_| !raw);
-        let value = if damaged || question.is_some() {
+        let value = if let Decision::Held { question, damaged, color_settings, ignore_exif } = decision {
             let conversion = crate::import_report_cmds::summary(imported.document.metadata.import_conversion.as_ref());
-            let held = s.hold_open(imported.document, imported.source_read_only, imported.initial_view);
+            let held = s.hold_open_with_policy(imported.document, imported.source_read_only, imported.initial_view, Some(*color_settings), Some(ignore_exif));
+            if let Err(error) = ctx.check() {
+                let _ = s.take_held_open_with_view(held);
+                return Err(error);
+            }
             json!({"held":held,"name":name,"warnings":imported.warnings,"color":question,"damaged":damaged,"importConversion":conversion})
         } else {
-            let (index, color) = s.open_imported_document(imported.document, path.clone().filter(|_| !imported.source_read_only), &ctx)?;
-            s.apply_import_initial_view(imported.initial_view)?;
-            let id = s.documents().get(index).ok_or(EngineError::NoDocument)?.doc.id;
-            if let Some(state) = s.active_mut() {
-                state.source_read_only = imported.source_read_only;
-                state.protected_import_source = path.filter(|_| imported.source_read_only);
-            }
+            let Decision::Prepared { color } = decision else { return Err(EngineError::Other("invalid prepared open decision".into())) };
+            let (index, id) = install_prepared(s, imported.document, path, imported.source_read_only, imported.initial_view, &ctx)?;
             let conversion = s.active().map(|state| crate::import_report_cmds::summary(state.doc.metadata.import_conversion.as_ref())).unwrap_or(Value::Null);
             json!({"document":index,"docId":id.0,"name":name,"warnings":imported.warnings,"color":color,"importConversion":conversion})
         };
@@ -198,6 +295,249 @@ fn run(s: &mut Session, request: Request, background: bool) -> Result<Started> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Author an embedded native Smart Filter whose absent cache requires real preparation.
+    fn native_source() -> Arc<Vec<u8>> {
+        use photocraft_color::{BlendMode, ColorMode, SampleType};
+        use photocraft_doc::{Document, Layer, LayerContent, SmartFilter, SmartObject, SmartSource};
+        use photocraft_geom::{Affine, Size};
+        let mut inner = Document::new("Independent native input", Size::new(2, 1), ColorMode::Rgb, SampleType::U8);
+        let mut pixels = photocraft_raster::Surface::new(inner.pixel_format());
+        pixels.fill_rect(inner.bounds(), &[1., 0., 0., 1.]);
+        inner.layers.push(Layer::new("Original pixels", LayerContent::Raster(pixels)));
+        let bytes = photocraft_format::save_to_bytes(&inner, &Default::default()).unwrap();
+        let mut smart = SmartObject::new(SmartSource::Embedded { file_name: "input.pcraft".into(), bytes: Arc::new(bytes) }, Affine::IDENTITY, None);
+        smart.smart_filters.push(SmartFilter {
+            command: "image.adjustments.invert".into(),
+            params: json!({}),
+            blend: BlendMode::Normal,
+            opacity: 1.,
+            visible: true,
+        });
+        let mut outer = Document::new("Native import", Size::new(2, 1), ColorMode::Rgb, SampleType::U8);
+        outer.layers.push(Layer::new("Editable invert", LayerContent::Smart(smart)));
+        Arc::new(photocraft_format::save_to_bytes(&outer, &Default::default()).unwrap())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct PreparationGate {
+        entered: std::sync::mpsc::SyncSender<()>,
+        resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct PreparationProbe {
+        threads: Vec<std::thread::ThreadId>,
+        gate: Option<Arc<PreparationGate>>,
+        deny: bool,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    static PREPARATION_PROBE: std::sync::Mutex<PreparationProbe> = std::sync::Mutex::new(PreparationProbe { threads: Vec::new(), gate: None, deny: false });
+    #[cfg(not(target_arch = "wasm32"))]
+    static PREPARATION_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Observe actual stored-filter authorization and optionally pause or deny native preparation.
+    fn observe_preparation(id: &str, _: &Value) -> Result<()> {
+        if id != "image.adjustments.invert" {
+            return Ok(());
+        }
+        let (gate, deny) = {
+            let mut probe = PREPARATION_PROBE.lock().unwrap();
+            probe.threads.push(std::thread::current().id());
+            (probe.gate.take(), probe.deny)
+        };
+        if let Some(gate) = gate {
+            gate.entered.send(()).map_err(|error| EngineError::Other(format!("preparation probe signal: {error}")))?;
+            gate.resume
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .map_err(|error| EngineError::Other(format!("preparation probe resume: {error}")))?;
+        }
+        if deny { Err(EngineError::Other("test denied native filter preparation".into())) } else { Ok(()) }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Require real native filter preparation on the worker, with captured color settings and no repeated UI-thread render.
+    fn background_open_prepares_on_worker_and_installs_without_replaying_policy_or_filters() {
+        let _serial = PREPARATION_TEST.lock().unwrap();
+        *PREPARATION_PROBE.lock().unwrap() = PreparationProbe { threads: Vec::new(), gate: None, deny: false };
+        let main = std::thread::current().id();
+        let mut s = Session::new();
+        s.color.settings.ask_on_missing = false;
+        s.authorize = Some(observe_preparation);
+        let Started::Job(id) = interactive(&mut s, "native.pcraft", OpenSource::Bytes(native_source()), Some("native.pcraft".into()), true).unwrap() else {
+            panic!("native worker expected")
+        };
+        // A later UI settings change must not turn the already-started request into a hold.
+        s.color.settings.ask_on_missing = true;
+        let value = s.wait_job(id).unwrap();
+        assert!(value.get("document").is_some());
+        assert!(value.get("held").is_none());
+        let probe = PREPARATION_PROBE.lock().unwrap();
+        assert!(!probe.threads.is_empty(), "fixture must execute real stored native filter preparation");
+        assert!(probe.threads.iter().all(|thread| *thread != main), "polling installation must not replay native filters");
+        let state = s.active().unwrap();
+        let photocraft_doc::LayerContent::Smart(smart) = &state.doc.layers[0].content else { panic!("editable native Smart layer") };
+        let cache = smart.cache.as_ref().expect("worker-prepared cache");
+        assert_eq!(cache.pixel(0, 0), vec![0., 1., 1., 1.]);
+        assert_eq!(state.path.as_deref(), Some("native.pcraft"));
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Cancel while the worker is inside native authorization and prove no partially prepared document is installed.
+    fn cancellation_during_worker_preparation_preserves_existing_document() {
+        let _serial = PREPARATION_TEST.lock().unwrap();
+        let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
+        let gate = Arc::new(PreparationGate { entered, resume: std::sync::Mutex::new(resume_rx) });
+        *PREPARATION_PROBE.lock().unwrap() = PreparationProbe { threads: Vec::new(), gate: Some(gate.clone()), deny: false };
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":3,"height":2})).unwrap();
+        let original = s.active().unwrap().doc.clone();
+        s.color.settings.ask_on_missing = false;
+        s.authorize = Some(observe_preparation);
+        let Started::Job(id) = interactive(&mut s, "cancel.pcraft", OpenSource::Bytes(native_source()), None, true).unwrap() else {
+            panic!("native worker expected")
+        };
+        entered_rx.recv_timeout(std::time::Duration::from_secs(10)).expect("worker must reach real native filter preparation");
+        assert!(s.cancel_job(id));
+        resume.send(()).unwrap();
+        s.join_cancelled_jobs();
+        let _ = s.poll_jobs();
+        assert_eq!(s.documents().len(), 1);
+        assert!(Arc::ptr_eq(&original, &s.active().unwrap().doc));
+        assert!(s.jobs.historical_xcf.is_empty());
+        assert!(s.held_opens.is_empty());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Preserve inherited render authorization on the worker and reject a denied filter before installation.
+    fn worker_preparation_keeps_inherited_authority_and_failure_is_not_installed() {
+        let _serial = PREPARATION_TEST.lock().unwrap();
+        *PREPARATION_PROBE.lock().unwrap() = PreparationProbe { threads: Vec::new(), gate: None, deny: true };
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":3,"height":2})).unwrap();
+        let original = s.active().unwrap().doc.clone();
+        s.color.settings.ask_on_missing = false;
+        let _authority = crate::jobs::render_authorization_scope(Some(observe_preparation));
+        let Started::Job(id) = interactive(&mut s, "denied.pcraft", OpenSource::Bytes(native_source()), None, true).unwrap() else {
+            panic!("native worker expected")
+        };
+        assert!(s.wait_job(id).is_err());
+        assert!(!PREPARATION_PROBE.lock().unwrap().threads.is_empty(), "inherited authorization cannot be erased by a missing session-local gate");
+        assert_eq!(s.documents().len(), 1);
+        assert!(Arc::ptr_eq(&original, &s.active().unwrap().doc));
+        assert!(s.held_opens.is_empty());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Bind a worker's P3 prompt to its captured policy when live settings change before the held import is installed.
+    fn background_color_hold_retains_request_policy_before_prompt_installation() {
+        let mut s = Session::new();
+        s.color.settings.working_rgb = photocraft_cms::Builtin::DisplayP3.id().into();
+        s.color.settings.ask_on_missing = true;
+        s.edit_prefs(|prefs| prefs.file_handling.ignore_exif_profile_tag = false);
+        let captured = s.color.settings.clone();
+        let Started::Job(id) = interactive(&mut s, "profile.pcraft", OpenSource::Bytes(native_source()), None, true).unwrap() else {
+            panic!("native worker expected")
+        };
+        s.color.settings.working_rgb = photocraft_cms::Builtin::AdobeRgbCompat.id().into();
+        s.edit_prefs(|prefs| prefs.file_handling.ignore_exif_profile_tag = true);
+        let live = s.color.settings.clone();
+        let value = s.wait_job(id).unwrap();
+        let held = value["held"].as_u64().expect("captured missing-profile question");
+        assert_eq!(value["color"]["working"].as_str(), Some(photocraft_cms::Builtin::DisplayP3.profile().description.as_str()));
+        assert!(s.documents().is_empty());
+        let pending = s.take_held_open_with_policy(held).unwrap();
+        assert_eq!(pending.color_settings.as_ref(), Some(&captured));
+        assert_eq!(pending.ignore_exif_profile_tag, Some(false));
+        assert_eq!(s.color.settings, live);
+        assert!(s.prefs().file_handling.ignore_exif_profile_tag);
+        let photocraft_doc::LayerContent::Smart(smart) = &pending.document.layers[0].content else { panic!("editable pending native Smart layer") };
+        assert!(smart.cache.is_none(), "hold remains unprepared until its captured color question is answered");
+        assert!(s.take_held_open_with_policy(held).is_none());
+    }
+
+    #[test]
+    /// Keep pending color/damage choices unprepared and preserve captured raw and EXR policy inputs.
+    fn worker_policy_preserves_holds_defaults_and_native_color_policy_parity() {
+        let make = || photocraft_io::import("native.pcraft", &native_source()).unwrap();
+        let mut s = Session::new();
+        s.color.settings.ask_on_missing = true;
+        let Read::Decoded(imported, Decision::Held { question: Some(_), damaged: false, .. }, _) =
+            WorkerPolicy::capture(&s).prepare("native.pcraft", make(), false, true, &JobCtx::new()).unwrap()
+        else {
+            panic!("color hold expected")
+        };
+        let photocraft_doc::LayerContent::Smart(smart) = &imported.document.layers[0].content else { panic!("native Smart") };
+        assert!(smart.cache.is_none(), "pending color choice must precede native preparation");
+        s.color.settings.ask_on_missing = false;
+        let Read::Decoded(_, Decision::Held { question: None, damaged: true, .. }, _) =
+            WorkerPolicy::capture(&s).prepare("native.pcraft", make(), true, true, &JobCtx::new()).unwrap()
+        else {
+            panic!("damage hold expected")
+        };
+        let mut raw = make();
+        raw.warnings.push(photocraft_io::raw::DEVELOPED_NOTE.into());
+        let mut policy = WorkerPolicy::capture(&s);
+        policy.raw_resolution = 123.;
+        let Read::Decoded(imported, Decision::Prepared { color }, _) = policy.prepare("native.pcraft", raw, false, false, &JobCtx::new()).unwrap() else {
+            panic!("prepared raw expected")
+        };
+        assert_eq!(imported.document.resolution_dpi, 123.);
+        let mut expected = make().document;
+        let expected_color = s.color.open_policy(&mut expected, s.prefs().file_handling.ignore_exif_profile_tag);
+        assert_eq!(color, expected_color);
+        assert_eq!(imported.document.icc_profile, expected.icc_profile);
+        let mut exr = make();
+        exr.document.icc_profile = Some(photocraft_cms::Builtin::LinearSrgb.profile().to_bytes());
+        s.color.settings.ask_on_mismatch = false;
+        let mut policy = WorkerPolicy::capture(&s);
+        policy.exr_aces_cg = true;
+        let Read::Decoded(imported, Decision::Prepared { .. }, _) = policy.prepare("source.exr", exr, false, false, &JobCtx::new()).unwrap() else {
+            panic!("prepared EXR expected")
+        };
+        assert_eq!(imported.document.icc_profile, Some(photocraft_cms::Builtin::AcesCg.profile().to_bytes()));
+        for policy in [crate::color_cmds::Policy::Preserve, crate::color_cmds::Policy::Convert, crate::color_cmds::Policy::Off] {
+            s.color.settings.policy_rgb = policy;
+            let mut input = make();
+            input.document.icc_profile = Some(photocraft_cms::Builtin::LinearSrgb.profile().to_bytes());
+            let mut expected = input.document.clone();
+            let expected_color = s.color.open_policy(&mut expected, s.prefs().file_handling.ignore_exif_profile_tag);
+            let Read::Decoded(imported, Decision::Prepared { color }, _) =
+                WorkerPolicy::capture(&s).prepare("native.pcraft", input, false, false, &JobCtx::new()).unwrap()
+            else {
+                panic!("prepared policy expected")
+            };
+            assert_eq!(color, expected_color);
+            assert_eq!(imported.document.icc_profile, expected.icc_profile);
+        }
+    }
+
+    #[test]
+    /// Reject invalid initial view state or cancellation without replacing the active document or losing protection state.
+    fn prepared_install_rejects_invalid_view_and_cancel_before_publication() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":2,"height":2})).unwrap();
+        let original = s.active().unwrap().doc.clone();
+        let imported = photocraft_io::import("native.pcraft", &native_source()).unwrap();
+        let view = photocraft_io::NativeInitialView { target: photocraft_io::NativeImportTarget::AlphaChannel(99), ..Default::default() };
+        assert!(install_prepared(&mut s, imported.document.clone(), Some("protected.xcf".into()), true, Some(view), &JobCtx::new()).is_err());
+        let ctx = JobCtx::new();
+        ctx.cancel();
+        assert!(matches!(install_prepared(&mut s, imported.document, Some("protected.xcf".into()), true, None, &ctx), Err(EngineError::Cancelled)));
+        assert_eq!(s.documents().len(), 1);
+        assert!(Arc::ptr_eq(&original, &s.active().unwrap().doc));
+        assert!(!s.active().unwrap().source_read_only);
+        assert!(s.active().unwrap().protected_import_source.is_none());
+    }
 
     /// Author a minimal v7 high-depth header whose sample order requires a choice without relying on a private corpus.
     fn source() -> Arc<Vec<u8>> {
