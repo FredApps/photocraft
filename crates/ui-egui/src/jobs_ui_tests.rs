@@ -16,6 +16,15 @@ fn native_and_automation_saves_protect_sources_then_save_as_becomes_writable() {
     use std::cell::RefCell;
     use std::rc::Rc;
     for automation in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.xcf");
+        let alias = directory.path().join("alias.pcraft");
+        let converted = directory.path().join("converted.pcraft");
+        std::fs::write(&source, b"protected original").unwrap();
+        std::fs::hard_link(&source, &alias).unwrap();
+        let source = source.to_string_lossy().into_owned();
+        let alias = alias.to_string_lossy().into_owned();
+        let converted = converted.to_string_lossy().into_owned();
         let writes = Rc::new(RefCell::new(Vec::new()));
         let native_writes = writes.clone();
         let scoped_writes = writes.clone();
@@ -29,31 +38,31 @@ fn native_and_automation_saves_protect_sources_then_save_as_becomes_writable() {
                 scoped_writes.borrow_mut().push(path.to_string());
                 Ok(())
             })),
-            same_file: Some(Box::new(|source, target| source == "source.xcf" && matches!(target, "source.xcf" | "alias.pcraft"))),
-            automation_same_file: Some(Box::new(|source, target| Ok(source == "source.xcf" && matches!(target, "source.xcf" | "alias.pcraft")))),
+            same_file: Some(Box::new(|source, target| source == target)),
+            automation_same_file: Some(Box::new(|source, target| Ok(photocraft_engine::file_cmds::same_file(source, target)))),
             ..Default::default()
         };
         let mut session = photocraft_engine::Session::new();
         session.execute("file.new", serde_json::json!({"width": 2, "height": 2})).unwrap();
         let state = session.active_mut().unwrap();
         state.source_read_only = true;
-        state.protected_import_source = Some("source.xcf".into());
+        state.protected_import_source = Some(source.clone());
         let mut app = crate::PhotocraftApp::new(session, services);
-        for target in ["source.xcf", "alias.pcraft"] {
-            let result = if automation { app.save_automation(Some(target.into())) } else { app.save_as(Some(target.into())) };
+        for target in [source.clone(), alias] {
+            let result = if automation { app.save_automation(Some(target)) } else { app.save_as(Some(target)) };
             assert!(result.is_err(), "source and alias must be refused before any writer");
         }
         assert!(writes.borrow().is_empty());
         if automation {
-            app.save_automation(Some("converted.pcraft".into())).unwrap();
+            app.save_automation(Some(converted.clone())).unwrap();
         } else {
-            app.save_as(Some("converted.pcraft".into())).unwrap();
+            app.save_as(Some(converted.clone())).unwrap();
         }
         let state = app.session.active().unwrap();
         assert!(!state.source_read_only);
-        assert_eq!(state.path.as_deref(), Some("converted.pcraft"));
-        assert_eq!(state.protected_import_source.as_deref(), Some("source.xcf"));
-        assert_eq!(*writes.borrow(), ["converted.pcraft"]);
+        assert_eq!(state.path.as_deref(), Some(converted.as_str()));
+        assert_eq!(state.protected_import_source.as_deref(), Some(source.as_str()));
+        assert_eq!(*writes.borrow(), [converted]);
     }
 }
 

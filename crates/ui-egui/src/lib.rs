@@ -2249,10 +2249,9 @@ impl PhotocraftApp {
                 None => source == destination, // Custom byte stores may have no filesystem aliases.
             }
         } else {
-            self.services
-                .same_file
-                .as_ref()
-                .map_or_else(|| photocraft_engine::file_cmds::same_file(source, destination), |compare| compare(source, destination))
+            // Replace prompts compare directory entries; source protection must
+            // instead follow symlinks and recognize every alias of the file.
+            photocraft_engine::file_cmds::same_file(source, destination)
         };
         if same { Err("the destination is the import-only source; choose a different native or export path".into()) } else { Ok(()) }
     }

@@ -118,9 +118,14 @@ fn save_copy_and_export_keep_the_editable_document_identity() {
 /// Resolve protection against the copied document's identity after a tab switch, refusing aliases before the delayed
 /// writer runs.
 fn delayed_save_copy_checks_the_copied_documents_source_after_switching_tabs() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source.xcf");
+    let alias = directory.path().join("alias.pcraft");
+    std::fs::write(&source, b"protected original").unwrap();
+    std::fs::hard_link(&source, &alias).unwrap();
     let mut app = app();
-    app.services.same_file = Some(Box::new(|a, b| a == b || (a == "source.xcf" && b == "alias.pcraft")));
-    app.session.active_mut().unwrap().protected_import_source = Some("source.xcf".into());
+    app.services.same_file = Some(Box::new(|a, b| a == b));
+    app.session.active_mut().unwrap().protected_import_source = Some(source.to_string_lossy().into_owned());
     let copied = app.session.active().unwrap().doc.clone();
     app.run("file.new", json!({"width": 2, "height": 2})).unwrap();
     let active = app.active_doc_id().unwrap();
@@ -130,12 +135,56 @@ fn delayed_save_copy_checks_the_copied_documents_source_after_switching_tabs() {
         w.borrow_mut().push(path.to_owned());
         Ok(())
     }));
-    assert!(crate::view_cmds::write_copy(&mut app, &copied, "alias.pcraft", Default::default()).is_err());
+    assert!(crate::view_cmds::write_copy(&mut app, &copied, alias.to_str().unwrap(), Default::default()).is_err());
     assert!(written.borrow().is_empty(), "no source alias may reach the writer");
     assert_eq!(app.active_doc_id().unwrap(), active);
     crate::view_cmds::write_copy(&mut app, &copied, "converted.pcraft", Default::default()).unwrap();
     assert_eq!(*written.borrow(), ["converted.pcraft"]);
     assert_eq!(app.active_doc_id().unwrap(), active);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+/// Follow a symbolic link for source protection even when the replace-prompt hook treats it as a different entry.
+fn symbolic_link_to_import_source_is_refused_before_the_native_writer() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source.xcf");
+    let alias = directory.path().join("alias.pcraft");
+    let original = b"original import-only bytes";
+    std::fs::write(&source, original).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&source, &alias).unwrap();
+    #[cfg(windows)]
+    if let Err(error) = std::os::windows::fs::symlink_file(&source, &alias) {
+        if error.raw_os_error() == Some(1314) {
+            eprintln!("SKIP symbolic-link creation: Windows requires symlink privilege or Developer Mode");
+            return;
+        }
+        panic!("cannot create symbolic-link fixture: {error}");
+    }
+    let mut app = app();
+    let comparisons = Rc::new(std::cell::Cell::new(0));
+    let seen = comparisons.clone();
+    app.services.same_file = Some(Box::new(move |_, _| {
+        seen.set(seen.get() + 1);
+        false
+    }));
+    app.session.active_mut().unwrap().source_read_only = true;
+    app.session.active_mut().unwrap().protected_import_source = Some(source.to_string_lossy().into_owned());
+    let writes = Rc::new(std::cell::Cell::new(0));
+    let written = writes.clone();
+    app.services.write = Some(Box::new(move |_, _| {
+        written.set(written.get() + 1);
+        Ok(())
+    }));
+    let before = identity(&app);
+
+    assert!(app.write_document(alias.to_string_lossy().into_owned(), &ExportSettings::default(), false).is_err());
+
+    assert_eq!(writes.get(), 0);
+    assert_eq!(comparisons.get(), 0, "source identity must not use the replace-entry hook");
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    assert_eq!(identity(&app), before);
 }
 
 #[test]
