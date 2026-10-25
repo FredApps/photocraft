@@ -625,6 +625,12 @@ async fn mcp_cancel_discards_an_exited_workers_queued_xcf_result_before_publicat
 /// Independently authored v26 framing, original pixels, and one typed stored
 /// adjustment. No native document bytes or external corpus define this input.
 fn stored_native_effect_xcf(operation: &str) -> Vec<u8> {
+    stored_native_effect_xcf_with_payload(operation, 4, 3, &[1, 3, 5, 7])
+}
+
+/// Vary only the independently encoded canvas and unknown source property, keeping the same
+/// original pixels and stored adjustment framing for small lifecycle/security regressions.
+fn stored_native_effect_xcf_with_payload(operation: &str, width: u32, height: u32, payload: &[u8]) -> Vec<u8> {
     struct W(Vec<u8>);
     impl W {
         /// Append a big-endian scalar to the independent stored-effect fixture.
@@ -665,18 +671,18 @@ fn stored_native_effect_xcf(operation: &str) -> Vec<u8> {
         }
     }
     let mut w = W(b"gimp xcf v026\0".to_vec());
-    for value in [4, 3, 0, 150] {
+    for value in [width, height, 0, 150] {
         w.word(value);
     }
     w.prop(17, &[0]);
-    w.prop(9001, &[1, 3, 5, 7]);
+    w.prop(9001, payload);
     w.end();
     let layer = w.slot();
     w.ptr(0);
     w.ptr(0);
     w.ptr(0);
     w.patch(layer);
-    for value in [4, 3, 1] {
+    for value in [width, height, 1] {
         w.word(value);
     }
     w.text("Stored filter owner");
@@ -686,18 +692,18 @@ fn stored_native_effect_xcf(operation: &str) -> Vec<u8> {
     let effect = w.slot();
     w.ptr(0);
     w.patch(hierarchy);
-    for value in [4, 3, 4] {
+    for value in [width, height, 4] {
         w.word(value);
     }
     let level = w.slot();
     w.ptr(0);
     w.patch(level);
-    w.word(4);
-    w.word(3);
+    w.word(width);
+    w.word(height);
     let tile = w.slot();
     w.ptr(0);
     w.patch(tile);
-    w.0.extend([64, 128, 192, 128].repeat(12));
+    w.0.extend([64, 128, 192, 128].repeat(width as usize * height as usize));
     w.patch(effect);
     w.text("Original stored adjustment");
     w.text("");
@@ -792,6 +798,114 @@ fn actual_stored_xcf_adjustments_trusted_and_scoped_headless_match_native_comman
             );
         }
     }
+}
+
+#[test]
+/// Persist a real stored XCF adjustment with command-shaped inert bytes, then require scoped
+/// native reopen and warmed-cache refresh to retain ordinary stored-command authorization.
+fn source_free_native_reopen_keeps_xcf_filter_authorization_and_unknown_commands_inert() {
+    use photocraft_doc::import_conversion::ImportConversion;
+    use photocraft_engine::{EngineError, smart_cmds};
+    use std::sync::Arc;
+
+    /// Keep normal workspace checks and deny only the persisted native adjustment; the outer
+    /// editing command remains permitted so failure must come from stored-filter replay.
+    fn deny_persisted_invert(id: &str, params: &serde_json::Value) -> photocraft_engine::Result<()> {
+        photocraft_automation::workspace::authorize_engine_step(id, params)?;
+        if id == "image.adjustments.invert" {
+            return Err(EngineError::Other("persisted native invert denied".into()));
+        }
+        Ok(())
+    }
+
+    let outside = Fixture::bytes("source.pcraft", b"outside workspace sentinel: never import or overwrite");
+    let outside_path = outside.0.join("source.pcraft");
+    let forbidden_output = outside.0.join("first.png");
+    let hostile = serde_json::to_vec(&json!({
+        "command":"file.open", "params":{"path":outside_path},
+        "then":{"command":"file.save", "params":{"path":forbidden_output}}
+    }))
+    .unwrap();
+    let bytes = stored_native_effect_xcf_with_payload("gegl:invert-gamma", 1, 1, &hostile);
+    let fixture = Fixture::bytes("source.xcf", &bytes);
+    let mut h = Headless::with_workspace(photocraft_automation::AuthorizedWorkspace::new(Some(&fixture.0), Some(&fixture.0)).unwrap());
+    h.open(std::path::Path::new("source.xcf")).unwrap();
+    let report = h.session.active().unwrap().doc.metadata.import_conversion.clone();
+    let Some(ImportConversion::Report(retained)) = report.as_deref() else { panic!("inert source report") };
+    assert!(retained.attachments.iter().any(|attachment| attachment.bytes.as_slice() == hostile));
+    h.save(None, Some(std::path::Path::new("converted.pcraft")), None, &Default::default()).unwrap();
+    assert_eq!(std::fs::read(fixture.0.join("source.xcf")).unwrap(), bytes);
+    let native_bytes = std::fs::read(fixture.0.join("converted.pcraft")).unwrap();
+    h.close(None).unwrap();
+    std::fs::remove_file(fixture.0.join("source.xcf")).unwrap();
+    h.open(std::path::Path::new("converted.pcraft")).unwrap();
+    let state = h.session.active().unwrap();
+    assert_eq!(state.doc.metadata.import_conversion, report);
+    assert!(!state.source_read_only);
+    assert!(photocraft_engine::link_watch::linked_files(&state.doc).is_empty());
+    let layer = &state.doc.layers[0];
+    assert!(matches!(layer.content, LayerContent::Smart(_)), "ordinary native Smart envelope");
+    let before_pixels = layer.surface().unwrap().read_region(state.doc.bounds());
+    // The independently known one-pixel input must be inverted exactly once, regardless of
+    // JSON command text retained in the unknown property.
+    assert_stored_filter_pixels(&before_pixels, &[191. / 255., 127. / 255., 63. / 255., 128. / 255.], "source-free scoped reopen");
+    let parent_before = Arc::clone(&state.doc);
+    let parent_revision = state.revision;
+    // The source envelope and its editable adjustment are separate ordinary native Smart
+    // documents. Follow the public Edit Contents route rather than inventing a top-level filter.
+    let mut filter_layer = None;
+    for _ in 0..64 {
+        let state = h.session.active().unwrap();
+        if let Some(layer) = state.doc.layers.iter().find(|layer| {
+            matches!(&layer.content, LayerContent::Smart(smart)
+                if smart.smart_filters.iter().any(|filter| filter.command == "image.adjustments.invert"))
+        }) {
+            let LayerContent::Smart(smart) = &layer.content else { panic!("native filter owner") };
+            assert_eq!(smart.smart_filters.len(), 1);
+            assert_eq!(smart.smart_filters[0].command, "image.adjustments.invert");
+            filter_layer = Some(layer.id);
+            break;
+        }
+        let wrapper = state.doc.layers.iter().find(|layer| matches!(layer.content, LayerContent::Smart(_))).expect("native envelope contents").id;
+        h.session.execute("layer.smartObjects.editContents", json!({"layer":wrapper.0})).unwrap();
+    }
+    let layer_id = filter_layer.expect("persisted imported Invert within bounded native contents");
+    let state = h.session.active().unwrap();
+    let child_pixels = state.doc.layer(layer_id).unwrap().surface().unwrap().read_region(state.doc.bounds());
+    let mut trusted = (*state.doc).clone();
+    assert!(smart_cmds::refresh(&mut trusted, layer_id).unwrap(), "warm the normal process-wide native stage cache");
+    let before = Arc::clone(&state.doc);
+    let revision = state.revision;
+    let history = state.history.entries();
+    let past = state.history.past_len();
+    let redo = state.history.can_redo();
+    let journal = h.session.journal.len();
+    h.session.authorize = Some(deny_persisted_invert);
+    for direct_refresh in [false, true] {
+        let result = if direct_refresh {
+            h.session.edit("Refresh imported native filter", |doc, _| smart_cmds::refresh(doc, layer_id).map(|_| ()))
+        } else {
+            h.session.execute("layer.smartFilter.setVisible", json!({"layer":layer_id.0,"visible":true})).map(|_| ())
+        };
+        assert!(result.unwrap_err().to_string().contains("persisted native invert denied"));
+        let state = h.session.active().unwrap();
+        assert!(Arc::ptr_eq(&state.doc, &before));
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.history.entries(), history);
+        assert_eq!(state.history.past_len(), past);
+        assert_eq!(state.history.can_redo(), redo);
+        assert_eq!(h.session.journal.len(), journal);
+        assert_eq!(state.doc.layer(layer_id).unwrap().surface().unwrap().read_region(state.doc.bounds()), child_pixels);
+        let parent = h.session.documents().iter().find(|state| state.doc.id == parent_before.id).unwrap();
+        assert!(Arc::ptr_eq(&parent.doc, &parent_before));
+        assert_eq!(parent.revision, parent_revision);
+        assert_eq!(parent.doc.layers[0].surface().unwrap().read_region(parent.doc.bounds()), before_pixels);
+        assert_eq!(parent.doc.metadata.import_conversion, report);
+    }
+    assert!(!fixture.0.join("source.xcf").exists());
+    assert_eq!(std::fs::read(fixture.0.join("converted.pcraft")).unwrap(), native_bytes);
+    assert_eq!(std::fs::read(outside_path).unwrap(), b"outside workspace sentinel: never import or overwrite");
+    assert!(!forbidden_output.exists());
 }
 
 #[cfg(not(target_arch = "wasm32"))]
