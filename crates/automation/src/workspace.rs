@@ -53,7 +53,7 @@ impl AuthorizedWorkspace {
         }
         let a = match read.dir.open(&source) {
             Ok(file) => file.into_std(),
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(file_error("inspect source", &source.to_string_lossy(), error)),
         };
         let b = match write.dir.open(&destination) {
@@ -577,6 +577,92 @@ mod tests {
         assert!(!workspace.is_import_source("source.xcf", "new.pcraft").unwrap());
         let same_root = AuthorizedWorkspace::new(Some(&inside), Some(&inside)).unwrap();
         assert!(same_root.is_import_source("source.xcf", "source.xcf").unwrap(), "the original path stays protected after removal");
+    }
+
+    #[test]
+    fn import_source_identity_recognizes_overlapping_roots_and_missing_paths() {
+        let (inside, _, _) = roots("import-source-overlap");
+        let sub = inside.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("source.xcf"), b"source").unwrap();
+        let workspace = AuthorizedWorkspace::new(Some(&inside), Some(&sub)).unwrap();
+        assert!(workspace.is_import_source("sub/source.xcf", "source.xcf").unwrap());
+        assert!(!workspace.is_import_source("sub/source.xcf", "new.pcraft").unwrap());
+        assert!(!workspace.is_import_source("sub/missing.xcf", "source.xcf").unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn denied_import_source_inspection_blocks_saves_through_overlapping_roots() {
+        use std::process::Command;
+
+        struct DeniedRead {
+            file: PathBuf,
+            sid: String,
+        }
+        impl DeniedRead {
+            fn restore(&self) {
+                let output = Command::new("icacls.exe").arg(&self.file).arg("/remove:d").arg(format!("*{}", self.sid)).output().unwrap();
+                assert!(output.status.success(), "cannot restore temporary fixture read access");
+            }
+        }
+        impl Drop for DeniedRead {
+            fn drop(&mut self) {
+                // Restore even if an assertion fails; never alter a directory ACL.
+                let _ = Command::new("icacls.exe").arg(&self.file).arg("/remove:d").arg(format!("*{}", self.sid)).output();
+            }
+        }
+
+        let (inside, _, _) = roots("import-source-denied");
+        let sub = inside.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let source = sub.join("source.xcf");
+        let mut bytes = b"gimp xcf v003\0".to_vec();
+        for value in [1u32, 1, 0, 0, 0, 0, 0] {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+        std::fs::write(&source, &bytes).unwrap();
+        let workspace = AuthorizedWorkspace::new(Some(&inside), Some(&sub)).unwrap();
+        let mut headless = crate::Headless::with_workspace(workspace.clone());
+        headless.open(Path::new("sub/source.xcf")).unwrap();
+        assert!(headless.session.active().unwrap().source_read_only);
+        let before = headless.session.active().unwrap().doc.clone();
+        let history = headless.session.active().unwrap().history.past_len();
+
+        let identity = Command::new("whoami.exe").args(["/user", "/fo", "csv", "/nh"]).output().unwrap();
+        assert!(identity.status.success());
+        let sid = String::from_utf8_lossy(&identity.stdout)
+            .split(',')
+            .map(|part| part.trim().trim_matches('"'))
+            .find(|part| part.starts_with("S-1-") && part.bytes().all(|byte| byte.is_ascii_digit() || byte == b'S' || byte == b'-'))
+            .unwrap()
+            .to_string();
+        let denied = DeniedRead { file: source.clone(), sid };
+        // Deny only read-data on this owned temporary file. Directory permissions
+        // and deletion/replacement rights stay intact, matching the reported case.
+        assert!(source.starts_with(&inside));
+        let output = Command::new("icacls.exe").arg(&source).arg("/deny").arg(format!("*{}:(RD)", denied.sid)).output().unwrap();
+        assert!(output.status.success(), "cannot deny read-data on temporary fixture");
+        assert_eq!(std::fs::File::open(&source).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        let error = workspace.is_import_source("sub/source.xcf", "source.xcf").unwrap_err().to_string();
+        assert!(error.contains("inspect source") && error.contains("PermissionDenied"), "{error}");
+        for destination in ["source.xcf", "converted.pcraft"] {
+            let error = headless.save(None, Some(Path::new(destination)), Some("pcraft"), &Default::default()).unwrap_err().to_string();
+            assert!(error.contains("inspect source") && error.contains("PermissionDenied"), "{error}");
+            let current = headless.session.active().unwrap();
+            assert!(Arc::ptr_eq(&before, &current.doc));
+            assert_eq!(current.history.past_len(), history);
+            assert!(current.source_read_only);
+            assert_eq!(current.protected_import_source.as_deref(), Some("sub/source.xcf"));
+            assert_eq!(std::fs::read_dir(&sub).unwrap().count(), 1, "inspection failure must precede output creation");
+        }
+        denied.restore();
+        drop(denied);
+        assert_eq!(std::fs::read(&source).unwrap(), bytes);
+        assert!(workspace.is_import_source("sub/source.xcf", "source.xcf").unwrap());
+        headless.save(None, Some(Path::new("converted.pcraft")), None, &Default::default()).unwrap();
+        assert!(sub.join("converted.pcraft").is_file());
+        assert_eq!(std::fs::read(&source).unwrap(), bytes);
     }
 
     #[test]
