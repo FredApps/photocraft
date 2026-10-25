@@ -8,12 +8,15 @@ use photocraft_geom::{Affine, Rect};
 use serde_json::{Value, json};
 type Result<T> = std::result::Result<T, MappingFailure>;
 const MAX_GEOMETRY: usize = 65_536;
+/// Classifies malformed optional spatial data without confusing it with an unavailable native resource.
 pub(super) fn invalid(message: impl Into<String>) -> MappingFailure {
     MappingFailure { reason: photocraft_doc::import_conversion::ConversionReason::InvalidOptionalData, message: message.into() }
 }
+/// Observes import cancellation before constructing native geometry or generated resources.
 pub(super) fn generation_check(c: &MappingContext) -> Result<()> {
     c.interrupt.check().map_err(|_| MappingFailure::resource("native generation was cancelled"))
 }
+/// Rejects generated working data beyond the remaining allowance before allocation, with cancellation taking precedence.
 pub(super) fn generation_bytes(c: &MappingContext, bytes: usize) -> Result<()> {
     generation_check(c)?;
     if bytes > c.remaining_generation_bytes {
@@ -21,6 +24,7 @@ pub(super) fn generation_bytes(c: &MappingContext, bytes: usize) -> Result<()> {
     }
     Ok(())
 }
+/// Checks overflow and conservative geometry storage against both remaining metadata and generation budgets.
 pub(super) fn geometry_bytes(c: &MappingContext, paths: usize, knots: usize) -> Result<()> {
     let bytes = paths
         .checked_mul(std::mem::size_of::<Subpath>())
@@ -33,6 +37,7 @@ pub(super) fn geometry_bytes(c: &MappingContext, paths: usize, knots: usize) -> 
     }
     generation_bytes(c, bytes)
 }
+/// Reads a finite source scalar using representable stored endpoints; rejects out-of-domain values rather than clamping them.
 pub(super) fn num(e: &StoredEffect<'_>, key: &str, default: f64, lo: f64, hi: f64) -> Result<f64> {
     let v = e.number(key).map_err(invalid)?.unwrap_or(default);
     if !v.is_finite() || v < f64::from(lo as f32) || v > f64::from(hi as f32) {
@@ -40,6 +45,7 @@ pub(super) fn num(e: &StoredEffect<'_>, key: &str, default: f64, lo: f64, hi: f6
     }
     Ok(v)
 }
+/// Preserves exact gint endpoints while rejecting fractional, nonfinite or out-of-range geometry controls.
 pub(super) fn integer(e: &StoredEffect<'_>, key: &str, default: i32, lo: i32, hi: i32) -> Result<i32> {
     // Stored gint must stay integer; do not pass i32 endpoints through rounded F32.
     let v = e.number(key).map_err(invalid)?.unwrap_or(f64::from(default));
@@ -48,6 +54,7 @@ pub(super) fn integer(e: &StoredEffect<'_>, key: &str, default: i32, lo: i32, hi
     }
     Ok(v as i32)
 }
+/// Accepts only the declared numeric enum values, preserving unknown choices as conversion failures.
 pub(super) fn choice(e: &StoredEffect<'_>, key: &str, default: i32, values: &[i32]) -> Result<i32> {
     let v = e.enum_value(key).map_err(invalid)?.unwrap_or(default);
     if !values.contains(&v) {
@@ -55,9 +62,11 @@ pub(super) fn choice(e: &StoredEffect<'_>, key: &str, default: i32, values: &[i3
     }
     Ok(v)
 }
+/// Reads a typed optional boolean, using the declared default only when the argument is absent.
 pub(super) fn boolean(e: &StoredEffect<'_>, key: &str, default: bool) -> Result<bool> {
     Ok(e.boolean(key).map_err(invalid)?.unwrap_or(default))
 }
+/// Requires the stored unsigned seed representation so signed or unrelated argument types cannot become random state.
 pub(super) fn seed(e: &StoredEffect<'_>) -> Result<u32> {
     match e.argument("seed").map_err(invalid)? {
         None => Ok(0),
@@ -65,32 +74,41 @@ pub(super) fn seed(e: &StoredEffect<'_>) -> Result<u32> {
         _ => Err(invalid("seed must be stored guint")),
     }
 }
+/// Converts typed source paint through native CMS and distinguishes missing color resources from malformed values.
 pub(super) fn color(e: &StoredEffect<'_>, key: &str, default: [f32; 4], c: &MappingContext) -> Result<Color> {
     let result =
         if e.argument(key).map_err(invalid)?.is_some() { super::resources::native_color(e, key, c) } else { super::resources::native_rgba(default, c) };
     result.map_err(|s| if s.starts_with("resource unavailable:") { MappingFailure::resource(s) } else { invalid(s) })
 }
+/// Packages ordinary native filters with the explanatory policy retained in the import report.
 pub(super) fn mapped(filters: Vec<photocraft_doc::SmartFilter>, note: impl Into<String>) -> NativeMapping {
     NativeMapping { filters, notes: vec![note.into()], ..Default::default() }
 }
+/// Constructs a single ordinary native filter without carrying a source operation into replay data.
 pub(super) fn one(command: &str, params: Value, note: impl Into<String>) -> NativeMapping {
     mapped(vec![native_filter(command, params)], note)
 }
+/// Wraps an editable native replacement layer and its conversion note without inventing pattern resources.
 pub(super) fn replace(layer: Layer, note: impl Into<String>) -> NativeMapping {
     NativeMapping { structure: Some(NativeStructure::Replace { layer: Box::new(layer), patterns: Vec::new() }), notes: vec![note.into()], ..Default::default() }
 }
+/// Builds an ordinary native branch composition with an explicit approximation note.
 pub(super) fn composite(branches: Vec<NativeBranch>, note: impl Into<String>) -> NativeMapping {
     NativeMapping { structure: Some(NativeStructure::Composite { branches }), notes: vec![note.into()], ..Default::default() }
 }
+/// Requires a nonempty native evaluation frame before calculating geometry or normalized positions.
 pub(super) fn bounds(c: &MappingContext) -> Result<Rect> {
     if c.native_filter_bounds.is_empty() { Err(invalid("native geometry needs nonempty evaluation bounds")) } else { Ok(c.native_filter_bounds) }
 }
+/// Authors a closed four-corner native polygon from already validated rectangle coordinates.
 pub(super) fn rect(x: f64, y: f64, w: f64, h: f64) -> Subpath {
     Subpath::polygon(&[(x, y), (x + w, y), (x + w, y + h), (x, y + h)])
 }
+/// Creates an editable native filled path layer from supplied subpaths and CMS-converted paint.
 pub(super) fn shape(name: &str, paths: Vec<Subpath>, paint: Color) -> Layer {
     Layer::new(name, LayerContent::Shape(ShapeLayer { path: Path::new(paths), fill: Some(Fill::Solid(paint)), ..Default::default() }))
 }
+/// Converts spacing and origin into clipped native vector rectangles, preflighting knot counts and checking cancellation while generating them.
 fn grid(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let b = bounds(c)?;
     let sx = i64::from(integer(e, "x", 32, 1, i32::MAX)?);
@@ -155,6 +173,7 @@ fn grid(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         "Source spacing, origin, zero thickness and paint become editable native vector rectangles. Native vector antialiasing and compositing apply; source raster sampling is not emulated",
     ))
 }
+/// Places native Lens Flare from the source owner-relative center; rejects centers outside the native editable domain.
 fn flare(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let b = bounds(c)?;
     let owner = c.owner_bounds;
@@ -169,6 +188,7 @@ fn flare(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         "Source normalized flare center becomes native Lens Flare. Source has no intensity or lens-type control; native 100% zoom lens is an explicitly selected optical approximation with different flare geometry and photometry",
     ))
 }
+/// Translates inner glow or shadow intent into native styles, with explicit distance and morphology approximations.
 fn glow(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let morphology = choice(e, "grow-shape", 1, &[0, 1, 2])?;
     let x = num(e, "x", 0., -f64::MAX, f64::MAX)?;
@@ -226,6 +246,7 @@ fn glow(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         ..Default::default()
     })
 }
+/// Chooses joint or per-component native Oil Paint branches; source histogram resolution becomes a disclosed native estimator policy.
 fn oil(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let radius = integer(e, "mask-radius", 4, 1, 100)?;
     let exponent = integer(e, "exponent", 8, 1, 20)?;
@@ -287,6 +308,7 @@ fn oil(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     Ok(composite(branches, note))
 }
 
+/// Builds native edge magnitude or signed direction data using ordinary derivative filters and a bounded joint lookup.
 fn image_gradient(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let mode = choice(e, "output-mode", 0, &[0, 1, 2])?;
     if mode != 1 {
@@ -353,6 +375,7 @@ fn image_gradient(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapp
     Ok(result)
 }
 
+/// Approximates local HDR intent with editable native power curves, saturation and detail sharpening.
 fn local_tone(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     let contrast = num(e, "contrast", 0.1, 0., 1.)?;
     let sat = num(e, "saturation", 0.8, 0., 2.)?;
@@ -376,6 +399,7 @@ fn local_tone(e: &StoredEffect<'_>) -> Result<NativeMapping> {
         "Source HDR contrast/saturation/detail intent becomes editable native global power-curve compression, native saturation and logarithmic local-detail sharpening. This explicit policy differs from perceptual gradient-domain HDR optimization; native ICC, HDR curve endpoints, clipping and alpha apply. Contrast zero uses the finite 1/256 native power limit",
     ))
 }
+/// Authors a deterministic native noise Pattern once, bounding octave work and preserving explicit extent and tileability policies.
 fn solid_noise(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let x_size = num(e, "x-size", 4., 0.1, 16.)?;
     let y_size = num(e, "y-size", 4., 0.1, 16.)?;
@@ -453,6 +477,7 @@ fn solid_noise(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping
     Ok(converted)
 }
 
+/// Constructs editable masked native cell copies over joint paint, checking aggregate branch, geometry and cache allowances.
 fn mosaic(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let kind = choice(e, "tile-type", 1, &[0, 1, 2, 3])?;
     let size = num(e, "tile-size", 15., 1., 1000.)?;
@@ -618,6 +643,7 @@ fn mosaic(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         ),
     ))
 }
+/// Routes native derivative axes through a bounded vector-normalization lookup, retaining explicit channel-collision and alpha policies.
 fn normal_map(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let scale = num(e, "scale", 10., 0., f64::MAX)?;
     let x = choice(e, "x-component", 0, &[0, 1, 2])?;
@@ -714,6 +740,7 @@ fn normal_map(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping>
     Ok(result)
 }
 
+/// Converts radial, scale and center controls into native lens correction and disclosed background/vignette structures.
 fn lens_distortion(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     use photocraft_algo::lens::{LensCorrection, LensMap, LensProfile};
     let main = num(e, "main", 0., -100., 100.)?;
@@ -788,6 +815,7 @@ fn lens_distortion(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMap
     mapped.notes.push("Outside optical samples use finite native Solid Fill with actual source paint ICC converted to the document profile. Native source-over compositing governs translucent pixels/background. Source brighten drives native Lens Correction vignette percent multiplied by negative average signed radial strength: -brighten*(main+edge)/200. Both-zero radial controls leave brighten inactive, independently observed. Native centred smooth exposure falloff/midpoint100 differs from source shifted polynomial energy compensation; opposed coefficients can cancel this chosen native illumination policy. Native alpha/HDR rules apply and original source controls remain historical only".into());
     Ok(mapped)
 }
+/// Builds bounded translated native owner instances with ordinary style paint and an explicit finite fade policy.
 fn long_shadow(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let b = bounds(c)?;
     let style = choice(e, "style", 0, &[0, 1, 2, 3])?;
@@ -857,6 +885,7 @@ fn long_shadow(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping
         ),
     ))
 }
+/// Creates native wedge-masked mirrored instances with crop-before-fold semantics and a transparent zero-scale result.
 fn mirrors(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let b = bounds(c)?;
     generation_check(c)?;
@@ -923,6 +952,7 @@ fn mirrors(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
 }
 // Native ordered-threshold parameter tiles. They contain no source pixels and
 // are authored independently from simple line/radial/L1/L-infinity geometry.
+/// Creates a small original geometric screening Pattern with bounded storage and cancellable native hashing.
 fn newsprint_tile(kind: i32, c: &MappingContext) -> Result<photocraft_doc::Pattern> {
     use photocraft_color::{ColorMode, PixelFormat, SampleType};
     use photocraft_raster::Surface;
@@ -946,6 +976,7 @@ fn newsprint_tile(kind: i32, c: &MappingContext) -> Result<photocraft_doc::Patte
     photocraft_doc::Pattern::try_new_in(format!("Native geometric screen {kind}"), surface, 64, 64, 64 * 4, &c.interrupt)
         .map_err(|error| MappingFailure::resource(error.to_string()))
 }
+/// Authors a native ink-reflectance lookup using actual profile-aware separation rather than a source color processor.
 fn newsprint_ink_filter(index: usize, pullout: f64, c: &MappingContext) -> Result<photocraft_doc::SmartFilter> {
     use photocraft_cms::{Builtin, ColorSpace, Intent, Profile, Transform};
     let fallback = if c.mode == photocraft_color::ColorMode::Grayscale || !c.linear { Builtin::Srgb } else { Builtin::LinearSrgb };
@@ -989,6 +1020,7 @@ fn newsprint_ink_filter(index: usize, pullout: f64, c: &MappingContext) -> Resul
     generation_check(c)?;
     mapped.filters.into_iter().next().ok_or_else(|| invalid("Native screen separation has no filter"))
 }
+/// Composes editable native screen plates and patterns, preflighting separation resources and disclosing screening differences.
 fn newsprint(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let model = choice(e, "color-model", 1, &[0, 1, 2, 3])?;
     let mut periods = [0.; 4];
@@ -1103,10 +1135,12 @@ fn newsprint(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> 
     })
 }
 
+/// Advances the deterministic local generator used for reproducible native maze geometry.
 pub(super) fn random(state: &mut u32) -> u32 {
     *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
     *state
 }
+/// Constructs bounded native maze walls with declared spacing, colors and seed; opposite-edge connectivity follows the selected tileability policy.
 fn maze(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let b = bounds(c)?;
     let sx = integer(e, "x", 16, 1, i32::MAX)?;
@@ -1201,6 +1235,7 @@ fn maze(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         ),
     ))
 }
+/// Represents periodic axes as editable native gradients and applies shared post-controls once, including explicit zero-axis paint.
 fn sinusoid(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let b = bounds(c)?;
     let px = num(e, "x-period", 128., 0., f64::MAX)?;
@@ -1317,6 +1352,7 @@ fn sinusoid(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     Ok(mapping)
 }
 
+/// Converts the source fan geometry into a bounded ordinary native coordinate map with disclosed zero-cycle handling.
 fn illusion(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     let division = integer(e, "division", 8, 0, 64)?;
     let kind = choice(e, "illusion-type", 0, &[0, 1])?;
@@ -1343,6 +1379,7 @@ fn illusion(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     )
 }
 
+/// Dispatches only the owned frozen spatial identities; unrecognized operations remain available to other converters.
 pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext) -> MappingResult {
     if !matches!(
         e.canonical_operation(),
@@ -1394,6 +1431,7 @@ mod tests {
     use super::super::{Argument, ColorLiteral};
     use super::*;
     use photocraft_color::ColorMode;
+    /// Supplies finite owner bounds and explicit import allowances for independent native mapping tests.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -1407,21 +1445,27 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Encodes a signed source integer so geometry tests exercise the actual stored argument type.
     fn int(name: &'static str, value: i32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Int(value) }
     }
+    /// Builds a typed source float argument for spatial domain and unit tests.
     fn float(name: &'static str, value: f32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Float(value) }
     }
+    /// Builds a stored enum argument without substituting a string nickname or numeric float.
     fn enm(name: &'static str, value: i32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Enum(value) }
     }
+    /// Requires a recognized successful mapping so tests cannot mistake retention for native conversion.
     fn result(op: &'static str, args: Vec<Argument<'static>>) -> NativeMapping {
         map(&StoredEffect::test(op, args), &context()).unwrap().unwrap()
     }
+    /// Builds a typed source color literal for paint, alpha and CMS conversion assertions.
     fn paint(name: &'static str) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Color(Some(ColorLiteral { encoding: "R'G'B'A u8", pixels: &[128, 64, 32, 128], profile: &[] })) }
     }
+    /// Checks every owned frozen identity reaches a meaningful native mapping rather than an unrelated default filter.
     #[test]
     fn finite_batch_recognizes_all_sixteen_ids_without_default_filter_substitutions() {
         let mut converted = 0;
@@ -1453,6 +1497,7 @@ mod tests {
         assert_eq!(converted, 16);
         assert!(map(&StoredEffect::test("not-our-batch", Vec::new()), &context()).is_none());
     }
+    /// Verifies negative origins and zero thickness produce the expected clipped editable vector data.
     #[test]
     fn grid_origin_negative_offsets_and_zero_width_become_editable_clipped_rectangles() {
         let mut c = context();
@@ -1472,6 +1517,7 @@ mod tests {
         let LayerContent::Shape(shape) = layer.content else { panic!("shape") };
         assert!(shape.path.is_empty());
     }
+    /// Checks identical seeds reproduce actual native wall paths and those paths survive native storage.
     #[test]
     fn maze_is_native_editable_geometry_and_seed_deterministic() {
         let a = result("gegl:maze", Vec::new());
@@ -1485,6 +1531,7 @@ mod tests {
         assert!(matches!(a.children[0].content, LayerContent::Fill(_)));
         assert!(matches!(a.children[1].content, LayerContent::Shape(_)));
     }
+    /// Asserts periodic axes remain ordinary editable gradient branches instead of baked source raster caches.
     #[test]
     fn sinusoid_uses_native_additive_gradient_axes_not_raster_caches() {
         let mapping = result("gegl:linear-sinusoid", vec![float("x-period", 8.), float("y-period", 16.), float("x-phase", 1.)]);
@@ -1498,6 +1545,7 @@ mod tests {
             assert!(stops.windows(2).all(|p| p[0].0 < p[1].0));
         }
     }
+    /// Checks paint alpha reaches effective native style opacity and source positions remain editable parameters.
     #[test]
     fn component_alpha_moves_to_native_style_opacity_and_positions_are_editable() {
         let mapping = result("gegl:inner-glow", vec![paint("value"), float("opacity", 0.5)]);
@@ -1518,6 +1566,7 @@ mod tests {
         assert!(branches.iter().all(|b| b.vector_mask.is_some()));
         assert!(branches[1].transform.determinant() < 0.);
     }
+    /// Exercises both fan policies, zero cycles and actual generation-budget rejection of coordinate resources.
     #[test]
     fn illusion_native_fan_embeds_both_types_and_zero_cycle_policy_with_real_budgets() {
         let first = result("gegl:illusion", Vec::new());
@@ -1530,6 +1579,7 @@ mod tests {
         let small = MappingContext { remaining_metadata_bytes: 1, ..context() };
         assert!(map(&StoredEffect::test("gegl:illusion", Vec::new()), &small).unwrap().is_err());
     }
+    /// Verifies shadow-only intent uses a scoped native knockout and preserves that structure through save/reopen.
     #[test]
     fn shadow_minus_image_uses_native_shallow_knockout_and_preserves_its_scope_on_reopen() {
         let c = context();
@@ -1565,6 +1615,7 @@ mod tests {
         let reopened = photocraft_format::load_from_bytes(&bytes).unwrap();
         assert_eq!(out, photocraft_compose::render(&reopened, reopened.bounds()).px);
     }
+    /// Checks cell controls, joints and relief become persistent native geometry and filter/style data.
     #[test]
     fn mosaic_controls_author_native_polygons_joint_paint_and_persisted_relief() {
         use photocraft_color::{ColorMode, PixelFormat, SampleType};
@@ -1625,6 +1676,7 @@ mod tests {
         let tiny = MappingContext { remaining_generation_bytes: 1, ..context() };
         assert!(map(&StoredEffect::test("gegl:mosaic", Vec::new()), &tiny).unwrap().is_err());
     }
+    /// Uses observed zero-axis behavior to verify constant native paint receives offset and power controls once.
     #[test]
     fn zero_axis_sinusoid_is_native_constant_paint_with_observed_post_controls() {
         use photocraft_color::{ColorMode, SampleType};
@@ -1649,6 +1701,7 @@ mod tests {
             assert_eq!(rendered, photocraft_compose::render(&reopened, reopened.bounds()).px);
         }
     }
+    /// Checks large offsets become valid native color convolution while retaining source alpha and unclamped control intent.
     #[test]
     fn sinusoid_large_offsets_use_native_color_convolution_without_alpha_or_dialog_clamping() {
         use photocraft_color::{ColorMode, PixelFormat, SampleType};
@@ -1692,6 +1745,7 @@ mod tests {
         let impossible = StoredEffect::test("gegl:linear-sinusoid", vec![float("offset", f32::MAX), float("x-amplitude", 126.)]);
         assert_eq!(sinusoid(&impossible, &context()).unwrap_err().reason, photocraft_doc::import_conversion::ConversionReason::ResourceUnavailable);
     }
+    /// Tests independently computed vector lengths and source-observed Z encoding in the authored native lookup.
     #[test]
     fn normal_vector_lut_has_unit_length_and_observed_full_z_encoding() {
         let half = result("gegl:normal-map", Vec::new());
@@ -1709,6 +1763,7 @@ mod tests {
         assert_eq!(half.data[i], full.data[i]);
         assert_eq!(half.data[i + 1], full.data[i + 1]);
     }
+    /// Verifies independent derivative axes and fractional owner alpha against native constructions.
     #[test]
     fn normal_axes_keep_independent_native_values_and_fractional_source_alpha() {
         use photocraft_color::{ColorMode, PixelFormat, SampleType};
@@ -1785,6 +1840,7 @@ mod tests {
             assert_eq!(photocraft_compose::render(&doc, b).px, photocraft_compose::render(&reopened, b).px);
         }
     }
+    /// Checks Gray owners use private native RGB working contents while preserving the outer Gray document and persistence.
     #[test]
     fn gray_normal_vectors_reuse_native_rgb_contents_and_keep_outer_gray_data() {
         use photocraft_color::{ColorMode, SampleType};
@@ -1825,6 +1881,7 @@ mod tests {
             assert_eq!(reopened.icc_profile, Some(photocraft_cms::Builtin::GrayGamma22.profile().to_bytes()));
         }
     }
+    /// Exercises extreme gain with finite lookup output and native depth-dependent rendering.
     #[test]
     fn normal_gain_extremes_are_finite_native_lut_pixels_at_every_depth() {
         use photocraft_color::{ColorMode, PixelFormat, SampleType};
@@ -1853,6 +1910,7 @@ mod tests {
             }
         }
     }
+    /// Checks equal component selectors follow the observed cyclic fallback while original source controls remain unchanged.
     #[test]
     fn normal_component_collision_translates_observed_cyclic_fallback_without_rewriting_source() {
         for x in 0..3 {
@@ -1867,6 +1925,7 @@ mod tests {
             assert!(collision.notes[0].contains("cyclic Y fallback"));
         }
     }
+    /// Asserts known unit conversions and unsupported native domains are reported rather than silently adjusted.
     #[test]
     fn actual_native_units_and_capability_gaps_are_explicit() {
         let tone = result("gegl:mantiuk06", vec![float("detail", 99.)]);
@@ -1877,6 +1936,7 @@ mod tests {
         let Some(NativeStructure::Composite { branches }) = cropped.structure else { panic!("native mirror crop") };
         assert_eq!(branches[0].filter_frame, Some(Rect::new(12, 0, 64, 48)));
     }
+    /// Checks component routing and combined sinusoid post-controls emit only ordinary native parameters.
     #[test]
     fn normal_components_and_post_sum_sinusoid_controls_stay_native() {
         let mapped =
@@ -1897,6 +1957,7 @@ mod tests {
         assert_eq!(angle, 75.);
         assert_eq!(scale, 12. / 64.);
     }
+    /// Rejects invalid geometry and argument types before large native resource construction.
     #[test]
     fn hostile_geometry_and_typed_values_fail_without_allocating_or_panicking() {
         let mut c = context();
@@ -1911,6 +1972,7 @@ mod tests {
             photocraft_doc::import_conversion::ConversionReason::InvalidOptionalData
         );
     }
+    /// Verifies resource admission and cancellation reject editable geometry without bypassing remaining allowances.
     #[test]
     fn editable_geometry_obeys_actual_budget_and_cancellation() {
         let mut metadata = context();
@@ -1927,6 +1989,7 @@ mod tests {
             assert!(map(&StoredEffect::test(operation, Vec::new()), &interrupted).unwrap().is_err(), "{operation}");
         }
     }
+    /// Compares radial placement, background and vignette structures with native counterparts and checks persistence.
     #[test]
     fn lens_distortion_native_radial_map_background_vignette_and_native_reopen_are_editable() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -2008,6 +2071,7 @@ mod tests {
         assert_eq!(smart.smart_filters[0].params, branches[1].filters[0].params);
         assert_eq!(smart.smart_filters[1].params, branches[1].filters[1].params);
     }
+    /// Exercises finite lens controls, negative/folded geometry and bounded coordinate-map generation.
     #[test]
     fn lens_distortion_all_scalar_controls_negative_folds_and_work_guards_use_native_data() {
         let neutral = result("gegl:lens-distortion", vec![float("brighten", 50.), float("x-shift", 25.)]);
@@ -2039,6 +2103,7 @@ mod tests {
         assert!(map(&e, &c).unwrap().is_err());
         assert!(map(&StoredEffect::test("gegl:lens-distortion", vec![float("main", f32::NAN)]), &context()).unwrap().is_err());
     }
+    /// Verifies noise controls author deterministic native pattern data, including exact tileable edges and native persistence.
     #[test]
     fn solid_noise_uses_all_geometry_detail_seed_and_turbulence_controls_as_native_resources() {
         let convert = |extra: Vec<Argument<'static>>| {
@@ -2097,6 +2162,7 @@ mod tests {
         let reopened = photocraft_format::load_from_bytes(&bytes).unwrap();
         assert_eq!(photocraft_compose::render(&reopened, reopened.bounds()).px, before.px);
     }
+    /// Checks zero extents, excessive octave work, tiny budgets and cancellation fail before expensive pattern allocation.
     #[test]
     fn solid_noise_empty_extents_and_hostile_work_budget_or_cancel_never_allocate_large_patterns() {
         let empty = result("gegl:noise-solid", vec![int("width", 0)]);
@@ -2112,6 +2178,7 @@ mod tests {
         assert!(map(&small, &cancelled).unwrap().is_err());
         assert!(map(&StoredEffect::test("gegl:noise-solid", vec![float("x-size", f32::NAN)]), &context()).unwrap().is_err());
     }
+    /// Uses independent cardinal-direction expectations to check signed native units, alpha, depth and save/reopen.
     #[test]
     fn gradient_direction_native_lut_cardinal_units_depth_alpha_and_persistence() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -2181,6 +2248,7 @@ mod tests {
         let both = result("gegl:image-gradient", vec![enm("output-mode", 2)]);
         assert_eq!(both.filters, result("gegl:image-gradient", Vec::new()).filters, "observed drawable Both is magnitude, not invented RGB vector data");
     }
+    /// Verifies the actual native derivative basis and coverage policy, including rejected unsupported domains.
     #[test]
     fn gradient_direction_native_derivative_basis_clipped_alpha_and_bounded_domains() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -2250,6 +2318,7 @@ mod tests {
         assert!(matches!(gray_native.structure, Some(NativeStructure::Composite { .. })));
         assert!(map(&StoredEffect::test("gegl:image-gradient", vec![enm("output-mode", 99)]), &context()).unwrap().is_err());
     }
+    /// Materializes native screening branches for rendering comparisons without evaluating a source operation.
     fn screen_native_document(mapping: NativeMapping, depth: photocraft_color::SampleType) -> photocraft_doc::Document {
         use photocraft_color::PixelFormat;
         use photocraft_doc::adjust::Adjustment;
@@ -2316,6 +2385,7 @@ mod tests {
         }
         doc
     }
+    /// Checks each mirrored instance crops its input before placement and retains that order through native storage.
     #[test]
     fn mirrors_crop_is_inside_each_native_instance_before_fold_and_survives_native_storage() {
         use crate::xcf::native_effects::{NativeEnvelope, NativeOwner};
@@ -2354,12 +2424,14 @@ mod tests {
         assert!(photocraft_compose::render_layer(&layer, Rect::new(0, 0, 4, 4)).px.iter().all(|p| p[3] == 0.));
         assert!(converted_native_mirror_policy().contains("fixed native owner canvas"));
     }
+    /// Collects the converted mirror policy notes so tests can verify disclosed crop and placement differences.
     fn converted_native_mirror_policy() -> String {
         result("gegl:mirrors", vec![Argument { name: "clip", value: ArgumentValue::Bool(false) }, Argument { name: "warp", value: ArgumentValue::Bool(false) }])
             .notes
             .join(" ")
     }
 
+    /// Compares converted screening with an independent native Hard Mix construction and checks coverage and persistence.
     #[test]
     fn newsprint_native_hardmix_counterpart_preserves_coverage_at_all_depths_and_reopens() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -2427,6 +2499,7 @@ mod tests {
             assert_eq!(reopened.patterns.len(), 1);
         }
     }
+    /// Checks independent ink plates, native pattern/profile data and actual resource admission limits.
     #[test]
     fn newsprint_independent_plates_patterns_cmyk_profile_and_actual_budgets_are_native() {
         use photocraft_color::SampleType;
@@ -2487,6 +2560,7 @@ mod tests {
         assert!(gray.notes[0].contains("ordinary RGB/sRGB Smart working contents"));
     }
 
+    /// Verifies bins are deliberately superseded by native estimation while radius and exponent retain meaningful native controls.
     #[test]
     fn oil_histogram_resolution_is_superseded_native_policy_and_controls_have_native_purpose() {
         let base = result("gegl:oilify", Vec::new());
@@ -2529,6 +2603,7 @@ mod tests {
             assert!(map(&StoredEffect::test("gegl:oilify", args), &context()).unwrap().is_err());
         }
     }
+    /// Confirms joint versus component painting produces distinct native results while preserving alpha and native persistence.
     #[test]
     fn oil_joint_and_independent_native_fields_differ_preserve_alpha_and_reopen_at_each_depth() {
         use photocraft_color::{PixelFormat, SampleType};

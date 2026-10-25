@@ -12,10 +12,12 @@ use serde_json::{Value, json};
 
 type Result<T> = std::result::Result<T, MappingFailure>;
 
+/// Marks malformed optional geometry as invalid data so retention reports distinguish it from missing resources.
 fn invalid(message: impl Into<String>) -> MappingFailure {
     MappingFailure { reason: ConversionReason::InvalidOptionalData, message: message.into() }
 }
 
+/// Requires a finite scalar within the declared source interval instead of silently clipping controls.
 fn number(e: &StoredEffect<'_>, key: &str, default: f64, low: f64, high: f64) -> Result<f64> {
     let value = e.number(key).map_err(invalid)?.unwrap_or(default);
     if !value.is_finite() || !(low..=high).contains(&value) {
@@ -24,6 +26,7 @@ fn number(e: &StoredEffect<'_>, key: &str, default: f64, low: f64, high: f64) ->
     Ok(value)
 }
 
+/// Rejects fractional controls before converting bounded nonnegative source values to integers.
 fn integer(e: &StoredEffect<'_>, key: &str, default: u32, low: u32, high: u32) -> Result<u32> {
     let v = number(e, key, f64::from(default), f64::from(low), f64::from(high))?;
     if v.fract() != 0.0 {
@@ -32,6 +35,7 @@ fn integer(e: &StoredEffect<'_>, key: &str, default: u32, low: u32, high: u32) -
     Ok(v as u32)
 }
 
+/// Resolves exact enum IDs or documented nicknames and rejects unrelated stored argument types.
 fn choice(e: &StoredEffect<'_>, key: &str, default: usize, names: &[&str]) -> Result<usize> {
     match e.argument(key).map_err(invalid)? {
         None => Ok(default),
@@ -41,6 +45,7 @@ fn choice(e: &StoredEffect<'_>, key: &str, default: usize, names: &[&str]) -> Re
     }
 }
 
+/// Rejects unknown or duplicate arguments before constructing any native geometry or filters.
 fn allowed(e: &StoredEffect<'_>, names: &[&str]) -> Result<()> {
     for arg in &e.arguments {
         if !names.contains(&arg.name) {
@@ -51,14 +56,17 @@ fn allowed(e: &StoredEffect<'_>, names: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Wraps ordinary native filters with the approximation policy carried into the conversion report.
 fn mapped(filters: Vec<SmartFilter>, note: impl Into<String>) -> NativeMapping {
     NativeMapping { filters, notes: vec![note.into()], ..Default::default() }
 }
 
+/// Constructs a single native filter mapping while keeping source behavior out of replay data.
 fn one(command: &str, params: Value, note: impl Into<String>) -> NativeMapping {
     mapped(vec![native_filter(command, params)], note)
 }
 
+/// Maps field parity and orientation to native deinterlacing; wider support uses an explicit native composite.
 fn deinterlace(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMapping> {
     allowed(e, &["keep", "orientation", "size"])?;
     let keep = choice(e, "keep", 0, &["even", "odd"])?;
@@ -79,6 +87,7 @@ fn deinterlace(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<Nat
     Ok(native)
 }
 
+/// Builds bounded missing-field vector masks and offset copies, checking cancellation before native interpolation data is allocated.
 fn deinterlace_support(keep: usize, orientation: usize, size: u32, context: &MappingContext<'_>) -> Result<NativeMapping> {
     use photocraft_doc::vector::{Knot, Path, Subpath, VectorMask};
     context.interrupt.check().map_err(|_| MappingFailure::from("Native field interpolation cancelled"))?;
@@ -136,6 +145,7 @@ fn deinterlace_support(keep: usize, orientation: usize, size: u32, context: &Map
     })
 }
 
+/// Authors native color and alpha quantization transfers with explicit seeded-noise and depth/interpolation policies.
 fn dither(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["red-levels", "green-levels", "blue-levels", "alpha-levels", "dither-method", "seed"])?;
     let levels = [integer(e, "red-levels", 6, 2, 65536)?, integer(e, "green-levels", 6, 2, 65536)?, integer(e, "blue-levels", 6, 2, 65536)?];
@@ -207,6 +217,7 @@ fn dither(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     ))
 }
 
+/// Translates offset, growth and blur intent into bounded native shadow structures with disclosed geometry and coverage differences.
 fn drop_shadow(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["x", "y", "radius", "grow-shape", "grow-radius", "color", "opacity"])?;
     let x = number(e, "x", 20.0, -f64::MAX, f64::MAX)?;
@@ -312,6 +323,7 @@ fn custom(k: [f64; 9], scale: f64, offset: f64) -> SmartFilter {
     native_filter("filter.other.custom", json!({"kernel":kernel.to_vec(),"scale":scale,"offset":offset}))
 }
 
+/// Returns a native centered Laplacian kernel rather than retaining a source edge evaluator.
 fn laplace(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(e, &[])?;
     Ok(mapped(
@@ -320,6 +332,7 @@ fn laplace(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     ))
 }
 
+/// Converts selected derivative directions to ordinary native edge filters and transfer curves, including disabled-axis policy.
 fn sobel(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMapping> {
     allowed(e, &["horizontal", "vertical", "keep-sign"])?;
     let horizontal = e.boolean("horizontal").map_err(invalid)?.unwrap_or(true);
@@ -363,6 +376,7 @@ fn sobel(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMap
     ))
 }
 
+/// Combines standard native finite-difference kernels and magnitude curves for the selected edge intent.
 fn edge(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(e, &["algorithm", "amount", "border-behavior"])?;
     let algorithm = choice(e, "algorithm", 0, &["sobel", "prewitt", "gradient", "roberts", "differential", "laplace"])?;
@@ -396,6 +410,7 @@ fn edge(e: &StoredEffect<'_>) -> Result<NativeMapping> {
         "Source edge algorithm becomes native standard finite-difference Custom kernels and gain/absolute pencil Curves. Two directions combine by native Add (L1 magnitude approximation); Gradient/Differential use centered differences. Source amount controls gain; native channel encoding, curve sampling, alpha, clamping and edge repetition apply".into()],..Default::default() })
 }
 
+/// Approximates thresholded distance with bounded native erosion shells and weighted native Add branches.
 fn distance(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["metric", "edge-handling", "threshold-lo", "threshold-hi", "averaging", "normalize"])?;
     let metric = choice(e, "metric", 0, &["euclidean", "manhattan", "chebyshev"])?;
@@ -497,6 +512,7 @@ fn generated_pattern(
     Ok(mapped)
 }
 
+/// Authors an original finite interference Pattern from source controls, rejecting excessive per-pixel work before generation.
 fn diffraction(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMapping> {
     let frequency =
         [number(e, "red-frequency", 0.815, 0.0, 20.0)?, number(e, "green-frequency", 1.221, 0.0, 20.0)?, number(e, "blue-frequency", 1.123, 0.0, 20.0)?];
@@ -537,6 +553,7 @@ fn diffraction(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<Nat
     )
 }
 
+/// Generates a bounded ordinary native Pattern from independently authored mathematical fractal families and palette controls.
 fn fractal(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMapping> {
     let family =
         choice(e, "fractaltype", 0, &["mandelbrot", "julia", "barnsley-1", "barnsley-2", "barnsley-3", "spider", "man-o-war", "lambda", "sierpinski"])?;
@@ -670,6 +687,7 @@ fn fractal(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeM
     )
 }
 
+/// Converts finite coordinate iterations once into an embedded native Displace map, preserving the editable actual input.
 fn fractal_trace(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMapping> {
     let family = choice(e, "fractal", 0, &["mandelbrot", "julia"])?;
     let x1 = number(e, "X1", -1.0, -50.0, 50.0)?;
@@ -756,6 +774,7 @@ fn fractal_trace(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<N
     ))
 }
 
+/// Validates displacement controls and reports unavailable actual auxiliary map data rather than inventing an image.
 fn displace(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(e, &["displace-mode", "sampler-type", "abyss-policy", "amount-x", "amount-y", "center", "center-x", "center-y"])?;
     let x = number(e, "amount-x", 0.0, -500.0, 500.0)?;
@@ -774,6 +793,7 @@ fn displace(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     ))
 }
 
+/// Constructs bounded editable native average-color cell copies over converted background paint, preserving floating tile spacing.
 fn cubism(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["tile-size", "tile-saturation", "bg-color", "seed"])?;
     let size = number(e, "tile-size", 10.0, 0.0, 256.0)?;
@@ -909,6 +929,7 @@ fn cubism(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     })
 }
 
+/// Translates lighting direction, elevation and depth into native Emboss and transfer controls with explicit native relief policy.
 fn emboss(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMapping> {
     allowed(e, &["type", "azimuth", "elevation", "depth"])?;
     let kind = choice(e, "type", 0, &["emboss", "bumpmap"])?;
@@ -951,6 +972,7 @@ fn emboss(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMa
     })
 }
 
+/// Builds native Gaussian edge-scale passes, Find Edges and gain, bounding blur decomposition and disclosing edge differences.
 fn neon(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(e, &["radius", "amount"])?;
     let radius = number(e, "radius", 5.0, 0.0, 1500.0)?;
@@ -977,6 +999,7 @@ fn neon(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     ))
 }
 
+/// Represents line height and limit intent using ordinary native Halftone Pattern and endpoint adjustments.
 fn engrave(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(e, &["row-height", "limit"])?;
     let height = integer(e, "row-height", 10, 2, 16)?;
@@ -998,6 +1021,7 @@ fn engrave(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     ))
 }
 
+/// Approximates tonal compression with native global curves, local detail and saturation rather than a source HDR solver.
 fn fattal(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["alpha", "beta", "saturation", "noise"])?;
     let alpha = number(e, "alpha", 1.0, 0.0, 2.0)?;
@@ -1041,6 +1065,7 @@ fn fattal(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     ))
 }
 
+/// Routes only this finite group of geometry identities to native converters, leaving other effects unclaimed.
 pub(super) fn map(e: &StoredEffect<'_>, context: &MappingContext) -> MappingResult {
     let result = match e.canonical_operation() {
         "gegl:deinterlace" => deinterlace(e, context),
@@ -1069,6 +1094,7 @@ mod tests {
     use super::super::Argument;
     use super::*;
     use photocraft_geom::Rect;
+    /// Creates explicit source/native bounds and import allowances for independent geometry mapping tests.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -1082,13 +1108,16 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Constructs a typed source argument without fabricating serialized configuration or executing an operation.
     fn arg(name: &'static str, value: ArgumentValue<'static>) -> Argument<'static> {
         Argument { name, value }
     }
+    /// Requires an owned operation identity while preserving conversion errors for explicit success and retention assertions.
     fn run(operation: &'static str, args: Vec<Argument<'static>>) -> Result<NativeMapping> {
         map(&StoredEffect::test(operation, args), &context()).unwrap()
     }
 
+    /// Checks source-local field parity and native quarter-turn placement for vertical deinterlacing.
     #[test]
     fn deinterlace_keeps_source_local_fields_and_rotates_vertical() {
         let a = run("gegl:deinterlace", vec![]).unwrap();
@@ -1098,6 +1127,7 @@ mod tests {
         assert_eq!(b.quarter_turns, 1);
         assert!(run("gegl:deinterlace", vec![arg("size", ArgumentValue::Int(0))]).is_err());
     }
+    /// Verifies wider support uses bounded offset copies restricted to alternating single-field masks.
     #[test]
     fn extended_field_support_is_native_offset_and_single_field_masks_with_bounds() {
         let a = run("gegl:deinterlace", vec![arg("size", ArgumentValue::Int(3))]).unwrap();
@@ -1130,6 +1160,7 @@ mod tests {
         c.interrupt = photocraft_raster::Interrupt::cancel_only(&cancelled);
         assert!(map(&effect, &c).unwrap().is_err());
     }
+    /// Checks independent channel level counts and transfer endpoints remain represented in native quantization data.
     #[test]
     fn quantization_preserves_unequal_channel_counts_and_endpoints() {
         let alias = StoredEffect::test("gegl:color-reduction", vec![arg("dither-method", ArgumentValue::Enum(0))]);
@@ -1150,6 +1181,7 @@ mod tests {
         );
     }
 
+    /// Verifies alpha quantization changes only coverage across supported native depths.
     #[test]
     fn alpha_quantization_uses_native_coverage_at_each_depth_without_touching_color() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -1182,6 +1214,7 @@ mod tests {
         let high = run("gegl:dither", vec![arg("alpha-levels", ArgumentValue::Int(65536))]).unwrap();
         assert_eq!(high.filters.last().unwrap().params["values"].as_array().unwrap().len(), 256);
     }
+    /// Compares seeded dithering against an independently constructed native noise/transfer pipeline at each depth.
     #[test]
     fn seeded_native_dither_matches_an_independent_native_counterpart_at_all_depths() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -1257,6 +1290,7 @@ mod tests {
         let covariant = run("gegl:dither", vec![arg("dither-method", ArgumentValue::Enum(4))]).unwrap();
         assert_eq!(covariant.filters[0].params["monochromatic"], true);
     }
+    /// Checks source offset and blur become the intended native light angle and variance-derived geometry.
     #[test]
     fn shadow_geometry_uses_light_angle_and_variance_not_defaults() {
         let a = run(
@@ -1286,6 +1320,7 @@ mod tests {
         let variance: f64 = branches[0].filters.iter().map(|f| f.params["radius"].as_f64().unwrap().powi(2)).sum();
         assert!((variance - 2250000.0).abs() < 1e-6);
     }
+    /// Verifies the native edge kernel's placement, ordering and zero response to constant input.
     #[test]
     fn standard_kernel_is_centered_row_major_and_zero_sum() {
         let a = run("gegl:edge-laplace", vec![]).unwrap();
@@ -1296,6 +1331,7 @@ mod tests {
         assert_eq!(k[0], 0.0);
         assert_eq!(k.iter().map(|v| v.as_f64().unwrap()).sum::<f64>(), 0.0);
     }
+    /// Checks derivative-direction choices author distinct editable native kernel structures.
     #[test]
     fn directional_sobel_and_prewitt_have_editable_native_constructions() {
         let a = run("gegl:edge-sobel", vec![arg("vertical", ArgumentValue::Bool(false)), arg("keep-sign", ArgumentValue::Bool(false))]).unwrap();
@@ -1306,6 +1342,7 @@ mod tests {
         assert_eq!(branches.len(), 2);
         assert_eq!(branches[0].blend, BlendMode::LinearDodge);
     }
+    /// Exercises native distance-shell rendering with depth, alpha and HDR behavior authoritative.
     #[test]
     fn distance_shells_render_native_depth_alpha_and_hdr_rules() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -1429,6 +1466,7 @@ mod tests {
         ctx.interrupt = photocraft_raster::Interrupt::cancel_only(&cancel);
         assert!(map(&effect, &ctx).unwrap().is_err());
     }
+    /// Compares authored native generator data with independently specified mathematical cases and bounded output extents.
     #[test]
     fn original_native_generators_have_closed_form_counterparts_and_finite_extents() {
         let m = run(
@@ -1524,6 +1562,7 @@ mod tests {
         assert!(map(&StoredEffect::test("gegl:fractal-explorer", vec![arg("iter", ArgumentValue::Int(1000))]), &c).unwrap().is_err());
         assert_eq!(checks.load(std::sync::atomic::Ordering::Relaxed), 6);
     }
+    /// Checks inactive fractal constants do not create fake changes while logarithmic palette controls have a native effect.
     #[test]
     fn sierpinski_inactive_constants_and_active_log_palette_have_native_counterparts() {
         let c = MappingContext { native_filter_bounds: Rect::new(0, 0, 1, 1), ..context() };
@@ -1562,6 +1601,7 @@ mod tests {
         assert_eq!(make(false, 1.25, 1.25), linear);
         assert_eq!(make(true, 1.25, 1.25), logarithmic);
     }
+    /// Verifies coordinate tracing retains actual input and persists an editable ordinary native displacement map.
     #[test]
     fn fractal_trace_preserves_input_with_editable_native_map_and_reopen() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -1653,6 +1693,7 @@ mod tests {
         assert!(map(&effect, &c).unwrap().is_err());
         assert!(run("gegl:fractal-trace", vec![arg("X1", ArgumentValue::Float(0.5))]).is_err());
     }
+    /// Checks degenerate tile and derivative cases use explicit native paint policies rather than unrelated default effects.
     #[test]
     fn zero_tile_background_and_disabled_sobel_axes_translate_to_native_paint() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -1707,6 +1748,7 @@ mod tests {
             assert_eq!(photocraft_compose::flatten(&photocraft_format::load_from_bytes(&bytes).unwrap()).px, before.px);
         }
     }
+    /// Verifies expansion and floating cell spacing stay geometry controls instead of collapsing to native dialog tile counts.
     #[test]
     fn cubism_expansion_and_exact_spacing_are_native_geometry_not_dialog_counts() {
         use photocraft_geom::{Point, Rect};
@@ -1753,6 +1795,7 @@ mod tests {
         assert_ne!(large[1].transform, larger[1].transform);
         assert!(matches!(make(4., 0., 0).structure, Some(NativeStructure::Replace { .. })));
     }
+    /// Compares averaging, placement and overlap with independent native cell constructions and save/reopen.
     #[test]
     fn cubism_native_average_placement_overlap_and_persistence_have_independent_counterparts() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -1827,6 +1870,7 @@ mod tests {
             assert_eq!(source.read_region(bounds), original);
         }
     }
+    /// Checks dense cell geometry and aggregate cache admission fail before native resources are generated.
     #[test]
     fn cubism_dense_geometry_and_aggregate_caches_reject_atomically_before_native_generation() {
         let effect = StoredEffect::test("gegl:cubism", vec![arg("tile-size", ArgumentValue::Float(0.0001))]);
@@ -1847,6 +1891,7 @@ mod tests {
         let c = MappingContext { native_filter_bounds: photocraft_geom::Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX), ..context() };
         assert!(cubism(&effect, &c).is_err());
     }
+    /// Verifies lighting, endpoint and detail conversions against existing native mathematical controls.
     #[test]
     fn light_intensity_endpoint_and_detail_controls_use_actual_native_math() {
         use photocraft_color::{PixelFormat, SampleType};
@@ -1969,6 +2014,7 @@ mod tests {
         let LayerContent::Smart(smart) = &reopened.layers[0].content else { panic!("native detail") };
         assert_eq!(smart.smart_filters, mapping.filters);
     }
+    /// Requires remaining unsupported lighting or coverage intent to be disclosed instead of silently discarded.
     #[test]
     fn partial_native_intent_keeps_unmapped_lighting_coverage_and_intensity_explicit() {
         let a = run(
@@ -2010,6 +2056,7 @@ mod tests {
         );
         assert_eq!(a.filters.last().unwrap().params["saturation"], -50.0);
     }
+    /// Checks invalid numbers and unfinished constructions retain source data without executing or allocating a substitute generator.
     #[test]
     fn hostile_numbers_unknown_controls_and_unfinished_generators_stay_inert() {
         assert_eq!(run("gegl:dropshadow", vec![arg("radius", ArgumentValue::Float(f32::NAN))]).unwrap_err().reason, ConversionReason::InvalidOptionalData);

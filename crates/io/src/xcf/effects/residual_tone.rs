@@ -8,6 +8,8 @@ use photocraft_geom::{Rect, Size};
 use photocraft_raster::Surface;
 use serde_json::{Value, json};
 type Result<T> = std::result::Result<T, MappingFailure>;
+/// Read a finite numeric control within its declared source range rather than silently clamping it to native
+/// bounds.
 fn num(e: &StoredEffect<'_>, name: &str, default: f64, lo: f64, hi: f64) -> Result<f64> {
     let value = e.number(name)?.unwrap_or(default);
     if !value.is_finite() || value < f64::from(lo as f32) || value > f64::from(hi as f32) {
@@ -15,6 +17,7 @@ fn num(e: &StoredEffect<'_>, name: &str, default: f64, lo: f64, hi: f64) -> Resu
     }
     Ok(value)
 }
+/// Require an integral stored control inside the bounded unsigned domain before using it as a count.
 fn integer(e: &StoredEffect<'_>, name: &str, default: u32, lo: u32, hi: u32) -> Result<u32> {
     let v = num(e, name, f64::from(default), f64::from(lo), f64::from(hi))?;
     if v.fract() != 0.0 {
@@ -22,6 +25,7 @@ fn integer(e: &StoredEffect<'_>, name: &str, default: u32, lo: u32, hi: u32) -> 
     }
     Ok(v as u32)
 }
+/// Validate a stored enum against the adapter's explicit supported choices.
 fn choice(e: &StoredEffect<'_>, name: &str, default: i32, options: &[i32]) -> Result<i32> {
     let v = e.enum_value(name)?.unwrap_or(default);
     if !options.contains(&v) {
@@ -29,6 +33,8 @@ fn choice(e: &StoredEffect<'_>, name: &str, default: i32, options: &[i32]) -> Re
     }
     Ok(v)
 }
+/// Reject unconsumed source properties so unsupported controls remain visible through retention rather than
+/// being dropped.
 fn allowed(e: &StoredEffect<'_>, names: &[&str]) -> Result<()> {
     for a in &e.arguments {
         if !names.contains(&a.name) {
@@ -37,9 +43,12 @@ fn allowed(e: &StoredEffect<'_>, names: &[&str]) -> Result<()> {
     }
     Ok(())
 }
+/// Package a single ordinary native filter with the note documenting its translation policy.
 fn one(command: &str, params: Value, note: &str) -> NativeMapping {
     NativeMapping { filters: vec![native_filter(command, params)], notes: vec![note.into()], ..Default::default() }
 }
+/// Dispatch the owned finite tonal and pattern batch, leaving other identities available to their designated
+/// adapters.
 pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext) -> MappingResult {
     Some(match e.canonical_operation(){
  "gegl:absolute"=>{allowed(e,&[]).map(|()|NativeMapping{layer_effects:vec![Effect::ColorOverlay{common:FxCommon::new(BlendMode::Difference,1.),color:Color::BLACK}],notes:vec!["Signed source absolute becomes an ordinary native black Color Overlay in Difference mode: native abs(color - black). Native layer coverage, transparent hidden colors and compositing rules apply; no source evaluator or signed-domain LUT is required".into()],..Default::default()})},
@@ -55,6 +64,7 @@ pub(super) fn map(e: &StoredEffect<'_>, c: &MappingContext) -> MappingResult {
  "gegl:color-to-alpha"=>color_to_alpha(e,c),
  "gegl:convolution-matrix"=>convolution(e,c),_=>return None})
 }
+/// Factor saturation into ordinary bounded native passes, preserving zero and large valid saturation intent.
 fn saturation_filters(factor: f64) -> Vec<photocraft_doc::SmartFilter> {
     let mut remaining = factor;
     let mut filters = Vec::new();
@@ -79,6 +89,8 @@ fn saturation_filters(factor: f64) -> Vec<photocraft_doc::SmartFilter> {
     }
     filters
 }
+/// Construct an editable native gray image and clipped rotated color grid after bounding geometry and
+/// metadata costs.
 fn assimilation(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["grid-size", "saturation", "angle", "line-thickness"])?;
     let period = num(e, "grid-size", 23., 0., 150.)?;
@@ -144,6 +156,8 @@ fn assimilation(e: &StoredEffect<'_>, context: &MappingContext) -> Result<Native
     Ok(NativeMapping{structure:Some(NativeStructure::Composite{branches:vec![NativeBranch{filters:gray,..Default::default()},NativeBranch{filters:saturation_filters(saturation),vector_mask:Some(mask),clipped:true,..Default::default()}]}),notes:vec!["Observed gray-base/colored-grid intent becomes ordinary native gray Channel Mixer plus a saturated source branch clipped to the gray base and editable vector rectangles. Grid period/angle/fractional line thickness control native geometry; saturation becomes bounded native luminance-preserving matrix gains (multiple native passes above 2). Native clipping preserves base alpha; native luma weights, 1/1024 coefficient quantization, working color, grid phase, vector antialias and per-layer alpha mixing differ from source rendering. All pixels/colors derive from the actual input, with no source graph or cached source render".into()],..Default::default()})
 }
 
+/// Generate deterministic native cellular Pattern data from rank, norm, octave, seed, and palette controls
+/// under live budgets.
 fn cell_noise(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["scale", "shape", "rank", "iterations", "palettize", "seed"])?;
     let scale = num(e, "scale", 1., 0., 20.)?;
@@ -212,6 +226,8 @@ fn cell_noise(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMa
     )
 }
 
+/// Convert the actual key color through native CMS and map source thresholds to the ordinary native Color to
+/// Alpha filter.
 fn color_to_alpha(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["color", "transparency-threshold", "opacity-threshold"])?;
     let transparency = num(e, "transparency-threshold", 0., 0., 1.)?;
@@ -228,6 +244,8 @@ fn color_to_alpha(e: &StoredEffect<'_>, context: &MappingContext) -> Result<Nati
     ))
 }
 
+/// Translate periodic frequency, phase, and keep controls into bounded native pencil Curves, with ordinary
+/// HSL conversion when requested.
 fn alien(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(
         e,
@@ -275,6 +293,8 @@ fn alien(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     }
     Ok(NativeMapping{filters,notes:vec!["Source frequency/phase/keep controls become bounded editable native piecewise-linear periodic Curves; native triangular waveform, finite curve sampling, HSL conversion, document encoding and HDR gamut differ from source remapping".into()],..Default::default()})
 }
+/// Represent enabled coverage bounds with native Clamp Alpha or Set Alpha, preserving identity and retaining
+/// crossed unsupported domains.
 fn alpha_clip(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(e, &["clip-low", "low-limit", "clip-high", "high-limit"])?;
     let low = num(e, "low-limit", 0., -f64::from(f32::MAX), f64::from(f32::MAX))?;
@@ -305,6 +325,8 @@ fn alpha_clip(e: &StoredEffect<'_>) -> Result<NativeMapping> {
         ))
     }
 }
+/// Construct an editable native elliptical lens region with explicit policies for unchanged or replaced
+/// surrounding pixels.
 fn lens(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMapping> {
     use photocraft_doc::{Path, Subpath, VectorMask};
     allowed(e, &["refraction-index", "keep-surroundings", "background-color"])?;
@@ -353,6 +375,7 @@ fn lens(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMapp
     })
 }
 
+/// Translate source bevel intent into ordinary editable native bevel properties and lighting units.
 fn bevel(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["type", "blendmode", "metric", "radius", "elevation", "depth", "azimuth"])?;
     let kind = choice(e, "type", 0, &[0, 1])?;
@@ -396,6 +419,7 @@ fn bevel(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     };
     Ok(NativeMapping{layer_effects:vec![Effect::BevelEmboss(b)],notes:vec!["Chamfer/bump and distance metric become native bevel style/technique approximations; radius,light angles and depth percentage remain editable. Native bevel shading, blend placement and native contour differ".into()],..Default::default()})
 }
+/// Keep the original and add an admitted native highlight/blur branch rather than baking source glow pixels.
 fn bloom(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(e, &["threshold", "softness", "radius", "strength", "limit-exposure"])?;
     let threshold = num(e, "threshold", 50., 0., 100.)? / 100.;
@@ -421,6 +445,8 @@ fn bloom(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     }
     Ok(NativeMapping{structure:Some(NativeStructure::Composite{branches:vec![NativeBranch::default(),NativeBranch{filters,blend:if limit{BlendMode::Screen}else{BlendMode::LinearDodge},opacity:strength as f32,..Default::default()}]}),notes:vec!["Native highlight Curves→Gaussian branch recombines over ordinary native original pixels. Source threshold/softness percentages use a native linear highlight ramp; native per-channel highlight choice,blur kernel,screen/add and HDR clipping differ".into()],..Default::default()})
 }
+/// Translate the tonal edge intent into ordinary native filters and report the different native
+/// edge/threshold policy.
 fn cartoon(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     allowed(e, &["mask-radius", "pct-black"])?;
     let radius = num(e, "mask-radius", 7., 0., 50.)?;
@@ -435,6 +461,8 @@ fn cartoon(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     filters.push(native_filter("image.adjustments.levels", json!({"inBlack":black*253.,"inWhite":255.,"gamma":1.,"outBlack":0.,"outWhite":255.})));
     Ok(NativeMapping{filters,notes:vec!["Source mask radius becomes native edge-preserving preprocessing; native edge Multiply and black-point Levels approximate cartoon outlines. pct-black is a native black-point proportion, not the source region-count algorithm; native edges/colors/clipping differ".into()],..Default::default()})
 }
+/// Generate a native Pattern resource only after checking dimensions, padded tiles, live allowances, and
+/// cancellation.
 pub(super) fn pattern_result(
     name: &str,
     size: Size,
@@ -532,6 +560,7 @@ pub(super) fn pattern_result(
         ..Default::default()
     })
 }
+/// Decode an integral source pattern offset into the finite native coordinate representation.
 fn offset(e: &StoredEffect<'_>, name: &str) -> Result<f32> {
     let value = num(e, name, 0., f64::from(i32::MIN), f64::from(i32::MAX))?;
     if value.fract() != 0. {
@@ -539,6 +568,7 @@ fn offset(e: &StoredEffect<'_>, name: &str) -> Result<f32> {
     }
     Ok(value as f32)
 }
+/// Accept only declared quarter-turn pattern rotations, rejecting unknown textual rotation values.
 fn rotation(e: &StoredEffect<'_>) -> Result<f32> {
     match e.argument("rotation")? {
         None => Ok(0.),
@@ -550,6 +580,8 @@ fn rotation(e: &StoredEffect<'_>) -> Result<f32> {
         _ => Err("unknown Bayer quarter-turn rotation".into()),
     }
 }
+/// Author standard Bayer-order native Pattern pixels with explicit scale, reflection, phase, and tone
+/// controls.
 fn bayer(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["subdivisions", "x-scale", "y-scale", "rotation", "reflect", "amplitude", "offset", "exponent", "x-offset", "y-offset"])?;
     let subdivisions = integer(e, "subdivisions", 1, 0, 15)?;
@@ -596,6 +628,8 @@ fn bayer(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         "Standard Bayer ordered threshold data becomes an ordinary editable native Pattern Fill. Logarithmic amplitude/exponent and source offsets are translated; native pattern rotation/linking, finite storage/CMS and document compositing apply; source procedural controls remain retained historical data",
     )
 }
+/// Create assigned-profile native checker paint with bounded period/offset data; unknown explicit source
+/// pixel formats remain unsupported.
 fn checker(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["x", "y", "x-offset", "y-offset", "color1", "color2", "format"])?;
     if e.argument("format")?.is_some() {
@@ -625,6 +659,8 @@ fn checker(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         "Typed source checker colors and cell sizes become a native Pattern Fill, converted through their own source spaces and actual target ICC. Native pattern phase/linking and document compositing are authoritative",
     )
 }
+/// Translate the stored row-major kernel and channel flags into native normalized convolution, preserving
+/// explicit alpha-weight and boundary policies.
 fn convolution(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     let mut names: Vec<String> =
         ["divisor", "offset", "red", "green", "blue", "alpha", "normalize", "alpha-weight", "border"].iter().map(|v| (*v).to_string()).collect();
@@ -670,6 +706,7 @@ fn convolution(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeM
 mod tests {
     use super::super::{Argument, ColorLiteral};
     use super::*;
+    /// Provide a bounded native document context and live allowances for tonal and pattern conversion tests.
     fn ctx() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -683,16 +720,20 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Construct a floating stored control for direct mapper tests without config-text parsing.
     fn arg(name: &'static str, value: f32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Float(value) }
     }
+    /// Construct a signed stored integer to test both accepted counts and rejected negative domains.
     fn int(name: &'static str, value: i32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Int(value) }
     }
+    /// Construct a typed source boolean so tests isolate flag semantics from argument parsing.
     fn flag(name: &'static str, value: bool) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Bool(value) }
     }
     #[test]
+    /// Compare native elliptical masks and outside-region policy across native depths and persistence.
     fn lens_native_ellipse_preserves_or_replaces_the_entire_surrounding_region() {
         use photocraft_doc::Document;
         use photocraft_raster::Interrupt;
@@ -768,6 +809,8 @@ mod tests {
         assert!(map(&StoredEffect::test("gegl:apply-lens", vec![]), &context).unwrap().is_err());
     }
     #[test]
+    /// Check independently known Bayer samples and verify the generated native Pattern remains editable after
+    /// reopen.
     fn standard_bayer_pattern_is_native_color_data_and_survives_native_reopen() {
         let converted = map(&StoredEffect::test("gegl:bayer-matrix", vec![]), &ctx()).unwrap().unwrap();
         let Some(NativeStructure::Replace { layer, patterns }) = converted.structure else { panic!("native replacement") };
@@ -791,6 +834,7 @@ mod tests {
         assert!(first.px.iter().all(|p| p[3] == 1.));
     }
     #[test]
+    /// Assert reflection, size, phase, and rotation remain separate native pattern controls.
     fn bayer_reflection_scale_phase_and_quarter_turn_stay_editable() {
         let source = StoredEffect::test(
             "gegl:bayer-matrix",
@@ -811,6 +855,8 @@ mod tests {
         assert_eq!((angle, phase), (90., (-3., 7.)));
     }
     #[test]
+    /// Compare checker paints with independent destination-profile conversion rather than changing only color
+    /// labels.
     fn checker_uses_actual_target_icc_instead_of_relabeling_srgb_colors() {
         let mut context = ctx();
         context.linear = false;
@@ -835,6 +881,8 @@ mod tests {
         assert_eq!(patterns[0].surface.pixel(1, 0), [1., 1., 1., 1.]);
     }
     #[test]
+    /// Require actual native bevel schema fields and meaningful unit conversions instead of inert
+    /// source-shaped parameters.
     fn bevel_uses_actual_native_editable_fields() {
         let source = StoredEffect::test("gegl:bevel", vec![arg("radius", 4.), arg("elevation", 150.), int("depth", 75), arg("azimuth", 120.)]);
         let converted = map(&source, &ctx()).unwrap().unwrap();
@@ -844,6 +892,7 @@ mod tests {
         assert_eq!(bevel.technique, BevelTechnique::ChiselHard);
     }
     #[test]
+    /// Verify bloom retains the editable original and a distinct native highlight/blur construction.
     fn bloom_preserves_original_and_builds_native_highlight_blur_branch() {
         let converted =
             map(&StoredEffect::test("gegl:bloom", vec![arg("threshold", 50.), arg("softness", 20.), arg("radius", 4.), arg("strength", 25.)]), &ctx())
@@ -858,6 +907,8 @@ mod tests {
         assert_eq!(branches[1].filters[1].params["radius"], 4.0);
     }
     #[test]
+    /// Check native kernel channel selection, alpha weighting, boundary mode, and scalar-Gray handling remain
+    /// explicit.
     fn native_convolution_retains_selected_alpha_weighting_boundaries_and_scalar_gray_policy() {
         for border in 0..=4 {
             let source = StoredEffect::test(
@@ -892,6 +943,8 @@ mod tests {
     }
 
     #[test]
+    /// Verify independent kernel positions and normalized offset values reach the ordinary native convolution
+    /// schema.
     fn custom_kernel_is_row_major_and_offset_is_in_native_units() {
         let source = StoredEffect::test(
             "gegl:convolution-matrix",
@@ -914,6 +967,7 @@ mod tests {
         assert_eq!(p["scale"], 2.0);
     }
     #[test]
+    /// Exercise identity, constant-alpha, and bounded-range mappings as distinct native coverage operations.
     fn alpha_clip_identity_constant_and_range_are_native_coverage_operations() {
         assert!(map(&StoredEffect::test("gegl:alpha-clip", vec![]), &ctx()).unwrap().unwrap().filters.is_empty());
         let clipped = map(&StoredEffect::test("gegl:alpha-clip", vec![arg("low-limit", 0.25)]), &ctx()).unwrap().unwrap();
@@ -930,6 +984,7 @@ mod tests {
         assert_eq!(map(&StoredEffect::test("gegl:color-enhance", vec![]), &ctx()).unwrap().unwrap().filters[0].command, "image.autoTone");
     }
     #[test]
+    /// Reject absurd pattern dimensions and nonfinite controls before creating resource-sized allocations.
     fn hostile_pattern_sizes_and_nonfinite_controls_fail_before_allocation() {
         for source in [
             StoredEffect::test("gegl:bayer-matrix", vec![int("subdivisions", 15)]),
@@ -942,6 +997,8 @@ mod tests {
         }
     }
     #[test]
+    /// Prove native tile storage and current remaining allowance are admitted before the sampling callback
+    /// runs.
     fn generated_pattern_checks_padded_tiles_and_live_remaining_budget_before_sampling() {
         let sampled = std::cell::Cell::new(false);
         // Even a single pixel requires a full native tile, unlike its tiny
@@ -994,6 +1051,8 @@ mod tests {
         assert_eq!(patterns[0].surface.read_region(Rect::new(0, 0, 1, 1))[1], 0.5);
     }
     #[test]
+    /// Require both early and mid-generation cancellation to stop without publishing a partially generated
+    /// native pattern.
     fn generated_pattern_honors_preexisting_and_mid_row_cancellation() {
         use photocraft_raster::Interrupt;
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1035,6 +1094,8 @@ mod tests {
         assert!((4..=256).contains(&sampled.load(Ordering::Relaxed)));
     }
     #[test]
+    /// Compare the signed absolute-value construction against independent native Difference styling with HDR
+    /// and partial alpha.
     fn signed_absolute_is_native_difference_style_with_hdr_and_fractional_coverage() {
         let converted = map(&StoredEffect::test("gegl:absolute", vec![]), &ctx()).unwrap().unwrap();
         let mut surface = Surface::new(PixelFormat::new(ColorMode::Rgb, SampleType::F32, true));
@@ -1054,6 +1115,8 @@ mod tests {
         assert_eq!(alias.operation, "gegl:abs");
     }
     #[test]
+    /// Verify assigned-profile key conversion and native unmix behavior through actual coverage and
+    /// independent native replay.
     fn typed_color_to_alpha_uses_native_icc_key_and_actual_native_unmix_coverage() {
         let source = StoredEffect::test(
             "gegl:color-to-alpha",
@@ -1089,6 +1152,7 @@ mod tests {
         assert!(map(&StoredEffect::test("gegl:color-to-alpha", vec![arg("transparency-threshold", -0.01)]), &ctx()).unwrap().is_err());
     }
     #[test]
+    /// Check each cellular control changes meaningful native data and survives native resource persistence.
     fn cellular_pattern_translates_rank_norm_octaves_palette_seed_and_native_reopen() {
         let converted = map(&StoredEffect::test("gegl:cell-noise", vec![]), &ctx()).unwrap().unwrap();
         let Some(NativeStructure::Replace { layer, patterns }) = converted.structure else { panic!("native cellular pattern") };
@@ -1123,6 +1187,8 @@ mod tests {
         assert!(map(&StoredEffect::test("gegl:cell-noise", vec![int("iterations", 20)]), &oversized).unwrap().is_err());
     }
     #[test]
+    /// Compare the native grid construction with independently authored native data across HDR, alpha, and
+    /// reopen cases.
     fn assimilation_is_editable_gray_and_clipped_color_grid_with_native_hdr_and_alpha() {
         use photocraft_doc::adjust::Adjustment;
         let bounds = Rect::new(0, 0, 16, 16);

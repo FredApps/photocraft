@@ -7,9 +7,12 @@ use photocraft_doc::import_conversion::ConversionReason;
 use serde_json::json;
 
 type Result<T> = std::result::Result<T, MappingFailure>;
+/// Classify malformed coverage controls as invalid optional data, preserving distinction from native
+/// capability limits.
 fn invalid(message: impl Into<String>) -> MappingFailure {
     MappingFailure { reason: ConversionReason::InvalidOptionalData, message: message.into() }
 }
+/// Read a finite control within the declared source range and reject malformed numeric representations.
 fn number(e: &StoredEffect<'_>, key: &str, default: f64, low: f64, high: f64) -> Result<f64> {
     let v = e.number(key).map_err(invalid)?.unwrap_or(default);
     if !v.is_finite() || !(low..=high).contains(&v) {
@@ -17,6 +20,7 @@ fn number(e: &StoredEffect<'_>, key: &str, default: f64, low: f64, high: f64) ->
     }
     Ok(v)
 }
+/// Require integral bounded counts before converting them to native unsigned parameters.
 fn integer(e: &StoredEffect<'_>, key: &str, default: u32, low: u32, high: u32) -> Result<u32> {
     let v = number(e, key, f64::from(default), f64::from(low), f64::from(high))?;
     if v.fract() != 0.0 {
@@ -24,6 +28,8 @@ fn integer(e: &StoredEffect<'_>, key: &str, default: u32, low: u32, high: u32) -
     }
     Ok(v as u32)
 }
+/// Accept only known stored enum indices or nicknames; reject unknown variants instead of selecting a
+/// default.
 fn choice(e: &StoredEffect<'_>, key: &str, default: usize, names: &[&str]) -> Result<usize> {
     match e.argument(key).map_err(invalid)? {
         None => Ok(default),
@@ -32,6 +38,7 @@ fn choice(e: &StoredEffect<'_>, key: &str, default: usize, names: &[&str]) -> Re
         _ => Err(invalid(format!("{key} must be a stored enum/nick"))),
     }
 }
+/// Validate consumed property names and duplicate access before constructing native coverage data.
 fn allowed(e: &StoredEffect<'_>, names: &[&str]) -> Result<()> {
     for arg in &e.arguments {
         if !names.contains(&arg.name) {
@@ -42,6 +49,7 @@ fn allowed(e: &StoredEffect<'_>, names: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Author a bounded radial native displacement map with explicit center, phase, aspect, and boundary policy.
 fn waves(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["x", "y", "amplitude", "period", "phi", "aspect", "sampler-type", "clamp"])?;
     let x = number(e, "x", 0.5, -f64::MAX, f64::MAX)?;
@@ -100,6 +108,8 @@ fn waves(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping
     Ok(mapping)
 }
 
+/// Build ordered native whirl/pinch effects in an editable parent frame with complementary coverage masks and
+/// bounded angle handling.
 fn whirl(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMapping> {
     use super::{NativeBranch, NativeStructure};
     use photocraft_doc::vector::PathOp;
@@ -178,6 +188,8 @@ fn whirl(e: &StoredEffect<'_>, context: &MappingContext<'_>) -> Result<NativeMap
     })
 }
 
+/// Translate wind direction, edge choice, seed, and strength into admitted native repetitions and fractional
+/// final opacity.
 fn wind(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["style", "direction", "edge", "threshold", "strength", "seed"])?;
     let style = choice(e, "style", 0, &["wind", "blast"])?;
@@ -222,6 +234,8 @@ fn wind(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping>
     })
 }
 
+/// Map only native-compatible stored component layouts; retain layouts that would relabel or incorrectly
+/// alter native alpha.
 fn scalar(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     allowed(e, &["n-components", "factor"])?;
     let components = integer(e, "n-components", 2, 1, 16)?;
@@ -266,6 +280,8 @@ fn scalar(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     })
 }
 
+/// Dispatch the finite coverage batch, including native alpha replacement/threshold intent without treating
+/// it as layer opacity.
 pub(super) fn map(e: &StoredEffect<'_>, context: &MappingContext) -> MappingResult {
     Some(match e.operation {
         "gegl:waves" => waves(e, context),
@@ -296,6 +312,7 @@ mod tests {
     use super::super::Argument;
     use super::*;
     use photocraft_geom::Rect;
+    /// Provide an explicit native frame and resource allowance for coverage-adapter fixtures.
     fn ctx() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -309,13 +326,18 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Construct a named stored argument with its exact value type for coverage-domain fixtures.
     fn arg(name: &'static str, value: ArgumentValue<'static>) -> Argument<'static> {
         Argument { name, value }
     }
+    /// Route a direct fixture through the owned coverage adapter and expose its accepted mapping or
+    /// classified conversion failure.
     fn run(op: &'static str, args: Vec<Argument<'static>>) -> Result<NativeMapping> {
         map(&StoredEffect::test(op, args), &ctx()).unwrap()
     }
     #[test]
+    /// Verify wind direction resolves to the correct native axis/destination and deterministic seed
+    /// parameters.
     fn wind_destination_and_axis_are_native_and_seed_survives() {
         for (direction, native, turns) in [(0, "fromRight", 0), (1, "fromLeft", 0), (2, "fromLeft", 1), (3, "fromRight", 1)] {
             let a = run("gegl:wind", vec![arg("direction", ArgumentValue::Enum(direction)), arg("seed", ArgumentValue::UInt(u32::MAX))]).unwrap();
@@ -325,6 +347,8 @@ mod tests {
         }
     }
     #[test]
+    /// Check wind strength is represented by bounded repetitions plus a fractional pass rather than a
+    /// silently clipped amount.
     fn wind_magnitude_is_native_repetition_and_fractional_opacity_with_budgets() {
         let small = run("gegl:wind", vec![arg("strength", ArgumentValue::Int(1))]).unwrap();
         assert_eq!(small.filters.len(), 1);
@@ -335,6 +359,7 @@ mod tests {
         assert!(wind(&StoredEffect::test("gegl:wind", vec![]), &MappingContext { remaining_metadata_bytes: 1, ..ctx() }).is_err());
     }
     #[test]
+    /// Compare native replay with independently authored wind stages and verify editable filter persistence.
     fn wind_strength_matches_independent_native_stages_and_reopens_as_editable_filters() {
         use photocraft_color::{PixelFormat, SampleType};
         use photocraft_doc::{Affine, Document, Layer, LayerContent, SmartObject, SmartSource};
@@ -386,6 +411,7 @@ mod tests {
         }
     }
     #[test]
+    /// Check independent radial wave coordinates, phase, aspect, and edge policy in the embedded native map.
     fn radial_waves_keep_center_phase_aspect_and_boundary_as_native_map_data() {
         let a = run("gegl:waves", vec![arg("amplitude", ArgumentValue::Float(2.0)), arg("period", ArgumentValue::Float(25.0))]).unwrap();
         assert_eq!(a.filters[0].command, "filter.distort.displace");
@@ -406,6 +432,8 @@ mod tests {
         assert!(waves(&StoredEffect::test("gegl:waves", vec![]), &tiny).is_err());
     }
     #[test]
+    /// Compare the wave map with an independently sampled native sine counterpart and verify native
+    /// editing/persistence.
     fn wave_native_sine_counterpart_renders_and_survives_native_edit_reopen() {
         use photocraft_color::{PixelFormat, SampleType};
         use photocraft_doc::{Affine, Document, Layer, LayerContent, SmartObject, SmartSource};
@@ -469,6 +497,8 @@ mod tests {
         assert!(waves(&StoredEffect::test("gegl:waves", vec![]), &MappingContext { interrupt: Interrupt::cancel_only(&cancelled), ..context }).is_err());
     }
     #[test]
+    /// Require the declared whirl-then-pinch order and reject or bound angles before excessive native stage
+    /// generation.
     fn whirl_pinch_are_ordered_and_large_angles_bounded() {
         let a = run("gegl:whirl-pinch", vec![arg("whirl", ArgumentValue::Float(1500.0)), arg("pinch", ArgumentValue::Float(0.5))]).unwrap();
         assert_eq!(a.filters.len(), 3);
@@ -479,6 +509,8 @@ mod tests {
         assert!(larger.filters.len() > 16 && larger.filters.len() <= 64);
     }
     #[test]
+    /// Verify radius changes produce actual native framing and complementary masks, preserving coverage
+    /// outside the effect.
     fn whirl_radius_is_an_editable_native_parent_frame_with_complementary_masks() {
         use super::super::NativeStructure;
         use photocraft_color::{PixelFormat, SampleType};
@@ -541,6 +573,8 @@ mod tests {
         assert!(map(&effect, &c).unwrap().is_err());
     }
     #[test]
+    /// Check compatible scalar color scope and explicit retention when alpha cannot be represented by that
+    /// layout.
     fn scalar_preserves_channel_scope_and_reports_unapplied_alpha() {
         let a = run("gimp:scalar-multiply", vec![arg("n-components", ArgumentValue::Int(2)), arg("factor", ArgumentValue::Float(0.5))]).unwrap();
         assert_eq!(a.filters[0].params["red"], json!([50.0, 0.0, 0.0, 0.0]));
@@ -557,6 +591,8 @@ mod tests {
         }
     }
     #[test]
+    /// Reject component-count reinterpretation that would mistake a native color or coverage sample for
+    /// another channel.
     fn generic_scalar_component_count_never_relabels_native_alpha() {
         use photocraft_color::SampleType;
         use photocraft_doc::Adjustment;
@@ -583,6 +619,8 @@ mod tests {
         assert!(mapping.notes[0].contains("generic n-components4 conversion is not RGBA"));
     }
     #[test]
+    /// Require native Set Alpha semantics so replacement affects actual coverage instead of multiplying
+    /// existing alpha.
     fn alpha_replacement_is_not_misrepresented_as_layer_opacity() {
         for op in ["gimp:set-alpha", "gimp:threshold-alpha"] {
             assert!(run(op, vec![]).unwrap().structure.is_none());
@@ -591,6 +629,7 @@ mod tests {
         assert!(map(&StoredEffect::test("not:owned", vec![]), &ctx()).is_none());
     }
     #[test]
+    /// Distinguish a declared optional pad from an actually missing required serialized input resource.
     fn declared_aux_pad_is_not_mistaken_for_a_missing_required_source_resource() {
         for (source, native) in [("gimp:set-alpha", "filter.other.setAlpha"), ("gimp:threshold-alpha", "filter.other.thresholdAlpha")] {
             for value in [0.0, 0.25, 0.5, 1.0] {

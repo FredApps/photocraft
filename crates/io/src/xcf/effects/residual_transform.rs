@@ -8,6 +8,8 @@ use photocraft_geom::{Affine, Rect};
 use serde_json::{Value, json};
 type Result<T> = std::result::Result<T, MappingFailure>;
 
+/// Read a finite stored number inside the conversion domain; reject out-of-range values instead of silently
+/// clamping native parameters.
 fn number(e: &StoredEffect<'_>, key: &str, default: f64, low: f64, high: f64) -> Result<f64> {
     let value = e.number(key)?.unwrap_or(default);
     if !value.is_finite() || value < f64::from(low as f32) || value > f64::from(high as f32) {
@@ -15,6 +17,7 @@ fn number(e: &StoredEffect<'_>, key: &str, default: f64, low: f64, high: f64) ->
     }
     Ok(value)
 }
+/// Require an integral stored value within the requested unsigned range before converting its representation.
 fn integer(e: &StoredEffect<'_>, key: &str, default: u32, low: u32, high: u32) -> Result<u32> {
     let value = number(e, key, f64::from(default), f64::from(low), f64::from(high))?;
     if value.fract() != 0.0 || value > f64::from(high) {
@@ -22,6 +25,7 @@ fn integer(e: &StoredEffect<'_>, key: &str, default: u32, low: u32, high: u32) -
     }
     Ok(value as u32)
 }
+/// Read a typed text property or its declared default; other stored argument types remain conversion errors.
 fn text<'a>(e: &'a StoredEffect<'a>, key: &str, default: &'a str) -> Result<&'a str> {
     match e.argument(key)? {
         None => Ok(default),
@@ -29,6 +33,7 @@ fn text<'a>(e: &'a StoredEffect<'a>, key: &str, default: &'a str) -> Result<&'a 
         _ => Err(format!("{key} must be text").into()),
     }
 }
+/// Reject properties this adapter cannot translate so source controls are never silently discarded.
 fn fields(e: &StoredEffect<'_>, keys: &[&str]) -> Result<()> {
     for argument in &e.arguments {
         if !keys.contains(&argument.name) {
@@ -37,9 +42,12 @@ fn fields(e: &StoredEffect<'_>, keys: &[&str]) -> Result<()> {
     }
     Ok(())
 }
+/// Package one ordinary native Smart Filter together with the policy explaining its approximation.
 fn mapped(command: &str, params: Value, note: &str) -> NativeMapping {
     NativeMapping { filters: vec![native_filter(command, params)], notes: vec![note.into()], ..Default::default() }
 }
+/// Dispatch this finite transform batch to native-data adapters; return no match for identities owned by
+/// other batches.
 pub(super) fn map(e: &StoredEffect<'_>, context: &MappingContext) -> MappingResult {
     Some(match e.operation {
         "gegl:photocopy" => photocopy(e),
@@ -59,6 +67,8 @@ pub(super) fn map(e: &StoredEffect<'_>, context: &MappingContext) -> MappingResu
         _ => return None,
     })
 }
+/// Translate the tonal outline intent into editable native filters, with an explicit native approximation of
+/// source sharpness and thresholds.
 fn photocopy(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     fields(e, &["mask-radius", "sharpness", "black", "white"])?;
     let radius = number(e, "mask-radius", 10., 0., 50.)?;
@@ -77,6 +87,8 @@ fn photocopy(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     filters.push(native_filter("image.adjustments.levels", json!({"inBlack":black*126.,"inWhite":255.-white*127.,"gamma":1.,"outBlack":0.,"outWhite":255.})));
     Ok(NativeMapping { filters, notes: vec!["Native Gaussian→Find Edges→Unsharp Mask→Levels approximates photocopy structure. Radius and sharpness stay editable; black/white become bounded native input-point proportions, not source image-percentile thresholds. Native kernels, color and alpha rules apply".into()], ..Default::default() })
 }
+/// Validate cell geometry and select native Mosaic or bounded native cell constructions without losing stored
+/// grid controls.
 fn pixelize(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     fields(e, &["norm", "size-x", "size-y", "offset-x", "offset-y", "ratio-x", "ratio-y", "background"])?;
     let norm = e.enum_value("norm")?.unwrap_or(2);
@@ -109,6 +121,8 @@ fn pixelize(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapp
     };
     native_pixel_cells((x, y), (offset_x, offset_y), norm, (rx, ry), background, context)
 }
+/// Build editable native cell masks and mean-color branches after checking grid counts and resource
+/// allowances.
 fn native_pixel_cells(
     size: (u32, u32),
     offset: (i64, i64),
@@ -191,6 +205,8 @@ fn native_pixel_cells(
         ..Default::default()
     })
 }
+/// Express enabled lower and upper color limits as ordered native blend structures, preserving coverage and
+/// signed HDR bounds.
 fn clip(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     use photocraft_color::{BlendMode, Color, ColorMode};
     fields(e, &["clip-low", "low-limit", "clip-high", "high-limit"])?;
@@ -230,6 +246,8 @@ fn clip(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping>
     Ok(NativeMapping { structure: Some(NativeStructure::Composite { branches }), notes, ..Default::default() })
 }
 
+/// Convert the declared wave geometry into a bounded embedded native displacement map and disclose native
+/// sampling and edge policies.
 fn ripple(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     fields(e, &["amplitude", "period", "phi", "angle", "sampler-type", "wave-type", "abyss-policy", "tileable"])?;
     let amplitude = number(e, "amplitude", 25., 0., 1000.)?;
@@ -326,6 +344,8 @@ fn ripple(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMappin
     }
     Ok(mapped)
 }
+/// Translate cluster size and compactness into editable native tessellation or regular-cell geometry, with
+/// bounded generation costs.
 fn slic(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     fields(e, &["cluster-size", "compactness", "iterations"])?;
     let size = integer(e, "cluster-size", 32, 2, i32::MAX as u32)?;
@@ -381,6 +401,8 @@ fn slic(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping>
     )];
     Ok(regular)
 }
+/// Keep the original image and add a native blurred, tone-shaped Screen branch rather than baking a source
+/// render.
 fn softglow(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     fields(e, &["glow-radius", "brightness", "sharpness"])?;
     let radius = number(e, "glow-radius", 10., 1., 50.)?;
@@ -393,6 +415,8 @@ fn softglow(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     ];
     Ok(NativeMapping { structure: Some(NativeStructure::Composite { branches: vec![NativeBranch::default(), NativeBranch { filters, blend: BlendMode::Screen, opacity: brightness as f32, ..Default::default() }] }), notes: vec!["Native highlight power Curves→Gaussian branch screens over ordinary original pixels. Source radius becomes native sigma; brightness becomes branch opacity and sharpness a native highlight exponent. This is an editable approximation with native color, kernel and compositing rules".into()], ..Default::default() })
 }
+/// Translate supported spherical controls into native Spherize parameters and structural framing; retain
+/// unrepresented source domains.
 fn spherize(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     fields(e, &["mode", "angle-of-view", "curvature", "amount", "sampler-type"])?;
     let mode = e.enum_value("mode")?.unwrap_or(0);
@@ -450,6 +474,7 @@ fn matrix(raw: &str) -> Result<Homography> {
     let coefficients: [f64; 9] = values.as_slice().try_into().map_err(|_| "Malformed numeric matrix")?;
     normalize_matrix(Homography(coefficients))
 }
+/// Normalize a finite invertible homography and reject unstable magnitudes before recursive native placement.
 fn normalize_matrix(matrix: Homography) -> Result<Homography> {
     let scale = if matrix.0[8].abs() >= 1e-12 { matrix.0[8] } else { matrix.0.iter().map(|v| v.abs()).fold(0., f64::max) };
     if !scale.is_finite() || scale == 0. {
@@ -462,6 +487,8 @@ fn normalize_matrix(matrix: Homography) -> Result<Homography> {
     Ok(matrix)
 }
 
+/// Build the inclusive requested sequence of native transform powers, fade, and layer order within depth and
+/// resource limits.
 fn recursive(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     fields(e, &["transform", "first-iteration", "iterations", "fade-color", "fade-opacity", "paste-below", "sampler-type"])?;
     let transform = matrix(text(e, "transform", "matrix (1, 0, 0, 0, 1, 0, 0, 0, 1)")?)?;
@@ -530,6 +557,8 @@ fn recursive(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMap
     Ok(NativeMapping { structure: Some(NativeStructure::Composite { branches }), notes: vec!["Inclusive first..first+iterations source copies become ordinary native affine or numeric projective Smart Object branches; homogeneous scale is normalized and every requested power has a finite invertible bounded footprint. Native front-side/horizon clipping and interpolation differ from source resampling; fade-opacity is exponentiated per iteration and paste-below reverses native stack order. Typed fade color becomes native ColorOverlay with effective alpha in effect opacity; repeated color fading is an explicit native approximation. Native interpolation, edge coverage, transformed style placement and working-space compositing apply".into()], ..Default::default() })
 }
 
+/// Translate brightness and adaptation intent into the checked native HDR Toning filter; its native tone
+/// response is the declared approximation.
 fn reinhard(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     fields(e, &["brightness", "chromatic", "light"])?;
     let brightness = number(e, "brightness", 0., -100., 100.)?;
@@ -542,6 +571,8 @@ fn reinhard(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     ))
 }
 
+/// Author a finite native camera displacement map and output-frame mask, checking generation, metadata, and
+/// cancellation first.
 fn panorama(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     fields(e, &["pan", "tilt", "spin", "zoom", "width", "height", "inverse", "sampler-type"])?;
     let pan = number(e, "pan", 0., -360., 360.)?.to_radians();
@@ -668,6 +699,8 @@ fn panorama(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapp
     }
     Ok(mapping)
 }
+/// Price all intersecting padded mask tiles and coordinate work with checked arithmetic before allocating a
+/// mask.
 pub(super) fn coordinate_mask_work_bytes(frame: Rect) -> Result<usize> {
     if frame.is_empty() {
         return Err("Panorama mask requires a nonempty frame".into());
@@ -683,6 +716,8 @@ pub(super) fn coordinate_mask_work_bytes(frame: Rect) -> Result<usize> {
     let row = usize::try_from(frame.width()).ok().and_then(|width| width.checked_mul(4)).ok_or("Panorama mask row size overflow")?;
     tiles.checked_add(row).ok_or_else(|| "Panorama mask scratch overflow".into())
 }
+/// Generate a static native coordinate mask only within both remaining allowances, checking cancellation
+/// during traversal.
 pub(super) fn coordinate_mask(context: &MappingContext, frame: Rect, visible: impl Fn(f64, f64) -> bool) -> Result<photocraft_doc::LayerMask> {
     use photocraft_color::{ColorMode, PixelFormat, SampleType};
     let bytes = coordinate_mask_work_bytes(frame)?;
@@ -789,6 +824,8 @@ pub(super) fn coordinate_map(context: &MappingContext, coordinate: impl Fn(u32, 
     Ok(mapped("filter.distort.displace", params, note))
 }
 
+/// Capture seeded one-axis shifts in an embedded native displacement resource instead of persisting a
+/// stochastic source evaluator.
 fn shift(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     fields(e, &["shift", "direction", "seed"])?;
     let amount = integer(e, "shift", 5, 0, 200)?;
@@ -845,6 +882,8 @@ fn shift(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping
     ))
 }
 
+/// Author a native RGB lookup for threshold-directed red suppression; the approximation changes color without
+/// claiming spatial eye detection.
 fn red_eye(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     fields(e, &["threshold"])?;
     let threshold = number(e, "threshold", 0.4, 0., 0.8)?;
@@ -859,6 +898,7 @@ fn red_eye(e: &StoredEffect<'_>) -> Result<NativeMapping> {
     }).map_err(Into::into)
 }
 
+/// Construct an ordinary rectangular vector mask in the requested native coordinate frame.
 fn extent_mask(x: f64, y: f64, width: u32, height: u32) -> photocraft_doc::VectorMask {
     photocraft_doc::VectorMask::new(photocraft_doc::Path::new(vec![photocraft_doc::Subpath::polygon(&[
         (x, y),
@@ -867,6 +907,8 @@ fn extent_mask(x: f64, y: f64, width: u32, height: u32) -> photocraft_doc::Vecto
         (x, y + f64::from(height)),
     ])]))
 }
+/// Represent an empty generator as editable transparent native fill data, preserving an explicitly empty
+/// result.
 fn empty_pattern() -> NativeMapping {
     NativeMapping {
         structure: Some(NativeStructure::Replace {
@@ -880,6 +922,8 @@ fn empty_pattern() -> NativeMapping {
         ..Default::default()
     }
 }
+/// Decode a portable stored color or use the declared default; unavailable or mistyped literal data is
+/// retained as an error.
 fn source_color(e: &StoredEffect<'_>, name: &str, default: [f32; 4]) -> Result<[f32; 4]> {
     match e.argument(name)? {
         None => Ok(default),
@@ -887,6 +931,8 @@ fn source_color(e: &StoredEffect<'_>, name: &str, default: [f32; 4]) -> Result<[
         _ => Err(format!("{name} has no portable source color literal").into()),
     }
 }
+/// Generate bounded native Pattern data from the stored sinusoidal controls and portable colors, retaining
+/// native editability.
 fn sinus(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     fields(e, &["x-scale", "y-scale", "complexity", "seed", "tiling", "perturbation", "color1", "color2", "blend-mode", "blend-power", "width", "height"])?;
     let xs = number(e, "x-scale", 15., 0.0001, 1_000_000.)?;
@@ -949,6 +995,8 @@ pub(super) fn lattice(x: i64, y: i64, z: i64, seed: u32) -> f64 {
     value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
     (value ^ (value >> 31)) as f64 / u64::MAX as f64
 }
+/// Sample the importer-authored deterministic lattice field used to create static native noise Pattern
+/// pixels.
 fn value_noise(x: f64, y: f64, z: f64, seed: u32) -> f64 {
     let (ix, iy, iz) = (x.floor() as i64, y.floor() as i64, z.floor() as i64);
     let smooth = |v: f64| v * v * (3. - 2. * v);
@@ -966,6 +1014,8 @@ fn value_noise(x: f64, y: f64, z: f64, seed: u32) -> f64 {
     }
     value
 }
+/// Translate this finite noise-generator family into bounded static native patterns with explicit seed,
+/// octave, color, and extent policies.
 fn noise(e: &StoredEffect<'_>, context: &MappingContext) -> Result<NativeMapping> {
     let (width, height, x, y, seed, octaves, frequency, multiplier, decay, z, colored) = match e.operation {
         "gegl:plasma" => {
@@ -1085,6 +1135,7 @@ mod tests {
     use super::*;
     use photocraft_color::{ColorMode, SampleType};
     use photocraft_geom::Rect;
+    /// Provide a bounded native frame and generous local allowances for transform-mapping fixtures.
     fn context() -> MappingContext<'static> {
         MappingContext {
             mode: ColorMode::Rgb,
@@ -1098,19 +1149,26 @@ mod tests {
             interrupt: photocraft_raster::Interrupt::NONE,
         }
     }
+    /// Construct a floating stored argument without passing through textual parsing, isolating mapper
+    /// behavior in tests.
     fn number(name: &'static str, value: f32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Float(value) }
     }
+    /// Construct a signed stored integer so valid counts and invalid negative domains are exercised directly.
     fn int(name: &'static str, value: i32) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Int(value) }
     }
+    /// Construct a typed stored flag so tests exercise conversion policy rather than config parsing.
     fn boolean(name: &'static str, value: bool) -> Argument<'static> {
         Argument { name, value: ArgumentValue::Bool(value) }
     }
+    /// Construct a stored string argument for matrix, sampler, and enum-nick test cases.
     fn string(name: &'static str, value: &'static str) -> Argument<'static> {
         Argument { name, value: ArgumentValue::String(value) }
     }
     #[test]
+    /// Check that only bounded numeric invertible matrices become native geometry; expressions and singular
+    /// matrices remain rejected.
     fn recursive_matrix_accepts_numeric_homographies_and_rejects_expressions_and_singular() {
         assert_eq!(matrix("matrix (1, 0, 4, 0, 1, -2, 0, 0, 1)").unwrap(), Homography([1., 0., 4., 0., 1., -2., 0., 0., 1.]));
         assert_eq!(matrix("matrix(2,0,0,0,2,0,0.02,0,2)").unwrap(), Homography([1., 0., 0., 0., 1., 0., 0.01, 0., 1.]));
@@ -1119,6 +1177,8 @@ mod tests {
         }
     }
     #[test]
+    /// Verify inclusive iteration counts, matrix powers, fade, and stacking order in the authored native
+    /// branch data.
     fn recursive_inclusive_source_count_transform_power_fade_and_order_are_native_data() {
         let source = StoredEffect::test(
             "gegl:recursive-transform",
@@ -1140,6 +1200,8 @@ mod tests {
         }
     }
     #[test]
+    /// Compare projective copies with independently warped native counterparts and verify their editable
+    /// transforms survive native persistence.
     fn recursive_projective_powers_are_native_data_with_fade_order_and_native_warp_reopen() {
         use photocraft_algo::transform::{Interp, warp_surface};
         use photocraft_color::PixelFormat;
@@ -1192,6 +1254,8 @@ mod tests {
         assert_eq!(again.read_region(bounds), warped.read_region(bounds));
     }
     #[test]
+    /// Reject horizon-crossing, excessive, or cancelled projective generation instead of truncating it into
+    /// plausible pixels.
     fn recursive_projective_validation_is_bounded_cancellable_and_does_not_truncate_horizons() {
         for transform in ["matrix(1,0,0,0,1,0,-0.2,0,1)", "matrix(1,0,0,0,1,0,0,0,0)", "matrix(1,0,0,0,1,0,0,0,NaN)"] {
             let effect = StoredEffect::test("gegl:recursive-transform", vec![string("transform", transform), int("first-iteration", 1), int("iterations", 0)]);
@@ -1207,6 +1271,8 @@ mod tests {
         assert!(map(&effect, &ctx).unwrap().is_err());
     }
     #[test]
+    /// Ensure translucent recursive fade paint uses native effect opacity, whose renderer actually consumes
+    /// the coverage control.
     fn recursive_translucent_color_uses_effect_opacity_instead_of_ignored_color_alpha() {
         let source = StoredEffect::test(
             "gegl:recursive-transform",
@@ -1227,6 +1293,7 @@ mod tests {
             assert!((common.opacity - (1. - (1. - 128. / 255.0_f32).powi(index))).abs() < 1e-6);
         }
     }
+    /// Build an independently authored native clipping document for signed-color and coverage comparisons.
     fn clip_document(mode: ColorMode, profile: std::sync::Arc<Vec<u8>>) -> photocraft_doc::Document {
         use photocraft_color::PixelFormat;
         use photocraft_doc::{Layer, LayerContent};
@@ -1243,6 +1310,8 @@ mod tests {
         doc
     }
     #[test]
+    /// Compare signed HDR clipping against native blend constructions across modes and verify coverage after
+    /// native reopen.
     fn clip_signed_hdr_fills_match_independent_native_clipping_and_preserve_coverage_after_reopen() {
         use photocraft_color::{BlendMode, Color};
         use photocraft_doc::{Fill, Layer, LayerContent};
@@ -1291,6 +1360,8 @@ mod tests {
         }
     }
     #[test]
+    /// Check that crossed limits retain the documented ordered native operations rather than invoking an
+    /// invalid reversed clamp.
     fn clip_crossed_bounds_follow_declared_native_order_without_reversed_clamp() {
         use photocraft_doc::{Layer, LayerContent};
         let profile = photocraft_cms::Builtin::LinearSrgb.profile().to_bytes();
@@ -1310,6 +1381,8 @@ mod tests {
         }
     }
     #[test]
+    /// Exercise enabled and disabled limits, crossed domains, and malformed values so clipping never silently
+    /// invents a range.
     fn clip_flags_crossed_limits_and_invalid_values_are_explicit_native_policies() {
         let effect = |args| map(&StoredEffect::test("gegl:rgb-clip", args), &context()).unwrap().unwrap();
         assert!(effect(vec![boolean("clip-low", false), boolean("clip-high", false)]).structure.is_none());
@@ -1326,6 +1399,7 @@ mod tests {
         }
     }
     #[test]
+    /// Verify the original remains editable beneath a separate native Screen glow branch.
     fn softglow_keeps_original_and_ordinary_editable_screen_branch() {
         let result = map(&StoredEffect::test("gegl:softglow", vec![number("brightness", 0.25), number("glow-radius", 5.)]), &context()).unwrap().unwrap();
         let Some(NativeStructure::Composite { branches }) = result.structure else { panic!("branches") };
@@ -1338,6 +1412,8 @@ mod tests {
         assert_eq!(branches[1].filters[1].params["radius"], 5.);
     }
     #[test]
+    /// Check cell shapes, phase, ratios, and background against native editable geometry and actual native
+    /// mean-color operations.
     fn pixelize_grid_shapes_background_full_domain_and_native_means_are_editable() {
         use photocraft_doc::{LayerContent, PathOp};
         for norm in 0..=2 {
@@ -1427,6 +1503,8 @@ mod tests {
     }
 
     #[test]
+    /// Verify these structural adapters keep native editability while reporting source controls replaced by
+    /// native policies.
     fn pixelize_slic_spherize_preserve_editable_native_domains_and_disclose_partial_controls() {
         let pixel = map(&StoredEffect::test("gegl:pixelize", vec![int("size-x", 8), int("size-y", 32), number("ratio-x", 0.5)]), &context()).unwrap().unwrap();
         let Some(NativeStructure::Composite { branches }) = pixel.structure else { panic!("native cells") };
@@ -1446,6 +1524,8 @@ mod tests {
         assert_eq!(sphere.filters[0].params, json!({"mode":"verticalOnly","amount":-50.}));
     }
     #[test]
+    /// Check native displacement data against independent standard wave coordinates over phase, direction,
+    /// and amplitude domains.
     fn ripple_standard_wave_geometry_authors_native_phase_angle_and_full_range_maps() {
         let create = |wave, phase, angle| {
             map(
@@ -1511,6 +1591,8 @@ mod tests {
     }
 
     #[test]
+    /// Assert that cluster regularization and spherical framing become explicit editable native parameters
+    /// rather than hidden presets.
     fn slic_regularization_and_spherical_cap_policy_are_native_editable_parameters() {
         let minimum = map(&StoredEffect::test("gegl:slic", vec![int("compactness", 1)]), &context()).unwrap().unwrap();
         assert_eq!(minimum.filters[0].params, json!({"cellSize":32,"seed":0}));
@@ -1558,6 +1640,7 @@ mod tests {
     }
 
     #[test]
+    /// Require ordinary native filter identities and a recorded approximation policy for both source intents.
     fn photocopy_and_ripple_are_native_filters_with_named_approximation_policy() {
         let photo = map(&StoredEffect::test("gegl:photocopy", vec![number("black", 1.), number("white", 1.)]), &context()).unwrap().unwrap();
         assert_eq!(photo.filters[0].command, "filter.blur.gaussianBlur");
@@ -1571,6 +1654,8 @@ mod tests {
         assert!(ripple.notes[0].contains("phase cycles"));
     }
     #[test]
+    /// Reject hostile values before generation, leaving unsupported source configuration available for
+    /// retention.
     fn malformed_or_excessive_values_retain_source_without_native_clamping_or_large_allocations() {
         for source in [
             StoredEffect::test("gegl:recursive-transform", vec![string("transform", "matrix(4,0,0,0,4,0,0,0,1)"), int("iterations", 20)]),
@@ -1584,6 +1669,8 @@ mod tests {
         }
     }
     #[test]
+    /// Validate sinus Pattern extents and assigned-profile colors, then verify ordinary native persistence
+    /// keeps the generated resource.
     fn sinus_is_editable_native_pattern_with_finite_extent_colors_icc_and_native_reopen() {
         let source = StoredEffect::test(
             "gegl:sinus",
@@ -1621,6 +1708,8 @@ mod tests {
         assert!(patterns.is_empty());
     }
     #[test]
+    /// Check determinism and independent geometry, octave, and color controls in the importer-authored native
+    /// noise data.
     fn original_native_noise_patterns_use_seed_geometry_octaves_and_real_color_channels() {
         let first = map(&StoredEffect::test("gegl:simplex-noise", vec![]), &context()).unwrap().unwrap();
         let Some(NativeStructure::Replace { patterns, .. }) = first.structure else { panic!("noise") };
@@ -1658,6 +1747,8 @@ mod tests {
         }
     }
     #[test]
+    /// Verify the native lookup suppresses red-dominant samples while leaving neutral and green samples
+    /// appropriately unchanged.
     fn red_eye_authors_ordinary_native_lookup_selects_red_and_retains_neutral_green() {
         let converted = map(&StoredEffect::test("gegl:red-eye-removal", vec![]), &context()).unwrap().unwrap();
         let filter = &converted.filters[0];
@@ -1673,6 +1764,8 @@ mod tests {
         assert_ne!(more.filters[0].params["data"], filter.params["data"]);
         assert!(map(&StoredEffect::test("gegl:red-eye-removal", vec![number("threshold", 0.81)]), &context()).unwrap().is_err());
     }
+    /// Round-trip a native Smart Filter through the ordinary format to test parameter persistence
+    /// independently of XCF parsing.
     fn reopen_filter(filter: photocraft_doc::SmartFilter) -> photocraft_doc::SmartFilter {
         use photocraft_doc::{Layer, LayerContent, SmartObject, SmartSource};
         let contents = photocraft_doc::Document::new("Contents", photocraft_geom::Size::new(64, 32), ColorMode::Rgb, SampleType::F32);
@@ -1687,6 +1780,8 @@ mod tests {
         let LayerContent::Smart(smart) = &reopened.layers[0].content else { panic!("native smart") };
         smart.smart_filters[0].clone()
     }
+    /// Apply an embedded ordinary native Displace filter to a supplied native surface for coordinate-map
+    /// oracle comparisons.
     fn displace_surface(filter: &photocraft_doc::SmartFilter, surface: &photocraft_raster::Surface, bounds: Rect) -> photocraft_raster::Surface {
         let options = photocraft_algo::FilterParams::Displace {
             horizontal: filter.params["horizontal"].as_f64().unwrap() as f32,
@@ -1698,6 +1793,8 @@ mod tests {
         photocraft_algo::apply_in_with(surface, &options, bounds, bounds, None, bounds, &photocraft_raster::Interrupt::NONE).unwrap()
     }
     #[test]
+    /// Prove resource admission precedes coordinate callbacks and rejects invalid maps without partially
+    /// generating resources.
     fn coordinate_resource_preflights_before_callback_and_rejects_nonfinite_or_unstable_maps() {
         let tiny = MappingContext { remaining_metadata_bytes: 1, ..context() };
         let failure = coordinate_map(&tiny, |_, _| panic!("budget must be checked before callback"), "test").unwrap_err();
@@ -1716,6 +1813,8 @@ mod tests {
         assert!(changed.message.contains("changed between"));
     }
     #[test]
+    /// Compare camera-map coordinates and native replay, then ensure the embedded map and coverage survive
+    /// reopen.
     fn panorama_authors_native_camera_map_and_native_render_reopen_preserves_map_and_coverage() {
         use photocraft_color::PixelFormat;
         use photocraft_raster::Surface;
@@ -1746,6 +1845,7 @@ mod tests {
         assert!((narrow.pixel(0, 16)[0] - centre[0]).abs() < (before.pixel(0, 16)[0] - centre[0]).abs());
     }
     #[test]
+    /// Check inverse-camera mapping and its separate output mask against native replay and persistence.
     fn inverse_panorama_native_map_and_final_frame_mask_preserve_coverage_and_reopen() {
         use photocraft_color::PixelFormat;
         use photocraft_doc::{Layer, LayerContent};
@@ -1786,6 +1886,8 @@ mod tests {
         assert_eq!(branches[0].mask.as_ref().unwrap().value(0, 16), 0.);
     }
     #[test]
+    /// Require both output dimensions and charge padded frame-mask tiles before generating a panorama
+    /// resource.
     fn panorama_output_frame_uses_both_positive_dimensions_and_preflights_mask_tiles() {
         let bounds = Rect::new(0, 0, 64, 32);
         let ctx = MappingContext { native_filter_bounds: bounds, owner_bounds: bounds, ..context() };
@@ -1809,6 +1911,8 @@ mod tests {
         assert!(map(&StoredEffect::test("gegl:panorama-projection", vec![boolean("inverse", true)]), &ctx).unwrap().is_err());
     }
     #[test]
+    /// Exercise unsupported camera domains and exhausted or cancelled generation without allocating
+    /// unadmitted metadata.
     fn panorama_rejects_unmapped_domains_and_preflights_metadata_work_and_cancellation() {
         let source = StoredEffect::test("gegl:panorama-projection", vec![]);
         for ctx in [MappingContext { remaining_metadata_bytes: 1, ..context() }, MappingContext { remaining_generation_bytes: 1, ..context() }] {
@@ -1826,6 +1930,8 @@ mod tests {
         assert!(map(&source, &ctx).unwrap().is_err());
     }
     #[test]
+    /// Verify checked native HDR parameters preserve alpha and survive native serialization rather than
+    /// storing a source tone evaluator.
     fn reinhard_intent_uses_checked_native_hdr_data_preserves_alpha_and_native_reopen() {
         use photocraft_color::PixelFormat;
         use photocraft_raster::{Interrupt, Surface};
@@ -1862,6 +1968,8 @@ mod tests {
         }
     }
     #[test]
+    /// Check the seeded shift resource changes only its selected axis and replays from ordinary native
+    /// parameters after reopen.
     fn stochastic_shift_embeds_one_dimensional_native_map_and_replays_after_native_reopen() {
         use photocraft_color::PixelFormat;
         use photocraft_doc::{Layer, LayerContent, SmartObject, SmartSource};
