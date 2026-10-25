@@ -144,7 +144,11 @@ fn edit_parameter(
         ui.ctx().data_mut(|data| data.insert_temp(id, value));
     }
     if response.drag_stopped() || response.lost_focus() {
-        let staged = ui.ctx().data_mut(|data| data.remove::<f32>(id)).unwrap_or(value);
+        let staged = ui.ctx().data_mut(|data| {
+            let staged = data.get_temp::<f32>(id).unwrap_or(value);
+            data.remove::<f32>(id);
+            staged
+        });
         if (staged - canonical).abs() > f32::EPSILON {
             let mut params = json!({"layer":layer,"index":index});
             if let Some(object) = params.as_object_mut() {
