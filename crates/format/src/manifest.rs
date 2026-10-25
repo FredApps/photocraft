@@ -432,6 +432,17 @@ pub struct MaskPaintLayerM {
     pub fill_map_size: [u32; 2],
     #[serde(default)]
     pub fill_bounds: Option<[i32; 4]>,
+    /// Fill source rotation in degrees around the fill bounds center.
+    #[serde(default)]
+    pub rotation: f32,
+    #[serde(default = "mask_paint_true_default")]
+    pub repeat_u: bool,
+    #[serde(default = "mask_paint_true_default")]
+    pub repeat_v: bool,
+    #[serde(default)]
+    pub mirror_u: bool,
+    #[serde(default)]
+    pub mirror_v: bool,
     #[serde(default = "mask_paint_kind_default")]
     pub kind: String,
     #[serde(default = "mask_paint_value_default")]
@@ -456,4 +467,41 @@ fn mask_paint_value_default() -> f32 {
 }
 fn mask_paint_one_default() -> f32 {
     1.0
+}
+fn mask_paint_true_default() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod mask_paint_rotation_compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn old_mask_fill_manifests_default_rotation_to_zero() {
+        let layer = MaskPaintLayerM {
+            name: "Fill".into(),
+            visible: true,
+            opacity: 1.0,
+            surface: SurfaceM { format: PixelFormat::RGBA8, default: "000000ff".into(), tiles: Vec::new() },
+            fill_map: None,
+            fill_map_size: [0, 0],
+            fill_bounds: None,
+            rotation: 0.0,
+            repeat_u: true,
+            repeat_v: true,
+            mirror_u: false,
+            mirror_v: false,
+            kind: "fill".into(),
+            value: 1.0,
+            input_black: 0.0,
+            gamma: 1.0,
+            input_white: 1.0,
+            output_black: 0.0,
+            output_white: 1.0,
+        };
+        let mut legacy = serde_json::to_value(layer).unwrap();
+        legacy.as_object_mut().unwrap().remove("rotation");
+        let loaded: MaskPaintLayerM = serde_json::from_value(legacy).unwrap();
+        assert_eq!(loaded.rotation, 0.0);
+    }
 }

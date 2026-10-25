@@ -6,6 +6,7 @@ use serde_json::json;
 pub(crate) struct Cache {
     images: std::collections::BTreeMap<u64, (std::sync::Arc<Vec<u8>>, TextureHandle)>,
     target: Option<(Rect, u64, egui::LayerId)>,
+    pub(crate) fill_targets: Vec<(Rect, u64, u64, usize)>,
     #[cfg(test)]
     layers_target: Option<Rect>,
 }
@@ -24,20 +25,40 @@ fn place(app: &mut PhotocraftApp, id: u64) {
 }
 pub(crate) fn layers_drop(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
     if app.ui.workspace != "3D" {
+        app.uv_cache.library.fill_targets.clear();
         return false;
     }
     let rect = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+    let fill_targets = std::mem::take(&mut app.uv_cache.library.fill_targets);
     #[cfg(test)]
     {
         app.uv_cache.library.layers_target = Some(rect);
     }
-    let over = ui.input(|i| i.pointer.latest_pos()).is_some_and(|p| rect.contains(p) && ui.ctx().layer_id_at(p).is_none_or(|top| top == ui.layer_id()));
+    let pointer = ui.input(|i| i.pointer.latest_pos());
+    let over_panel = pointer.is_some_and(|p| rect.contains(p) && ui.ctx().layer_id_at(p).is_none_or(|top| top == ui.layer_id()));
+    let active_fill = app.session.active().and_then(|st| {
+        let layer = st.active_layer.and_then(|id| st.doc.layer(id))?;
+        let stack = layer.mask.as_ref()?.paint.as_ref()?;
+        matches!(&stack.layers.get(stack.active)?.kind, photocraft_doc::mask_paint::EffectKind::Fill { .. }).then_some((st.doc.id.0, layer.id.0, stack.active))
+    });
+    let fill_target = pointer
+        .filter(|_| over_panel && egui::DragAndDrop::has_payload_of_type::<Drag>(ui.ctx()))
+        .and_then(|p| fill_targets.iter().rev().find(|(target, doc, layer, index)| target.contains(p) && active_fill == Some((*doc, *layer, *index))).copied());
+    let over = over_panel;
     if egui::DragAndDrop::has_payload_of_type::<Drag>(ui.ctx()) && over {
-        ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, Tokens::get(ui.ctx()).accent), egui::StrokeKind::Inside);
+        let highlight = fill_target.map_or(rect, |(target, _, _, _)| target);
+        ui.painter().rect_stroke(highlight, 2.0, egui::Stroke::new(1.0, Tokens::get(ui.ctx()).accent), egui::StrokeKind::Inside);
         if ui.input(|i| i.pointer.any_released())
             && let Some(payload) = egui::DragAndDrop::take_payload::<Drag>(ui.ctx())
         {
-            place(app, payload.id);
+            if let Some((_, _, layer, index)) = fill_target {
+                crate::uv_ui::finish_paint(app);
+                if let Err(error) = app.run("uv.maskPaint.fillSource", json!({"layer":layer,"index":index,"asset":payload.id})) {
+                    app.ui.uv_workbench.status = error;
+                }
+            } else {
+                place(app, payload.id);
+            }
             return true;
         }
     }
@@ -250,10 +271,68 @@ mod tests {
         assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, "checker");
         assert_eq!(st.selected_layers().len(), 1);
         assert!(matches!(st.doc.layer(st.active_layer.unwrap()).unwrap().content, photocraft_doc::LayerContent::Raster(_)));
+        h.state_mut().run("layer.layerMask.revealAll", json!({})).unwrap();
+        h.state_mut().run("uv.maskPaint.add", json!({"kind":"fill"})).unwrap();
+        h.state_mut().ui.mask_target = true;
+        h.run_steps(4);
+        let fill_row = h.state().uv_cache.library.fill_targets.first().map(|(rect, _, _, _)| *rect).unwrap();
+        let layers_bounds = h.state().uv_cache.library.layers_target.unwrap();
+        assert!(fill_row.left() <= layers_bounds.left() + 1.0, "Fill drop target spans the row's left edge");
+        assert!(fill_row.right() >= layers_bounds.right() - 1.0, "Fill drop target spans the row's right edge");
+        let fill_target = egui::pos2(layers_bounds.right() - 1.0, fill_row.center().y);
+        h.hover_at(start);
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: start, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.run_steps(1);
+        h.event(egui::Event::PointerMoved(start + vec2(-30.0, 10.0)));
+        h.run_steps(2);
+        assert!(egui::DragAndDrop::has_payload_of_type::<Drag>(&h.ctx));
+        h.event(egui::Event::PointerMoved(fill_target));
+        h.run_steps(2);
+        h.event(egui::Event::PointerButton { pos: fill_target, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(4);
+        let fill = h
+            .state()
+            .session
+            .active()
+            .unwrap()
+            .doc
+            .layer(h.state().session.active().unwrap().active_layer.unwrap())
+            .unwrap()
+            .mask
+            .as_ref()
+            .unwrap()
+            .paint
+            .as_ref()
+            .unwrap()
+            .layers[0]
+            .clone();
+        assert!(fill.fill_map.is_some(), "dropping on the Fill row assigns the image source");
+        assert_eq!(h.state().session.active().unwrap().doc.layers.len(), before + 1, "Fill drop does not place another raster layer");
+        assert!(h.state().ui.transform.is_none(), "Fill drop assigns directly without starting a layer transform");
+        h.state_mut().ui.dock_tabs.properties = 0;
+        h.run_steps(2);
         if let Ok(path) = std::env::var("PHOTOCRAFT_UV_LIBRARY_SCREENSHOT") {
             h.render().unwrap().save(path).unwrap();
         }
         h.state_mut().run("edit.undo", json!({})).unwrap();
-        assert_eq!(h.state().session.active().unwrap().doc.layers.len(), before);
+        assert_eq!(h.state().session.active().unwrap().doc.layers.len(), before + 1);
+        let restored_fill = h
+            .state()
+            .session
+            .active()
+            .unwrap()
+            .doc
+            .layer(h.state().session.active().unwrap().active_layer.unwrap())
+            .unwrap()
+            .mask
+            .as_ref()
+            .unwrap()
+            .paint
+            .as_ref()
+            .unwrap()
+            .layers[0]
+            .clone();
+        assert!(restored_fill.fill_map.is_none(), "undo removes the dropped image source");
     }
 }

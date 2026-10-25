@@ -570,6 +570,23 @@ impl<'a> Planner<'a> {
             if layer.vector_mask.is_some() || m.feather > 0.0 {
                 return Err(Unsupported("Paint-layer mask combined with vector or feathered mask (composited on the CPU)".into()));
             }
+            // Fill images, selection fills, and bounded fills are already flattened in the mask
+            // surface by the CPU oracle. Sample that cached result so the GPU path honours the
+            // source image, repeat/mirror modes, and rectangle bounds exactly.
+            let has_spatial_fill = stack.layers.iter().any(|paint| {
+                matches!(
+                    &paint.kind,
+                    photocraft_doc::mask_paint::EffectKind::Fill { .. }
+                        if paint.fill_map.is_some()
+                            || paint.fill_bounds.is_some_and(|[x0, y0, x1, y1]| {
+                                x0 != self.cx.canvas.x0 || y0 != self.cx.canvas.y0 || x1 != self.cx.canvas.x1 || y1 != self.cx.canvas.y1
+                            })
+                )
+            });
+            if has_spatial_fill {
+                let default = m.surface.default_pixel().first().copied().unwrap_or(1.0);
+                return Ok(Some(MaskUse { layer: layer.id, source: MaskSource::Surface(SurfaceRef::Doc(&m.surface)), density: m.density, default }));
+            }
             let mut base = Pass::new(Kernel::MaskStack, 0);
             base.adjust_kind = 0;
             base.tex = Some(TexUse { layer: layer.id, role: Role::Mask, surface: SurfaceRef::Doc(&stack.base) });
@@ -600,7 +617,7 @@ impl<'a> Planner<'a> {
                         let alpha = source.get(3).copied().unwrap_or(0.0) * paint.opacity;
                         default = source.first().copied().unwrap_or(0.0) * alpha + default * (1.0 - alpha);
                     }
-                    photocraft_doc::mask_paint::EffectKind::Fill { value } => {
+                    photocraft_doc::mask_paint::EffectKind::Fill { value, .. } => {
                         if !value.is_finite() || !(0.0..=1.0).contains(value) {
                             return Err(Unsupported("Mask Fill contains an invalid value".into()));
                         }

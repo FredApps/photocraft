@@ -25,7 +25,13 @@ pub(crate) fn overlay(app: &PhotocraftApp, index: usize, doc: &photocraft_doc::D
     let Some(st) = app.session.documents().get(index) else {
         return;
     };
-    if let Some(px) = crate::channel_view::render(doc, &st.channel_view, rect, factor, crate::channel_view::Look::of(&app.session), st.active_layer) {
+    let mut view = st.channel_view.clone();
+    if view.target == photocraft_engine::channel_cmds::ChannelTarget::LayerMask
+        && let Some(layer) = st.active_layer.filter(|id| doc.layer(*id).is_some_and(|layer| layer.mask.is_some()))
+    {
+        view.layer_mask = Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
+    }
+    if let Some(px) = crate::channel_view::render(doc, &view, rect, factor, crate::channel_view::Look::of(&app.session), st.active_layer) {
         for (out, p) in pixels.iter_mut().zip(px) {
             let rgba = p.to_array().map(|v| v as f32 / 255.0);
             for i in 0..3 {

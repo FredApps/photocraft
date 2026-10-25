@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, path::Path, sync::Arc};
 
+type PaddingCacheKey = (usize, u32, u32, i32, i32, usize, u64);
+
 #[derive(Default)]
 pub struct UvState {
     /// Restored external destinations require explicit rebinding before texture writeback.
@@ -49,7 +51,7 @@ pub struct UvState {
     pub padding: f64,
     padding_cache_scene: Option<Arc<Scene>>,
     occupancy_cache: std::collections::HashMap<(usize, u32, u32, i32, i32), Arc<OccupancyMask>>,
-    padding_cache: std::collections::HashMap<(usize, u32, u32, i32, i32, usize, u64), Arc<PaddingMask>>,
+    padding_cache: std::collections::HashMap<PaddingCacheKey, Arc<PaddingMask>>,
     pub generation: u64,
 }
 
@@ -528,10 +530,10 @@ fn cached_occupancy(s: &mut Session, material: usize, width: u32, height: u32, t
     }
     let topology = s.uv.topology.as_ref().cloned().ok_or_else(|| err("No topology"))?;
     let occupancy = Arc::new(topology.occupancy_mask(&scene, width, height, material, tile).map_err(|e| err(e.to_string()))?);
-    if s.uv.occupancy_cache.len() >= 4 {
-        if let Some(oldest) = s.uv.occupancy_cache.keys().next().copied() {
-            s.uv.occupancy_cache.remove(&oldest);
-        }
+    if s.uv.occupancy_cache.len() >= 4
+        && let Some(oldest) = s.uv.occupancy_cache.keys().next().copied()
+    {
+        s.uv.occupancy_cache.remove(&oldest);
     }
     s.uv.occupancy_cache.insert(key, occupancy.clone());
     Ok(occupancy)
@@ -552,7 +554,20 @@ pub(crate) fn cached_padding(
         return Ok(cached.clone());
     }
     let topology = s.uv.topology.as_ref().cloned().ok_or_else(|| err("No topology"))?;
-    let mask = Arc::new(topology.outward_padding_mask(width, height, material, tile, shell, padding, &occupancy).map_err(|e| err(e.to_string()))?);
+    let mask_options = MaskOptions {
+        width,
+        height,
+        material,
+        tile,
+        selected: BTreeSet::from([shell]),
+        guard: 0.0,
+        horizontal: 0.0,
+        vertical: 0.0,
+        feather: 0.0,
+        open_borders: false,
+        padding,
+    };
+    let mask = Arc::new(topology.outward_padding_mask(&mask_options, shell, &occupancy).map_err(|e| err(e.to_string()))?);
     const CACHE_BUDGET: usize = 64 * 1024 * 1024;
     let mask_bytes = mask.estimated_bytes();
     if mask_bytes <= CACHE_BUDGET {

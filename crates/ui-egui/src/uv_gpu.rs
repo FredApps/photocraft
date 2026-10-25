@@ -1609,6 +1609,9 @@ mod tests {
                     visible: true,
                     opacity: 0.75,
                     surface,
+                    fill_map: None,
+                    fill_map_size: [0, 0],
+                    fill_bounds: None,
                     kind: photocraft_doc::mask_paint::EffectKind::Paint,
                 }
             })

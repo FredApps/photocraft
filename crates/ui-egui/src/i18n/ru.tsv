@@ -752,6 +752,7 @@
 	Expand group  ({key}-click: all groups)	Развернуть группу  ({key}-клик: все группы)
 	Collapse group  ({key}-click: all groups)	Свернуть группу  ({key}-клик: все группы)
 	Effects	Эффекты
+	Mask Paint Effects	Эффекты рисования на маске
 	Blending	Наложение
 	Blend If	Изображение если
 	General Blend	Общие параметры наложения
@@ -4746,7 +4747,11 @@ shape	Appearance	Оформление
 	Fill from selection	Заливка из выделения
 	Use as Fill image	Использовать как изображение заливки
 	Gray value	Уровень серого
+	Repeat U	Повторять по U
+	Repeat V	Повторять по V
+	Mirror U	Отражать по U
+	Mirror V	Отражать по V
 	Bounds	Границы
-	Drag the rectangle handles on the 2D canvas to resize the Fill mask.	Перетаскивайте угловые маркеры на 2D-холсте, чтобы изменить размер маски заливки.
+	Drag inside with right mouse to move; drag the handles to resize the Fill mask.	Перетаскивайте прямоугольник правой кнопкой; маркеры меняют размер маски заливки.
 	Image from the Images tab	Изображение из вкладки «Изображения»
 	Uniform grayscale Fill	Однотонная заливка серым

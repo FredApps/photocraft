@@ -143,6 +143,35 @@ fn vector_mask_double_click_opens_its_properties() {
 }
 
 #[test]
+fn pixel_mask_thumbnail_targets_mask_without_selecting_or_expanding_child_effects() {
+    use egui_kittest::kittest::Queryable;
+
+    let mut s = photocraft_engine::Session::new();
+    s.execute("uv.workspace.activate", json!({"active":true})).unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
+    s.execute("uv.model.import", json!({"path":source})).unwrap();
+    s.execute("uv.texture.create", json!({"channel":"opacity","width":16,"height":16})).unwrap();
+    let layer = s.active().unwrap().active_layer.unwrap();
+    s.execute("layer.layerMask.revealAll", json!({})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"layer":layer.0,"kind":"fill","name":"Unique Fill Child"})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"layer":layer.0,"kind":"levels","name":"Unique Levels Child"})).unwrap();
+    let mut h = harness(s, 1.0);
+    h.state_mut().ui.workspace = "3D".into();
+    h.state_mut().ui.mask_target = false;
+    h.run_steps(3);
+
+    let (thumbs, _) = crate::mask_thumbs_ui::recorded(&h.ctx, layer.0).expect("pixel mask thumbnail drawn");
+    let at = thumbs.iter().find(|(kind, _)| *kind == crate::mask_thumbs_ui::MaskKind::Pixel).unwrap().1.center();
+    click(&mut h, at, PointerButton::Primary);
+    assert!(h.state().ui.mask_target, "thumbnail click targets the mask");
+    assert_eq!(h.state().session.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().active, 1);
+    assert!(h.query_by_label("Unique Levels Child").is_none(), "the child row remains collapsed");
+    h.query_by_label("Mask Paint Effects").expect("collapsed header is visible").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Unique Levels Child").is_some(), "only the explicit header opens the child rows");
+}
+
+#[test]
 fn mask_double_click_launches_select_and_mask_with_preference() {
     let mut s = session();
     let id = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();

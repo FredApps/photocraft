@@ -245,6 +245,18 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
         hidden.write_region(Rect::new(0, 1, 8, 3), &[0.0; 64]);
         let mut top = photocraft_raster::Surface::with_default(rgba, &[0.12, 0.0, 0.0, 0.31]);
         top.write_region(Rect::new(2, 0, 8, 4), &(0..24).flat_map(|i| [0.25 + i as f32 / 70.0, 0.0, 0.0, 0.12 + i as f32 / 55.0]).collect::<Vec<_>>());
+        let mut fill_map = photocraft_raster::Surface::with_default(gray, &[0.1]);
+        fill_map.write_region(Rect::new(0, 0, 2, 2), &[0.2, 0.4, 0.6, 0.8]);
+        let spatial_fill = Paint {
+            name: "fill".into(),
+            visible: true,
+            opacity: 0.55,
+            surface: photocraft_raster::Surface::new(rgba),
+            fill_map: Some(fill_map),
+            fill_map_size: [2, 2],
+            fill_bounds: Some([0, 0, 8, 4]),
+            kind: EffectKind::Fill { value: 0.37, rotation: 0.0, repeat_u: true, repeat_v: true, mirror_u: false, mirror_v: false },
+        };
         mask.paint = Some(Stack {
             base,
             layers: vec![
@@ -278,16 +290,7 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
                     fill_bounds: None,
                     kind: EffectKind::Paint,
                 },
-                Paint {
-                    name: "fill".into(),
-                    visible: true,
-                    opacity: 0.55,
-                    surface: photocraft_raster::Surface::new(rgba),
-                    fill_map: None,
-                    fill_map_size: [0, 0],
-                    fill_bounds: None,
-                    kind: EffectKind::Fill { value: 0.37 },
-                },
+                spatial_fill,
                 Paint {
                     name: "levels".into(),
                     visible: true,
@@ -311,7 +314,10 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
                     let alpha = source[3] * paint.opacity;
                     expected_default = source[0] * alpha + expected_default * (1.0 - alpha);
                 }
-                EffectKind::Fill { value } => expected_default = *value * paint.opacity + expected_default * (1.0 - paint.opacity),
+                EffectKind::Fill { value, .. } if paint.fill_bounds.is_none() => {
+                    expected_default = *value * paint.opacity + expected_default * (1.0 - paint.opacity)
+                }
+                EffectKind::Fill { .. } => {}
                 EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
                     let normalized = ((expected_default - *input_black) / (*input_white - *input_black)).clamp(0.0, 1.0);
                     let adjusted = *output_black + normalized.powf(1.0 / *gamma) * (*output_white - *output_black);

@@ -885,11 +885,12 @@ impl Session {
         let mut active = st.active_layer;
         let r = f(&mut doc, &mut active)?;
         // Experimental brush stacks keep the ordinary mask as the render/export cache.
+        let mask_canvas = doc.bounds();
         let mask_ids: Vec<_> = doc.walk().iter().filter_map(|(_, _, l)| l.mask.as_ref().filter(|m| m.paint.is_some()).map(|_| l.id)).collect();
         for id in mask_ids {
             if let Some(mask) = doc.layer_mut(id).and_then(|l| l.mask.as_mut()) {
                 let old = before.layer(id).and_then(|l| l.mask.as_ref()).and_then(|m| m.paint.as_ref());
-                photocraft_compose::mask_paint::refresh_changes(mask, old);
+                photocraft_compose::mask_paint::refresh_changes_in_canvas(mask, old, mask_canvas);
             }
         }
         if let (Some(k), Some(id)) = (restrict, active) {

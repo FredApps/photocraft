@@ -391,7 +391,14 @@ impl Loader<'_> {
             }
             let kind = match p.kind.as_str() {
                 "paint" => photocraft_doc::mask_paint::EffectKind::Paint,
-                "fill" if p.value.is_finite() && (0.0..=1.0).contains(&p.value) => photocraft_doc::mask_paint::EffectKind::Fill { value: p.value },
+                "fill" if p.value.is_finite() && (0.0..=1.0).contains(&p.value) && p.rotation.is_finite() => photocraft_doc::mask_paint::EffectKind::Fill {
+                    value: p.value,
+                    rotation: p.rotation,
+                    repeat_u: p.repeat_u,
+                    repeat_v: p.repeat_v,
+                    mirror_u: p.mirror_u,
+                    mirror_v: p.mirror_v,
+                },
                 "levels"
                     if p.input_black.is_finite()
                         && p.input_white.is_finite()
@@ -767,11 +774,11 @@ fn mask_paint_m(m: &LayerMask, sink: &mut dyn Sink) -> Option<MaskPaintM> {
             .layers
             .iter()
             .map(|p| {
-                let (kind, value, input_black, gamma, input_white, output_black, output_white) = match &p.kind {
-                    photocraft_doc::mask_paint::EffectKind::Paint => ("paint", 1.0, 0.0, 1.0, 1.0, 0.0, 1.0),
-                    photocraft_doc::mask_paint::EffectKind::Fill { value } => ("fill", *value, 0.0, 1.0, 1.0, 0.0, 1.0),
+                let (kind, value, rotation, input_black, gamma, input_white, output_black, output_white) = match &p.kind {
+                    photocraft_doc::mask_paint::EffectKind::Paint => ("paint", 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0),
+                    photocraft_doc::mask_paint::EffectKind::Fill { value, rotation, .. } => ("fill", *value, *rotation, 0.0, 1.0, 1.0, 0.0, 1.0),
                     photocraft_doc::mask_paint::EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
-                        ("levels", 1.0, *input_black, *gamma, *input_white, *output_black, *output_white)
+                        ("levels", 1.0, 0.0, *input_black, *gamma, *input_white, *output_black, *output_white)
                     }
                 };
                 MaskPaintLayerM {
@@ -782,6 +789,23 @@ fn mask_paint_m(m: &LayerMask, sink: &mut dyn Sink) -> Option<MaskPaintM> {
                     fill_map: p.fill_map.as_ref().map(|map| surface_m(map, sink)),
                     fill_map_size: p.fill_map_size,
                     fill_bounds: p.fill_bounds,
+                    rotation,
+                    repeat_u: match &p.kind {
+                        photocraft_doc::mask_paint::EffectKind::Fill { repeat_u, .. } => *repeat_u,
+                        _ => true,
+                    },
+                    repeat_v: match &p.kind {
+                        photocraft_doc::mask_paint::EffectKind::Fill { repeat_v, .. } => *repeat_v,
+                        _ => true,
+                    },
+                    mirror_u: match &p.kind {
+                        photocraft_doc::mask_paint::EffectKind::Fill { mirror_u, .. } => *mirror_u,
+                        _ => false,
+                    },
+                    mirror_v: match &p.kind {
+                        photocraft_doc::mask_paint::EffectKind::Fill { mirror_v, .. } => *mirror_v,
+                        _ => false,
+                    },
                     kind: kind.into(),
                     value,
                     input_black,

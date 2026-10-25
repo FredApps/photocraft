@@ -600,6 +600,9 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
         | "edit.transform.skew"
         | "edit.transform.distort"
         | "edit.transform.perspective" => {
+            if crate::transform_tool::route_to_mask_fill(app, ctx) {
+                return Ok(json!({"transform": null, "maskFill": true}));
+            }
             // While a box is up, Scale / Rotate / Skew / Distort / Perspective (and Free Transform)
             // switch its mode; otherwise they start one in that mode.
             if app.ui.transform.as_ref().is_some_and(|t| t.content_aware.is_some()) {

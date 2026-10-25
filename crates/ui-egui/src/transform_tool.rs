@@ -190,6 +190,9 @@ fn corners(r: [f64; 4]) -> [[f64; 2]; 4] {
 /// Start Free Transform on the active layer (or its selected pixels), or on the targeted unlinked
 /// layer mask, alpha channel or Quick Mask.
 pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
+    if route_to_mask_fill(app, ctx) {
+        return Ok(());
+    }
     if let Some((params, path)) = crate::vector_ui::free_transform_path(app) {
         return begin_path(app, ctx, params, path);
     }
@@ -287,6 +290,9 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
 /// Free Transform on a copy (⌥⌘T, no menu item): duplicates the active layer (with a selection,
 /// its selected pixels, as Layer via Copy) and transforms the copy (#352).
 pub fn begin_copy(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
+    if route_to_mask_fill(app, ctx) {
+        return Ok(());
+    }
     let selection = app.session.active().is_some_and(|d| d.doc.selection.is_some());
     let params = if selection { json!({}) } else { json!({"inPlace": true}) };
     app.run(if selection { "layer.new.layerViaCopy" } else { "layer.duplicate" }, params)?;
@@ -650,6 +656,9 @@ pub fn begin_selection(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(
 
 /// Start (or switch an active Free Transform into) Warp mode.
 pub fn begin_warp(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
+    if route_to_mask_fill(app, ctx) {
+        return Ok(());
+    }
     if app.ui.transform.as_ref().is_some_and(|t| t.content_aware.is_some()) {
         return Err(CAS_ONLY_SCALES.into());
     }
@@ -1231,6 +1240,20 @@ pub fn follow_edits(app: &mut PhotocraftApp) {
     pv.opacity = if live.visible { live.opacity * live.fill_opacity } else { 0.0 };
     follow.revision = st.revision;
     pv.doc = Arc::new(pd);
+}
+
+/// A mask Fill already has live, non-destructive canvas controls. Native transform commands
+/// must not create a second session targeting its linked parent raster.
+pub(crate) fn route_to_mask_fill(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
+    #[cfg(feature = "uv-workbench")]
+    let owns = app.session.active_index().is_some_and(|index| crate::uv_ui::fill_manipulator_active(app, index));
+    #[cfg(not(feature = "uv-workbench"))]
+    let owns = false;
+    if owns && (app.ui.transform.is_some() || app.transform_preview.is_some()) {
+        cancel(app);
+        ctx.request_repaint();
+    }
+    owns
 }
 
 pub fn cancel(app: &mut PhotocraftApp) {
@@ -4273,6 +4296,40 @@ mod tests {
         drag(&mut s, [100.0, 0.0], [120.0, -10.0], egui::Modifiers::COMMAND);
         assert_eq!(s.quad[1], [120.0, -10.0]);
         assert_eq!(s.quad[0], [0.0, 0.0]);
+    }
+
+    #[test]
+    #[cfg(feature = "uv-workbench")]
+    fn mask_fill_transform_commands_preserve_parent_and_do_not_open_apply_session() {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("uv.workspace.activate", json!({"active":true})).unwrap();
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
+        session.execute("uv.model.import", json!({"path":source})).unwrap();
+        session.execute("uv.texture.create", json!({"width":32,"height":32})).unwrap();
+        session.execute("edit.fill", json!({"color":"#649ecf"})).unwrap();
+        session.execute("layer.layerMask.revealAll", json!({})).unwrap();
+        session.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.5})).unwrap();
+        let mut app = PhotocraftApp::new(session, crate::Services::default());
+        app.ui.workspace = "3D".into();
+        app.ui.mask_target = false;
+        app.sync_views();
+        let ctx = egui::Context::default();
+        let st = app.session.active().unwrap();
+        let layer = st.active_layer.unwrap();
+        let before = st.doc.layer(layer).unwrap().surface().unwrap().read_region(st.doc.bounds());
+        let layer_count = st.doc.layers.len();
+        // A transform opened before choosing the Fill is cancelled without touching pixels.
+        begin(&mut app, &ctx).unwrap();
+        assert!(app.ui.transform.is_some());
+        app.ui.mask_target = true;
+        for command in ["edit.freeTransform", "edit.transform.rotate", "edit.transform.scale", "edit.freeTransformCopy", "edit.transform.warp"] {
+            crate::menus::invoke(&mut app, &ctx, command, json!({})).unwrap();
+            assert!(app.ui.transform.is_none(), "{command} opened a native Apply session");
+            assert!(app.transform_preview.is_none());
+            let st = app.session.active().unwrap();
+            assert_eq!(st.doc.layers.len(), layer_count, "{command} duplicated the parent");
+            assert_eq!(st.doc.layer(layer).unwrap().surface().unwrap().read_region(st.doc.bounds()), before, "{command} changed parent pixels");
+        }
     }
 
     #[test]

@@ -1374,17 +1374,13 @@ impl PhotocraftApp {
             let target = self.session.documents().iter().position(|st| st.doc.id == commit.doc);
             if let Some(target) = target {
                 if self.session.documents().get(target).is_none_or(|st| st.revision != commit.revision) {
-                    result = Err("The mask Paint opacity preview is stale. Press Escape to discard it.".into());
+                    result = Err("The mask Paint preview is stale. Press Escape to discard it.".into());
                     skip_command = true;
                 } else {
-                    let exact_ui_commit = id == "uv.maskPaint.modify"
-                        && params.get("layer").and_then(Value::as_u64) == Some(commit.layer.0)
-                        && params.get("index").and_then(Value::as_u64) == u64::try_from(commit.index).ok()
-                        && params.as_object().is_some_and(|object| object.len() == 3)
-                        && params.get("opacity").and_then(Value::as_f64).is_some_and(|value| (value as f32).to_bits() == commit.opacity.to_bits());
+                    let exact_ui_commit = id == "uv.maskPaint.modify" && params == commit.params();
                     let previous = self.session.active_index();
                     if previous != Some(target) && !self.session.set_active(target) {
-                        result = Err("The mask Paint opacity preview document is unavailable".into());
+                        result = Err("The mask Paint preview document is unavailable".into());
                         skip_command = true;
                     } else {
                         result = self.run_command("uv.maskPaint.modify", commit.params());

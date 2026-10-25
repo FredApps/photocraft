@@ -79,7 +79,7 @@ fn live_mask_paint_reuses_stack_prefix_and_matches_canonical_refresh_at_every_de
                     active: 1,
                 }),
             };
-            doc.layer_mut(id).ok_or_else(|| EngineError::NoLayer(id))?.mask = Some(mask);
+            doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.mask = Some(mask);
             Ok(())
         })
         .unwrap();
@@ -117,7 +117,7 @@ fn brush_does_not_write_to_a_flattened_mask_when_an_effect_is_selected() {
     let id = s.active().unwrap().active_layer.unwrap();
     let base = Surface::with_default(PixelFormat::new(ColorMode::Grayscale, SampleType::U16, false), &[0.4]);
     s.edit("test fill mask", |doc, _| {
-        doc.layer_mut(id).ok_or_else(|| EngineError::NoLayer(id))?.mask = Some(LayerMask {
+        doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.mask = Some(LayerMask {
             surface: base.clone(),
             enabled: true,
             linked: true,
@@ -133,7 +133,7 @@ fn brush_does_not_write_to_a_flattened_mask_when_an_effect_is_selected() {
                     fill_map: None,
                     fill_map_size: [0, 0],
                     fill_bounds: None,
-                    kind: EffectKind::Fill { value: 0.8 },
+                    kind: EffectKind::Fill { value: 0.8, rotation: 0.0, repeat_u: true, repeat_v: true, mirror_u: false, mirror_v: false },
                 }],
                 active: 0,
             }),
@@ -183,7 +183,7 @@ fn dense_ten_paint_mask_session() -> Session {
         });
     }
     s.edit("dense mask benchmark", |doc, _| {
-        let layer = doc.layer_mut(id).ok_or_else(|| EngineError::NoLayer(id))?;
+        let layer = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
         let mut pixels = Surface::new(PixelFormat::RGBA16);
         pixels.write_region(rect, &vec![0.2; 512 * 512 * 4]);
         *layer.surface_mut().ok_or_else(|| EngineError::Other("benchmark layer has no pixels".into()))? = pixels;

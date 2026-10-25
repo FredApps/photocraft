@@ -27,7 +27,7 @@ pub enum EffectKind {
     /// Transparent grayscale paint pixels stored as RGBA for independent coverage.
     Paint,
     /// A constant grayscale value.
-    Fill { value: f32 },
+    Fill { value: f32, rotation: f32, repeat_u: bool, repeat_v: bool, mirror_u: bool, mirror_v: bool },
     /// Tonal remapping applied to the accumulated mask at this stack position.
     Levels { input_black: f32, gamma: f32, input_white: f32, output_black: f32, output_white: f32 },
 }

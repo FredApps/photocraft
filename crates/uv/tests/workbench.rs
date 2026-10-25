@@ -32,7 +32,9 @@ fn outward_padding_fills_only_empty_space_around_the_selected_shell() {
     let shell = topology.pick_uv(&scene, [0.2, 0.5], topology.shells[0].material)[0];
     let material = topology.shells[shell].material;
     let occupancy = topology.occupancy_mask(&scene, 128, 128, material, [0, 0]).unwrap();
-    let padding = topology.outward_padding_mask(128, 128, material, [0, 0], shell, 3.0, &occupancy).unwrap();
+    let mut padding_options = options(material, shell);
+    padding_options.padding = 3.0;
+    let padding = topology.outward_padding_mask(&padding_options, shell, &occupancy).unwrap();
     let mut options = options(material, shell);
     options.guard = 0.0;
     options.padding = 3.0;
@@ -444,7 +446,9 @@ fn tangent_chart_emits_only_cached_shell_apron_pixels_outside_its_uv_triangles()
         })
         .unwrap();
     let shell = topology.triangle_shell[start];
-    let apron = topology.outward_padding_mask(128, 128, material, [0, 0], shell, 3.0, &occupancy).unwrap();
+    let mut padding_options = options(material, shell);
+    padding_options.padding = 3.0;
+    let apron = topology.outward_padding_mask(&padding_options, shell, &occupancy).unwrap();
     let patches = mesh.chart(&scene, start, [-0.02, 0.0, 0.0], [128, 128], 12.0).unwrap();
     let (mut base, mut padded) = (BTreeSet::new(), BTreeSet::new());
     for patch in patches {

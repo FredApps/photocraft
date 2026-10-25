@@ -37,11 +37,28 @@ fn gamma_param(p: &Value) -> Result<f32> {
         .transpose()
         .map(|v| v.unwrap_or(1.0))
 }
+fn rotation_param(p: &Value) -> Result<f32> {
+    p.get("rotation")
+        .map(|v| {
+            v.as_f64()
+                .filter(|n| n.is_finite() && (-36_000.0..=36_000.0).contains(n))
+                .map(|n| n as f32)
+                .ok_or_else(|| bad("Fill rotation must be between -36000 and 36000 degrees"))
+        })
+        .transpose()
+        .map(|v| v.unwrap_or(0.0))
+}
+fn bool_param(p: &Value, key: &str, default: bool) -> Result<bool> {
+    p.get(key)
+        .map(|value| value.as_bool().ok_or_else(|| bad("Fill repeat and mirror options must be boolean")))
+        .transpose()
+        .map(|value| value.unwrap_or(default))
+}
 fn validate_effect(effect: &EffectKind) -> Result<()> {
     match effect {
         EffectKind::Paint => Ok(()),
-        EffectKind::Fill { value } if value.is_finite() && (0.0..=1.0).contains(value) => Ok(()),
-        EffectKind::Fill { .. } => Err(bad("Fill value must be between 0 and 1")),
+        EffectKind::Fill { value, rotation, .. } if value.is_finite() && (0.0..=1.0).contains(value) && rotation.is_finite() => Ok(()),
+        EffectKind::Fill { .. } => Err(bad("Fill value must be between 0 and 1 and rotation must be finite")),
         EffectKind::Levels { input_black, gamma, input_white, output_black, output_white }
             if input_black.is_finite()
                 && gamma.is_finite()
@@ -87,7 +104,14 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         let surface = Surface::new(format);
         let effect = match kind.as_str() {
             "paint" => EffectKind::Paint,
-            "fill" => EffectKind::Fill { value: unit_param(p, "value", 1.0)? },
+            "fill" => EffectKind::Fill {
+                value: unit_param(p, "value", 1.0)?,
+                rotation: rotation_param(p)?,
+                repeat_u: bool_param(p, "repeat_u", true)?,
+                repeat_v: bool_param(p, "repeat_v", true)?,
+                mirror_u: bool_param(p, "mirror_u", false)?,
+                mirror_v: bool_param(p, "mirror_v", false)?,
+            },
             "levels" => EffectKind::Levels {
                 input_black: unit_param(p, "input_black", 0.0)?,
                 gamma: gamma_param(p)?,
@@ -99,13 +123,32 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         };
         validate_effect(&effect)?;
         match &effect {
-            EffectKind::Paint if has_any(p, &["value", "input_black", "gamma", "input_white", "output_black", "output_white"]) => {
+            EffectKind::Paint
+                if has_any(
+                    p,
+                    &[
+                        "value",
+                        "rotation",
+                        "repeat_u",
+                        "repeat_v",
+                        "mirror_u",
+                        "mirror_v",
+                        "input_black",
+                        "gamma",
+                        "input_white",
+                        "output_black",
+                        "output_white",
+                    ],
+                ) =>
+            {
                 return Err(bad("Effect settings do not apply to Paint layers"));
             }
             EffectKind::Fill { .. } if has_any(p, &["input_black", "gamma", "input_white", "output_black", "output_white"]) => {
                 return Err(bad("Levels settings do not apply to Fill layers"));
             }
-            EffectKind::Levels { .. } if p.get("value").is_some() => return Err(bad("Fill value does not apply to Levels layers")),
+            EffectKind::Levels { .. } if has_any(p, &["value", "rotation", "repeat_u", "repeat_v", "mirror_u", "mirror_v"]) => {
+                return Err(bad("Fill settings do not apply to Levels layers"));
+            }
             _ => {}
         }
         let (fill_map, fill_map_size, fill_bounds) = if matches!(&effect, EffectKind::Fill { .. }) {
@@ -162,6 +205,11 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
     let destination = p.get("to").map(|v| v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("Invalid destination"))).transpose()?;
     let remove = p.get("remove").and_then(Value::as_bool).unwrap_or(false);
     let fill_value = p.get("value").map(|_| unit_param(p, "value", 0.0)).transpose()?;
+    let rotation = p.get("rotation").map(|_| rotation_param(p)).transpose()?;
+    let repeat_u = p.get("repeat_u").map(|_| bool_param(p, "repeat_u", true)).transpose()?;
+    let repeat_v = p.get("repeat_v").map(|_| bool_param(p, "repeat_v", true)).transpose()?;
+    let mirror_u = p.get("mirror_u").map(|_| bool_param(p, "mirror_u", false)).transpose()?;
+    let mirror_v = p.get("mirror_v").map(|_| bool_param(p, "mirror_v", false)).transpose()?;
     let input_black = p.get("input_black").map(|_| unit_param(p, "input_black", 0.0)).transpose()?;
     let input_white = p.get("input_white").map(|_| unit_param(p, "input_white", 1.0)).transpose()?;
     let output_black = p.get("output_black").map(|_| unit_param(p, "output_black", 0.0)).transpose()?;
@@ -185,6 +233,11 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
         })
         .transpose()?;
     let effect_changed = fill_value.is_some()
+        || rotation.is_some()
+        || repeat_u.is_some()
+        || repeat_v.is_some()
+        || mirror_u.is_some()
+        || mirror_v.is_some()
         || input_black.is_some()
         || input_white.is_some()
         || output_black.is_some()
@@ -224,19 +277,48 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
             paint.name = name.chars().take(128).collect();
         }
         match &mut paint.kind {
-            EffectKind::Fill { value } => {
+            EffectKind::Fill {
+                value,
+                rotation: fill_rotation,
+                repeat_u: fill_repeat_u,
+                repeat_v: fill_repeat_v,
+                mirror_u: fill_mirror_u,
+                mirror_v: fill_mirror_v,
+            } => {
                 if input_black.is_some() || gamma.is_some() || input_white.is_some() || output_black.is_some() || output_white.is_some() {
                     return Err(bad("Levels settings do not apply to Fill layers"));
                 }
                 if let Some(next) = fill_value {
                     *value = next;
                 }
+                if let Some(next) = rotation {
+                    *fill_rotation = next;
+                }
+                if let Some(next) = repeat_u {
+                    *fill_repeat_u = next;
+                }
+                if let Some(next) = repeat_v {
+                    *fill_repeat_v = next;
+                }
+                if let Some(next) = mirror_u {
+                    *fill_mirror_u = next;
+                }
+                if let Some(next) = mirror_v {
+                    *fill_mirror_v = next;
+                }
                 if let Some(next) = bounds {
                     paint.fill_bounds = Some(next);
                 }
             }
             EffectKind::Levels { input_black: ib, gamma: g, input_white: iw, output_black: ob, output_white: ow } => {
-                if fill_value.is_some() || bounds.is_some() {
+                if fill_value.is_some()
+                    || rotation.is_some()
+                    || repeat_u.is_some()
+                    || repeat_v.is_some()
+                    || mirror_u.is_some()
+                    || mirror_v.is_some()
+                    || bounds.is_some()
+                {
                     return Err(bad("Fill value does not apply to Levels layers"));
                 }
                 if let Some(next) = input_black {
@@ -257,6 +339,11 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
             }
             EffectKind::Paint => {
                 if fill_value.is_some()
+                    || rotation.is_some()
+                    || repeat_u.is_some()
+                    || repeat_v.is_some()
+                    || mirror_u.is_some()
+                    || mirror_v.is_some()
                     || bounds.is_some()
                     || input_black.is_some()
                     || gamma.is_some()
@@ -339,13 +426,13 @@ fn fill_source(s: &mut Session, p: &Value) -> Result<Value> {
 }
 pub fn specs() -> Vec<CommandSpec> {
     [
-        ("uv.maskPaint.add", "Add mask stack layer", r#"{"layer":id?,"name":string?,"kind":"paint"|"fill"|"levels"?,"value":number?,"from_selection":bool?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#, add as fn(&mut Session, &Value) -> Result<Value>),
+        ("uv.maskPaint.add", "Add mask stack layer", r#"{"layer":id?,"name":string?,"kind":"paint"|"fill"|"levels"?,"value":number?,"rotation":degrees?,"from_selection":bool?,"repeat_u":bool?,"repeat_v":bool?,"mirror_u":bool?,"mirror_v":bool?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#, add as fn(&mut Session, &Value) -> Result<Value>),
         ("uv.maskPaint.select", "Select mask Paint layer", r#"{"layer":id?,"index":int}"#, select),
         ("uv.maskPaint.fillSource", "Set Fill image", r#"{"layer":id?,"index":int,"asset":int}"#, fill_source),
         (
             "uv.maskPaint.modify",
             "Edit mask Paint layer",
-            r#"{"layer":id?,"index":int,"visible":bool?,"opacity":number?,"name":string?,"to":int?,"remove":bool?,"value":number?,"bounds":[i32,i32,i32,i32]?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#,
+            r#"{"layer":id?,"index":int,"visible":bool?,"opacity":number?,"name":string?,"to":int?,"remove":bool?,"value":number?,"rotation":degrees?,"bounds":[i32,i32,i32,i32]?,"repeat_u":bool?,"repeat_v":bool?,"mirror_u":bool?,"mirror_v":bool?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#,
             modify,
         ),
     ]

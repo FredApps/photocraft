@@ -14,6 +14,14 @@ pub enum OrbitPivot {
     Cursor,
     Fixed,
 }
+
+#[derive(Clone, Copy)]
+struct FillDragState {
+    start: [f64; 2],
+    bounds: [i32; 4],
+    rotation: f32,
+    handle: Option<usize>,
+}
 impl OrbitPivot {
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -1472,6 +1480,26 @@ fn canvas_materials(app: &PhotocraftApp, index: usize) -> Vec<usize> {
         .collect()
 }
 
+/// Whether the active 2D canvas is showing the selected mask Fill's own controls.
+/// The canvas uses this to keep the generic Move/Free Transform state machine from
+/// seeing the same pointer events as the Fill manipulator.
+pub(crate) fn fill_manipulator_active(app: &PhotocraftApp, index: usize) -> bool {
+    if app.ui.workspace != "3D" || !app.ui.mask_target || app.session.uv.topology.is_none() || canvas_materials(app, index).is_empty() {
+        return false;
+    }
+    let Some(document) = app.session.documents().get(index) else { return false };
+    app.session.active().is_some_and(|st| {
+        st.doc.id == document.doc.id
+            && st
+                .active_layer
+                .and_then(|id| st.doc.layer(id))
+                .and_then(|layer| layer.mask.as_ref())
+                .and_then(|mask| mask.paint.as_ref())
+                .and_then(|stack| stack.layers.get(stack.active))
+                .is_some_and(|effect| matches!(&effect.kind, photocraft_doc::mask_paint::EffectKind::Fill { .. }))
+    })
+}
+
 /// View-only overlay: it never changes the image pixels or the persistent seam mask.
 pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &crate::canvas::ViewXform, index: usize, _primary: bool) -> Option<Rect> {
     if app.ui.workspace != "3D" {
@@ -1485,71 +1513,154 @@ pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &cr
     let document = app.session.documents().get(index)?;
     let size = [document.doc.size.width, document.doc.size.height];
     let t = Tokens::get(ui.ctx());
+    let mut fill_area = None;
     // A selected Fill exposes an editable rectangle directly on the active 2D map.
     // The document pixels remain untouched; only the Fill's destination bounds change.
-    if let Some((layer_id, effect_index, bounds)) = app.session.active().and_then(|st| {
+    if let Some((layer_id, effect_index, bounds, rotation)) = app.session.active().and_then(|st| {
         if st.doc.id != document.doc.id || !app.ui.mask_target {
             return None;
         }
         let layer = st.active_layer.and_then(|id| st.doc.layer(id))?;
         let stack = layer.mask.as_ref()?.paint.as_ref()?;
         let effect = stack.layers.get(stack.active)?;
-        if !matches!(&effect.kind, photocraft_doc::mask_paint::EffectKind::Fill { .. }) {
+        let photocraft_doc::mask_paint::EffectKind::Fill { rotation, .. } = &effect.kind else { return None };
+        let bounds = effect.fill_bounds.unwrap_or([0, 0, size[0] as i32, size[1] as i32]).map(|value| value.clamp(-1_000_000, 1_000_000));
+        if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
             return None;
         }
-        Some((layer.id.0, stack.active, effect.fill_bounds.unwrap_or([0, 0, size[0] as i32, size[1] as i32])))
+        Some((layer.id.0, stack.active, bounds, *rotation))
     }) {
+        let (shown_bounds, shown_rotation) =
+            crate::uv_mask_paint_preview::fill_transform(app, photocraft_doc::LayerId(layer_id), effect_index, bounds, rotation);
         let id = ui.id().with(("fill-mask-manipulator", document.doc.id.0, layer_id, effect_index));
-        let response = ui.interact(xf.rect, id, Sense::click_and_drag());
         let screen = |x: f32, y: f32| xf.to_screen(x, y);
-        let corners = [
-            screen(bounds[0] as f32, bounds[1] as f32),
-            screen(bounds[2] as f32, bounds[1] as f32),
-            screen(bounds[2] as f32, bounds[3] as f32),
-            screen(bounds[0] as f32, bounds[3] as f32),
-        ];
-        let box_rect = Rect::from_min_max(
-            egui::pos2(corners[0].x.min(corners[2].x), corners[0].y.min(corners[2].y)),
-            egui::pos2(corners[0].x.max(corners[2].x), corners[0].y.max(corners[2].y)),
-        );
+        let corners = fill_corners(shown_bounds, shown_rotation).map(|[x, y]| screen(x, y));
+        let box_rect = corners.iter().copied().fold(Rect::NOTHING, |rect, point| rect.union(Rect::from_min_max(point, point)));
         let painter = ui.painter_at(xf.rect);
-        painter.rect_stroke(box_rect, 0.0, Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
-        for p in corners {
-            painter.rect_filled(Rect::from_center_size(p, vec2(9.0, 9.0)), 1.0, t.accent);
-        }
-        let drag_id = id.with("fixed-corner");
-        if response.drag_started() {
-            if let Some(pointer) = response.interact_pointer_pos() {
-                let nearest =
-                    corners.iter().enumerate().min_by(|(_, a), (_, b)| a.distance_sq(pointer).total_cmp(&b.distance_sq(pointer))).map(|(i, _)| i).unwrap_or(2);
-                let opposite = (nearest + 2) % 4;
-                let fixed = xf.to_doc(corners[opposite]);
-                ui.ctx().data_mut(|data| data.insert_temp(drag_id, fixed));
+        let handles = fill_handles(corners);
+        let rotation_handle = fill_rotation_handle(corners, xf.rect);
+        let draw_bounds = |bounds: [i32; 4], rotation: f32| {
+            let points = fill_corners(bounds, rotation).map(|[x, y]| screen(x, y));
+            for index in 0..4 {
+                painter.line_segment([points[index], points[(index + 1) % 4]], Stroke::new(1.5, t.accent));
             }
-        }
-        if response.dragged() || response.drag_stopped() {
-            if let (Some(pointer), Some(fixed)) = (response.interact_pointer_pos(), ui.ctx().data_mut(|data| data.get_temp::<[f64; 2]>(drag_id))) {
-                let moving = xf.to_doc(pointer);
-                let next = [
-                    fixed[0].min(moving[0]).round().clamp(0.0, size[0] as f64) as i32,
-                    fixed[1].min(moving[1]).round().clamp(0.0, size[1] as f64) as i32,
-                    fixed[0].max(moving[0]).round().clamp(0.0, size[0] as f64) as i32,
-                    fixed[1].max(moving[1]).round().clamp(0.0, size[1] as f64) as i32,
-                ];
-                if response.drag_stopped() {
-                    ui.ctx().data_mut(|data| data.remove::<[f64; 2]>(drag_id));
-                    if next[2] > next[0] && next[3] > next[1] {
-                        if let Err(error) = app.run("uv.maskPaint.modify", serde_json::json!({"layer":layer_id,"index":effect_index,"bounds":next})) {
-                            app.ui.uv_workbench.status = error;
+            for point in fill_handles(points) {
+                painter.rect_filled(Rect::from_center_size(point, vec2(9.0, 9.0)), 1.0, t.accent);
+            }
+            let top = points[0].lerp(points[1], 0.5);
+            let rotate = fill_rotation_handle(points, xf.rect);
+            painter.line_segment([top, rotate], Stroke::new(1.0, t.accent));
+            painter.circle_filled(rotate, 5.0, t.accent);
+        };
+        let drag_id = id.with("drag-state");
+        let mut displayed_bounds = shown_bounds;
+        let mut displayed_rotation = shown_rotation;
+        let response_rect = box_rect.expand(30.0).intersect(xf.rect).intersect(ui.clip_rect());
+        fill_area = Some(response_rect);
+        let navigating = app.ui.tool == crate::state::Tool::Hand || ui.input(|i| i.key_down(egui::Key::Space) || i.pointer.middle_down());
+        if !navigating && response_rect.width() > 0.0 && response_rect.height() > 0.0 {
+            let response = ui.interact(response_rect, id, Sense::click_and_drag());
+            if let Some(pointer) = response.interact_pointer_pos() {
+                let doc_point = xf.to_doc(pointer);
+                let press_origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(pointer);
+                let press_doc = xf.to_doc(press_origin);
+                if response.drag_started_by(egui::PointerButton::Secondary) && point_in_quad(press_origin, corners) {
+                    ui.ctx().data_mut(|data| data.insert_temp(drag_id, FillDragState { start: press_doc, bounds, rotation, handle: None }));
+                } else if response.drag_started_by(egui::PointerButton::Primary) && rotation_handle.distance(press_origin) <= 12.0 {
+                    ui.ctx().data_mut(|data| data.insert_temp(drag_id, FillDragState { start: press_doc, bounds, rotation, handle: Some(8) }));
+                } else if response.drag_started_by(egui::PointerButton::Primary)
+                    && let Some((handle, _)) =
+                        handles.iter().enumerate().map(|(index, point)| (index, point.distance_sq(press_origin))).min_by(|a, b| a.1.total_cmp(&b.1))
+                    && handles[handle].distance(press_origin) <= 12.0
+                {
+                    ui.ctx().data_mut(|data| data.insert_temp(drag_id, FillDragState { start: press_doc, bounds, rotation, handle: Some(handle) }));
+                }
+                let drag = ui.ctx().data_mut(|data| data.get_temp::<FillDragState>(drag_id));
+                if let Some(drag) = drag {
+                    let active = match drag.handle {
+                        None => response.dragged_by(egui::PointerButton::Secondary) || response.drag_stopped_by(egui::PointerButton::Secondary),
+                        Some(_) => response.dragged_by(egui::PointerButton::Primary) || response.drag_stopped_by(egui::PointerButton::Primary),
+                    };
+                    if active {
+                        let next_rotation = if drag.handle == Some(8) {
+                            let center =
+                                [(f64::from(drag.bounds[0]) + f64::from(drag.bounds[2])) * 0.5, (f64::from(drag.bounds[1]) + f64::from(drag.bounds[3])) * 0.5];
+                            let start_angle = (drag.start[1] - center[1]).atan2(drag.start[0] - center[0]);
+                            let current_angle = (doc_point[1] - center[1]).atan2(doc_point[0] - center[0]);
+                            drag.rotation + (current_angle - start_angle).to_degrees() as f32
+                        } else {
+                            drag.rotation
+                        };
+                        let handle_point =
+                            if drag.handle.is_some_and(|handle| handle < 8) { inverse_rotate_point(doc_point, drag.bounds, drag.rotation) } else { doc_point };
+                        let moving =
+                            [handle_point[0].round().clamp(-1_000_000.0, 1_000_000.0) as i32, handle_point[1].round().clamp(-1_000_000.0, 1_000_000.0) as i32];
+                        let width = drag.bounds[2].saturating_sub(drag.bounds[0]).max(1);
+                        let height = drag.bounds[3].saturating_sub(drag.bounds[1]).max(1);
+                        let next = match drag.handle {
+                            None => {
+                                let dx = (doc_point[0] - drag.start[0]).round() as i32;
+                                let dy = (doc_point[1] - drag.start[1]).round() as i32;
+                                let x0 = drag.bounds[0].saturating_add(dx).clamp(-1_000_000, 1_000_000 - width);
+                                let y0 = drag.bounds[1].saturating_add(dy).clamp(-1_000_000, 1_000_000 - height);
+                                [x0, y0, x0.saturating_add(width), y0.saturating_add(height)]
+                            }
+                            Some(8) => drag.bounds,
+                            Some(0) => [
+                                moving[0].clamp(-1_000_000, drag.bounds[2].saturating_sub(1)),
+                                moving[1].clamp(-1_000_000, drag.bounds[3].saturating_sub(1)),
+                                drag.bounds[2],
+                                drag.bounds[3],
+                            ],
+                            Some(2) => [
+                                drag.bounds[0],
+                                moving[1].clamp(-1_000_000, drag.bounds[3].saturating_sub(1)),
+                                moving[0].clamp(drag.bounds[0].saturating_add(1), 1_000_000),
+                                drag.bounds[3],
+                            ],
+                            Some(4) => [
+                                drag.bounds[0],
+                                drag.bounds[1],
+                                moving[0].clamp(drag.bounds[0].saturating_add(1), 1_000_000),
+                                moving[1].clamp(drag.bounds[1].saturating_add(1), 1_000_000),
+                            ],
+                            Some(6) => [
+                                moving[0].clamp(-1_000_000, drag.bounds[2].saturating_sub(1)),
+                                drag.bounds[1],
+                                drag.bounds[2],
+                                moving[1].clamp(drag.bounds[1].saturating_add(1), 1_000_000),
+                            ],
+                            Some(1) => [drag.bounds[0], moving[1].clamp(-1_000_000, drag.bounds[3].saturating_sub(1)), drag.bounds[2], drag.bounds[3]],
+                            Some(3) => [drag.bounds[0], drag.bounds[1], moving[0].clamp(drag.bounds[0].saturating_add(1), 1_000_000), drag.bounds[3]],
+                            Some(5) => [drag.bounds[0], drag.bounds[1], drag.bounds[2], moving[1].clamp(drag.bounds[1].saturating_add(1), 1_000_000)],
+                            Some(7) => [moving[0].clamp(-1_000_000, drag.bounds[2].saturating_sub(1)), drag.bounds[1], drag.bounds[2], drag.bounds[3]],
+                            _ => drag.bounds,
+                        };
+                        let stopped = match drag.handle {
+                            None => response.drag_stopped_by(egui::PointerButton::Secondary),
+                            Some(_) => response.drag_stopped_by(egui::PointerButton::Primary),
+                        };
+                        crate::uv_mask_paint_preview::set_fill(app, photocraft_doc::LayerId(layer_id), effect_index, next, next_rotation);
+                        if next != shown_bounds || next_rotation.to_bits() != shown_rotation.to_bits() {
+                            ui.ctx().request_repaint();
+                        }
+                        if stopped {
+                            ui.ctx().data_mut(|data| data.remove::<FillDragState>(drag_id));
+                            if (next != drag.bounds || next_rotation.to_bits() != drag.rotation.to_bits())
+                                && let Some(commit) = crate::uv_mask_paint_preview::pending(app)
+                                && let Err(error) = app.run("uv.maskPaint.modify", commit.params())
+                            {
+                                app.ui.uv_workbench.status = error;
+                            }
+                        } else {
+                            displayed_bounds = next;
+                            displayed_rotation = next_rotation;
                         }
                     }
-                } else {
-                    let a = screen(next[0] as f32, next[1] as f32);
-                    let b = screen(next[2] as f32, next[3] as f32);
-                    painter.rect_stroke(Rect::from_two_pos(a, b), 0.0, Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
                 }
             }
         }
+        draw_bounds(displayed_bounds, displayed_rotation);
     }
     if app.ui.uv_workbench.show_overlay {
         let painter = ui.painter_at(xf.rect);
@@ -1565,7 +1676,69 @@ pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &cr
             painter.line_segment(points, Stroke::new(if selected { 2.0 } else { 1.0 }, if selected { t.accent } else { t.text }));
         }
     }
-    None
+    fill_area
+}
+
+pub(crate) fn fill_corners(bounds: [i32; 4], rotation: f32) -> [[f32; 2]; 4] {
+    let [x0, y0, x1, y1] = bounds;
+    let corners = [[x0 as f32, y0 as f32], [x1 as f32, y0 as f32], [x1 as f32, y1 as f32], [x0 as f32, y1 as f32]];
+    let angle = rotation.rem_euclid(360.0);
+    if angle == 0.0 || !angle.is_finite() {
+        return corners;
+    }
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let center = [(x0 as f32 + x1 as f32) * 0.5, (y0 as f32 + y1 as f32) * 0.5];
+    corners.map(|[x, y]| {
+        let (dx, dy) = (x - center[0], y - center[1]);
+        [center[0] + cos * dx - sin * dy, center[1] + sin * dx + cos * dy]
+    })
+}
+
+fn fill_handles(corners: [Pos2; 4]) -> [Pos2; 8] {
+    [
+        corners[0],
+        corners[0].lerp(corners[1], 0.5),
+        corners[1],
+        corners[1].lerp(corners[2], 0.5),
+        corners[2],
+        corners[2].lerp(corners[3], 0.5),
+        corners[3],
+        corners[3].lerp(corners[0], 0.5),
+    ]
+}
+
+pub(crate) fn fill_rotation_handle(corners: [Pos2; 4], canvas: Rect) -> Pos2 {
+    let top = corners[0].lerp(corners[1], 0.5);
+    let center = corners[0].lerp(corners[2], 0.5);
+    let outward = (top - center).normalized();
+    let outside = top + outward * 24.0;
+    if canvas.contains(outside) { outside } else { top - outward * 24.0 }
+}
+
+fn inverse_rotate_point(point: [f64; 2], bounds: [i32; 4], rotation: f32) -> [f64; 2] {
+    let angle = f64::from(rotation.rem_euclid(360.0)).to_radians();
+    let (sin, cos) = angle.sin_cos();
+    let center = [(f64::from(bounds[0]) + f64::from(bounds[2])) * 0.5, (f64::from(bounds[1]) + f64::from(bounds[3])) * 0.5];
+    let (dx, dy) = (point[0] - center[0], point[1] - center[1]);
+    [center[0] + cos * dx + sin * dy, center[1] - sin * dx + cos * dy]
+}
+
+fn point_in_quad(point: Pos2, quad: [Pos2; 4]) -> bool {
+    let mut sign = 0.0_f32;
+    for index in 0..4 {
+        let a = quad[index];
+        let b = quad[(index + 1) % 4];
+        let cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+        if cross.abs() <= 0.01 {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cross.signum();
+        } else if cross.signum() != sign {
+            return false;
+        }
+    }
+    true
 }
 
 fn selection_mode(app: &PhotocraftApp, index: usize) -> bool {
@@ -1692,6 +1865,15 @@ fn choose(app: &mut PhotocraftApp, state: &mut State, ui: &egui::Ui, material: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rotated_fill_manipulator_uses_the_transformed_quad_for_outline_and_hit_testing() {
+        let corners = fill_corners([0, 0, 8, 4], 45.0).map(|[x, y]| pos2(x, y));
+        assert!(point_in_quad(pos2(4.0, 2.0), corners));
+        assert!(!point_in_quad(pos2(0.0, -2.0), corners), "empty corners of the rotated AABB must not start a drag");
+        let local = inverse_rotate_point([4.0, 2.0], [0, 0, 8, 4], 45.0);
+        assert!((local[0] - 4.0).abs() < 1e-5 && (local[1] - 2.0).abs() < 1e-5);
+    }
+
     fn input_key(h: &mut egui_kittest::Harness<'_, PhotocraftApp>, key: egui::Key, mods: egui::Modifiers) {
         h.event(egui::Event::ModifiersChanged(mods));
         h.event(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: mods });
@@ -2219,6 +2401,34 @@ mod tests {
         refresh(&mut app, &ctx, &mut cache).unwrap();
         assert!(cache.masked.is_empty());
         assert_ne!(cache.keys[material], old);
+    }
+    #[test]
+    fn targeted_layer_mask_replaces_uv_preview_with_grayscale_mask() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut app = fixture_app();
+        let ctx = egui::Context::default();
+        app.run("uv.shell.select", json!({"shells":[0]})).unwrap();
+        app.run("uv.layer.create", json!({"guard":8})).unwrap();
+        app.run("channel.target.layerMask", json!({})).unwrap();
+        app.run("view.layerMask", json!({"mode":"gray"})).unwrap();
+
+        let st = app.session.active().unwrap();
+        let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
+        let mask = layer.mask.as_ref().unwrap().surface.clone();
+        let material = app.session.uv.material;
+        let mut cache = Cache { display_channel: Channel::Material, ..Default::default() };
+        refresh(&mut app, &ctx, &mut cache).unwrap();
+
+        assert!(cache.masked.contains(&material), "the targeted mask is used by the UV preview");
+        let image = cache.textures[material].as_ref().unwrap();
+        for (x, y) in [(30, 64), (52, 64)] {
+            let shown = image.rgba[y * image.width + x];
+            let expected = mask.pixel(x as i32, y as i32)[0];
+            assert!(
+                (shown[0] - expected).abs() < 0.01 && shown[0] == shown[1] && shown[1] == shown[2] && shown[3] == 1.0,
+                "targeted mask is shown as grayscale at {x},{y}"
+            );
+        }
     }
     fn fixture_app() -> PhotocraftApp {
         let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.fbx");

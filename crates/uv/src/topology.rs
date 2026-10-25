@@ -248,30 +248,22 @@ impl Topology {
     /// Build a sparse exterior apron for a single shell. The apron follows only true shell
     /// boundaries (never internal triangulation edges), stays inside the atlas, and excludes
     /// every texel covered by another shell of the same material.
-    pub fn outward_padding_mask(
-        &self,
-        width: u32,
-        height: u32,
-        material: usize,
-        tile: [i32; 2],
-        shell_id: usize,
-        padding: f64,
-        occupancy: &OccupancyMask,
-    ) -> Result<PaddingMask> {
-        if !padding.is_finite() || !(0.0..=1024.0).contains(&padding) {
+    pub fn outward_padding_mask(&self, options: &MaskOptions, shell_id: usize, occupancy: &OccupancyMask) -> Result<PaddingMask> {
+        let MaskOptions { width, height, material, tile, padding, .. } = options;
+        if !padding.is_finite() || !(0.0..=1024.0).contains(padding) {
             return Err(Error("Outward padding must be in 0..1024 pixels".into()));
         }
-        if padding == 0.0 {
+        if *padding == 0.0 {
             return Ok(PaddingMask::default());
         }
-        if (occupancy.width, occupancy.height, occupancy.material, occupancy.tile) != (width, height, material, tile) {
+        if (occupancy.width, occupancy.height, occupancy.material, occupancy.tile) != (*width, *height, *material, *tile) {
             return Err(Error("UV occupancy key does not match".into()));
         }
-        self.shells.get(shell_id).filter(|shell| shell.material == material).ok_or_else(|| Error("Selected shell does not belong to this material".into()))?;
-        let (w, h) = (width as usize, height as usize);
+        self.shells.get(shell_id).filter(|shell| shell.material == *material).ok_or_else(|| Error("Selected shell does not belong to this material".into()))?;
+        let (w, h) = (*width as usize, *height as usize);
         let point = |uv: [f64; 2]| [(uv[0] - f64::from(tile[0])) * w as f64, (1.0 - (uv[1] - f64::from(tile[1]))) * h as f64];
         let mut result = PaddingMask::default();
-        let radius = padding + std::f64::consts::FRAC_1_SQRT_2;
+        let radius = *padding + std::f64::consts::FRAC_1_SQRT_2;
         let scan_radius = radius + 0.5;
         let diameter = (scan_radius.ceil() as usize).saturating_mul(2).saturating_add(1);
         let mut candidates = 0usize;
@@ -392,7 +384,7 @@ impl Topology {
                 let padding_mask = if let Some(cached) = cached_padding.and_then(|masks| masks.get(shell_id)) {
                     cached
                 } else {
-                    generated = self.outward_padding_mask(*width, *height, *material, *tile, *shell_id, *padding, occupancy)?;
+                    generated = self.outward_padding_mask(options, *shell_id, occupancy)?;
                     &generated
                 };
                 padding_mask.for_each(|x, y| {

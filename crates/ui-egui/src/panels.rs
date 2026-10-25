@@ -2988,6 +2988,19 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             app.ui.mask_target = p.as_bool().unwrap_or(false);
             app.ui.vector_mask_target = false;
             app.sync_mask_targets();
+            #[cfg(feature = "uv-workbench")]
+            if app.ui.workspace == "3D" {
+                let mask_view = app.session.active().and_then(photocraft_engine::mask_view_cmds::current);
+                if app.ui.mask_target {
+                    if let Err(error) = app.run("view.layerMask", json!({"mode":"gray"})) {
+                        app.ui.uv_workbench.status = error;
+                    }
+                } else if mask_view.is_some()
+                    && let Err(error) = app.run("view.layerMask", json!({"mode":"off"}))
+                {
+                    app.ui.uv_workbench.status = error;
+                }
+            }
             continue;
         }
         if id == "ui.vectorMaskTarget" {
