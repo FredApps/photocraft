@@ -18,7 +18,7 @@ The **Layers** panel can show a compact list of layer names or larger previews. 
 
 ## Choose what a thumbnail shows
 
-In **Layers › Panel Options…**, the **Thumbnail Contents** section offers two choices:
+In the Layers panel menu, open **Panel Options…**. The **Thumbnail Contents** section offers two choices:
 
 - **Layer Bounds** frames the content of each layer, which can make small objects easier to recognize.
 - **Entire Document** shows the full canvas area in each preview, useful for seeing where a layer sits in the composition.
