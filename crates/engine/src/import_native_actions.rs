@@ -37,13 +37,15 @@ fn fixed_parameters(
     ctx: &JobCtx,
     charge: &mut impl FnMut(u64) -> Result<()>,
 ) -> Result<(&'static str, serde_json::Value)> {
+    ctx.check()?;
+    // Conservative retained-parameter allowance for either Levels JSON or the
+    // larger pencil Curves table. This is not the reusable full-frame workspace.
+    charge(64 * 1024)?;
     let narrow = matches!(levels,Adjustment::Levels {master,per_channel,..} if std::iter::once(master).chain(per_channel).any(|row|(row.in_white-row.in_black)*255.<1.9999));
     if !narrow {
         return Ok(("image.adjustments.levels", crate::adjust_params::to_params(levels)));
     }
     ctx.check()?;
-    // Fixed small analysis and resulting JSON/native table allocation.
-    charge(64 * 1024)?;
     let mut ramp = photocraft_compose::Buffer {
         rect: Rect::new(0, 0, 256, 1),
         px: (0..256)
@@ -83,14 +85,17 @@ fn fixed_parameters(
 /// Charge and authorization failures leave this layer untouched; publication remains caller-owned.
 #[cfg(test)]
 pub(crate) fn materialize(doc: &Document, layer: &mut Layer, ctx: &JobCtx, charge: &mut impl FnMut(u64) -> Result<()>) -> Result<bool> {
-    materialize_with_source(doc, layer, ctx, charge, None)
+    let prepaid = doc.size.area().checked_mul(32).ok_or_else(|| EngineError::Other("native auto analysis bounds overflow".into()))?;
+    materialize_with_source(doc, layer, ctx, prepaid, charge, None)
 }
 
 /// Resolve analysis against the shared preparer's already prepared source, keeping its original locator intact.
+/// The caller holds `prepaid_render_bytes` through this call; only retained parameter allocations debit `charge`.
 pub(crate) fn materialize_with_source(
     doc: &Document,
     layer: &mut Layer,
     ctx: &JobCtx,
+    prepaid_render_bytes: u64,
     charge: &mut impl FnMut(u64) -> Result<()>,
     source: Option<&crate::smart_cmds::SourceImage>,
 ) -> Result<bool> {
@@ -99,6 +104,10 @@ pub(crate) fn materialize_with_source(
         return Ok(false);
     }
     let LayerContent::Smart(original) = &layer.content else { return Ok(false) };
+    let required = doc.size.area().checked_mul(32).ok_or_else(|| EngineError::Other("native auto analysis bounds overflow".into()))?;
+    if required > prepaid_render_bytes {
+        return Err(EngineError::Other("native auto analysis exceeds its prepaid render reservation".into()));
+    }
     let mut pending = original.clone();
     for index in 0..pending.smart_filters.len() {
         ctx.check()?;
@@ -112,8 +121,6 @@ pub(crate) fn materialize_with_source(
             return Err(EngineError::Other("one-time native automatic tone action requires an empty parameter object".into()));
         }
         crate::jobs::authorize_render_command(&filter.command, &filter.params)?;
-        let bytes = doc.size.area().checked_mul(32).ok_or_else(|| EngineError::Other("native auto analysis bounds overflow".into()))?;
-        charge(bytes)?;
         let source = crate::smart_cmds::render_below_filter_with_source(doc, &pending, index, ctx, source)?
             .ok_or_else(|| EngineError::Other("native auto action has no prepared source pixels".into()))?;
         let levels = adjustment(&source, doc.bounds(), kind, ctx)?;
@@ -188,7 +195,7 @@ mod tests {
                     })
                     .unwrap()
                 );
-                assert_eq!(charged, doc.size.area() * 32);
+                assert_eq!(charged, 64 * 1024, "fixed Levels JSON remains charged while analysis reuses the prepaid render frame");
                 assert_eq!(object(&layer).smart_filters[0].command, "image.adjustments.levels");
                 let actual = crate::smart_cmds::render(&doc, object(&layer)).unwrap().unwrap();
                 for x in 0..16 {

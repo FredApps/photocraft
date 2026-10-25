@@ -579,3 +579,138 @@ fn direct_svg_avoids_discarded_native_import_while_stacked_svg_keeps_shared_admi
     let b = refused.layers[0].surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 1, 1));
     assert_eq!(a, b, "one native SVG shape and its Mean stack have the same ordinary pixels");
 }
+
+/// Author bounded native pixels and pending automatic filters without precomputing their fixed parameters.
+fn automatic_document(layers: usize, filters: usize, uniform: bool) -> (Document, u64) {
+    let mut source = Document::new("Original automatic input", Size::new(64, 64), ColorMode::Rgb, SampleType::U8);
+    let mut pixels = Layer::raster("Original gradient", source.pixel_format());
+    for x in 0..64 {
+        let value = if uniform { 0.4 } else { 0.1 + 0.8 * x as f32 / 63.0 };
+        pixels.surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(x, 0, x + 1, 64), &[value, value, value, 1.0]);
+    }
+    source.layers.push(pixels);
+    let bytes = Arc::new(smart_cmds::encode_source(&source).unwrap());
+    let (_, decoded_bytes) = photocraft_format::load_from_bytes_measured(&bytes, &Default::default()).unwrap();
+    let mut document = Document::new("Pending sequential analysis", source.size, source.mode, source.depth);
+    for _ in 0..layers {
+        let mut layer = smart(bytes.clone());
+        let LayerContent::Smart(object) = &mut layer.content else { panic!("automatic Smart") };
+        object.smart_filters = (0..filters)
+            .map(|index| SmartFilter {
+                command: if index % 2 == 0 { "image.autoTone" } else { "image.autoContrast" }.into(),
+                params: serde_json::json!({}),
+                blend: BlendMode::Normal,
+                opacity: 1.0,
+                visible: true,
+            })
+            .collect();
+        document.layers.push(layer);
+    }
+    (document, decoded_bytes)
+}
+
+/// Permit one-time native analysis but deny publication of its generated fixed curve command.
+fn deny_generated_automatic_curve(command: &str, _: &serde_json::Value) -> Result<()> {
+    if command == "image.adjustments.curves" { Err(limit("denied fixed automatic curve")) } else { Ok(()) }
+}
+
+#[test]
+/// Sequential auto filters and layers reuse one live render peak while every decoded tile, cache and fixed parameter stays charged.
+fn sequential_automatic_analysis_reuses_prepaid_frames_and_retains_fixed_parameters() {
+    for (layers, filters, uniform) in [(1, 3, false), (3, 2, false), (2, 2, true)] {
+        let (original, decoded_bytes) = automatic_document(layers, filters, uniform);
+        let frame = Allowance::render_bytes(&original).unwrap();
+        let mut ready = original.clone();
+        let mut measured = allowance();
+        prepare_with_allowance(&mut ready, &JobCtx::new(), &mut measured).unwrap();
+        let mut caches = allowance();
+        for layer in &ready.layers {
+            caches.cache(layer.surface().unwrap()).unwrap();
+            let LayerContent::Smart(object) = &layer.content else { panic!("prepared Smart") };
+            assert!(object.smart_filters.iter().all(|filter| filter.command == if uniform { "image.adjustments.curves" } else { "image.adjustments.levels" }));
+        }
+        let retained = decoded_bytes * layers as u64 + (MAX_PREPARATION_BYTES - caches.remaining_bytes) + 64 * 1024 * (layers * filters) as u64;
+        assert_eq!(
+            MAX_PREPARATION_BYTES - measured.remaining_bytes,
+            retained,
+            "analysis frames are temporary; decoded data, caches and every fixed parameter allowance persist"
+        );
+        let mut exact = allowance();
+        exact.remaining_bytes = frame + retained;
+        let mut pending = original.clone();
+        prepare_with_allowance(&mut pending, &JobCtx::new(), &mut exact).unwrap();
+        assert_eq!(exact.remaining_bytes, frame, "all sequential items release the same render peak");
+        assert_eq!(pending, ready);
+        let mut short = allowance();
+        short.remaining_bytes = frame + retained - 1;
+        let mut refused = original.clone();
+        assert!(prepare_with_allowance(&mut refused, &JobCtx::new(), &mut short).is_err());
+        assert_eq!(refused, original, "a one-byte retained-data shortage cannot publish partial fixed filters");
+    }
+}
+
+#[test]
+/// Analysis credit is validated before work; retained parameter admission survives failure/cancel while temporary credit is released.
+fn automatic_analysis_credit_and_retained_parameter_failure_lifetimes_are_distinct() {
+    let (original, _) = automatic_document(1, 1, true);
+    let original_layer = original.layers[0].clone();
+    let LayerContent::Smart(object) = &original_layer.content else { panic!("pending Smart") };
+    let SmartSource::Embedded { bytes, .. } = &object.source else { panic!("embedded source") };
+    let source = photocraft_format::load_from_bytes(bytes).unwrap();
+    let image = smart_cmds::prepared_source_image(&source, original.pixel_format(), None, &JobCtx::new()).unwrap();
+    let frame = Allowance::render_bytes(&original).unwrap();
+    let mut insufficient = allowance();
+    insufficient.remaining_bytes = frame + 64 * 1024;
+    let before = insufficient.remaining_bytes;
+    let mut layer = original_layer.clone();
+    assert!(
+        insufficient
+            .with_render(&original, |budget, credit, _| crate::import_native_actions::materialize_with_source(
+                &original,
+                &mut layer,
+                &JobCtx::new(),
+                credit - 1,
+                &mut |bytes| budget.bytes(bytes),
+                Some(&image),
+            ))
+            .is_err()
+    );
+    assert_eq!(insufficient.remaining_bytes, before, "insufficient prepaid credit must not charge or allocate fixed parameters");
+    assert_eq!(layer, original_layer);
+    for outcome in 0..3 {
+        let context = JobCtx::new();
+        let mut layer = original_layer.clone();
+        let mut budget = allowance();
+        budget.remaining_bytes = frame + 64 * 1024;
+        let authority: Option<fn(&str, &serde_json::Value) -> Result<()>> = if outcome == 2 { Some(deny_generated_automatic_curve) } else { None };
+        let _scope = crate::jobs::render_authorization_scope(authority);
+        let result = budget.with_render(&original, |budget, credit, _| {
+            crate::import_native_actions::materialize_with_source(
+                &original,
+                &mut layer,
+                &context,
+                credit,
+                &mut |bytes| {
+                    assert_eq!(bytes, 64 * 1024);
+                    budget.bytes(bytes)?;
+                    if outcome == 1 {
+                        context.cancel();
+                        Ok(())
+                    } else if outcome == 0 {
+                        Err(limit("synthetic fixed-parameter failure"))
+                    } else {
+                        Ok(())
+                    }
+                },
+                Some(&image),
+            )
+        });
+        if outcome == 1 {
+            assert!(matches!(result, Err(EngineError::Cancelled)));
+        } else {
+            assert!(result.is_err());
+        }
+        assert_eq!(budget.remaining_bytes, frame, "release only the temporary frame; admitted fixed-parameter bytes stay charged");
+        assert_eq!(layer, original_layer, "neither error nor cancellation publishes a partially materialized filter");
+    }
+}

@@ -388,7 +388,14 @@ fn prepare_layers(doc: &mut Document, ids: Vec<LayerPath>, ctx: &JobCtx, depth: 
                         .transpose()?;
                     // Embedded PSD UUIDs render from memory without enabling a filesystem link.
                     object.source = SmartSource::Embedded { file_name: name, bytes: prepared_bytes };
-                    crate::import_native_actions::materialize_with_source(doc, &mut layer, ctx, &mut |bytes| allowance.bytes(bytes), image.as_ref())?;
+                    crate::import_native_actions::materialize_with_source(
+                        doc,
+                        &mut layer,
+                        ctx,
+                        render_reservation,
+                        &mut |bytes| allowance.bytes(bytes),
+                        image.as_ref(),
+                    )?;
                     if !smart_cmds::prepare_layer_with_source(doc, &mut layer, ctx, image.as_ref())? {
                         return Err(EngineError::Other("native smart contents could not be prepared".into()));
                     }
