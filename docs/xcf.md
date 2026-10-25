@@ -69,6 +69,13 @@ CLI `convert`, `info`, `run` and `batch` accept
 `historicalXcfSampleOrder: "little-endian"` (or `"big-endian"`). Without a choice, noninteractive
 imports refuse ambiguous high-depth files rather than publish potentially wrong pixels. The
 public IO API exposes the same choice through `ImportOptions::historical_xcf_sample_order`.
+
+Place Embedded prepares imported content before creating pixels or a Smart Object preview.
+For ambiguous historical files with an explicit byte-order choice, embedded Smart contents
+become native `.pcraft` data so refresh and Edit Contents need no further XCF interpretation.
+The original file stays unchanged. To use Place Linked for these historical files, first open
+with the chosen order, save as `.pcraft`, and link that native file.
+
 Genuine U16/F32 sources qualify selected little-endian cases across XCF7–11: Windows GIMP
 2.9.6 supplies versions 7/8/9/11, and unmodified GIMP 2.9.5 development commit
 [`0874703`](https://github.com/GNOME/gimp/commit/0874703e3b7f2d211816feccd745404ed8ec3d71)

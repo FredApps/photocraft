@@ -821,56 +821,103 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let vector = photocraft_io::svg::is_svg(&bytes);
     let mut opts = crate::jobs::import_options(s.prefs());
     opts.historical_xcf_sample_order = historical_xcf_sample_order(p, "file.placeEmbedded")?;
-    let imported = photocraft_io::import_with_options(name, &bytes, &opts).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
-    if imported.preview_only {
-        return Err(EngineError::Other(format!(
-            "{name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
-        )));
-    }
-    let src = imported.document;
-    let (w, h) = (src.size.width as f64, src.size.height as f64);
-    // The implicit `fit` is Preferences ▸ General ▸ Resize Image During Place (on by default).
     let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(s.prefs().general.resize_image_during_place);
-    let scale = match f64_param(p, "scale") {
-        Some(k) => (k / 100.0).max(1e-4),
-        None if fit && (w > cw || h > ch) => (cw / w).min(ch / h),
-        None => 1.0,
-    };
-    let center = match p.get("center").and_then(Value::as_array) {
-        Some(c) if c.len() == 2 => (c[0].as_f64().unwrap_or(cw / 2.0), c[1].as_f64().unwrap_or(ch / 2.0)),
-        _ => (cw / 2.0, ch / 2.0),
-    };
-    let (dx, dy) = ((center.0 - w * scale / 2.0).round(), (center.1 - h * scale / 2.0).round());
-    let mut px = flattened_checked(&src, fmt, "file.place")?;
-    if (scale - 1.0).abs() > 1e-9 {
-        px = resize_surface(&px, scale, scale, Resample::Bicubic);
-    }
-    let px = translate_surface(&px, dx as i32, dy as i32);
-    // Preferences ▸ General ▸ Always Create Smart Objects When Placing (on by default): off, an
-    // embedded place lands as a plain pixel layer. A linked place is always a smart object.
     let smart = linked.is_some() || p.get("smartObject").and_then(Value::as_bool).unwrap_or(s.prefs().general.always_create_smart_objects_when_placing);
-    let source = match linked {
-        Some(path) => SmartSource::Linked { path },
-        None => SmartSource::Embedded { file_name: file_name(name), bytes: Arc::new(bytes) },
-    };
-    let layer_name = stem(name);
-    let label = if matches!(&source, SmartSource::Linked { .. }) { "Place Linked" } else { PLACE_EMBEDDED };
-    let id = s.edit(label, |doc, active| {
-        let layer = if smart {
-            let mut so = SmartObject::new(source, Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, Some(px));
-            // A vector source (SVG) renders at its placement scale instead of as a resampled raster.
-            if vector && let Some(sharp) = crate::smart_cmds::render(doc, &so)? {
-                so.cache = Some(sharp);
+    let historical_linked = linked.is_some();
+    let name = name.to_string();
+    let decode_name = name.clone();
+    let bytes = Arc::new(bytes);
+    let decode_bytes = bytes.clone();
+    let p = p.clone();
+    crate::jobs::run(
+        s,
+        "Place",
+        true,
+        move |ctx| {
+            // Only an explicit choice needs this extra historical probe. Ordinary
+            // imports keep their single decoding/inflation pass, and missing choices
+            // retain the importer's typed refusal before anything is published.
+            let normalize_historical = if smart && opts.historical_xcf_sample_order.is_some() {
+                let request = ctx
+                    .stage(0.0, 0.05, "Checking historical sample order", |ctl| {
+                        photocraft_io::historical_xcf_sample_order_request_with(&decode_name, &decode_bytes, ctl)
+                    })
+                    .map_err(|error| if ctx.cancelled() { EngineError::Cancelled } else { EngineError::Other(format!("{decode_name}: {error}")) })?;
+                if request.is_some() && historical_linked {
+                    return Err(EngineError::Other("Historical high-depth XCF linked contents cannot retain a sample byte-order choice. Open the XCF with the chosen byte order, save it as .pcraft, then use Place Linked on that native file.".into()));
+                }
+                request.is_some()
+            } else {
+                false
+            };
+            let imported = ctx
+                .stage(0.0, 0.5, "Decoding placed contents", |ctl| photocraft_io::import_with_options_and_interrupt(&decode_name, &decode_bytes, &opts, ctl))
+                .map_err(|e| if ctx.cancelled() { EngineError::Cancelled } else { EngineError::Other(format!("{decode_name}: {e}")) })?;
+            if imported.preview_only {
+                return Err(EngineError::Other(format!(
+                    "{decode_name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
+                )));
             }
-            Layer::new(layer_name, LayerContent::Smart(so))
-        } else {
-            Layer::new(layer_name, LayerContent::Raster(px))
-        };
-        let id = doc.insert_above(*active, layer);
-        *active = Some(id);
-        Ok(id)
-    })?;
-    Ok(json!({"layer": id.0, "scale": scale * 100.0, "bounds": [dx, dy, dx + w * scale, dy + h * scale], "smartObject": smart}))
+            let mut src = imported.document;
+            crate::import_prepare::prepare_imported_document(&mut src, ctx)?;
+            // Persist the explicit interpretation as native editable contents, never
+            // as a guessed future policy or an amended copy of the original XCF.
+            let normalized = if normalize_historical {
+                crate::allocation::checkpoint("normalizing historical placed contents")?;
+                Some(crate::smart_cmds::encode_source(&src)?)
+            } else {
+                None
+            };
+            ctx.check()?;
+            Ok((src, ctx.clone(), normalized))
+        },
+        move |s, (src, ctx, normalized)| {
+            ctx.check()?;
+            let (w, h) = (src.size.width as f64, src.size.height as f64);
+            // The implicit `fit` is Preferences ▸ General ▸ Resize Image During Place (on by default).
+            let scale = match f64_param(&p, "scale") {
+                Some(k) => (k / 100.0).max(1e-4),
+                None if fit && (w > cw || h > ch) => (cw / w).min(ch / h),
+                None => 1.0,
+            };
+            let center = match p.get("center").and_then(Value::as_array) {
+                Some(c) if c.len() == 2 => (c[0].as_f64().unwrap_or(cw / 2.0), c[1].as_f64().unwrap_or(ch / 2.0)),
+                _ => (cw / 2.0, ch / 2.0),
+            };
+            let (dx, dy) = ((center.0 - w * scale / 2.0).round(), (center.1 - h * scale / 2.0).round());
+            let mut px = flattened_checked(&src, fmt, "file.place")?;
+            if (scale - 1.0).abs() > 1e-9 {
+                px = resize_surface(&px, scale, scale, Resample::Bicubic);
+            }
+            let px = translate_surface(&px, dx as i32, dy as i32);
+            // Preferences ▸ General ▸ Always Create Smart Objects When Placing (on by default): off, an
+            // embedded place lands as a plain pixel layer. A linked place is always a smart object.
+            let source = match (linked, normalized) {
+                (Some(path), _) => SmartSource::Linked { path },
+                (None, Some(native)) => SmartSource::Embedded { file_name: format!("{}.pcraft", stem(&name)), bytes: Arc::new(native) },
+                (None, None) => SmartSource::Embedded { file_name: file_name(&name), bytes },
+            };
+            let layer_name = stem(&name);
+            let label = if matches!(&source, SmartSource::Linked { .. }) { "Place Linked" } else { PLACE_EMBEDDED };
+            ctx.check()?;
+            let id = s.edit(label, |doc, active| {
+                let layer = if smart {
+                    let mut so = SmartObject::new(source, Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, Some(px));
+                    // A vector source (SVG) renders at its placement scale instead of as a resampled raster.
+                    if vector && let Some(sharp) = crate::smart_cmds::render(doc, &so)? {
+                        so.cache = Some(sharp);
+                    }
+                    Layer::new(layer_name, LayerContent::Smart(so))
+                } else {
+                    Layer::new(layer_name, LayerContent::Raster(px))
+                };
+                let id = doc.insert_above(*active, layer);
+                *active = Some(id);
+                Ok(id)
+            })?;
+            Ok(json!({"layer": id.0, "scale": scale * 100.0, "bounds": [dx, dy, dx + w * scale, dy + h * scale], "smartObject": smart}))
+        },
+    )
 }
 
 fn place(s: &mut Session, p: &Value, linked: bool) -> Result<Value> {

@@ -88,4 +88,5 @@ mod xcf_native_persistence;
 mod xcf_native_relationships;
 mod xcf_native_shapes;
 mod xcf_native_text;
+mod xcf_place_preparation;
 mod xmp_charref;
