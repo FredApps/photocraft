@@ -191,7 +191,7 @@ mod synthetic {
         let LayerContent::Text(text) = &doc.layers[0].content else { panic!("editable legacy text") };
         assert_eq!(text.text, "héλ");
         assert_eq!(text.transform, photocraft_geom::Affine::IDENTITY);
-        let photocraft_doc::import_conversion::ImportConversion::Report(report) = doc.metadata.import_conversion.as_ref().unwrap() else {
+        let photocraft_doc::import_conversion::ImportConversion::Report(report) = doc.metadata.import_conversion.as_deref().unwrap() else {
             panic!("known report")
         };
         let entry = report.entries.iter().find(|entry| entry.feature_code == "xcf.text").unwrap();

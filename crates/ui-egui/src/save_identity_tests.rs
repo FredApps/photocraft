@@ -340,16 +340,18 @@ fn read_only_conversion_reports_default_to_native_while_existing_format_choices_
             st.path = path.map(str::to_owned);
             let doc = std::sync::Arc::make_mut(&mut st.doc);
             doc.name = name.into();
-            doc.metadata.import_conversion = reported.then(|| {
-                if opaque {
-                    ImportConversion::Opaque { schema_version: 77, record: std::sync::Arc::new(b"future inert report".to_vec()), attachments: Vec::new() }
-                } else {
-                    ImportConversion::Report(ConversionReport {
-                        source_format: "arbitrary historical label, never a format dispatch".into(),
-                        ..Default::default()
-                    })
-                }
-            });
+            doc.metadata.import_conversion = reported
+                .then(|| {
+                    if opaque {
+                        ImportConversion::Opaque { schema_version: 77, record: std::sync::Arc::new(b"future inert report".to_vec()), attachments: Vec::new() }
+                    } else {
+                        ImportConversion::Report(ConversionReport {
+                            source_format: "arbitrary historical label, never a format dispatch".into(),
+                            ..Default::default()
+                        })
+                    }
+                })
+                .map(std::sync::Arc::new);
             let before = identity(&app);
             let (dialog, requests) = crate::file_dialog::fake(vec![None]);
             app.services.file_dialog = Some(dialog);

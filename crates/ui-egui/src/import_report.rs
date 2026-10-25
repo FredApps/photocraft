@@ -218,7 +218,7 @@ mod tests {
         let mut session = photocraft_engine::Session::new();
         session.execute("file.new", serde_json::json!({"width": 3, "height": 2})).unwrap();
         let doc = Arc::make_mut(&mut session.active_mut().unwrap().doc);
-        doc.metadata.import_conversion = Some(ImportConversion::Report(ConversionReport {
+        doc.metadata.import_conversion = Some(Arc::new(ImportConversion::Report(ConversionReport {
             source_format: "xcf".into(),
             source_version: Some(11),
             policy_version: 1,
@@ -240,7 +240,7 @@ mod tests {
                 encoding: "opaque".into(),
                 bytes: Arc::new(b"private bytes C:\\resources\\unavailable.asset".to_vec()),
             }],
-        }));
+        })));
         crate::PhotocraftApp::new(session, crate::Services::default())
     }
 

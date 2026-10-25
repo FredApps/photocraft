@@ -225,7 +225,7 @@ fn channel_m(c: &AlphaChannel, sink: &mut dyn Sink) -> ChannelM {
 /// Build native document manifest data, sending durable conversion provenance through the same bounded content sink as
 /// other stored data.
 pub(crate) fn doc_m(d: &Document, sink: &mut dyn Sink) -> Result<DocM> {
-    let import_conversion = d.metadata.import_conversion.as_ref().map(|report| crate::import_conversion::to_manifest(report, sink)).transpose()?;
+    let import_conversion = d.metadata.import_conversion.as_deref().map(|report| crate::import_conversion::to_manifest(report, sink)).transpose()?;
     Ok(DocM {
         id: d.id.0,
         name: d.name.clone(),

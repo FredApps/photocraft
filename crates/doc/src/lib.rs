@@ -848,7 +848,8 @@ pub type PsdGlobalBlock = ([u8; 4], [u8; 4], Arc<Vec<u8>>);
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Metadata {
     /// Historical conversion information; never consulted by native rendering or editing.
-    pub import_conversion: Option<import_conversion::ImportConversion>,
+    /// Shared so document/history clones do not duplicate report entries, strings or retained payloads.
+    pub import_conversion: Option<Arc<import_conversion::ImportConversion>>,
     /// The XMP packet as stored, kept as text so properties PhotoCraft doesn't model survive.
     /// Shared like the other payloads here: cloning a document or a history state never copies
     /// it (#4535).

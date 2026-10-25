@@ -59,7 +59,7 @@ pub(crate) fn to_manifest(report: &ImportConversion, sink: &mut dyn Sink) -> Res
 
 /// Load bounded known or opaque future reports, validating framing and attachment counts without interpreting
 /// retained data.
-pub(crate) fn from_manifest(m: &ImportConversionM, fetch: &mut dyn Fetch) -> Result<ImportConversion> {
+pub(crate) fn from_manifest(m: &ImportConversionM, fetch: &mut dyn Fetch) -> Result<Arc<ImportConversion>> {
     if m.schema_version == 0 {
         return Err(FormatError::corrupt("import conversion schema version is zero"));
     }
@@ -93,5 +93,5 @@ pub(crate) fn from_manifest(m: &ImportConversionM, fetch: &mut dyn Fetch) -> Res
         ImportConversion::Opaque { schema_version: m.schema_version, record, attachments }
     };
     report.validate().map_err(validation)?;
-    Ok(report)
+    Ok(Arc::new(report))
 }

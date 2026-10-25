@@ -165,7 +165,7 @@ pub(crate) fn unequal_resolution_warning(x: f64, y: f64) -> Option<String> {
 pub fn open_warnings(doc: &Document) -> Vec<String> {
     let mut out = Vec::new();
     use photocraft_doc::import_conversion::{ConversionDisposition, ImportConversion};
-    match doc.metadata.import_conversion.as_ref() {
+    match doc.metadata.import_conversion.as_deref() {
         Some(ImportConversion::Report(report)) if report.entries.iter().any(|entry| entry.disposition != ConversionDisposition::NativeEquivalent) => {
             out.push("a historical import conversion report records approximations or unapplied source data; view Import Conversion Report for details".into());
         }

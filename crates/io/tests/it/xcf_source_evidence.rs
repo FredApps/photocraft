@@ -605,7 +605,7 @@ fn historical_stock_resaved_bootstrap_graphs_preserve_original_pixels_as_native_
         let mask = masks[0];
         assert!(mask.enabled);
         assert!(mask.surface.read_region(Rect::new(0, 0, 8, 6)).iter().all(|v| *v == 1.), "stock full-white graph mask remains native coverage");
-        let Some(ImportConversion::Report(report)) = &doc.metadata.import_conversion else { panic!("typed source conversion report") };
+        let Some(ImportConversion::Report(report)) = doc.metadata.import_conversion.as_deref() else { panic!("typed source conversion report") };
         assert!(report.entries.iter().any(|e| e.feature_code == "xcf.layer_effect"
             && e.source_description.contains("gegl:gegl")
             && e.disposition == ConversionDisposition::NativeApproximation));

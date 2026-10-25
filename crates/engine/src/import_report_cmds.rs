@@ -1,6 +1,7 @@
 //! Read-only inspection of historical conversion metadata. Payloads never become commands.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use photocraft_doc::import_conversion::{ConversionDisposition as D, ImportConversion};
 use serde_json::{Value, json};
@@ -12,7 +13,8 @@ const CMD: &str = "document.importReport";
 
 /// Expose disposition counts and schema information without returning retained payload bytes or executing report
 /// targets.
-pub fn summary(conversion: Option<&ImportConversion>) -> Value {
+pub fn summary(conversion: Option<&Arc<ImportConversion>>) -> Value {
+    let conversion = conversion.map(Arc::as_ref);
     match conversion {
         None => Value::Null,
         Some(ImportConversion::Opaque { schema_version, attachments, .. }) => json!({
@@ -66,9 +68,9 @@ fn page(session: &mut Session, params: &Value) -> Result<Value> {
     }
     let state = session.active().ok_or(EngineError::NoDocument)?;
     let conversion = state.doc.metadata.import_conversion.as_ref();
-    let Some(ImportConversion::Report(report)) = conversion else {
+    let Some(ImportConversion::Report(report)) = conversion.map(Arc::as_ref) else {
         return Ok(json!({"total": 0, "offset": offset, "nextOffset": null, "entries": [],
-            "summary": summary(conversion), "opaque": matches!(conversion, Some(ImportConversion::Opaque { .. }))}));
+            "summary": summary(conversion), "opaque": matches!(conversion.map(Arc::as_ref), Some(ImportConversion::Opaque { .. }))}));
     };
     report.validate().map_err(|e| EngineError::Other(e.to_string()))?;
     let start = usize::try_from(offset).unwrap_or(usize::MAX).min(report.entries.len());

@@ -1999,7 +1999,7 @@ mod tests {
         w.ptr(0);
         let imported = crate::xcf::import("key-limit.xcf", &w.out, &Interrupt::NONE).unwrap().document;
         assert_eq!(imported.layers[0].surface().unwrap().read_region(r), input.read_region(r));
-        let ImportConversion::Report(report) = imported.metadata.import_conversion.as_ref().unwrap() else { panic!("native report") };
+        let ImportConversion::Report(report) = imported.metadata.import_conversion.as_deref().unwrap() else { panic!("native report") };
         let entry = report.entries.iter().find(|entry| entry.feature_code == "xcf.layer_effect").unwrap();
         assert_eq!(entry.disposition, ConversionDisposition::RetainedUnapplied);
         assert_eq!(entry.reason, ConversionReason::NativeLimitation);
@@ -2094,7 +2094,7 @@ mod tests {
             for (actual, expected) in original.iter().zip(pixels) {
                 assert!((*actual - f32::from(expected) / 255.).abs() < 1e-6, "{name}");
             }
-            let ImportConversion::Report(report) = imported.metadata.import_conversion.as_ref().unwrap() else { panic!("report") };
+            let ImportConversion::Report(report) = imported.metadata.import_conversion.as_deref().unwrap() else { panic!("report") };
             let entry = report.entries.iter().find(|entry| entry.feature_code == "xcf.layer_effect").unwrap();
             assert_eq!(entry.disposition, ConversionDisposition::RetainedUnapplied, "{name}");
             assert_eq!(entry.reason, ConversionReason::NativeLimitation, "{name}");

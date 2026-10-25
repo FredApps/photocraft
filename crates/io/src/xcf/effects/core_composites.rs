@@ -429,7 +429,7 @@ mod tests {
                 imported.document.layers[0].surface().expect("unmodified native source").pixel(0, 0),
                 vec![20.0 / 255.0, 40.0 / 255.0, 60.0 / 255.0, 1.0]
             );
-            let Some(ImportConversion::Report(report)) = &imported.document.metadata.import_conversion else { panic!("current report") };
+            let Some(ImportConversion::Report(report)) = imported.document.metadata.import_conversion.as_deref() else { panic!("current report") };
             assert!(report.entries.iter().any(|entry| entry.reason == ConversionReason::ResourceUnavailable
                 && entry.disposition == ConversionDisposition::RetainedUnapplied
                 && entry.source_description.contains(operation)));

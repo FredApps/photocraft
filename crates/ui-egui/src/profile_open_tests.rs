@@ -201,12 +201,12 @@ fn held_color_choices_preserve_conversion_reports_and_the_decoders_source_policy
         for action in ["preserve", "convert"] {
             let mut doc = Document::with_background("Converted", Size::new(3, 2), ColorMode::Rgb, SampleType::U16, Color::rgba(0.2, 0.6, 0.9, 1.0));
             doc.icc_profile = Some(photocraft_cms::Builtin::AdobeRgbCompat.profile().to_bytes());
-            doc.metadata.import_conversion = Some(ImportConversion::Report(ConversionReport {
+            doc.metadata.import_conversion = Some(std::sync::Arc::new(ImportConversion::Report(ConversionReport {
                 source_format: "xcf".into(),
                 source_version: Some(11),
                 policy_version: 1,
                 ..Default::default()
-            }));
+            })));
             let report = doc.metadata.import_conversion.clone();
             let services = Services {
                 import: Some(Box::new(move |_, _, _| {

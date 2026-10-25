@@ -253,7 +253,7 @@ fn rgb_double_offcanvas_layers_masks_and_channel_keep_native_bits_profile_and_ow
         samples(layer(document, "Outside canvas"), Rect::new(4, -2, 5, -1)).iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
         [0xbf000000, 0x40000000, 1, 0x3f800000]
     );
-    let Some(ImportConversion::Report(report)) = &document.metadata.import_conversion else { panic!("conversion report") };
+    let Some(ImportConversion::Report(report)) = document.metadata.import_conversion.as_deref() else { panic!("conversion report") };
     let underflows: Vec<_> = report.entries.iter().filter(|entry| entry.feature_code == "xcf.precision_underflow").collect();
     assert_eq!(underflows.len(), 3);
     assert!(

@@ -495,7 +495,7 @@ fn finite_default_operations_prepare_and_reopen_or_report_retained_source() {
             .unwrap_or_else(|error| panic!("{operation}: first-open preparation failed: {error}"));
         let state = session.active().unwrap();
         assert!(state.source_read_only, "{operation}");
-        let Some(ImportConversion::Report(report)) = &state.doc.metadata.import_conversion else { panic!("{operation}: missing report") };
+        let Some(ImportConversion::Report(report)) = state.doc.metadata.import_conversion.as_deref() else { panic!("{operation}: missing report") };
         let effect =
             report.entries.iter().find(|entry| entry.feature_code == "xcf.layer_effect").unwrap_or_else(|| panic!("{operation}: missing operation outcome"));
         assert!(
@@ -578,7 +578,7 @@ fn transparent_native_paper_replaces_full_stage_and_partial_stage_uses_native_un
             photocraft_compose::flatten(&independently_native_chain(&[])).px
         };
         assert_eq!(actual, expected, "opacity {opacity}");
-        let Some(ImportConversion::Report(report)) = &state.doc.metadata.import_conversion else { panic!("missing report") };
+        let Some(ImportConversion::Report(report)) = state.doc.metadata.import_conversion.as_deref() else { panic!("missing report") };
         assert!(report.entries.iter().any(|entry| entry.feature_code == "xcf.layer_effect" && entry.disposition == ConversionDisposition::NativeApproximation));
         assert_current_native_commands(&state.doc, "gegl:tile-paper", 0);
         let saved = photocraft_format::save_to_bytes(&state.doc, &Default::default()).unwrap();
@@ -621,7 +621,7 @@ fn noncommuting_stored_order_and_omitted_siblings_match_independent_native_comma
         let expected = photocraft_compose::flatten(&expected).px;
         assert_ne!(expected, photocraft_compose::flatten(&reversed).px, "oracle must distinguish order");
         assert!(pixels.iter().zip(&expected).all(|(a, b)| a.iter().zip(b).all(|(a, b)| (a - b).abs() <= 2.0 / 255.0)), "omitted{omitted}");
-        let Some(ImportConversion::Report(report)) = &session.active().unwrap().doc.metadata.import_conversion else { panic!() };
+        let Some(ImportConversion::Report(report)) = session.active().unwrap().doc.metadata.import_conversion.as_deref() else { panic!() };
         let outcomes: Vec<_> = report.entries.iter().filter(|entry| entry.feature_code == "xcf.layer_effect").collect();
         assert_eq!(outcomes.len(), if omitted { 3 } else { 2 });
         if omitted {
@@ -659,7 +659,7 @@ fn source_alpha_extraction_becomes_an_ordinary_native_alpha_to_color_filter() {
         let expected = independently_native_chain(&commands);
         let actual = photocraft_compose::flatten(&session.active().unwrap().doc).px;
         assert_eq!(actual, photocraft_compose::flatten(&expected).px);
-        let Some(ImportConversion::Report(report)) = &session.active().unwrap().doc.metadata.import_conversion else { panic!() };
+        let Some(ImportConversion::Report(report)) = session.active().unwrap().doc.metadata.import_conversion.as_deref() else { panic!() };
         let outcome = report.entries.iter().find(|entry| entry.feature_code == "xcf.layer_effect").unwrap();
         assert_eq!(outcome.disposition, ConversionDisposition::NativeApproximation);
         assert_current_native_commands(&session.active().unwrap().doc, "gegl:component-extract", 0);
@@ -695,7 +695,7 @@ fn malformed_optional_effect_mask_and_unknown_component_are_retained_without_app
         let expected = independently_native_chain(&[("image.adjustments.exposure", json!({"exposure":1.0,"offset":0.0,"gamma":1.0}))]);
         let pixels = photocraft_compose::flatten(&session.active().unwrap().doc).px;
         assert_eq!(pixels, photocraft_compose::flatten(&expected).px, "unknown_component{unknown_component}");
-        let Some(ImportConversion::Report(report)) = &session.active().unwrap().doc.metadata.import_conversion else { panic!() };
+        let Some(ImportConversion::Report(report)) = session.active().unwrap().doc.metadata.import_conversion.as_deref() else { panic!() };
         let outcomes: Vec<_> = report.entries.iter().filter(|entry| entry.feature_code == "xcf.layer_effect").collect();
         assert_eq!(outcomes[0].disposition, ConversionDisposition::RetainedUnapplied);
         assert_eq!(outcomes[0].reason, if unknown_component { ConversionReason::MissingMapping } else { ConversionReason::InvalidOptionalData });
@@ -766,7 +766,7 @@ fn nondefault_native_source_in_mode(step: Step<'_>, required_commands: &[&str], 
     let state = session.active().unwrap();
     assert_eq!(state.doc.mode, if gray { ColorMode::Grayscale } else { ColorMode::Rgb });
     assert!(state.source_read_only);
-    let Some(ImportConversion::Report(report)) = &state.doc.metadata.import_conversion else { panic!("missing source report") };
+    let Some(ImportConversion::Report(report)) = state.doc.metadata.import_conversion.as_deref() else { panic!("missing source report") };
     let outcome = report.entries.iter().find(|entry| entry.feature_code == "xcf.layer_effect").unwrap();
     assert_eq!(outcome.disposition, ConversionDisposition::NativeApproximation, "{operation}: {}", outcome.native_description);
     let LayerContent::Smart(smart) = &state.doc.layers[0].content else { panic!("native optical Smart Object") };
@@ -1408,7 +1408,8 @@ fn finite_graph_chain_forks_and_structural_postfilters_prepare_against_independe
                 open_bytes_as(&mut session, "original-graph.xcf", &bytes, None, None).unwrap();
                 drop(bytes);
                 assert!(session.active().unwrap().source_read_only);
-                let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = &session.active().unwrap().doc.metadata.import_conversion
+                let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) =
+                    session.active().unwrap().doc.metadata.import_conversion.as_deref()
                 else {
                     panic!("typed graph conversion report")
                 };
@@ -1479,7 +1480,8 @@ fn actual_auxiliary_graph_mask_piecewise_and_displace_use_current_native_inputs_
         session.color.settings.ask_on_missing = false;
         open_bytes_as(&mut session, "actual-native-auxiliary.xcf", &source, None, None).unwrap();
         drop(source);
-        let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = &session.active().unwrap().doc.metadata.import_conversion else {
+        let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = session.active().unwrap().doc.metadata.import_conversion.as_deref()
+        else {
             panic!("typed auxiliary graph report")
         };
         let outcome = report.entries.iter().find(|entry| entry.feature_code == "xcf.layer_effect" && entry.source_description.contains("(gegl:gegl)")).unwrap();
@@ -1567,7 +1569,7 @@ fn actual_auxiliary_graph_displace_on_saved_scalar_channel_is_native_editable_an
         assert!((*got - want).abs() <= 1. / 255.);
     }
     assert_eq!(doc.layers[0].surface().unwrap().read_region(bounds), PIXELS.map(|value| f32::from(value) / 255.));
-    let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = &doc.metadata.import_conversion else {
+    let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = doc.metadata.import_conversion.as_deref() else {
         panic!("typed scalar graph outcome")
     };
     let outcome = report.entries.iter().find(|entry| entry.feature_code == "xcf.coverage_effect").unwrap();
@@ -1628,7 +1630,9 @@ fn invalid_graph_fields_preserve_native_neighbors_and_report_unapplied_without_p
         open_bytes_as(&mut session, "retained-graph.xcf", &bytes, None, None).unwrap();
         drop(bytes);
         let expected = graph_native_scene(&graph_native_invert(&graph_native_exposure(&graph_native_input(false), -0.5)));
-        let ImportConversion::Report(report) = session.active().unwrap().doc.metadata.import_conversion.as_ref().unwrap() else { panic!("typed graph report") };
+        let ImportConversion::Report(report) = session.active().unwrap().doc.metadata.import_conversion.as_deref().unwrap() else {
+            panic!("typed graph report")
+        };
         assert!(
             report.entries.iter().any(|entry| entry.source_description.contains("gegl:gegl") && entry.disposition == ConversionDisposition::RetainedUnapplied)
         );

@@ -177,7 +177,7 @@ mod tests {
             let layer = result.document.layers.iter().find(|layer| layer.name == "Floating").unwrap();
             let surface = layer.surface().unwrap();
             assert_eq!(surface.read_region(Rect::new(-1, 2, 1, 3)), vec![1.0, 0.0, 0.0, 128.0 / 255.0, 0.0, 0.0, 1.0, 1.0]);
-            let Some(ImportConversion::Report(report)) = &result.document.metadata.import_conversion else { panic!("report") };
+            let Some(ImportConversion::Report(report)) = result.document.metadata.import_conversion.as_deref() else { panic!("report") };
             let outcome = report.entries.iter().find(|entry| entry.feature_code == "xcf.floating_selection").unwrap();
             assert_eq!(outcome.targets[0].layer_id, Some(layer.id));
             assert!(outcome.source_description.contains("97"));
@@ -242,7 +242,7 @@ mod tests {
             let layer = &result.document.layers[0];
             assert!(matches!(layer.content, LayerContent::Raster(_)));
             assert_eq!(layer.surface().unwrap().read_region(Rect::new(-2, 1, -1, 2)), vec![10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 1.0]);
-            let Some(ImportConversion::Report(report)) = &result.document.metadata.import_conversion else { panic!("report") };
+            let Some(ImportConversion::Report(report)) = result.document.metadata.import_conversion.as_deref() else { panic!("report") };
             assert!(report.entries.iter().any(|entry| entry.feature_code == "xcf.link_transform"));
             assert!(report.entries.iter().all(|entry| !entry.source_description.contains("untrusted.invalid")));
         }
@@ -256,7 +256,7 @@ mod tests {
         layer.props = vec![(48, source_link("../../missing.png", 0)), (49, vec![0])];
         image.layers.push(layer);
         let result = import("unavailable.xcf", &image.write(), &Interrupt::NONE).unwrap();
-        let Some(ImportConversion::Report(report)) = &result.document.metadata.import_conversion else { panic!("report") };
+        let Some(ImportConversion::Report(report)) = result.document.metadata.import_conversion.as_deref() else { panic!("report") };
         assert!(report.entries.iter().any(|entry| entry.feature_code == "xcf.link_layer" && entry.reason == photocraft_doc::import_conversion::ConversionReason::ResourceUnavailable));
         assert!(report.entries.iter().any(
             |entry| entry.feature_code == "xcf.link_transform" && entry.reason == photocraft_doc::import_conversion::ConversionReason::InvalidOptionalData

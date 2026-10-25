@@ -306,6 +306,52 @@ mod tests {
         assert_eq!(report.schema_version(), 1);
     }
 
+    /// Document and history-style clones share the complete report, including entry strings and opaque future records.
+    #[test]
+    fn document_clones_share_known_and_opaque_conversion_reports() {
+        let entry = ConversionEntry {
+            feature_code: "xcf.source".into(),
+            source: SourceItemRef { kind: "layer".into(), ..Default::default() },
+            targets: Vec::new(),
+            disposition: ConversionDisposition::RetainedUnapplied,
+            reason: ConversionReason::MissingMapping,
+            source_description: "source control ".repeat(64),
+            native_description: "inert historical conversion information".into(),
+            attachments: vec![0],
+        };
+        let known = ImportConversion::Report(ConversionReport {
+            source_format: "xcf".into(),
+            entries: vec![entry; 1024],
+            attachments: vec![RetainedImportData {
+                owner: SourceItemRef::default(),
+                kind: "configuration".into(),
+                encoding: "binary".into(),
+                bytes: Arc::new(vec![17; 64 * 1024]),
+            }],
+            ..Default::default()
+        });
+        let opaque = ImportConversion::Opaque {
+            schema_version: CONVERSION_SCHEMA_VERSION + 1,
+            record: Arc::new(b"future report record".to_vec()),
+            attachments: vec![Arc::new(vec![23; 64 * 1024])],
+        };
+        for report in [known, opaque] {
+            report.validate().unwrap();
+            let mut original =
+                crate::Document::new("Shared report", crate::Size::new(1, 1), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8);
+            original.metadata.import_conversion = Some(Arc::new(report));
+            let cloned = original.clone();
+            let first = original.metadata.import_conversion.as_ref().unwrap();
+            let second = cloned.metadata.import_conversion.as_ref().unwrap();
+            assert!(Arc::ptr_eq(first, second), "document clones must share the entire conversion report");
+            if let ImportConversion::Report(report) = first.as_ref() {
+                let ImportConversion::Report(copy) = second.as_ref() else { panic!("same shared variant") };
+                assert_eq!(report.entries.as_ptr(), copy.entries.as_ptr(), "entry and string arrays are not deep-cloned");
+                assert!(Arc::ptr_eq(&report.attachments[0].bytes, &copy.attachments[0].bytes));
+            }
+        }
+    }
+
     #[test]
     /// Reject oversized strings and future opaque payloads under the independent report allowance.
     fn string_and_opaque_payload_limits_are_enforced() {

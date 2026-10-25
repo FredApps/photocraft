@@ -185,7 +185,7 @@ fn published_text_becomes_native_editable_data_with_inert_configuration() {
     let LayerContent::Text(text) = &doc.layers[1].content else { panic!("native editable text") };
     assert_eq!(text.text, "XCF");
     assert!(text.cache.is_none(), "source pixels are never a valid native editable-text cache");
-    let Some(ImportConversion::Report(report)) = &doc.metadata.import_conversion else { panic!("missing report") };
+    let Some(ImportConversion::Report(report)) = doc.metadata.import_conversion.as_deref() else { panic!("missing report") };
     assert!(
         report
             .entries

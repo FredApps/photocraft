@@ -249,7 +249,7 @@ fn emit(value: &Value) -> Result<()> {
 /// Require a conversion-report entry with applied native targets before accepting a graph timing result.
 fn graph_applied(doc: &photocraft_doc::Document) -> bool {
     use photocraft_doc::import_conversion::{ConversionDisposition as D, ImportConversion};
-    matches!(&doc.metadata.import_conversion, Some(ImportConversion::Report(report)) if report.entries.iter().any(|entry|
+    matches!(doc.metadata.import_conversion.as_deref(), Some(ImportConversion::Report(report)) if report.entries.iter().any(|entry|
         entry.feature_code == "xcf.layer_effect" && matches!(entry.disposition,D::NativeEquivalent|D::NativeApproximation) && !entry.targets.is_empty()))
 }
 /// Generate original benchmark inputs or measure import, preparation and native output with bounded CLI inputs and
@@ -298,7 +298,7 @@ fn main() -> Result<()> {
         if c.graph && !graph_applied(&doc) {
             return Err("graph was not translated into applied native targets; no graph timing acceptance".into());
         }
-        let report = match &doc.metadata.import_conversion {
+        let report = match doc.metadata.import_conversion.as_deref() {
             Some(photocraft_doc::import_conversion::ImportConversion::Report(r)) => serde_json::to_value(r)?,
             _ => Value::Null,
         };

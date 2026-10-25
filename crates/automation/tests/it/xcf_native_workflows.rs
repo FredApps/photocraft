@@ -81,8 +81,12 @@ fn native_preparation_obeys_the_sessions_filter_authorization_before_installing(
 fn headless_open_exposes_the_inert_report_summary_without_changing_native_writability() {
     use photocraft_doc::import_conversion::{ConversionReport, ImportConversion};
     let mut doc = pending_native_smart();
-    doc.metadata.import_conversion =
-        Some(ImportConversion::Report(ConversionReport { source_format: "xcf".into(), source_version: Some(11), policy_version: 1, ..Default::default() }));
+    doc.metadata.import_conversion = Some(std::sync::Arc::new(ImportConversion::Report(ConversionReport {
+        source_format: "xcf".into(),
+        source_version: Some(11),
+        policy_version: 1,
+        ..Default::default()
+    })));
     let fixture = Fixture::new(&doc);
     let mut headless = Headless::trusted_local();
     let opened = headless.open(&fixture.0.join("source.pcraft")).unwrap();
@@ -759,7 +763,7 @@ fn actual_stored_xcf_adjustments_trusted_and_scoped_headless_match_native_comman
             let LayerContent::Smart(smart) = &state.doc.layers[0].content else { panic!("newly emitted native smart source") };
             assert!(smart.cache.is_some());
             assert_stored_filter_pixels(&state.doc.layers[0].surface().unwrap().read_region(state.doc.bounds()), &expected, operation);
-            let Some(ImportConversion::Report(report)) = &state.doc.metadata.import_conversion else { panic!("source-only report") };
+            let Some(ImportConversion::Report(report)) = state.doc.metadata.import_conversion.as_deref() else { panic!("source-only report") };
             assert!(report.entries.iter().any(|row| row.feature_code == "xcf.layer_effect" && row.disposition == ConversionDisposition::NativeApproximation));
             assert!(
                 report.entries.iter().any(|row| row.feature_code == "xcf.source_property.9001" && row.disposition == ConversionDisposition::RetainedUnapplied)

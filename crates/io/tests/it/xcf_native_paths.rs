@@ -205,7 +205,7 @@ fn modified_or_missing_vector_reference_preserves_separate_stored_pixels_and_sav
         assert_eq!(doc.paths[0].path, expected().path);
         let LayerContent::Raster(surface) = &doc.layers[0].content else { panic!("native raster fallback") };
         assert_eq!(surface.read_region(Rect::new(-2, 3, -1, 4)), vec![17.0 / 255.0, 31.0 / 255.0, 57.0 / 255.0, 1.0]);
-        let Some(ImportConversion::Report(report)) = &doc.metadata.import_conversion else { panic!("report") };
+        let Some(ImportConversion::Report(report)) = doc.metadata.import_conversion.as_deref() else { panic!("report") };
         assert!(report.entries.iter().any(|entry| entry.feature_code == "xcf.vector_layer" && entry.reason == reason));
         assert!(report.attachments.iter().any(|entry| entry.kind == "xcf.property.47"));
     }

@@ -247,7 +247,7 @@ fn import_report_demo(app: &mut PhotocraftApp, count: u32) {
             "Stored pixels preserved; editable text conversion remains unfinished",
         ),
     ];
-    doc.metadata.import_conversion = Some(ImportConversion::Report(ConversionReport {
+    doc.metadata.import_conversion = Some(std::sync::Arc::new(ImportConversion::Report(ConversionReport {
         source_format: "xcf".into(),
         source_version: Some(26),
         policy_version: 1,
@@ -278,7 +278,7 @@ fn import_report_demo(app: &mut PhotocraftApp, count: u32) {
             encoding: "opaque".into(),
             bytes: std::sync::Arc::new(b"inert procedural example".to_vec()),
         }],
-    }));
+    })));
     app.session.add_document(doc, None);
     app.sync_views();
     photocraft_ui_egui::import_report::open(app);

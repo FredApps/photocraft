@@ -47,6 +47,7 @@ pub(crate) mod transport;
 
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::Arc;
 
 use photocraft_codecs::f16;
 use photocraft_color::{BlendMode, ColorMode, PixelFormat, SampleType};
@@ -1555,7 +1556,7 @@ pub(crate) fn import_with_sample_order(
     }
     image.initial_view.validate(&document)?;
     let initial_view = (image.initial_view != Default::default()).then_some(image.initial_view);
-    document.metadata.import_conversion = Some(image.outcomes.finish()?);
+    document.metadata.import_conversion = Some(Arc::new(image.outcomes.finish()?));
     ctl.progress(1.0);
     Ok(ImportResult { initial_view, document, warnings: image.warnings.finish(), source_read_only: true, preview_only: false })
 }

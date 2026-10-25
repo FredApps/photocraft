@@ -59,7 +59,9 @@ fn optional_invalid_xml_and_comment_remain_inert() {
     let result = open(&image.write());
     assert!(result.document.metadata.text.is_empty());
     assert!(result.document.metadata.exif.is_none());
-    let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = result.document.metadata.import_conversion else { panic!("report") };
+    let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = result.document.metadata.import_conversion.as_deref() else {
+        panic!("report")
+    };
     assert_eq!(report.attachments.len(), 3);
 }
 
@@ -80,7 +82,9 @@ fn guides_resolution_and_units_follow_native_limits_and_documented_versions() {
         assert_eq!(result.document.resolution_dpi, 300.0);
         assert_eq!(result.document.guides.horizontal, if version == 11 { vec![2.0] } else { vec![-2.0, 2.0] });
         assert_eq!(result.document.guides.vertical, if version == 11 { vec![] } else { vec![7.0] });
-        let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = result.document.metadata.import_conversion else { panic!("report") };
+        let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = result.document.metadata.import_conversion.as_deref() else {
+            panic!("report")
+        };
         assert!(report.entries.iter().any(|e| e.feature_code == "xcf.resolution"));
         assert!(report.entries.iter().any(|e| e.feature_code == "xcf.unit"));
     }
@@ -199,7 +203,9 @@ fn finite_extended_overlay_colors_are_preserved_and_nonfinite_optional_values_st
     let result = open(&channel_file(&bad, (2, 1)));
     assert_eq!(result.document.channels[0].color, photocraft_color::Color::rgb(64.0 / 255.0, 128.0 / 255.0, 1.0));
     assert_eq!(result.document.channels[0].opacity, 0.5);
-    let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = result.document.metadata.import_conversion else { panic!("report") };
+    let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = result.document.metadata.import_conversion.as_deref() else {
+        panic!("report")
+    };
     assert!(report.attachments.iter().any(|a| a.kind == "xcf.property.38"));
     assert!(report.attachments.iter().any(|a| a.kind == "xcf.property.33"));
 }

@@ -121,7 +121,7 @@ fn source_with_auxiliary_placement(owner: Owner, nested: bool, cyclic: bool, off
 
 /// Reads the durable conversion report attached to an imported fixture document.
 fn report(document: &Document) -> &photocraft_doc::import_conversion::ConversionReport {
-    match document.metadata.import_conversion.as_ref().unwrap() {
+    match document.metadata.import_conversion.as_deref().unwrap() {
         ImportConversion::Report(report) => report,
         _ => panic!("known report"),
     }

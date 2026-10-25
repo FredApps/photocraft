@@ -26,7 +26,7 @@ fn session() -> Session {
             attachments: vec![0],
         })
         .collect();
-    doc.metadata.import_conversion = Some(ImportConversion::Report(ConversionReport {
+    doc.metadata.import_conversion = Some(Arc::new(ImportConversion::Report(ConversionReport {
         source_format: "xcf".into(),
         source_version: Some(11),
         policy_version: 1,
@@ -37,10 +37,26 @@ fn session() -> Session {
             encoding: "opaque".into(),
             bytes: Arc::new(b"private binary C:\\unpublished\\resource.asset".to_vec()),
         }],
-    }));
+    })));
     let mut s = Session::new();
     s.add_document(doc, None);
     s
+}
+
+#[test]
+/// Keep report storage shared across real document edits and undo/redo, not just direct metadata clones.
+fn report_storage_is_shared_by_edit_history_and_retained_snapshots() {
+    let mut s = session();
+    let snapshot = s.active().unwrap().doc.clone();
+    let report = snapshot.metadata.import_conversion.as_ref().unwrap().clone();
+    s.execute("layer.new.layer", json!({"name": "Later edit"})).unwrap();
+    assert!(!Arc::ptr_eq(&snapshot, &s.active().unwrap().doc));
+    assert!(Arc::ptr_eq(&report, s.active().unwrap().doc.metadata.import_conversion.as_ref().unwrap()));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(Arc::ptr_eq(&report, s.active().unwrap().doc.metadata.import_conversion.as_ref().unwrap()));
+    s.execute("edit.redo", json!({})).unwrap();
+    assert!(Arc::ptr_eq(&report, s.active().unwrap().doc.metadata.import_conversion.as_ref().unwrap()));
+    assert!(Arc::ptr_eq(&report, snapshot.metadata.import_conversion.as_ref().unwrap()));
 }
 
 #[test]
@@ -142,11 +158,11 @@ fn report_paging_validates_types_and_bounds_without_overflow() {
 /// Preserve future report schemas as opaque metadata while exposing only safe summary fields and no payload bytes.
 fn future_opaque_reports_are_summarized_without_parsing_or_exposing_their_bytes() {
     let mut doc = Document::new("Future", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
-    doc.metadata.import_conversion = Some(ImportConversion::Opaque {
+    doc.metadata.import_conversion = Some(Arc::new(ImportConversion::Opaque {
         schema_version: 2,
         record: Arc::new(b"not parsed private record".to_vec()),
         attachments: vec![Arc::new(vec![1, 2, 3])],
-    });
+    }));
     let mut s = Session::new();
     s.add_document(doc, None);
     let summary = s.execute("document.inspect", json!({})).unwrap()["importConversion"].clone();

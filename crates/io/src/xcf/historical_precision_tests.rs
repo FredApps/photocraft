@@ -220,7 +220,7 @@ fn ambiguous_development_high_depth_requires_choice_then_keeps_durable_explicit_
         if ambiguous {
             assert!(notices[0].contains("big-endian"));
         }
-        let Some(ImportConversion::Report(report)) = &imported.document.metadata.import_conversion else { panic!("conversion report") };
+        let Some(ImportConversion::Report(report)) = imported.document.metadata.import_conversion.as_deref() else { panic!("conversion report") };
         let entries: Vec<_> = report.entries.iter().filter(|entry| entry.feature_code == "xcf.historical_sample_order").collect();
         assert_eq!(entries.len(), usize::from(ambiguous));
         if ambiguous {

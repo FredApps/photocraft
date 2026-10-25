@@ -182,7 +182,7 @@ fn gdyntext_latin1_and_invalid_preferred_record_preserve_honest_native_outcomes(
     let doc = open(&image(2, &[], &[(21, raw)]));
     let LayerContent::Raster(pixels) = &doc.layers[0].content else { panic!("invalid preferred text keeps actual pixels, not stale text") };
     assert_eq!(pixels.read_region(Rect::new(-3, 7, -2, 8)), [17. / 255., 31. / 255., 57. / 255., 1.]);
-    let Some(ImportConversion::Report(report)) = &doc.metadata.import_conversion else { panic!("durable report") };
+    let Some(ImportConversion::Report(report)) = doc.metadata.import_conversion.as_deref() else { panic!("durable report") };
     assert!(report.entries.iter().any(|e| e.feature_code == "xcf.text" && e.reason == ConversionReason::InvalidOptionalData));
     roundtrip(&doc);
 }
@@ -262,7 +262,7 @@ fn link_rename_monitor_bits_stay_inert_while_legacy_movement_is_a_separate_nativ
         assert_eq!(owner.link_group, Some(1));
         let LayerContent::Raster(pixels) = &owner.content else { panic!("stored native pixels, no live link") };
         assert_eq!(pixels.read_region(Rect::new(-3, 7, -2, 8)), [17. / 255., 31. / 255., 57. / 255., 1.]);
-        let Some(ImportConversion::Report(report)) = &doc.metadata.import_conversion else { panic!("durable report") };
+        let Some(ImportConversion::Report(report)) = doc.metadata.import_conversion.as_deref() else { panic!("durable report") };
         assert!(report.attachments.iter().any(|a| a.bytes.as_slice() == raw));
         assert!(report.entries.iter().any(|e| e.feature_code == "xcf.link_layer"));
         assert!(report.entries.iter().all(|e| !e.source_description.contains("not-authorized")));
@@ -331,7 +331,7 @@ fn genuine_historical_highdepth_sources_use_explicit_provenance_order_and_editab
                     assert_eq!(surface.pixel(x, y).iter().map(|v| v.to_bits()).collect::<Vec<_>>(), expected.map(f32::to_bits), "{name} pixel{x},{y}");
                 }
             }
-            let Some(ImportConversion::Report(report)) = &doc.metadata.import_conversion else { panic!("durable native conversion provenance") };
+            let Some(ImportConversion::Report(report)) = doc.metadata.import_conversion.as_deref() else { panic!("durable native conversion provenance") };
             assert!(
                 report.entries.iter().any(|entry| entry.feature_code == "xcf.historical_sample_order" && entry.native_description.contains("little-endian"))
             );

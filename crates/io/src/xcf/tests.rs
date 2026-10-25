@@ -74,7 +74,7 @@ fn invalid_optional_saved_paths_preserve_pixels_and_configuration() {
         let result = open(&image.write()).expect("optional paths must not make pixels unavailable");
         assert_eq!(pixel(&result.document.layers[0], 0, 0), [17.0 / 255.0, 31.0 / 255.0, 57.0 / 255.0, 1.0]);
         assert!(result.document.paths.is_empty());
-        let report = result.document.metadata.import_conversion.as_ref().unwrap();
+        let report = result.document.metadata.import_conversion.as_deref().unwrap();
         let ImportConversion::Report(report) = report else { panic!("current report") };
         assert!(report.entries.iter().any(|entry| entry.feature_code == "xcf.path" && entry.reason == ConversionReason::InvalidOptionalData));
         assert!(report.attachments.iter().any(|attachment| attachment.bytes.as_slice() == raw));
@@ -126,7 +126,7 @@ fn unknown_standalone_path_does_not_hide_later_paths_or_pixels() {
     assert_eq!(result.document.paths.len(), 1);
     assert_eq!(result.document.paths[0].name, "Native path");
     assert_eq!(result.initial_view.unwrap().selected_path, Some(0));
-    let Some(ImportConversion::Report(report)) = &result.document.metadata.import_conversion else { panic!("report") };
+    let Some(ImportConversion::Report(report)) = result.document.metadata.import_conversion.as_deref() else { panic!("report") };
     let paths: Vec<_> = report.entries.iter().filter(|entry| entry.feature_code == "xcf.path").collect();
     assert_eq!(paths.len(), 2);
     assert_eq!((paths[0].source.ordinal, paths[1].source.ordinal), (0, 1));
@@ -751,7 +751,7 @@ fn unsigned_32_samples_choose_native_float_and_preserve_normalization_boundaries
     for (x, bits) in expected.into_iter().enumerate() {
         assert_eq!(pixel_n(&document.layers[0], x as i32, 0, 2)[0].to_bits(), bits, "sample {x}");
     }
-    let Some(ImportConversion::Report(report)) = &document.metadata.import_conversion else { panic!("report") };
+    let Some(ImportConversion::Report(report)) = document.metadata.import_conversion.as_deref() else { panic!("report") };
     assert!(report.entries.iter().any(|entry| entry.feature_code == "xcf.precision" && entry.reason == ConversionReason::NumericalConversion));
     let reopened = photocraft_format::load_from_bytes(&photocraft_format::save_to_bytes(&document, &Default::default()).unwrap()).unwrap();
     assert_eq!(reopened.depth, SampleType::F32);
@@ -802,7 +802,7 @@ fn finite_float_boundaries_preserve_native_bits_without_false_underflow() {
             let image = float_pixel_image(precision, [value, 0.0, 0.0, 1.0]);
             let imported = open(&image.write()).unwrap();
             assert_eq!(pixel(&imported.document.layers[0], 0, 0)[0].to_bits(), (value as f32).to_bits(), "precision {precision}, {value}");
-            let Some(ImportConversion::Report(report)) = &imported.document.metadata.import_conversion else { panic!("report") };
+            let Some(ImportConversion::Report(report)) = imported.document.metadata.import_conversion.as_deref() else { panic!("report") };
             assert!(!report.entries.iter().any(|entry| entry.feature_code == "xcf.precision_underflow"));
             assert_eq!(report.entries.iter().any(|entry| entry.feature_code == "xcf.precision"), precision == 750);
             let reopened = photocraft_format::load_from_bytes(&photocraft_format::save_to_bytes(&imported.document, &Default::default()).unwrap()).unwrap();
@@ -826,7 +826,7 @@ fn double_rounding_signed_zero_and_underflow_have_native_data_and_per_owner_noti
     let imported = open(&image.write()).unwrap();
     assert_eq!(pixel(&imported.document.layers[0], 0, 0).map(f32::to_bits), [0, 0x80000000, 1, 0x3f800000]);
     assert_eq!(pixel(&imported.document.layers[0], 1, 0).map(f32::to_bits), [0x3f800000, 0x3f800002, 0x80000000, 0x3f800000]);
-    let Some(ImportConversion::Report(report)) = imported.document.metadata.import_conversion else { panic!("report") };
+    let Some(ImportConversion::Report(report)) = imported.document.metadata.import_conversion.as_deref() else { panic!("report") };
     let entries: Vec<_> = report.entries.iter().filter(|entry| entry.feature_code == "xcf.precision_underflow").collect();
     assert_eq!(entries.len(), 3, "one notice per affected layer/mask/channel, not per sample");
     assert!(entries.iter().all(|entry| entry.reason == ConversionReason::NumericalConversion));
@@ -973,7 +973,7 @@ fn clipping_text_vector_effects_and_floating_selections_are_reported() {
     let r = open(&img.write()).unwrap();
     assert_eq!(r.document.layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["Bottom", "Floating Selection", "Clipped"]);
     assert!(r.document.layers[2].clipped);
-    let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = &r.document.metadata.import_conversion else { panic!("report") };
+    let Some(photocraft_doc::import_conversion::ImportConversion::Report(report)) = r.document.metadata.import_conversion.as_deref() else { panic!("report") };
     for code in ["xcf.text", "xcf.vector_layer", "xcf.floating_selection"] {
         assert!(report.entries.iter().any(|entry| entry.feature_code == code), "missing {code}");
     }
@@ -993,7 +993,7 @@ fn native_conversion_distinguishes_duplicate_names_and_reports_source_policies()
     let result = open(&img.write()).unwrap();
     assert!(result.source_read_only && !result.preview_only);
     assert!(result.document.layers.iter().all(|l| !l.clipped), "GIMP coverage is not native clipping");
-    let Some(ImportConversion::Report(report)) = &result.document.metadata.import_conversion else { panic!("missing conversion report") };
+    let Some(ImportConversion::Report(report)) = result.document.metadata.import_conversion.as_deref() else { panic!("missing conversion report") };
     report.validate().unwrap();
     assert_eq!((report.source_format.as_str(), report.source_version, report.policy_version), ("xcf", Some(11), 1));
     let entries: Vec<_> = report.entries.iter().filter(|e| e.feature_code == "xcf.layer").collect();
@@ -1041,7 +1041,7 @@ fn historical_source_path_and_tattoo_survive_fallback_placement() {
     layer.props = vec![(30, [3u32, 2].into_iter().flat_map(u32::to_be_bytes).collect()), (20, 42u32.to_be_bytes().to_vec())];
     img.layers.push(layer);
     let imported = open(&img.write()).unwrap();
-    let Some(ImportConversion::Report(report)) = imported.document.metadata.import_conversion else { panic!("missing report") };
+    let Some(ImportConversion::Report(report)) = imported.document.metadata.import_conversion.as_deref() else { panic!("missing report") };
     let entry = report.entries.iter().find(|e| e.feature_code == "xcf.item_path").unwrap();
     assert_eq!((entry.source.ordinal, entry.source.tattoo), (0, Some(42)));
     assert_eq!(entry.source.item_path, [3, 2]);
@@ -1061,7 +1061,7 @@ fn unknown_configuration_is_retained_inertly_without_claiming_editable_source_fe
     img.layers.push(layer);
     let imported = open(&img.write()).unwrap().document;
     assert!(matches!(imported.layers[0].content, LayerContent::Raster(_)));
-    let Some(ImportConversion::Report(report)) = &imported.metadata.import_conversion else { panic!("missing report") };
+    let Some(ImportConversion::Report(report)) = imported.metadata.import_conversion.as_deref() else { panic!("missing report") };
     assert!(report.attachments.iter().any(|a| a.bytes.as_slice() == payload));
     assert!(report.entries.iter().any(|e| e.feature_code == "xcf.source_property.777" && e.disposition == D::RetainedUnapplied));
     assert!(report.entries.iter().any(|e| e.feature_code == "xcf.vector_layer"
@@ -1083,7 +1083,7 @@ fn malformed_optional_parasite_is_retained_with_an_invalid_data_reason() {
     let mut img = TestImage::rgb8(1, 1);
     img.image_props.push((21, vec![0, 0, 0, 8, b'x']));
     let doc = open(&img.write()).unwrap().document;
-    let Some(ImportConversion::Report(report)) = doc.metadata.import_conversion else { panic!("missing report") };
+    let Some(ImportConversion::Report(report)) = doc.metadata.import_conversion.as_deref() else { panic!("missing report") };
     assert!(report.entries.iter().any(|e| e.disposition == D::RetainedUnapplied && e.reason == R::InvalidOptionalData));
 }
 
