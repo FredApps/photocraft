@@ -311,6 +311,7 @@ impl GpuTimer {
 mod tests {
     use super::*;
 
+    /// Create a timestamp-capable test device or explicitly skip when the adapter lacks the required features.
     fn timer() -> Option<(wgpu::Device, GpuTimer)> {
         let instance = wgpu::Instance::default();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
@@ -351,6 +352,8 @@ mod tests {
     }
 
     #[test]
+    /// Inject mapped timestamp bytes to prove span summation excludes gaps and each completed measurement is
+    /// consumed once.
     fn mapped_nonuniform_spans_sum_through_collect_and_take() {
         let Some((device, mut timer)) = timer() else { return };
         // Durations 1000, 9000 and 3000 ticks; the much larger gaps must not be counted.

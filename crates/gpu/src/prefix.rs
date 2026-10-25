@@ -54,6 +54,7 @@ pub(crate) struct Prefix {
 }
 
 impl Default for Prefix {
+    /// Start an empty prefix cache with the native byte budget and no captured document or render context.
     fn default() -> Self {
         Self {
             context: None,
@@ -92,6 +93,7 @@ fn capture_below(checkpoints: &[Checkpoint], previous: &[Checkpoint], changed: u
 }
 
 impl Prefix {
+    /// Discard cached chunks and all context/history keys together so later renders cannot restore stale pixels.
     pub(crate) fn clear(&mut self) {
         self.context = None;
         self.text_gamma_bits = 0;
@@ -290,11 +292,13 @@ impl Prefix {
 mod tests {
     use super::*;
 
+    /// Define exact checkpoint tuples independently of the planner for capture-policy boundary tests.
     fn point(layer_end: usize, pass_end: usize, slot: u32) -> Checkpoint {
         Checkpoint { layer_start: 0, layer_end, pass_end, slot }
     }
 
     #[test]
+    /// Prefer a stable boundary shared across paste/Undo plans while still allowing safe upward progress.
     fn capture_prefers_a_shared_boundary_over_a_newly_exposed_batch_end() {
         let lower = point(21, 34, 1);
         let exposed = point(23, 36, 1);
@@ -307,6 +311,8 @@ mod tests {
     }
 
     #[test]
+    /// Check slot-sensitive checkpoint identity, edit bounds and first-plan fallback without accepting a false
+    /// shared point.
     fn capture_keeps_exact_tuple_bounds_and_has_a_first_plan_fallback() {
         let lower = point(21, 34, 1);
         let upper = point(23, 36, 1);

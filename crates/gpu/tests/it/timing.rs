@@ -96,6 +96,8 @@ fn measure(device: &wgpu::Device, queue: &wgpu::Queue, comp: &mut Compositor, do
     (submit_ms, wall_ms, timing)
 }
 
+/// Measure submission and waited wall time for one complete refresh, then poll its GPU timing readback alongside actual
+/// render statistics.
 fn measure_with_stats(device: &wgpu::Device, queue: &wgpu::Queue, comp: &mut Compositor, doc: &Document, region: Rect) -> (f64, f64, Option<GpuTiming>, Stats) {
     let t0 = Instant::now();
     let stats = comp.render(device, queue, doc, region, |_, _| {}).expect("the document composites on the GPU");
@@ -183,6 +185,8 @@ fn an_unmeasured_compositor_reports_nothing() {
 }
 
 #[test]
+/// Force intermediate submissions with a constrained cache and require timing spans to cover the entire refresh rather
+/// than only its last buffer.
 fn a_refresh_that_submits_several_times_is_one_measurement() {
     let _lock = crate::GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some((device, queue, mut comp)) = gpu() else { return };

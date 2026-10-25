@@ -375,6 +375,8 @@ fn prefix_follows_an_edit_up_the_stack_and_stays_exact() {
 }
 
 #[test]
+/// Exercise styled mid-stack insert/remove transitions at every depth, requiring cache hits plus exact uncached GPU and
+/// tolerant CPU parity.
 fn prefix_repeated_mid_stack_paste_and_undo_keep_a_shared_batch_boundary() {
     let Some(mut g) = gpu() else { return };
     let mut uncached = Compositor::new(&g.device);
@@ -1224,6 +1226,8 @@ fn duplicates_copy_their_source_texture() {
 }
 
 #[test]
+/// Reuse sparse cropped tile donors and verify later hole fills, COW source edits and undo match independent native
+/// rendering.
 fn sparse_cropped_donors_preserve_copy_on_write_pixels_at_each_depth() {
     let Some(mut g) = gpu() else { return };
     for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
@@ -2335,10 +2339,14 @@ fn as_text(src: Layer) -> Layer {
 static TEXT_GAMMA: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+/// Change only text render context and require invalidation, while stable context keeps useful prefixes and CPU/GPU
+/// parity.
 fn prefix_invalidates_when_text_gamma_changes_without_document_edits() {
     let _gamma = TEXT_GAMMA.lock().unwrap_or_else(|e| e.into_inner());
     struct RestoreGamma(f32);
     impl Drop for RestoreGamma {
+        /// Restore the process-wide text-gamma setting after the cache-context regression, including assertion
+        /// unwinding.
         fn drop(&mut self) {
             photocraft_compose::psblend::set_text_gamma(self.0);
         }
