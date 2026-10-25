@@ -216,15 +216,22 @@ fn placement_matrix(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<Affi
         "gegl:scale-size-keepaspect" => {
             let x = number(e, "x", -1.)?;
             let y = number(e, "y", -1.)?;
-            // Native fit-to-box policy: nonpositive dimensions are unspecified, both
-            // unspecified preserve input. Positive limits select the smaller ratio.
-            let scale = match (x > 0., y > 0.) {
-                (true, true) => (x / f64::from(b.width())).min(y / f64::from(b.height())),
-                (true, false) => x / f64::from(b.width()),
-                (false, true) => y / f64::from(b.height()),
-                (false, false) => 1.,
+            // Observed GEGL 0.4.72 behavior: a 20x10 input becomes 40x15 for
+            // (40,15), 40x20 for (40,0), and 30x15 for (0,15). Two positive
+            // dimensions are independent; only a single positive axis is uniform.
+            let (sx, sy) = match (x > 0., y > 0.) {
+                (true, true) => (x / f64::from(b.width()), y / f64::from(b.height())),
+                (true, false) => {
+                    let scale = x / f64::from(b.width());
+                    (scale, scale)
+                }
+                (false, true) => {
+                    let scale = y / f64::from(b.height());
+                    (scale, scale)
+                }
+                (false, false) => (1., 1.),
             };
-            Affine::scale(scale)
+            Affine { m: [sx, 0., 0., sy, 0., 0.] }
         }
         "gegl:shear" => Affine { m: [1., number(e, "y", 0.)?, number(e, "x", 0.)?, 1., 0., 0.] },
         "gegl:reflect" => {
@@ -379,7 +386,7 @@ fn map_known(e: &StoredEffect<'_>, c: &MappingContext<'_>) -> Result<NativeMappi
             Ok(composite(
                 vec![NativeBranch { transform, ..Default::default() }],
                 format!(
-                    "Stock placement becomes editable native Smart affine data. All admitted transforms are 2D affine with constant homogeneous z=1; declared near-z={near_z} in 0..1 is inactive under this native 2D policy, without introducing a 3D clipping evaluator. Native pixel-size fit, shear-factor units, frame-center rotation and canvas-target alignment use the fixed native input frame rather than inferred dynamic source content bounds; aspect fit treats nonpositive dimensions as unspecified. Native resampling/clipping supersede source sampler and target discovery. SVG transform lists become bounded ordinary native Affine composition."
+                    "Stock placement becomes editable native Smart affine data. All admitted transforms are 2D affine with constant homogeneous z=1; declared near-z={near_z} in 0..1 is inactive under this native 2D policy, without introducing a 3D clipping evaluator. Native pixel-size scaling, shear-factor units, frame-center rotation and canvas-target alignment use the fixed native input frame rather than inferred dynamic source content bounds. Keep-aspect treats nonpositive dimensions as unspecified: one positive axis scales uniformly, while two positive axes set independent native dimensions. Native resampling/clipping supersede source sampler and target discovery. SVG transform lists become bounded ordinary native Affine composition."
                 ),
             ))
         }
@@ -545,7 +552,7 @@ mod tests {
         c.native_filter_bounds = Rect::new(0, 0, 100, 80);
         let get = |op, args| placement_matrix(&StoredEffect::test(op, args), &c).unwrap().m;
         assert_eq!(get("gegl:scale-size", vec![number_arg("x", 40.), number_arg("y", 30.)]), [2., 0., 0., 3., 0., 0.]);
-        assert_eq!(get("gegl:scale-size-keepaspect", vec![number_arg("x", 40.), number_arg("y", 15.)]), [1.5, 0., 0., 1.5, 0., 0.]);
+        assert_eq!(get("gegl:scale-size-keepaspect", vec![number_arg("x", 40.), number_arg("y", 15.)]), [2., 0., 0., 1.5, 0., 0.]);
         assert_eq!(get("gegl:scale-size-keepaspect", vec![]), Affine::IDENTITY.m);
         assert_eq!(get("gegl:shear", vec![number_arg("x", 2.), number_arg("y", 0.25)]), [1., 0.25, 2., 1., 0., 0.]);
         assert_eq!(get("gegl:reflect", vec![number_arg("x", 1.)]), [1., 0., 0., -1., 0., 0.]);
@@ -560,22 +567,49 @@ mod tests {
         assert!(map(&StoredEffect::test("gegl:reflect", vec![]), &c).unwrap().is_err());
         assert!(map(&StoredEffect::test("gegl:scale-size", vec![number_arg("x", 9001.)]), &c).unwrap().is_err());
     }
-    /// Treat unspecified dimensions as absent limits, preserving a nonempty native affine branch rather than a collapsed fill.
+    /// Match observed runtime extents: two positive sizes are independent and one positive size is uniform.
+    /// With no positive dimension, preserve native input without a collapsed replacement.
     #[test]
-    fn aspect_fit_zero_dimensions_are_unspecified_and_positive_limits_keep_native_affines() {
+    fn keepaspect_positive_axes_are_independent_and_unspecified_dimensions_preserve_native_affines() {
         let mut c = context();
         c.owner_bounds = Rect::new(-3, 5, 17, 15);
-        for (x, y, expected_scale) in [(0., -1., 1.), (0., 15., 1.5), (40., 0., 2.), (0., 0., 1.), (-1., 0., 1.), (40., 15., 1.5)] {
+        for (x, y, sx, sy) in [
+            (40., 15., 2., 1.5),
+            (30., 40., 1.5, 4.),
+            (0., 15., 1.5, 1.5),
+            (-1., 15., 1.5, 1.5),
+            (40., 0., 2., 2.),
+            (40., -1., 2., 2.),
+            (0., -1., 1., 1.),
+            (0., 0., 1., 1.),
+            (-1., 0., 1., 1.),
+            (-1., -1., 1., 1.),
+            (-2., 0., 1., 1.),
+            (0., -2., 1., 1.),
+        ] {
             let source = StoredEffect::test("gegl:scale-size-keepaspect", vec![number_arg("x", x), number_arg("y", y)]);
             let mapping = map(&source, &c).unwrap().unwrap();
             let Some(NativeStructure::Composite { branches }) = mapping.structure else {
                 panic!("unspecified dimensions must preserve editable native input, not replace it with a collapsed fill")
             };
             assert_eq!(branches.len(), 1);
-            let expected = Affine { m: [expected_scale, 0., 0., expected_scale, 0., 0.] };
+            let expected = Affine { m: [sx, 0., 0., sy, 0., 0.] };
             assert_eq!(branches[0].transform, expected, "x={x}, y={y}");
             assert!(branches[0].transform.m[0] > 0. && branches[0].transform.m[3] > 0.);
             assert!(mapping.notes.iter().any(|note| note.contains("nonpositive dimensions as unspecified")));
+        }
+    }
+    /// Keep declared size bounds separate from unspecified-axis semantics without clipping or flipping input.
+    #[test]
+    fn keepaspect_declared_size_domains_do_not_clip_or_flip_unspecified_axes() {
+        let mut c = context();
+        c.owner_bounds = Rect::new(0, 0, 20, 10);
+        let get = |x, y| placement_matrix(&StoredEffect::test("gegl:scale-size-keepaspect", vec![number_arg("x", x), number_arg("y", y)]), &c);
+        assert_eq!(get(9000., 9000.).unwrap().m, [450., 0., 0., 900., 0., 0.]);
+        assert_eq!(get(-9000., 9000.).unwrap().m, [900., 0., 0., 900., 0., 0.]);
+        assert_eq!(get(-9000., -9000.).unwrap().m, Affine::IDENTITY.m);
+        for (x, y) in [(9001., 1.), (-9001., 1.), (1., 9001.), (1., -9001.), (f64::NAN, 1.), (1., f64::INFINITY)] {
+            assert!(get(x, y).is_err());
         }
     }
     #[test]
