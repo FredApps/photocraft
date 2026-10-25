@@ -2436,6 +2436,8 @@ mod tests {
     }
 
     #[test]
+    /// Require discrete preview scaling to divide native rank support exactly, preserve JSON numeric representation and
+    /// leave topology filters at full resolution.
     fn discrete_native_rank_proxy_preserves_radius_support_and_json_number_kind() {
         let command = "filter.other.percentile";
         for (radius, requested, expected) in [(4, 4, 4), (4, 3, 2), (5, 4, 1), (6, 4, 3), (7, 4, 1), (8, 4, 4)] {

@@ -3,6 +3,7 @@ use photocraft_engine::Session;
 use serde_json::json;
 
 #[test]
+/// Prove explicit in-place conversion still cannot overwrite an import-only source.
 fn convert_cannot_replace_an_import_only_source_even_with_in_place() {
     let mut bytes = b"gimp xcf v003\0".to_vec();
     for value in [1u32, 1, 0, 0, 0, 0, 0] {
@@ -40,6 +41,7 @@ fn convert_cannot_replace_an_import_only_source_even_with_in_place() {
 }
 
 #[test]
+/// Check direct conversion prepares native Smart contents before exporting their first appearance.
 fn direct_convert_renders_missing_native_smart_cache_before_writing() {
     let mut session = Session::new();
     session.execute("file.new", json!({"width": 1, "height": 1, "background": "white"})).unwrap();
@@ -75,6 +77,7 @@ fn direct_convert_renders_missing_native_smart_cache_before_writing() {
 }
 
 #[test]
+/// Verify inspection exposes the same inert conversion summary before and after native persistence.
 fn info_inherits_conversion_summary_for_xcf_and_native_reopen() {
     let mut bytes = b"gimp xcf v003\0".to_vec();
     for value in [1u32, 1, 0, 0, 0, 0, 0] {
@@ -108,9 +111,11 @@ fn info_inherits_conversion_summary_for_xcf_and_native_reopen() {
 
 /// One ordinary RGBA layer, with uncompressed tile bytes and no private corpus input.
 fn layered_xcf() -> Vec<u8> {
+    /// Append a big-endian v3 fixture field without relying on the importer or a corpus file.
     fn word(out: &mut Vec<u8>, value: u32) {
         out.extend_from_slice(&value.to_be_bytes());
     }
+    /// Resolve a reserved 32-bit fixture pointer to its independently written section.
     fn patch(out: &mut [u8], at: usize, value: usize) {
         out[at..at + 4].copy_from_slice(&(value as u32).to_be_bytes());
     }
@@ -157,6 +162,7 @@ fn layered_xcf() -> Vec<u8> {
     out
 }
 
+/// Compute the standard wrapper checksum over original fixture bytes for decoder-independent transport tests.
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = u32::MAX;
     for byte in bytes {
@@ -168,6 +174,7 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
+/// Wrap a small original fixture in one stored DEFLATE block with independent gzip length and CRC fields.
 fn stored_gzip(bytes: &[u8]) -> Vec<u8> {
     assert!(bytes.len() <= u16::MAX as usize);
     let len = bytes.len() as u16;
@@ -182,6 +189,7 @@ fn stored_gzip(bytes: &[u8]) -> Vec<u8> {
 
 /// Single uncompressed LZMA2 chunk and CRC32; independent of decoder encoder features.
 fn stored_xz(bytes: &[u8]) -> Vec<u8> {
+    /// Encode an XZ index integer in base-128 form for the original stored-chunk wrapper.
     fn vli(mut value: usize, out: &mut Vec<u8>) {
         loop {
             let byte = (value & 127) as u8;
@@ -223,6 +231,7 @@ fn stored_xz(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Return identical original XCF pixels in plain, gzip, bzip2 and XZ transports.
 fn wrapped_sources() -> Vec<(&'static str, Vec<u8>)> {
     let source = layered_xcf();
     // Python standard-library bz2.compress(layered_xcf()) output, solely original synthetic
@@ -237,17 +246,20 @@ fn wrapped_sources() -> Vec<(&'static str, Vec<u8>)> {
 
 struct RouteFiles(std::path::PathBuf);
 impl RouteFiles {
+    /// Create an isolated temporary directory for route tests without touching published corpus files.
     fn new() -> Self {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let path = std::env::temp_dir().join(format!("pc-cli-xcf-routes-{}-{stamp}", std::process::id()));
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
+    /// Resolve an individual test artifact inside its owned temporary directory.
     fn path(&self, name: &str) -> String {
         self.0.join(name).to_string_lossy().into_owned()
     }
 }
 impl Drop for RouteFiles {
+    /// Remove the temporary route artifacts and directory after a test finishes.
     fn drop(&mut self) {
         if let Ok(entries) = std::fs::read_dir(&self.0) {
             for entry in entries.flatten() {
@@ -258,6 +270,7 @@ impl Drop for RouteFiles {
     }
 }
 
+/// Run the CLI in process and capture its exit code and separate output/error streams.
 fn call(args: Vec<String>) -> (i32, String, String) {
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = photocraft_cli::run(&args, &mut out, &mut err);
@@ -265,6 +278,7 @@ fn call(args: Vec<String>) -> (i32, String, String) {
 }
 
 #[test]
+/// Exercise every transport through inspection, conversion, native editing and reopen after source removal.
 fn all_xcf_transports_support_info_convert_native_edit_and_source_independent_reopen() {
     let mut expected_summary = None;
     for (transport, bytes) in wrapped_sources() {
@@ -334,6 +348,7 @@ fn all_xcf_transports_support_info_convert_native_edit_and_source_independent_re
 }
 
 #[test]
+/// Prevent transport or suffix changes from bypassing import-only source protection through hard links.
 fn compressed_and_misnamed_sources_reject_convert_and_run_to_hard_link_aliases() {
     for (transport, bytes) in wrapped_sources() {
         let files = RouteFiles::new();
@@ -381,6 +396,7 @@ fn compressed_and_misnamed_sources_reject_convert_and_run_to_hard_link_aliases()
 }
 
 #[test]
+/// Verify malformed inputs fail each CLI route without writing outputs or altering the source.
 fn corrupt_sources_fail_all_cli_routes_without_output_or_source_changes() {
     for (transport, mut bytes) in wrapped_sources() {
         bytes.truncate(bytes.len() - 3);
@@ -416,31 +432,38 @@ fn corrupt_sources_fail_all_cli_routes_without_output_or_source_changes() {
 fn stored_native_effect_xcf(operation: &str) -> Vec<u8> {
     struct W(Vec<u8>);
     impl W {
+        /// Write a big-endian field for the independently authored v26 stored-effect fixture.
         fn word(&mut self, v: u32) {
             self.0.extend(v.to_be_bytes());
         }
+        /// Encode a 64-bit absolute pointer for the v26 fixture's effect and pixel sections.
         fn ptr(&mut self, v: usize) {
             self.0.extend((v as u64).to_be_bytes());
         }
+        /// Reserve a v26 offset that will be resolved after its section is emitted.
         fn slot(&mut self) -> usize {
             let at = self.0.len();
             self.ptr(0);
             at
         }
+        /// Point a reserved v26 fixture field at the section's actual final position.
         fn patch(&mut self, at: usize) {
             let value = self.0.len() as u64;
             self.0[at..at + 8].copy_from_slice(&value.to_be_bytes());
         }
+        /// Write the source's explicit UTF-8 byte count and trailing NUL.
         fn text(&mut self, v: &str) {
             self.word(v.len() as u32 + 1);
             self.0.extend(v.as_bytes());
             self.0.push(0);
         }
+        /// Frame a stored effect or image property with its type and payload size.
         fn prop(&mut self, kind: u32, data: &[u8]) {
             self.word(kind);
             self.word(data.len() as u32);
             self.0.extend(data);
         }
+        /// Terminate a fixture property list without adding unsupported source state.
         fn end(&mut self) {
             self.word(0);
             self.word(0);
@@ -515,6 +538,7 @@ fn independently_native_stored_filter_samples(operation: &str) -> Vec<f32> {
     assert!(doc.metadata.import_conversion.is_none());
     doc.layers[0].surface().unwrap().read_region(doc.bounds())
 }
+/// Require finite samples within the native-depth tolerance of an independently executed command counterpart.
 fn assert_stored_filter_pixels(actual: &[f32], expected: &[f32], route: &str) {
     assert_eq!(actual.len(), expected.len(), "{route}: sample count");
     let max = actual.iter().zip(expected).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
@@ -522,6 +546,8 @@ fn assert_stored_filter_pixels(actual: &[f32], expected: &[f32], route: &str) {
 }
 
 #[test]
+/// Compare actual stored adjustments with independent native commands across direct conversion and source-free
+/// native reopen.
 fn actual_stored_xcf_adjustments_direct_convert_match_native_commands_and_reopen_without_source() {
     for operation in ["gegl:invert-gamma", "gegl:exposure"] {
         let files = RouteFiles::new();

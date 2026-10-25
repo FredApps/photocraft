@@ -9,10 +9,12 @@ use serde_json::json;
 struct Fixture(PathBuf);
 
 impl Fixture {
+    /// Serialize a native document into an isolated on-disk fixture for headless open tests.
     fn new(doc: &Document) -> Self {
         Self::bytes("source.pcraft", &photocraft_format::save_to_bytes(doc, &Default::default()).unwrap())
     }
 
+    /// Write the supplied bytes under a unique temporary directory, retaining the requested suffix for sniffing tests.
     fn bytes(name: &str, bytes: &[u8]) -> Self {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let dir = std::env::temp_dir().join(format!("pc-native-preparation-{}-{stamp}", std::process::id()));
@@ -23,6 +25,7 @@ impl Fixture {
 }
 
 impl Drop for Fixture {
+    /// Remove the known fixture outputs without letting cleanup errors obscure the test failure.
     fn drop(&mut self) {
         for name in ["source.pcraft", "source.xcf", "alias.pcraft", "converted.pcraft", "first.png"] {
             let _ = std::fs::remove_file(self.0.join(name));
@@ -31,6 +34,7 @@ impl Drop for Fixture {
     }
 }
 
+/// Build an ordinary white Smart Object with its render cache removed, forcing preparation during open.
 fn pending_native_smart() -> Document {
     let mut session = Session::new();
     session.execute("file.new", json!({"width": 1, "height": 1, "background": "white"})).unwrap();
@@ -42,6 +46,7 @@ fn pending_native_smart() -> Document {
 }
 
 #[test]
+/// Require the first headless result to contain prepared white pixels while remaining a clean native document.
 fn headless_open_prepares_native_smart_pixels_before_export() {
     let fixture = Fixture::new(&pending_native_smart());
     let mut headless = Headless::trusted_local();
@@ -52,6 +57,7 @@ fn headless_open_prepares_native_smart_pixels_before_export() {
 }
 
 #[test]
+/// Reject a stored filter through session authority and verify that no partly prepared document is installed.
 fn native_preparation_obeys_the_sessions_filter_authorization_before_installing() {
     let mut doc = pending_native_smart();
     if let LayerContent::Smart(object) = &mut doc.layers[0].content {
@@ -71,6 +77,7 @@ fn native_preparation_obeys_the_sessions_filter_authorization_before_installing(
 }
 
 #[test]
+/// Inspect a persisted conversion report without treating its historical source format as a live write restriction.
 fn headless_open_exposes_the_inert_report_summary_without_changing_native_writability() {
     use photocraft_doc::import_conversion::{ConversionReport, ImportConversion};
     let mut doc = pending_native_smart();
@@ -87,6 +94,8 @@ fn headless_open_exposes_the_inert_report_summary_without_changing_native_writab
 }
 
 #[test]
+/// Exercise source aliases and indexed saves under both filesystem authorities; native Save As must retain the report
+/// and leave source bytes intact.
 fn source_protection_and_native_save_reopen_work_with_trusted_and_scoped_filesystems() {
     let mut bytes = b"gimp xcf v003\0".to_vec();
     for value in [1u32, 1, 0, 0, 0, 0, 0] {
@@ -138,34 +147,42 @@ fn source_protection_and_native_save_reopen_work_with_trusted_and_scoped_filesys
 /// Independent public XCF18 framing; no corpus or GIMP runtime needed.
 struct XcfBytes(Vec<u8>);
 impl XcfBytes {
+    /// Append a big-endian property word to the independently authored XCF fixture.
     fn u32(&mut self, value: u32) {
         self.0.extend(value.to_be_bytes());
     }
+    /// Encode a length-prefixed UTF-8 fixture string including its terminating NUL.
     fn string(&mut self, value: &str) {
         self.u32(value.len() as u32 + 1);
         self.0.extend(value.as_bytes());
         self.0.push(0);
     }
+    /// Append a typed property envelope whose length matches the supplied fixture payload.
     fn prop(&mut self, kind: u32, data: &[u8]) {
         self.u32(kind);
         self.u32(data.len() as u32);
         self.0.extend(data);
     }
+    /// Terminate the fixture property list with the required zero kind and length.
     fn end(&mut self) {
         self.u32(0);
         self.u32(0);
     }
+    /// Append the 64-bit big-endian record pointer used by this modern fixture version.
     fn pointer(&mut self, value: usize) {
         self.0.extend((value as u64).to_be_bytes());
     }
+    /// Reserve a null record pointer and return its byte position for later backpatching.
     fn slot(&mut self) -> usize {
         let at = self.0.len();
         self.pointer(0);
         at
     }
+    /// Fill a previously reserved 64-bit pointer with the fixture record's absolute offset.
     fn patch(&mut self, at: usize, value: usize) {
         self.0[at..at + 8].copy_from_slice(&(value as u64).to_be_bytes());
     }
+    /// Emit one 4-by-3 uncompressed hierarchy and tile, keeping channel coverage independent of native serialization.
     fn hierarchy(&mut self, channels: u32, pixels: &[u8]) -> usize {
         let at = self.0.len();
         for value in [4, 3, channels] {
@@ -184,6 +201,7 @@ impl XcfBytes {
         self.0.extend(pixels);
         at
     }
+    /// Author a named half-coverage channel with an optional active marker for initial-view tests.
     fn channel(&mut self, name: &str, active: bool) -> usize {
         let at = self.0.len();
         self.u32(4);
@@ -200,6 +218,8 @@ impl XcfBytes {
         at
     }
 }
+/// Construct original XCF records for mask/channel targeting, path selection and samplers, with an optional embedded
+/// profile.
 fn source_view_xcf(active_channel: bool, profile: Option<&[u8]>) -> Vec<u8> {
     let mut w = XcfBytes(b"gimp xcf v018\0".to_vec());
     for value in [4, 3, 0, 150] {
@@ -274,6 +294,7 @@ fn source_view_xcf(active_channel: bool, profile: Option<&[u8]>) -> Vec<u8> {
     w.patch(overlay, at);
     w.0
 }
+/// Check the complete imported editing target and one-time view hints without admitting an undo step or dirty revision.
 fn assert_source_view(session: &Session, alpha: bool) {
     use photocraft_engine::channel_cmds::ChannelTarget;
     let state = session.active().unwrap();
@@ -291,6 +312,8 @@ fn assert_source_view(session: &Session, alpha: bool) {
 }
 
 #[test]
+/// Compare direct and scoped headless installation, then require native reopen to retain provenance without replaying
+/// transient source view hints.
 fn files_and_headless_routes_preserve_complete_native_view_and_inert_report_once() {
     use photocraft_automation::{AuthorizedWorkspace, files};
     for alpha in [false, true] {
@@ -343,6 +366,8 @@ fn files_and_headless_routes_preserve_complete_native_view_and_inert_report_once
 }
 
 #[test]
+/// Apply configured synchronous profile policy and verify failed I/O preserves the current document, view and protected
+/// source.
 fn headless_uses_shared_immediate_color_policy_and_failed_save_open_are_atomic() {
     let mut tagged = Session::new();
     tagged.execute("file.new", json!({"width":4,"height":3})).unwrap();
@@ -374,6 +399,8 @@ fn headless_uses_shared_immediate_color_policy_and_failed_save_open_are_atomic()
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+/// Verify one-shot profile handoff and cancellation before publication, including a result already completed by its
+/// worker.
 fn async_held_color_handoff_is_taken_once_and_cancelled_open_publishes_nothing() {
     use photocraft_engine::jobs::{OpenSource, Started};
     let mut tagged = Session::new();
@@ -415,6 +442,7 @@ fn async_held_color_handoff_is_taken_once_and_cancelled_open_publishes_nothing()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+/// Drive real MCP calls to compare report paging, imported view state, scoped authority and source-safe native reopen.
 async fn mcp_xcf_open_report_paging_native_view_and_source_protection_share_headless_results() {
     use photocraft_automation::{AuthorizedWorkspace, PhotocraftMcp};
     use rmcp::model::{CallToolRequestParams, CallToolResult, ClientConfig};
@@ -424,14 +452,17 @@ async fn mcp_xcf_open_report_paging_native_view_and_source_protection_share_head
     #[derive(Clone, Default)]
     struct Client;
     impl ClientHandler for Client {
+        /// Supply default client capabilities for the in-process MCP protocol round trip.
         fn get_info(&self) -> ClientConfig {
             ClientConfig::default()
         }
     }
+    /// Send a named MCP tool request through the real client transport using object arguments.
     async fn call(client: &RunningService<RoleClient, Client>, name: &str, args: Value) -> CallToolResult {
         let request = CallToolRequestParams::new(name.to_owned()).with_arguments(args.as_object().unwrap().clone());
         client.call_tool(request).await.unwrap()
     }
+    /// Decode the MCP text result as JSON and fail the test if the server returned a tool error.
     fn value(reply: &CallToolResult) -> Value {
         let text = reply.content.iter().filter_map(|entry| entry.as_text()).map(|text| text.text.as_str()).collect::<Vec<_>>().join("\n");
         assert_ne!(reply.is_error, Some(true), "{text}");
@@ -495,6 +526,7 @@ async fn mcp_xcf_open_report_paging_native_view_and_source_protection_share_head
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test(flavor = "multi_thread")]
+/// Use worker-exit signaling to prove both MCP cancellation routes discard a completed but unpublished import.
 async fn mcp_cancel_discards_an_exited_workers_queued_xcf_result_before_publication() {
     use photocraft_automation::{Backend, PhotocraftMcp, files};
     use photocraft_engine::jobs::Started;
@@ -506,6 +538,8 @@ async fn mcp_cancel_discards_an_exited_workers_queued_xcf_result_before_publicat
     };
     struct ExitSignal(Arc<AtomicBool>);
     impl Drop for ExitSignal {
+        /// Signal actual worker-thread exit so cancellation is tested after result queueing rather than merely during
+        /// decode.
         fn drop(&mut self) {
             self.0.store(true, Ordering::Release);
         }
@@ -514,6 +548,7 @@ async fn mcp_cancel_discards_an_exited_workers_queued_xcf_result_before_publicat
     #[derive(Clone, Default)]
     struct Client;
     impl ClientHandler for Client {
+        /// Advertise the minimal default MCP client configuration needed by the cancellation transport test.
         fn get_info(&self) -> ClientConfig {
             ClientConfig::default()
         }
@@ -588,31 +623,38 @@ async fn mcp_cancel_discards_an_exited_workers_queued_xcf_result_before_publicat
 fn stored_native_effect_xcf(operation: &str) -> Vec<u8> {
     struct W(Vec<u8>);
     impl W {
+        /// Append a big-endian scalar to the independent stored-effect fixture.
         fn word(&mut self, v: u32) {
             self.0.extend(v.to_be_bytes());
         }
+        /// Encode a modern XCF record address as a 64-bit big-endian pointer.
         fn ptr(&mut self, v: usize) {
             self.0.extend((v as u64).to_be_bytes());
         }
+        /// Reserve an eight-byte pointer slot before writing its target record.
         fn slot(&mut self) -> usize {
             let at = self.0.len();
             self.ptr(0);
             at
         }
+        /// Point a reserved slot at the current end of the fixture buffer.
         fn patch(&mut self, at: usize) {
             let value = self.0.len() as u64;
             self.0[at..at + 8].copy_from_slice(&value.to_be_bytes());
         }
+        /// Write a NUL-terminated, byte-length-prefixed UTF-8 effect or property name.
         fn text(&mut self, v: &str) {
             self.word(v.len() as u32 + 1);
             self.0.extend(v.as_bytes());
             self.0.push(0);
         }
+        /// Wrap the supplied effect argument bytes in a typed, length-delimited property.
         fn prop(&mut self, kind: u32, data: &[u8]) {
             self.word(kind);
             self.word(data.len() as u32);
             self.0.extend(data);
         }
+        /// Close an image, layer or effect property list with its zero-length terminator.
         fn end(&mut self) {
             self.word(0);
             self.word(0);
@@ -687,6 +729,7 @@ fn independently_native_stored_filter_samples(operation: &str) -> Vec<f32> {
     assert!(doc.metadata.import_conversion.is_none());
     doc.layers[0].surface().unwrap().read_region(doc.bounds())
 }
+/// Compare finite output samples against separately executed native commands using the declared export tolerance.
 fn assert_stored_filter_pixels(actual: &[f32], expected: &[f32], route: &str) {
     assert_eq!(actual.len(), expected.len(), "{route}: sample count");
     let max = actual.iter().zip(expected).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
@@ -694,6 +737,8 @@ fn assert_stored_filter_pixels(actual: &[f32], expected: &[f32], route: &str) {
 }
 
 #[test]
+/// Compare stored XCF adjustments to native command output through trusted/scoped open, export and source-independent
+/// reopen.
 fn actual_stored_xcf_adjustments_trusted_and_scoped_headless_match_native_commands() {
     use photocraft_doc::import_conversion::{ConversionDisposition, ImportConversion};
     for operation in ["gegl:invert-gamma", "gegl:exposure"] {
@@ -747,6 +792,8 @@ fn actual_stored_xcf_adjustments_trusted_and_scoped_headless_match_native_comman
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test(flavor = "multi_thread")]
+/// Require MCP's first exported pixels to match native commands and remain reproducible after deleting the original
+/// source.
 async fn actual_stored_xcf_adjustments_mcp_first_output_and_source_independent_native_reopen() {
     use photocraft_automation::{AuthorizedWorkspace, Backend, PhotocraftMcp};
     use rmcp::model::{CallToolRequestParams, CallToolResult, ClientConfig};
@@ -757,13 +804,16 @@ async fn actual_stored_xcf_adjustments_mcp_first_output_and_source_independent_n
     #[derive(Clone, Default)]
     struct Client;
     impl ClientHandler for Client {
+        /// Supply default MCP client capabilities for the stored-adjustment transport test.
         fn get_info(&self) -> ClientConfig {
             ClientConfig::default()
         }
     }
+    /// Invoke the real MCP tool endpoint with typed JSON object arguments for the adjustment workflow.
     async fn call(client: &RunningService<RoleClient, Client>, name: &str, args: Value) -> CallToolResult {
         client.call_tool(CallToolRequestParams::new(name.to_owned()).with_arguments(args.as_object().unwrap().clone())).await.unwrap()
     }
+    /// Parse a successful MCP text response into JSON, preserving protocol errors as test failures.
     fn value(reply: &CallToolResult) -> Value {
         let text = reply.content.iter().filter_map(|entry| entry.as_text()).map(|entry| entry.text.as_str()).collect::<Vec<_>>().join("\n");
         assert_ne!(reply.is_error, Some(true), "{text}");

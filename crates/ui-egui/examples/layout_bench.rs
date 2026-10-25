@@ -144,6 +144,7 @@ fn point_on(h: &H, id: LayerId) -> Option<[f64; 2]> {
     None
 }
 
+/// Run the selected procedural layout workload and report its measurements without requiring personal image input.
 fn main() {
     reexec_with_gpu_sync();
     let args: Vec<String> = std::env::args().collect();

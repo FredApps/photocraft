@@ -20,34 +20,42 @@ use std::{
 #[derive(Default)]
 struct Wire(Vec<u8>);
 impl Wire {
+    /// Append a big-endian scalar to the original UI workflow fixture.
     fn word(&mut self, n: u32) {
         self.0.extend_from_slice(&n.to_be_bytes());
     }
+    /// Encode a UTF-8 fixture string with its length and terminating NUL.
     fn string(&mut self, text: &str) {
         self.word(text.len() as u32 + 1);
         self.0.extend_from_slice(text.as_bytes());
         self.0.push(0);
     }
+    /// Append one length-delimited XCF property without using a native document serializer.
     fn property(&mut self, kind: u32, bytes: &[u8]) {
         self.word(kind);
         self.word(bytes.len() as u32);
         self.0.extend_from_slice(bytes);
     }
+    /// Close the current fixture property list using the wire-format terminator.
     fn end(&mut self) {
         self.word(0);
         self.word(0);
     }
+    /// Append a 64-bit big-endian pointer for the fixture's modern record framing.
     fn pointer(&mut self, value: usize) {
         self.0.extend_from_slice(&(value as u64).to_be_bytes());
     }
+    /// Reserve a null pointer for a record that will be authored later in the buffer.
     fn slot(&mut self) -> usize {
         let at = self.0.len();
         self.pointer(0);
         at
     }
+    /// Backpatch a reserved pointer with the absolute fixture-record offset.
     fn patch(&mut self, at: usize, value: usize) {
         self.0[at..at + 8].copy_from_slice(&(value as u64).to_be_bytes());
     }
+    /// Write a single 2-by-1 hierarchy and uncompressed tile with the supplied native channel bytes.
     fn pixels(&mut self, channels: u32, data: &[u8]) -> usize {
         let at = self.0.len();
         self.word(2);
@@ -120,6 +128,7 @@ fn xcf() -> Vec<u8> {
     w.0
 }
 
+/// Create a real importer-backed shell with selectable background execution and profile prompts disabled.
 fn app(background: bool) -> PhotocraftApp {
     let mut session = Session::new();
     session.color.settings.ask_on_missing = false;
@@ -134,6 +143,7 @@ fn app(background: bool) -> PhotocraftApp {
     app.background_jobs = background;
     app
 }
+/// Poll the shell's worker handoff until jobs finish, with a bounded timeout for stalled opens.
 fn finish(app: &mut PhotocraftApp) {
     let ctx = egui::Context::default();
     let start = Instant::now();
@@ -144,6 +154,8 @@ fn finish(app: &mut PhotocraftApp) {
     }
     jobs_ui::tick(app, &ctx);
 }
+/// Verify source protection, selected mask/channel view, notices and durable report metadata on the installed native
+/// document.
 fn assert_open(app: &PhotocraftApp, path: Option<&str>) {
     let state = app.session.active().expect("native document installed");
     assert!(state.source_read_only && state.path.is_none());
@@ -171,15 +183,19 @@ fn assert_open(app: &PhotocraftApp, path: Option<&str>) {
 #[derive(Debug)]
 struct DropBytes(PathBuf, Vec<u8>);
 impl egui::DroppedFile for DropBytes {
+    /// Expose the synthetic dropped file's path to the platform-independent drop contract.
     fn path(&self) -> &Path {
         &self.0
     }
+    /// Return a fresh copy of the dropped fixture bytes without reading an external file.
     fn bytes(&self) -> Result<Vec<u8>, String> {
         Ok(self.1.clone())
     }
 }
 
 #[test]
+/// Compare actual XCF installation through open, recent and drop routes in both execution modes while preserving source
+/// bytes.
 fn actual_xcf_open_recent_and_drop_share_native_installation_inline_and_async() {
     let source = xcf();
     for background in [false, true] {
@@ -205,6 +221,8 @@ fn actual_xcf_open_recent_and_drop_share_native_installation_inline_and_async() 
 }
 
 #[test]
+/// Require source aliases to activate the existing tab without replaying view hints until native Save As ends that
+/// identity.
 fn already_open_xcf_activates_existing_tab_until_native_save_as() {
     for background in [false, true] {
         let dir = tempfile::tempdir().unwrap();
@@ -254,6 +272,7 @@ fn already_open_xcf_activates_existing_tab_until_native_save_as() {
 }
 
 #[test]
+/// Exercise both picker paths and browser byte answers against the same native installation assertions.
 fn picker_paths_and_browser_contents_contract_preserve_native_xcf_state() {
     for background in [false, true] {
         for bytes_answer in [false, true] {
@@ -279,6 +298,7 @@ fn picker_paths_and_browser_contents_contract_preserve_native_xcf_state() {
 }
 
 #[test]
+/// Queue two actual imports behind profile choices and require each result to install exactly once in order.
 fn real_xcf_color_held_queue_preserves_each_result_until_answered() {
     for background in [false, true] {
         let source = xcf();
@@ -302,6 +322,7 @@ fn real_xcf_color_held_queue_preserves_each_result_until_answered() {
 }
 
 #[test]
+/// Feed an actual XCF through the browser-style byte inbox and verify a real shell frame installs it.
 fn browser_style_inbox_is_consumed_by_offscreen_shell_frame() {
     let inbox = Arc::new(Mutex::new(vec![("inbox.xcf".into(), xcf())]));
     let sent = inbox.clone();
@@ -317,6 +338,8 @@ fn browser_style_inbox_is_consumed_by_offscreen_shell_frame() {
 }
 
 #[test]
+/// Require text, shape and Smart caches to exist before the first display through immediate and profile-held service
+/// routes.
 fn synchronous_and_color_held_services_prepare_native_content_before_installation() {
     use photocraft_doc::{Affine, Color, Fill, Layer, Path as VectorPath, ShapeLayer, SmartObject, SmartSource, Subpath, TextLayer};
     let imported = photocraft_io::import("prepared.xcf", &xcf()).unwrap();

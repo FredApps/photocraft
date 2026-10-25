@@ -47,6 +47,8 @@ pub(crate) struct ImportArgs {
     pub(crate) historical_xcf_sample_order: Option<photocraft_io::HistoricalXcfSampleOrder>,
 }
 
+/// Accept only the explicit historical byte-order spellings, avoiding unmarked platform or sample plausibility
+/// guesses.
 fn historical_xcf_sample_order(value: &str) -> Result<photocraft_io::HistoricalXcfSampleOrder, &'static str> {
     match value {
         "little-endian" => Ok(photocraft_io::HistoricalXcfSampleOrder::LittleEndian),

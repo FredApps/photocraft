@@ -1624,6 +1624,8 @@ pub struct UiState {
 }
 
 impl Default for UiState {
+    /// Initialize shell view/tool state with empty transient queues and native defaults for panels, dialogs and
+    /// previews.
     fn default() -> Self {
         Self {
             tool: Tool::Brush,

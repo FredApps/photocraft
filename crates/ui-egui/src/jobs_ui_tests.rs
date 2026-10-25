@@ -10,6 +10,8 @@ use egui::vec2;
 use egui_kittest::Harness;
 
 #[test]
+/// Reject source aliases before either writer runs, then require a separate native Save As to establish writable
+/// identity.
 fn native_and_automation_saves_protect_sources_then_save_as_becomes_writable() {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -56,6 +58,8 @@ fn native_and_automation_saves_protect_sources_then_save_as_becomes_writable() {
 }
 
 #[test]
+/// Feed a native archive with a missing Smart cache through the automation service and require prepared data before
+/// installation.
 fn automation_service_import_prepares_native_smart_data_before_installing() {
     use photocraft_doc::{Document, Layer, LayerContent, SmartObject, SmartSource};
     let source = Document::with_background(
@@ -85,6 +89,8 @@ fn automation_service_import_prepares_native_smart_data_before_installing() {
 }
 
 #[test]
+/// Sniff original XCF bytes through both service routes and preserve source protection plus lossless native save
+/// suggestions.
 fn service_routes_preserve_decoder_source_policy_for_xcf_bytes() {
     // A specification-authored v3 XCF: 1x1 RGB canvas, no layers/channels.
     let mut bytes = b"gimp xcf v003\0".to_vec();
@@ -123,6 +129,7 @@ fn app_harness() -> Harness<'static, PhotocraftApp> {
     app_harness_with(crate::Services::default())
 }
 
+/// Author a minimal v7 high-depth fixture to trigger a sample-order prompt without external files.
 fn historical_xcf_bytes() -> Vec<u8> {
     let mut bytes = b"gimp xcf v007\0".to_vec();
     for value in [1u32, 1, 0, 250, 0, 0, 0, 0] {
@@ -132,6 +139,8 @@ fn historical_xcf_bytes() -> Vec<u8> {
 }
 
 #[test]
+/// Require an unanswered choice, protected routing marker and cancellation that frees held bytes without changing the
+/// active tab.
 fn historical_xcf_prompt_has_no_default_and_cancel_preserves_current_document() {
     assert!(crate::dialogs::is_route_marker("__historicalXcfOpen"));
     assert!(!crate::dialogs::is_route_marker("historicalXcfSampleOrder"));
@@ -154,6 +163,8 @@ fn historical_xcf_prompt_has_no_default_and_cancel_preserves_current_document() 
 }
 
 #[test]
+/// Exercise both explicit orders inline and in workers, requiring prompt cleanup and native-saveable source-protected
+/// results.
 fn historical_xcf_explicit_ui_choices_resume_through_engine_and_remain_native_saveable() {
     for (order, background) in [("little-endian", false), ("big-endian", false), ("little-endian", true), ("big-endian", true)] {
         let mut h = app_harness();
@@ -184,6 +195,8 @@ fn historical_xcf_explicit_ui_choices_resume_through_engine_and_remain_native_sa
 }
 
 #[test]
+/// Fail decoding after a valid historical header and verify the prompt and held bytes are consumed without replacing
+/// the current tab.
 fn historical_xcf_failed_resume_consumes_prompt_and_preserves_current_document() {
     let mut h = app_harness();
     h.state_mut().background_jobs = false;
@@ -1122,6 +1135,7 @@ fn background_open_warns_about_missing_fonts() {
 }
 
 #[test]
+/// Require a held profile result to prepare native Smart pixels before it becomes a clean installed document.
 fn color_prompt_prepares_native_contents_before_admitting_the_document() {
     let mut source = photocraft_engine::Session::new();
     source.execute("file.new", json!({"width": 1, "height": 1, "background": "white"})).unwrap();
@@ -1156,6 +1170,8 @@ fn color_prompt_prepares_native_contents_before_admitting_the_document() {
 }
 
 #[test]
+/// Preserve mask/channel, sampler and path hints through held and automation opens without replaying them on later
+/// frames.
 fn imported_native_view_survives_color_prompt_and_automation_installation_once() {
     use photocraft_doc::{AlphaChannel, Layer, LayerMask, NamedPath};
     use photocraft_io::{NativeImportTarget, NativeInitialView};
@@ -1346,6 +1362,8 @@ fn open_identity_rejects_closed_missing_and_invalid_identities() {
 }
 
 #[test]
+/// Finish multiple imports in one poll and verify stable document identity when an earlier held result shifts tab
+/// indices.
 fn open_identity_keeps_same_poll_results_in_the_profile_queue() {
     let mut app = identity_app();
     let control = IdentityControl::capture(&app);

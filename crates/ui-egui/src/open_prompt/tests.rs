@@ -3,10 +3,12 @@ use photocraft_doc::{Color, SampleType, Size};
 use photocraft_engine::Session;
 use photocraft_io::{NativeImportTarget, NativeInitialView};
 
+/// Create a tiny original native document so opening-error tests need no importer or external fixture.
 fn document(name: &str) -> Document {
     Document::with_background(name, Size::new(2, 2), ColorMode::Rgb, SampleType::U8, Color::WHITE)
 }
 
+/// Build a protected decoded queue entry with supplied view hints and no additional profile-policy work.
 fn held(name: &str, view: NativeInitialView) -> Held {
     Held {
         doc: document(name),
@@ -24,6 +26,8 @@ fn held(name: &str, view: NativeInitialView) -> Held {
 }
 
 #[test]
+/// Require swallowed queue errors to post a named notice while preserving existing documents and their active
+/// index.
 fn queued_invalid_initial_view_is_visible_and_preserves_existing_documents() {
     let mut app = PhotocraftApp::new(Session::new(), crate::Services::default());
     app.session.add_document(document("Existing active"), None);
@@ -45,6 +49,8 @@ fn queued_invalid_initial_view_is_visible_and_preserves_existing_documents() {
 }
 
 #[test]
+/// Reject invalid profile-prompt hints visibly, then admit the valid next file with its sampler state and source
+/// protection.
 fn invalid_profile_prompt_view_reports_failure_and_next_queued_file_opens_protected() {
     let mut app = PhotocraftApp::new(Session::new(), crate::Services::default());
     app.session.add_document(document("Existing"), None);

@@ -637,6 +637,7 @@ impl PhotocraftMcp {
     }
 
     #[tool(description = "Open an image or document file and make it active. Returns index, size and import warnings.")]
+    /// Validate explicit historical order and open through the authorized headless backend or the GUI bridge.
     async fn doc_open(&self, Parameters(p): Parameters<OpenParams>) -> Result<CallToolResult, McpError> {
         let path = PathBuf::from(&p.path);
         let mut params = json!({"path": p.path});
@@ -1044,6 +1045,7 @@ fn bridge_only_headless(name: &str) -> Result<CallToolResult, McpError> {
 }
 
 impl PhotocraftMcp {
+    /// Start a normally authorized engine command in headless mode or forward it through the available GUI bridge.
     async fn run_command(&self, id: String, params: Value, wait: bool) -> Result<CallToolResult, McpError> {
         let (id2, params2) = (id.clone(), params.clone());
         if let Some(r) = self.headless_op_with_poll(id != "jobs.cancel", move |h| h.command_start(&id2, params2, wait)).await {

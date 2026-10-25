@@ -26,6 +26,8 @@ fn refuse_overwriting_input(in_place: bool, input: &Path, output: &Path) -> Resu
     Ok(())
 }
 
+/// Prepare imported native contents before direct export, preserving import-only source identity and forwarding
+/// warnings.
 pub(crate) fn convert(a: &ConvertArgs, _out: &mut dyn Write, err: &mut dyn Write) -> Result {
     let (input, output) = (&a.input, &a.output);
     let opts = ExportOptions::from(&a.export);
@@ -45,6 +47,8 @@ pub(crate) fn convert(a: &ConvertArgs, _out: &mut dyn Write, err: &mut dyn Write
     Ok(())
 }
 
+/// Inspect a normally opened document with import warnings while omitting session-only history noise from CLI
+/// output.
 pub(crate) fn info(a: &InfoArgs, out: &mut dyn Write) -> Result {
     let file = &a.file;
     let mut h = Headless::trusted_local();
@@ -77,6 +81,8 @@ fn command_list(a: &RunArgs) -> Result<Vec<(String, Value)>> {
     Ok(cmds)
 }
 
+/// Open or create a native document, execute requested commands and export under source protection with
+/// deduplicated warnings.
 pub(crate) fn run_cmds(a: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result {
     let opts = ExportOptions::from(&a.export);
     let mut h = Headless::trusted_local();

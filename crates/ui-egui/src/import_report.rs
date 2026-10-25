@@ -17,6 +17,7 @@ pub struct State {
 }
 
 impl PartialEq for State {
+    /// Compare visible report state while ignoring the derived page cache.
     fn eq(&self, other: &Self) -> bool {
         self.open == other.open && self.offset == other.offset
     }
@@ -28,14 +29,18 @@ struct CachedPage {
     page: Result<Value, String>,
 }
 
+/// Offer report inspection whenever the active native document carries conversion metadata, including after native
+/// reopen.
 pub fn available(app: &PhotocraftApp) -> bool {
     app.session.active().is_some_and(|s| s.doc.metadata.import_conversion.is_some())
 }
 
+/// Open report inspection at its first page with a fresh cache.
 pub fn open(app: &mut PhotocraftApp) {
     app.ui.import_report = State { open: true, ..Default::default() };
 }
 
+/// Fetch a bounded page through the read-only engine command only when document, revision or page offset changes.
 fn refresh(app: &mut PhotocraftApp) {
     let active = app.session.active();
     let offset = app.ui.import_report.offset;
@@ -47,6 +52,7 @@ fn refresh(app: &mut PhotocraftApp) {
     app.ui.import_report.cache = Some(CachedPage { key, page });
 }
 
+/// Truncate display text by Unicode characters and append an ellipsis only when more characters remain.
 fn short(text: &str, limit: usize) -> String {
     let mut chars = text.chars();
     let mut result: String = chars.by_ref().take(limit).collect();
@@ -56,6 +62,7 @@ fn short(text: &str, limit: usize) -> String {
     result
 }
 
+/// Translate stored outcome keys into stable localizable labels with an explicit unknown fallback.
 fn disposition(key: &str) -> &'static str {
     match key {
         "native_equivalent" => "Native equivalent",
@@ -66,6 +73,7 @@ fn disposition(key: &str) -> &'static str {
     }
 }
 
+/// Translate stored conversion reasons into localizable UI labels without interpreting retained payloads.
 fn reason(key: &str) -> &'static str {
     match key {
         "native_policy" => "Native rules",
@@ -79,6 +87,7 @@ fn reason(key: &str) -> &'static str {
     }
 }
 
+/// Display the cached read-only report as a modal with bounded paging and release its cache when closed.
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if !app.ui.import_report.open {
         app.ui.import_report.cache = None;
@@ -203,6 +212,8 @@ mod tests {
     };
     use std::sync::Arc;
 
+    /// Construct a native document with synthetic report entries and private retained payloads for UI paging
+    /// assertions.
     fn app(count: u32) -> crate::PhotocraftApp {
         let mut session = photocraft_engine::Session::new();
         session.execute("file.new", serde_json::json!({"width": 3, "height": 2})).unwrap();
@@ -234,6 +245,8 @@ mod tests {
     }
 
     #[test]
+    /// Verify page limits, stale-target flags and Unicode truncation without exposing private payloads or modifying
+    /// document revision.
     fn pages_are_bounded_read_only_and_hide_retained_payloads() {
         let mut app = app(61);
         let before = app.session.active().unwrap().doc.clone();
@@ -257,6 +270,7 @@ mod tests {
     }
 
     #[test]
+    /// Keep empty and persisted reports inspectable independently of the session's live source-read-only flag.
     fn empty_and_reopened_native_reports_are_accessible_without_source_flags() {
         let mut app = app(0);
         refresh(&mut app);
@@ -271,6 +285,7 @@ mod tests {
     }
 
     #[test]
+    /// Feed an undo shortcut beneath the report modal and require the native document to remain unchanged.
     fn report_modal_does_not_run_document_shortcuts_beneath_it() {
         let mut app = app(1);
         app.session.execute("layer.setProps", json!({"opacity": 0.4})).unwrap();
@@ -295,6 +310,8 @@ mod tests {
     }
 
     #[test]
+    /// Drive report visibility through control requests and reject non-boolean state updates without partial UI
+    /// changes.
     fn control_can_open_and_close_the_view_and_rejects_bad_values_atomically() {
         use crate::control::{ControlRequest, Outcome, handle};
         let mut app = app(1);
@@ -313,6 +330,8 @@ mod tests {
     }
 
     #[test]
+    /// Attach report links only to conversion notices for their originating document, not unrelated errors or later
+    /// tabs.
     fn only_import_notices_link_to_their_own_converted_document() {
         let mut app = app(1);
         let id = app.session.active().unwrap().doc.id;
@@ -326,6 +345,8 @@ mod tests {
     }
 
     #[test]
+    /// Require every dynamically selected report outcome/reason label to have translations rather than falling back to
+    /// English keys.
     fn dynamic_outcome_labels_are_localized() {
         let labels = [
             disposition("native_equivalent"),

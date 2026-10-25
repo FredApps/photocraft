@@ -562,6 +562,8 @@ mod tests {
     }
 
     #[test]
+    /// Distinguish equal relative names across roots while detecting real aliases and preserving removed-source
+    /// protection.
     fn import_source_identity_respects_separate_read_and_write_roots() {
         let (inside, outside, _) = roots("import-source-identity");
         std::fs::write(inside.join("source.xcf"), b"source").unwrap();
@@ -580,6 +582,7 @@ mod tests {
     }
 
     #[test]
+    /// Check file identity across overlapping capability roots without treating unrelated missing paths as aliases.
     fn import_source_identity_recognizes_overlapping_roots_and_missing_paths() {
         let (inside, _, _) = roots("import-source-overlap");
         let sub = inside.join("sub");
@@ -593,6 +596,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    /// Fail closed when Windows denies identity inspection of a source that overlaps the authorized write root.
     fn denied_import_source_inspection_blocks_saves_through_overlapping_roots() {
         use std::process::Command;
 
@@ -601,12 +605,15 @@ mod tests {
             sid: String,
         }
         impl DeniedRead {
+            /// Restore only the temporary fixture file's denied read permission after the identity check.
             fn restore(&self) {
                 let output = Command::new("icacls.exe").arg(&self.file).arg("/remove:d").arg(format!("*{}", self.sid)).output().unwrap();
                 assert!(output.status.success(), "cannot restore temporary fixture read access");
             }
         }
         impl Drop for DeniedRead {
+            /// Remove the fixture's explicit deny rule even when an assertion exits early, without changing
+            /// directory ACLs.
             fn drop(&mut self) {
                 // Restore even if an assertion fails; never alter a directory ACL.
                 let _ = Command::new("icacls.exe").arg(&self.file).arg("/remove:d").arg(format!("*{}", self.sid)).output();

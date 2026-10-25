@@ -260,6 +260,8 @@ pub(crate) fn close_box(ui: &mut egui::Ui, rect: egui::Rect) -> bool {
     crate::icons::button(&mut child, "x", CLOSE_BOX_SIZE, false, tl!("Close")).clicked()
 }
 
+/// Render stacked agent-visible dialogs with only the top interactive, routing confirmation and cancellation to
+/// their owning flow.
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     crate::layer_style::color_picker::prune(app);
     crate::type_panels_ui::color_picker::prune(app);

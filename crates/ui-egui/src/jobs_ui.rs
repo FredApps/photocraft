@@ -214,6 +214,8 @@ pub fn start_open(app: &mut PhotocraftApp, name: &str, path: Option<String>, sou
     }
 }
 
+/// Continue the matching held import with its explicit byte order while preserving job tracking and queued opening
+/// state.
 pub(crate) fn resume_historical(app: &mut PhotocraftApp, held: &crate::open_prompt::Historical, order: &str) -> Result<Value, String> {
     let params = json!({"heldHistoricalXcfOpen":held.id,"historicalXcfSampleOrder":order,"interactive":true});
     let started = if app.background_jobs { app.session.start(OPEN_JOB, params) } else { app.session.execute(OPEN_JOB, params).map(Started::Done) };

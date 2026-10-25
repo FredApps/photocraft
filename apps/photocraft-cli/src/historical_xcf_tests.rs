@@ -2,20 +2,25 @@ use super::*;
 use photocraft_automation::{AuthorizedWorkspace, Headless};
 use serde_json::json;
 
+/// Write an original historical high-depth fixture whose samples need an explicit unmarked byte-order choice.
 fn source() -> Vec<u8> {
     struct Wire(Vec<u8>);
     impl Wire {
+        /// Append a big-endian structural field independently of historical sample byte order.
         fn word(&mut self, n: u32) {
             self.0.extend(n.to_be_bytes());
         }
+        /// Write a historical fixture's 64-bit section offset.
         fn pointer(&mut self, n: usize) {
             self.0.extend((n as u64).to_be_bytes());
         }
+        /// Reserve an absolute pointer for the independently written hierarchy and tile sections.
         fn slot(&mut self) -> usize {
             let at = self.0.len();
             self.pointer(0);
             at
         }
+        /// Fill a reserved historical pointer with its actual emitted section position.
         fn patch(&mut self, at: usize) {
             let end = self.0.len() as u64;
             self.0[at..at + 8].copy_from_slice(&end.to_be_bytes());
@@ -59,6 +64,7 @@ fn source() -> Vec<u8> {
     w.0
 }
 
+/// Capture in-process CLI output and exit status for historical import option tests.
 fn invoke(args: &[&str]) -> (i32, String, String) {
     let mut out = Vec::new();
     let mut err = Vec::new();
@@ -67,6 +73,7 @@ fn invoke(args: &[&str]) -> (i32, String, String) {
 }
 
 #[test]
+/// Require every CLI import route to accept only the declared historical sample-order choices.
 fn historical_choice_uses_upstream_clap_validation_for_all_import_commands() {
     use crate::args::{Command, parse};
     let cases = [
@@ -102,6 +109,8 @@ fn historical_choice_uses_upstream_clap_validation_for_all_import_commands() {
 }
 
 #[test]
+/// Verify explicit byte-order provenance reaches conversion and authorized RPC opening without broadening file
+/// capabilities.
 fn historical_choice_reaches_cli_conversion_and_capability_scoped_rpc() {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!("photocraft-xcf-order-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
@@ -146,6 +155,7 @@ fn historical_choice_reaches_cli_conversion_and_capability_scoped_rpc() {
 }
 
 #[test]
+/// Limit batch discovery to declared XCF transport suffixes rather than arbitrary misleading filenames.
 fn batch_selects_only_explicit_xcf_transport_suffixes() {
     let dir = std::env::temp_dir().join(format!("photocraft-batch-xcf-suffixes-{}", std::process::id()));
     std::fs::create_dir(&dir).unwrap();
@@ -168,6 +178,7 @@ fn batch_selects_only_explicit_xcf_transport_suffixes() {
 }
 
 #[test]
+/// Check historical sources and compressed transports are processed by batch with the selected order.
 fn batch_imports_historical_xcf_and_wrappers_instead_of_silently_skipping_them() {
     // Independently encoded gzip/bzip2/XZ containers around source()'s exact 177-byte wire
     // fixture. Generated once with Python's gzip.compress(mtime=0), bz2.compress and

@@ -567,6 +567,8 @@ fn update_transport(flatpak_id: Option<&std::ffi::OsStr>) -> Option<photocraft_e
     flatpak_id.is_none().then(crate::updates::service)
 }
 
+/// Assemble desktop platform services, including alias-aware source checks and capability-scoped automation I/O when a
+/// workspace is supplied.
 pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) -> Services {
     let clip: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::default();
     let clip_unreadable: Rc<Cell<bool>> = Rc::default();

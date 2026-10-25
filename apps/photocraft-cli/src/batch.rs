@@ -19,6 +19,8 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
 }
 
+/// Select recognized readable image names, admitting only supported XCF compound transports rather than arbitrary
+/// archives.
 pub(crate) fn is_input(p: &Path) -> bool {
     let known = |e: &str| {
         matches!(e, "pcraft" | "psd" | "psb" | "pdn" | "ora" | "kra" | "krz" | "af" | "afdesign" | "afphoto" | "afpub" | "xcf" | "xcfgz" | "xcfbz2" | "xcfxz")
@@ -54,6 +56,8 @@ fn strip_shell_steps(action: &mut Action) {
     (action.steps, action.disabled, action.dialogs) = (steps, disabled, dialogs);
 }
 
+/// Run actions in scratch sessions with safe separate destinations, reporting per-file failures without saving a failed
+/// nested action result.
 pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result {
     let (in_dir, out_dir) = (a.in_dir.as_path(), a.out.as_path());
     let (actions, mut set, warnings) = load_actions_file(&a.actions, a.action.as_deref())?;

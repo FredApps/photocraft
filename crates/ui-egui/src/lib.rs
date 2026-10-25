@@ -337,6 +337,7 @@ impl FormatChoices {
 pub type ImportFn = Box<dyn Fn(&str, &[u8], &photocraft_io::ImportOptions) -> Result<photocraft_io::ImportResult, String>>;
 
 #[cfg(test)]
+/// Wrap a native test document with explicit writable, non-preview defaults and no one-time import view.
 pub(crate) fn test_import_result(document: Document, warnings: Vec<String>) -> photocraft_io::ImportResult {
     photocraft_io::ImportResult { document, warnings, initial_view: None, source_read_only: false, preview_only: false }
 }
@@ -1699,6 +1700,8 @@ impl PhotocraftApp {
         self.open_automation_bytes_with_sample_order(name, bytes, None)
     }
 
+    /// Install automation bytes through native import policy with an optional explicit historical sample order and no
+    /// interactive guessing.
     pub fn open_automation_bytes_with_sample_order(
         &mut self,
         name: &str,
@@ -2235,6 +2238,8 @@ impl PhotocraftApp {
         Ok(reply(&target, &warnings))
     }
 
+    /// Reject writes to a protected import source or filesystem alias before either native or automation export reaches
+    /// a writer.
     pub(crate) fn check_import_destination(&self, destination: &str, automation: bool) -> Result<(), String> {
         let state = self.session.active().ok_or("no document")?;
         let Some(source) = state.protected_import_source.as_deref() else { return Ok(()) };
@@ -2470,6 +2475,8 @@ impl eframe::App for PhotocraftApp {
         }
     }
 
+    /// Advance native shell input, jobs, dialogs and panels for one frame, keeping modal handling ahead of document
+    /// shortcuts.
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.hover_layer = None;

@@ -16,6 +16,7 @@ const GRAPH: &str = "id=in over aux=[ref=in invert-linear]";
 
 struct Wire(Vec<u8>);
 impl Wire {
+    /// Reserve synthetic wire storage fallibly and reject capacities beyond the benchmark's input limit.
     fn new(capacity: usize) -> Result<Self> {
         if capacity > MAX_INPUT_BYTES {
             return Err("synthetic source exceeds benchmark input limit".into());
@@ -24,6 +25,7 @@ impl Wire {
         data.try_reserve_exact(capacity)?;
         Ok(Self(data))
     }
+    /// Append bytes only after checked length growth and fallible reservation within the wire limit.
     fn bytes(&mut self, bytes: &[u8]) -> Result<()> {
         let size = self.0.len().checked_add(bytes.len()).ok_or("wire length overflow")?;
         if size > MAX_INPUT_BYTES {
@@ -33,33 +35,40 @@ impl Wire {
         self.0.extend_from_slice(bytes);
         Ok(())
     }
+    /// Write one big-endian scalar through the same bounded buffer admission as other fixture data.
     fn word(&mut self, value: u32) -> Result<()> {
         self.bytes(&value.to_be_bytes())
     }
+    /// Encode a checked 64-bit big-endian offset without bypassing the wire byte limit.
     fn pointer(&mut self, value: usize) -> Result<()> {
         self.bytes(&u64::try_from(value)?.to_be_bytes())
     }
+    /// Reserve a zero pointer and return its byte offset for checked later patching.
     fn slot(&mut self) -> Result<usize> {
         let at = self.0.len();
         self.pointer(0)?;
         Ok(at)
     }
+    /// Point a reserved eight-byte slot at the current buffer end, rejecting overflow or an out-of-buffer slot.
     fn patch(&mut self, at: usize) -> Result<()> {
         let value = u64::try_from(self.0.len())?.to_be_bytes();
         let end = at.checked_add(value.len()).ok_or("wire patch overflow")?;
         self.0.get_mut(at..end).ok_or("wire patch outside source")?.copy_from_slice(&value);
         Ok(())
     }
+    /// Encode a length-prefixed UTF-8 string with checked NUL-inclusive length and bounded appends.
     fn text(&mut self, value: &str) -> Result<()> {
         self.word(u32::try_from(value.len())?.checked_add(1).ok_or("wire text overflow")?)?;
         self.bytes(value.as_bytes())?;
         self.bytes(&[0])
     }
+    /// Encode a typed property and its checked payload length through the bounded writer.
     fn property(&mut self, kind: u32, value: &[u8]) -> Result<()> {
         self.word(kind)?;
         self.word(u32::try_from(value.len())?)?;
         self.bytes(value)
     }
+    /// Append the two zero words terminating a fixture property list.
     fn end(&mut self) -> Result<()> {
         self.word(0)?;
         self.word(0)
@@ -72,6 +81,7 @@ struct Case {
     float: bool,
     graph: bool,
 }
+/// Resolve only the named smoke and high-depth stress cases; reject unrecognized workload identifiers.
 fn case(id: &str) -> Result<Case> {
     Ok(match id {
         "smoke-graph-f32" => Case { width: 96, height: 65, float: true, graph: true },
@@ -176,6 +186,7 @@ fn source(c: Case) -> Result<Vec<u8>> {
     }
     Ok(w.0)
 }
+/// Read an input within its byte allowance and detect files that grow past that limit during reading.
 fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let mut file = File::open(path)?;
     let size = usize::try_from(file.metadata()?.len())?;
@@ -205,6 +216,7 @@ struct Cli {
     path: PathBuf,
     reps: usize,
 }
+/// Validate generate/measure arguments, case names and bounded repetition counts before doing file or rendering work.
 fn arguments(mut args: impl Iterator<Item = OsString>) -> Result<Cli> {
     let _program = args.next();
     let mode = args.next().ok_or("usage: xcf_import_bench generate|measure CASE FILE [REPS]")?.into_string().map_err(|_| "mode must be UTF-8")?;
@@ -227,17 +239,21 @@ fn arguments(mut args: impl Iterator<Item = OsString>) -> Result<Cli> {
     }
     Ok(Cli { mode, id, case, path, reps })
 }
+/// Write one JSON result followed by a newline, propagating serialization and output errors.
 fn emit(value: &Value) -> Result<()> {
     let mut output = std::io::stdout().lock();
     serde_json::to_writer(&mut output, value)?;
     output.write_all(b"\n")?;
     Ok(())
 }
+/// Require a conversion-report entry with applied native targets before accepting a graph timing result.
 fn graph_applied(doc: &photocraft_doc::Document) -> bool {
     use photocraft_doc::import_conversion::{ConversionDisposition as D, ImportConversion};
     matches!(&doc.metadata.import_conversion, Some(ImportConversion::Report(report)) if report.entries.iter().any(|entry|
         entry.feature_code == "xcf.layer_effect" && matches!(entry.disposition,D::NativeEquivalent|D::NativeApproximation) && !entry.targets.is_empty()))
 }
+/// Generate original benchmark inputs or measure import, preparation and native output with bounded CLI inputs and
+/// explicit failures.
 fn main() -> Result<()> {
     let cli = arguments(std::env::args_os())?;
     let c = cli.case;
@@ -304,6 +320,8 @@ mod tests {
     use super::*;
     use photocraft_color::SampleType;
     #[test]
+    /// Verify partial edge tiles and HDR source samples, then require finite, nonempty prepared output for raster and
+    /// native graph cases.
     fn partial_tiles_high_depth_and_native_graph_prepare_actual_pixels() {
         for float in [false, true] {
             for graph in [false, true] {
@@ -334,6 +352,7 @@ mod tests {
         }
     }
     #[test]
+    /// Reject invalid invocation, pointer patches, dimensions and oversized file reads before accepting benchmark work.
     fn cli_and_wire_errors_are_bounded() {
         for args in [
             vec!["bench"],

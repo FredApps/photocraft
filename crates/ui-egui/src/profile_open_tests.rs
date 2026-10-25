@@ -27,6 +27,7 @@ fn adobe_png() -> Vec<u8> {
     photocraft_io::export(&d, "t.png", &Default::default()).unwrap().bytes
 }
 
+/// Create a real importer-backed offscreen shell with selectable workers and deterministic profile-mismatch prompting.
 fn harness(background: bool) -> Harness<'static, PhotocraftApp> {
     let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).with_max_steps(64).build_eframe(|cc| {
         PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
@@ -192,6 +193,8 @@ fn a_held_file_still_reports_its_missing_fonts() {
 }
 
 #[test]
+/// Exercise preserve/convert answers while retaining durable reports, decoder write policy, source identity and
+/// conversion notices.
 fn held_color_choices_preserve_conversion_reports_and_the_decoders_source_policy() {
     use photocraft_doc::import_conversion::{ConversionReport, ImportConversion};
     for read_only in [false, true] {

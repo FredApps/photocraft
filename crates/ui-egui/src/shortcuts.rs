@@ -408,6 +408,8 @@ pub fn clipboard_keys(ctx: &egui::Context, typing: bool, raw: &mut egui::RawInpu
     raw.events = out;
 }
 
+/// Dispatch eligible keyboard input through configured shell/engine bindings while respecting text-editing and
+/// modal focus.
 pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // A held tool letter released: a temporary tool gives the previous one back (#2672).
     crate::spring_tools::tick(app, ctx);
@@ -1241,6 +1243,7 @@ mod tests {
     }
 
     #[test]
+    /// Reject conflicting default shortcut identities before they can trigger multiple actions for one key event.
     fn no_duplicate_shortcuts() {
         let mut seen = std::collections::HashMap::new();
         for (id, _, _, shortcut) in crate::menus::UI_COMMANDS {
@@ -1268,6 +1271,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensure the shared Open identity reaches one native picker instead of both engine and shell fallbacks.
     fn engine_and_shell_open_identity_dispatches_one_native_picker() {
         let (dialog, requests) = crate::file_dialog::fake(vec![None]);
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services { file_dialog: Some(dialog), ..Default::default() });

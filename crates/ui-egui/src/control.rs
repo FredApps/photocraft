@@ -403,6 +403,8 @@ fn context_entries(app: &PhotocraftApp, menu: &crate::canvas_tool_menu::CanvasTo
     entries
 }
 
+/// Route control requests through normal UI/engine gates, preserving modal decisions, capability checks and
+/// asynchronous outcomes.
 fn dispatch(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
@@ -1491,6 +1493,7 @@ mod tests {
     }
 
     #[test]
+    /// Exercise agent-facing Camera Raw changes and both completion paths on an actually opened raw document.
     fn camera_raw_control_updates_and_commits_or_cancels_an_open_raw() {
         use photocraft_raw::testgen::{DngSpec, mosaic, scene};
         let (w, h) = (48, 32);
@@ -2617,6 +2620,8 @@ mod tests {
     }
 
     #[test]
+    /// Verify automation file operations obey separate capability roots and expose import/export warnings in their
+    /// replies.
     fn automation_open_and_save_use_the_roots_and_reply_with_warnings() {
         use photocraft_color::{ColorMode, SampleType};
         use photocraft_doc::Document;
@@ -2764,6 +2769,7 @@ mod tests {
     }
 
     #[test]
+    /// Open native directory bundles through the app route while retaining the supported ZIP-bundle fallback.
     fn app_open_opens_a_directory_pcraft_and_falls_back_for_the_zip_form() {
         use photocraft_doc::Document;
         use serde_json::json;

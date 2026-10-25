@@ -33,6 +33,8 @@ fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
 }
 
+/// Render the native shell offscreen with requested controls, deterministic settings and optional procedural review
+/// states.
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let out = arg(&args, "--out").unwrap_or_else(|| "snapshot.png".into());
@@ -205,6 +207,7 @@ fn main() {
     println!("wrote {out} ({}×{})", img.width(), img.height());
 }
 
+/// Populate inert conversion records and attachments to preview report paging, missing targets and empty-state UI.
 fn import_report_demo(app: &mut PhotocraftApp, count: u32) {
     use photocraft_doc::import_conversion::{
         ConversionDisposition as D, ConversionEntry, ConversionReason as R, ConversionReport, ImportConversion, NativeTargetRef, RetainedImportData,

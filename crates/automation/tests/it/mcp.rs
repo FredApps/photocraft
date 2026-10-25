@@ -538,6 +538,7 @@ fn write_image(dir: &std::path::Path, name: &str, format: photocraft_codecs::For
 }
 
 #[tokio::test(flavor = "multi_thread")]
+/// Require preview-only Affinity opening to expose its warning and prevent saving over the original import source.
 async fn affinity_preview_warns_and_requires_a_new_save_path() {
     let dir = tmp("affinity-preview");
     let png = write_image(&dir, "preview.png", photocraft_codecs::Format::Png);

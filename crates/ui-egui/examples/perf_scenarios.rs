@@ -131,6 +131,7 @@ impl Bench {
         Ok(ms(t))
     }
 
+    /// Return completed native refresh wall time from the same observed path that also captures GPU statistics.
     fn refresh(&self, s: &Session, full: bool) -> Res<f64> {
         self.refresh_observed(s, full).map(|(elapsed, _)| elapsed)
     }

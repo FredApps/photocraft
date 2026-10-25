@@ -5,6 +5,7 @@ use photocraft_engine::Session;
 use serde_json::json;
 use std::{cell::RefCell, rc::Rc};
 
+/// Create a shell with real byte import and export callbacks plus an editable native test layer.
 fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(
         Session::new(),
@@ -114,6 +115,8 @@ fn save_copy_and_export_keep_the_editable_document_identity() {
 }
 
 #[test]
+/// Resolve protection against the copied document's identity after a tab switch, refusing aliases before the delayed
+/// writer runs.
 fn delayed_save_copy_checks_the_copied_documents_source_after_switching_tabs() {
     let mut app = app();
     app.services.same_file = Some(Box::new(|a, b| a == b || (a == "source.xcf" && b == "alias.pcraft")));
@@ -314,6 +317,8 @@ fn unconfirmed_download_names_the_document_but_keeps_it_unsaved() {
 }
 
 #[test]
+/// Prefer lossless native suggestions for reported read-only/pathless imports while preserving established writable
+/// paths and cancellation identity.
 fn read_only_conversion_reports_default_to_native_while_existing_format_choices_keep_priority() {
     use photocraft_doc::import_conversion::{ConversionReport, ImportConversion};
     for opaque in [false, true] {
@@ -362,6 +367,8 @@ fn read_only_conversion_reports_default_to_native_while_existing_format_choices_
 }
 
 #[test]
+/// Open original and wrapped XCF bytes, then require native report persistence over browser downloads without falsely
+/// marking unconfirmed saves clean.
 fn actual_xcf_bytes_and_wrappers_download_native_reports_without_confirming_a_browser_save() {
     use std::io::Write;
     // Independently specification-authored1x1 v3 RGB XCF, no source layers/channels.

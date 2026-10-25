@@ -34,18 +34,21 @@ pub(crate) enum Pending {
     Historical(Historical),
 }
 impl Pending {
+    /// Return the queued file's display name regardless of whether decoding awaits a historical-order choice.
     pub(crate) fn name(&self) -> &str {
         match self {
             Self::Decoded(held) => &held.name,
             Self::Historical(held) => &held.name,
         }
     }
+    /// Expose a decoded pending file without treating a historical sample-order question as document data.
     pub(crate) fn decoded(&self) -> Option<&Held> {
         match self {
             Self::Decoded(held) => Some(held),
             _ => None,
         }
     }
+    /// Mutate decoded confirmation state only after the pending entry actually contains a document.
     fn decoded_mut(&mut self) -> Option<&mut Held> {
         match self {
             Self::Decoded(held) => Some(held),
@@ -89,6 +92,7 @@ pub fn arrive(app: &mut PhotocraftApp, held: Held) {
     advance(app);
 }
 
+/// Queue a historical byte-order question in the same ordered opening flow as decoded files.
 pub(crate) fn arrive_historical(app: &mut PhotocraftApp, held: Historical) {
     app.held_opens.push_back(Pending::Historical(held));
     advance(app);
@@ -291,12 +295,15 @@ pub(crate) fn answer_damage(app: &mut PhotocraftApp, accept: bool) -> Result<Val
     Ok(json!({"name": name, "continued": accept}))
 }
 
+/// Identify this module's sample-order dialog from its private held-open marker.
 pub(crate) fn owns_historical(fields: &serde_json::Map<String, Value>) -> bool {
     fields.contains_key(HISTORICAL_FIELD)
 }
+/// Allow confirmation only after an explicit supported sample order has been selected.
 pub(crate) fn historical_can_confirm(fields: &serde_json::Map<String, Value>) -> bool {
     !owns_historical(fields) || matches!(fields.get("historicalXcfSampleOrder").and_then(Value::as_str), Some("little-endian" | "big-endian"))
 }
+/// Present the queued file's version and precision without preselecting an unmarked historical sample order.
 fn show_historical(app: &mut PhotocraftApp) {
     let Some(Pending::Historical(held)) = app.held_opens.front() else { return };
     let fields = [
@@ -311,6 +318,7 @@ fn show_historical(app: &mut PhotocraftApp) {
     .collect();
     app.ui.open_dialog(crate::state::DialogKind::Command, fields);
 }
+/// Render the explicit byte-order choices through ordinary agent-visible dialog fields.
 pub(crate) fn historical_body(ui: &mut egui::Ui, fields: &mut serde_json::Map<String, Value>) {
     ui.label(crate::i18n::fmt(
         tl!("The older XCF document “{name}” does not declare the byte order of its multibyte samples."),
@@ -324,6 +332,7 @@ pub(crate) fn historical_body(ui: &mut egui::Ui, fields: &mut serde_json::Map<St
         fields.insert("historicalXcfSampleOrder".into(), json!(order));
     }
 }
+/// Resume or cancel only the matching held import, rejecting stale dialogs and advancing the remaining queue.
 pub(crate) fn answer_historical(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>, accept: bool) -> Result<Value, String> {
     let Some(Pending::Historical(held)) = app.held_opens.front() else { return Err("no XCF sample-order choice is waiting".into()) };
     if fields.get(HISTORICAL_FIELD).and_then(Value::as_u64) != Some(held.id) {
