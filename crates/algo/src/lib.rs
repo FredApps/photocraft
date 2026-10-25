@@ -1164,6 +1164,8 @@ pub fn apply_tiled_with(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Dispatch checked whole-domain filters or bounded native tiles, publishing a result only after successful processing
+/// and cancellation checks.
 fn apply_tiled_with_impl(
     surface: &Surface,
     params: &FilterParams,
@@ -1570,6 +1572,8 @@ mod selected_alpha_tests {
     use photocraft_color::{ColorMode, PixelFormat, SampleType};
 
     #[test]
+    /// Compare declared alpha capability to actual channel-selective noise/convolution pixels across native models and
+    /// depths.
     fn selective_filters_declare_transparency_only_for_selected_alpha() {
         let bounds = Rect::new(0, 0, 4, 3);
         for mode in [ColorMode::Grayscale, ColorMode::Rgb, ColorMode::Cmyk] {

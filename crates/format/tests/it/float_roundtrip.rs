@@ -4,6 +4,8 @@ use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, Size};
 
 #[test]
+/// Round-trip nontrivial double-precision geometry and require bit-identical guide/origin values plus complete document
+/// equality.
 fn f64_coordinates_reload_bit_exact() {
     let x = 11.183221215612905_f64;
     let y = 0.1 + 0.2;

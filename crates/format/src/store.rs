@@ -235,10 +235,13 @@ impl Fetch for LoadFetch<'_> {
         Ok(data)
     }
 
+    /// Fetch a content-addressed blob under the load options' per-blob limit.
     fn blob(&mut self, hash: &str) -> Result<Arc<Vec<u8>>> {
         self.blob_bounded(hash, self.opts.max_blob_bytes)
     }
 
+    /// Validate blob identity and compressed framing, enforce the tighter requested byte cap and reuse only verified
+    /// cached bytes.
     fn blob_bounded(&mut self, hash: &str, max: usize) -> Result<Arc<Vec<u8>>> {
         let max = max.min(self.opts.max_blob_bytes);
         if let Some(b) = self.blobs.get(hash) {
@@ -281,10 +284,13 @@ fn admit_canvas(size: photocraft_geom::Size, opts: &LoadOptions) -> Result<()> {
     Ok(())
 }
 
+/// Load a checked native bundle while discarding the internal decoded-byte accounting result.
 pub(crate) fn load(src: &dyn ByteSource, opts: &LoadOptions) -> Result<Document> {
     load_measured(src, opts).map(|(doc, _)| doc)
 }
 
+/// Admit native canvas dimensions and return both the reconstructed document and the bytes actually fetched for its
+/// content.
 pub(crate) fn load_measured(src: &dyn ByteSource, opts: &LoadOptions) -> Result<(Document, u64)> {
     let m = read_manifest(src, opts)?;
     admit_canvas(m.document.size, opts)?;
@@ -877,6 +883,8 @@ impl PcraftWriter {
         self.lock_wait = wait;
     }
 
+    /// Validate nesting and finite manifest data, then stage content-addressed objects/previews while pruning expired
+    /// hash-cache entries.
     fn prepare(&mut self, doc: &Document, opts: &SaveOptions) -> Result<Prepared> {
         self.hash_cache.retain(|_, (w, _)| w.strong_count() > 0);
         self.blob_hash_cache.retain(|_, (w, _)| w.strong_count() > 0);

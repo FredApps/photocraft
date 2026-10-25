@@ -21,6 +21,7 @@ pub enum Error {
     Allocation,
 }
 impl std::fmt::Display for Error {
+    /// Expose bounded native automatic-analysis errors as actionable messages for calling hosts.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Cancelled => "native automatic tone analysis cancelled",
@@ -32,6 +33,8 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
+/// Sample native display bins on a bounded grid, skipping transparent pixels and checking cancellation per
+/// row/block.
 fn histograms(surface: &Surface, area: Rect, ctl: &Interrupt<'_>) -> Result<[[u64; 256]; 3], Error> {
     ctl.check().map_err(|_| Error::Cancelled)?;
     let width = usize::try_from(i64::from(area.x1) - i64::from(area.x0)).map_err(|_| Error::InvalidGeometry)?;
@@ -72,6 +75,7 @@ fn histograms(surface: &Surface, area: Rect, ctl: &Interrupt<'_>) -> Result<[[u6
     Ok(histograms)
 }
 
+/// Find the native 0.1-percent histogram endpoints, falling back to identity when no samples exist.
 fn clip_points(histogram: &[u64; 256]) -> (f32, f32) {
     let total: u64 = histogram.iter().sum();
     if total == 0 {
@@ -90,6 +94,7 @@ fn clip_points(histogram: &[u64; 256]) -> (f32, f32) {
     }
     (low as f32 / 255., high as f32 / 255.)
 }
+/// Select the central occupied display bin for ordinary native Auto Color neutralization.
 fn median(histogram: &[u64; 256]) -> f32 {
     let total: u64 = histogram.iter().sum();
     let mut accumulated = 0;
@@ -142,6 +147,7 @@ mod tests {
     use super::*;
     use photocraft_color::{ColorMode, PixelFormat, SampleType};
     #[test]
+    /// Pin native per-channel, combined-contrast and color-neutralization policies against known histogram samples.
     fn known_native_bins_keep_tone_contrast_and_color_policy_at_every_depth() {
         for sample in SampleType::ALL {
             let mut surface = Surface::new(PixelFormat::new(ColorMode::Rgb, sample, true));
@@ -155,6 +161,8 @@ mod tests {
         }
     }
     #[test]
+    /// Verify transparent/empty inputs and hostile geometry remain bounded and cancellation returns a controlled
+    /// error.
     fn transparent_empty_hostile_and_cancelled_analysis_are_bounded() {
         let surface = Surface::new(PixelFormat::RGBA8);
         assert_eq!(analyze(&surface, Rect::new(0, 0, 2, 2), Kind::Tone, &Interrupt::NONE).unwrap(), [[0., 1., 1.]; 3]);

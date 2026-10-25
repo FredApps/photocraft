@@ -18,6 +18,7 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
+    /// Describe native Smart-filter mixing failures without altering or interpreting source configuration.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Cancelled => f.write_str("Smart filter mixing cancelled"),
@@ -31,11 +32,13 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl From<AllocationError> for Error {
+    /// Preserve a fallible raster allocation failure in the native mixing error type.
     fn from(error: AllocationError) -> Self {
         Self::Allocation(error)
     }
 }
 
+/// Convert cancellation into the shared mix error before another tile is processed.
 fn check(ctl: &Interrupt<'_>) -> Result<(), Error> {
     ctl.check().map_err(|_| Error::Cancelled)
 }
@@ -123,12 +126,14 @@ mod tests {
     use photocraft_color::{ColorMode, PixelFormat};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Create original native-format samples for direct premultiplied-mixing expectations.
     fn surface(format: PixelFormat, rgba: [f32; 4], rect: Rect) -> Surface {
         let mut surface = Surface::new(format);
         surface.write_region(rect, &photocraft_raster::from_rgba(&format, rgba).repeat((rect.width() * rect.height()) as usize));
         surface
     }
 
+    /// Choose comparison tolerance from actual native sample quantization rather than imported source precision.
     fn tolerance(sample: SampleType) -> f32 {
         match sample {
             SampleType::U8 => 2. / 255.,
@@ -138,6 +143,7 @@ mod tests {
     }
 
     #[test]
+    /// Pin Normal filter strength against independent changed-alpha premultiplied arithmetic at every depth.
     fn normal_strength_keeps_coverage_and_uses_premultiplied_changed_alpha_at_every_depth() {
         let rect = Rect::new(-1, -1, 2, 1);
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
@@ -168,6 +174,8 @@ mod tests {
     }
 
     #[test]
+    /// Ensure one changed-alpha region selects the same whole-extent policy across tile boundaries as native
+    /// composition.
     fn non_normal_coverage_classification_is_global_across_tiles_and_matches_native_composite() {
         let area = Rect::new(0, 0, 257, 1);
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
@@ -192,6 +200,7 @@ mod tests {
     }
 
     #[test]
+    /// Keep native HDR and opaque formats while limiting changes to the caller's explicit mixing extent.
     fn float_hdr_and_alpha_absent_native_data_are_preserved_and_extent_is_explicit() {
         let area = Rect::new(0, 0, 1, 1);
         for alpha in [false, true] {
@@ -208,6 +217,7 @@ mod tests {
     }
 
     #[test]
+    /// Reject mismatched formats, invalid opacity and delayed cancellation without modifying either input surface.
     fn invalid_arguments_and_mid_work_cancellation_do_not_mutate_inputs() {
         let area = Rect::new(0, 0, 513, 1);
         let format = PixelFormat::new(ColorMode::Rgb, SampleType::F32, true);

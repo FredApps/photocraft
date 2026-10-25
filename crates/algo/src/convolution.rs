@@ -23,6 +23,7 @@ pub struct Params {
     pub alpha_weighted: bool,
     pub edge: Edge,
 }
+/// Require a finite 5-by-5 kernel, nonzero divisor and channel mask matching the actual native format.
 pub fn validate(p: &Params, channels: usize) -> Result<(), Error> {
     if channels == 0
         || channels > 5
@@ -38,6 +39,7 @@ pub fn validate(p: &Params, channels: usize) -> Result<(), Error> {
     }
     Ok(())
 }
+/// Bound positive convolution geometry using widened arithmetic before deriving buffer sizes.
 fn dimensions(r: Rect) -> Result<(usize, usize), Error> {
     let w = i64::from(r.x1) - i64::from(r.x0);
     let h = i64::from(r.y1) - i64::from(r.y0);
@@ -46,6 +48,7 @@ fn dimensions(r: Rect) -> Result<(usize, usize), Error> {
     }
     Ok((w as usize, h as usize))
 }
+/// Admit padded output tiles, map clones and fixed halo scratch under the existing native workspace ceiling.
 fn preflight(s: &Surface, area: Rect, selection: Option<&Surface>) -> Result<(), Error> {
     dimensions(area)?;
     let tiles = |a: i32, b: i32| -> Result<usize, Error> {
@@ -62,6 +65,7 @@ fn preflight(s: &Surface, area: Rect, selection: Option<&Surface>) -> Result<(),
     }
     Ok(())
 }
+/// Fill black or white edge samples in the native color model, with opaque alpha when present.
 fn neutral(mode: ColorMode, white: bool, out: &mut [f32], alpha: bool) {
     let color_count = out.len().saturating_sub(usize::from(alpha));
     let value = if white { 1. } else { 0. };
@@ -88,6 +92,8 @@ fn neutral(mode: ColorMode, white: bool, out: &mut [f32], alpha: bool) {
         *v = 1.;
     }
 }
+/// Sample the requested native edge policy, distinguishing repeated/wrapped coordinates from transparent or neutral
+/// borders.
 fn sample(s: &Surface, x: i64, y: i64, domain: Rect, edge: Edge, out: &mut [f32]) -> Result<(), Error> {
     let inside = x >= i64::from(domain.x0) && x < i64::from(domain.x1) && y >= i64::from(domain.y0) && y < i64::from(domain.y1);
     if inside {
@@ -107,6 +113,7 @@ fn sample(s: &Surface, x: i64, y: i64, domain: Rect, edge: Edge, out: &mut [f32]
     };
     Ok(())
 }
+/// Apply selected kernel channels with explicit alpha support, finite-value checks and row cancellation.
 fn convolve(data: &[f32], w: usize, h: usize, format: PixelFormat, p: &Params, ctl: &Interrupt<'_>) -> Result<Vec<f32>, Error> {
     let ch = format.channels();
     let stride = (w + 4) * ch;
@@ -249,6 +256,7 @@ pub fn apply_with(s: &Surface, p: &Params, area: Rect, domain: Rect, selection: 
     }
     Ok(result)
 }
+/// Bridge raw float images to checked convolution and use bounded identity output when admission fails.
 pub(crate) fn run_image(src: &Image, out: Rect, ctx: &Ctx, p: &Params) -> Vec<f32> {
     let identity = || -> Result<Vec<f32>, Error> {
         let (w, h) = dimensions(src.rect)?;
@@ -287,11 +295,13 @@ pub(crate) fn run_image(src: &Image, out: Rect, ctx: &Ctx, p: &Params) -> Vec<f3
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Define the native custom-filter fixture kernel independently of imported source configuration.
     fn params(ch: usize) -> Params {
         let mut k = vec![0.; 25];
         k[12] = 1.;
         Params { kernel: k, scale: 1., offset: 0., channels: vec![true; ch], alpha_weighted: false, edge: Edge::Repeat }
     }
+    /// Populate a native-format test surface with original samples for cross-depth counterpart comparisons.
     fn surface(mode: ColorMode, depth: SampleType, r: Rect) -> Surface {
         let fmt = PixelFormat::new(mode, depth, true);
         let mut s = Surface::new(fmt);
@@ -302,6 +312,7 @@ mod tests {
         s
     }
     #[test]
+    /// Compare the checked kernel with the existing native Custom filter's row-major brightness policy.
     fn native_custom_counterpart_matches_row_major_brightness_at_every_depth_and_model() {
         let r = Rect::new(-3, -3, 10, 9);
         let out = Rect::new(0, 0, 7, 6);
@@ -337,6 +348,7 @@ mod tests {
         }
     }
     #[test]
+    /// Exercise signed kernels and missing alpha support without inventing nonfinite hidden HDR samples.
     fn signed_alpha_weighting_and_empty_support_preserve_finite_hidden_hdr() {
         let r = Rect::new(0, 0, 3, 1);
         let mut s = Surface::new(PixelFormat::new(ColorMode::Rgb, SampleType::F32, true));
@@ -358,6 +370,7 @@ mod tests {
         assert_eq!(got.pixel(1, 0), vec![0.25, 3., 0.25, 0.25]);
     }
     #[test]
+    /// Check border policies, native neutral colors and actual scalar/alpha channel selections.
     fn explicit_edges_neutral_models_and_alpha_scalar_channel_masks() {
         let r = Rect::new(0, 0, 1, 1);
         for mode in [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab] {
@@ -381,6 +394,7 @@ mod tests {
         }
     }
     #[test]
+    /// Verify tiled selection output while cancellation and numeric failure cannot modify the original input.
     fn tiling_selection_mid_cancel_and_numeric_failures_are_atomic() {
         let r = Rect::new(-2, 4, 132, 12);
         let s = surface(ColorMode::Rgb, SampleType::F32, r);
@@ -402,6 +416,7 @@ mod tests {
         assert_eq!(apply_with(&s, &p, r, r, None, &Interrupt::NONE).unwrap_err(), Error::NonFiniteSample);
     }
     #[test]
+    /// Ensure opaque formats retain their real channel count rather than acquiring an invented alpha plane.
     fn opaque_native_models_use_actual_channel_counts_without_synthetic_alpha() {
         let r = Rect::new(0, 0, 3, 2);
         for mode in [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab] {
@@ -427,6 +442,7 @@ mod tests {
         }
     }
     #[test]
+    /// Reject malformed kernel shapes, masks and geometry before native convolution can allocate or publish work.
     fn strict_kernel_channel_and_geometry_admission() {
         let r = Rect::new(0, 0, 2, 2);
         let s = surface(ColorMode::Rgb, SampleType::F32, r);

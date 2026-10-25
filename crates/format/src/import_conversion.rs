@@ -11,6 +11,7 @@ use crate::convert::{Fetch, Sink};
 use crate::manifest::ImportConversionM;
 use crate::{FormatError, Result};
 
+/// Preserve the distinction between report resource limits and corrupt metadata in native-format errors.
 fn validation(error: ConversionValidationError) -> FormatError {
     match error {
         ConversionValidationError::Limit(_) => FormatError::LimitExceeded(error.to_string()),
@@ -22,6 +23,8 @@ fn validation(error: ConversionValidationError) -> FormatError {
 struct RecordBytes(Vec<u8>);
 
 impl Write for RecordBytes {
+    /// Admit serialized report bytes before appending, preventing escaped JSON from exceeding the encoded-record
+    /// ceiling.
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if bytes.len() > MAX_CONVERSION_BYTES.saturating_sub(self.0.len()) {
             return Err(std::io::Error::other("import conversion record exceeds 32 MiB"));
@@ -30,11 +33,13 @@ impl Write for RecordBytes {
         Ok(bytes.len())
     }
 
+    /// Complete the in-memory report writer without introducing file or resource side effects.
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
+/// Validate and bound inert report records and attachments before storing them through native hashed blobs.
 pub(crate) fn to_manifest(report: &ImportConversion, sink: &mut dyn Sink) -> Result<ImportConversionM> {
     report.validate().map_err(validation)?;
     let (record, payloads) = match report {
@@ -52,6 +57,8 @@ pub(crate) fn to_manifest(report: &ImportConversion, sink: &mut dyn Sink) -> Res
     Ok(ImportConversionM { schema_version: report.schema_version(), record: sink.blob(&record), attachments: payloads.iter().map(|b| sink.blob(b)).collect() })
 }
 
+/// Load bounded known or opaque future reports, validating framing and attachment counts without interpreting
+/// retained data.
 pub(crate) fn from_manifest(m: &ImportConversionM, fetch: &mut dyn Fetch) -> Result<ImportConversion> {
     if m.schema_version == 0 {
         return Err(FormatError::corrupt("import conversion schema version is zero"));

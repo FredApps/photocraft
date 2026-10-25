@@ -11,6 +11,7 @@ use photocraft_raster::Rgba8Image;
 
 const MODES: [ColorMode; 4] = [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab];
 
+/// Create inert historical conversion metadata with one native target and a separately stored original attachment.
 fn conversion_report() -> photocraft_doc::import_conversion::ImportConversion {
     use photocraft_doc::import_conversion::*;
     let owner = SourceItemRef { kind: "layer".into(), ordinal: 3, name: "Duplicate".into(), ..Default::default() };
@@ -38,6 +39,7 @@ fn conversion_report() -> photocraft_doc::import_conversion::ImportConversion {
 }
 
 #[test]
+/// Round-trip converted native structures and off-canvas samples at every depth without losing their report.
 fn converted_native_groups_masks_off_canvas_pixels_and_report_survive_at_every_depth() {
     for depth in SampleType::ALL {
         let mut doc = Document::new("Native converted components", photocraft_geom::Size::new(4, 3), ColorMode::Rgb, depth);
@@ -65,6 +67,7 @@ fn converted_native_groups_masks_off_canvas_pixels_and_report_survive_at_every_d
 }
 
 #[test]
+/// Verify report attachments use native hashed blobs and never acquire executable document semantics.
 fn import_conversion_roundtrip_is_inert_and_uses_native_blobs() {
     for depth in SampleType::ALL {
         let mut doc = Document::new("Converted", photocraft_geom::Size::new(4, 3), ColorMode::Rgb, depth);
@@ -85,6 +88,7 @@ fn import_conversion_roundtrip_is_inert_and_uses_native_blobs() {
 }
 
 #[test]
+/// Preserve a future report schema and its bytes as opaque optional metadata.
 fn unknown_optional_import_report_survives_without_interpretation() {
     use photocraft_doc::import_conversion::ImportConversion;
     use std::sync::Arc;
@@ -99,6 +103,7 @@ fn unknown_optional_import_report_survives_without_interpretation() {
 }
 
 #[test]
+/// Reject invalid attachment references before writing a native bundle.
 fn import_report_invalid_references_are_rejected_before_save() {
     use photocraft_doc::import_conversion::ImportConversion;
     let mut doc = Document::new("Invalid report", photocraft_geom::Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
@@ -111,6 +116,7 @@ fn import_report_invalid_references_are_rejected_before_save() {
 }
 
 #[test]
+/// Preserve ordinal/path identity and multiple historical targets even when source display names repeat.
 fn import_report_distinguishes_duplicate_names_and_preserves_one_to_many_targets() {
     use photocraft_doc::import_conversion::*;
     let mut doc = Document::new("Duplicate items", photocraft_geom::Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
@@ -128,6 +134,7 @@ fn import_report_distinguishes_duplicate_names_and_preserves_one_to_many_targets
 }
 
 #[test]
+/// Check backward compatibility when the optional native report field is absent.
 fn older_bundles_without_import_conversion_still_load() {
     let doc = Document::new("Older bundle", photocraft_geom::Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
     let bytes = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
@@ -137,6 +144,7 @@ fn older_bundles_without_import_conversion_still_load() {
     assert_eq!(load_from_bytes(&bytes).unwrap(), doc);
 }
 
+/// Rewrite only the fixture's report manifest to exercise corrupt framing and missing-blob validation.
 fn edit_import_manifest(bytes: &[u8], edit: impl Fn(&mut serde_json::Value)) -> Vec<u8> {
     let zip = zip::ZipReader::new(bytes).unwrap();
     let mut out = zip::ZipWriter::new();
@@ -153,6 +161,7 @@ fn edit_import_manifest(bytes: &[u8], edit: impl Fn(&mut serde_json::Value)) -> 
 }
 
 #[test]
+/// Require controlled native-load errors for malformed report records and unavailable attachment blobs.
 fn import_report_corrupt_framing_and_missing_blobs_fail_without_panic() {
     let mut doc = Document::new("Report framing", photocraft_geom::Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
     doc.metadata.import_conversion = Some(conversion_report());
@@ -167,6 +176,7 @@ fn import_report_corrupt_framing_and_missing_blobs_fail_without_panic() {
 }
 
 #[test]
+/// Count escaped JSON bytes so serialization expansion cannot bypass the independent report ceiling.
 fn import_report_encoded_size_is_bounded_even_when_strings_expand_in_json() {
     use photocraft_doc::import_conversion::ImportConversion;
     let mut doc = Document::new("Escaped report", photocraft_geom::Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
@@ -182,6 +192,7 @@ fn import_report_encoded_size_is_bounded_even_when_strings_expand_in_json() {
 }
 
 #[test]
+/// Ensure blob-cache reuse still enforces report payload limits rather than treating cached data as free.
 fn import_report_limits_also_apply_to_already_cached_blobs() {
     use photocraft_doc::import_conversion::MAX_CONVERSION_BYTES;
     let mut doc = Document::new("Cached blob", photocraft_geom::Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
@@ -195,6 +206,7 @@ fn import_report_limits_also_apply_to_already_cached_blobs() {
 }
 
 #[test]
+/// Verify measured loading reports unique decoded blob work without double-charging shared references.
 fn measured_native_load_reports_existing_unique_blob_accounting() {
     let mut doc = Document::new("Measured contents", photocraft_geom::Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
     let shared = std::sync::Arc::new(vec![7; 123]);

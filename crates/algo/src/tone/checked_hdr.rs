@@ -18,6 +18,7 @@ pub enum Error {
     Allocation,
 }
 impl std::fmt::Display for Error {
+    /// Render checked HDR geometry, parameter, sample, allocation and cancellation failures as actionable messages.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Cancelled => "native HDR cancelled",
@@ -30,11 +31,14 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+/// Convert the shared interrupt check into this operation's explicit cancellation error.
 fn check(ctl: &Interrupt<'_>) -> Result<(), Error> {
     ctl.check().map_err(|_| Error::Cancelled)
 }
 // Independent pixel phases use PhotoCraft's normal native rayon scheduling. No parallel
 // reduction: the visibility-weighted mean retains its original deterministic serial order.
+/// Process disjoint chunks in parallel only on sufficiently large native workloads; preserve chunk offsets and the
+/// serial wasm path.
 fn independent_chunks<T: Send>(values: &mut [T], f: impl Fn(usize, &mut [T]) -> Result<(), Error> + Sync + Send) -> Result<(), Error> {
     #[cfg(not(target_arch = "wasm32"))]
     if values.len() >= 65_536 {
@@ -43,6 +47,7 @@ fn independent_chunks<T: Send>(values: &mut [T], f: impl Fn(usize, &mut [T]) -> 
     }
     values.chunks_mut(2048).enumerate().try_for_each(|(i, q)| f(i * 2048, q))
 }
+/// Allocate scratch fallibly and initialize it in cancellable bounded chunks.
 fn zeroes<T: Clone>(count: usize, value: T, ctl: &Interrupt<'_>) -> Result<Vec<T>, Error> {
     let mut out = Vec::new();
     out.try_reserve_exact(count).map_err(|_| Error::Allocation)?;
@@ -52,6 +57,7 @@ fn zeroes<T: Clone>(count: usize, value: T, ctl: &Interrupt<'_>) -> Result<Vec<T
     }
     Ok(out)
 }
+/// Refuse nonfinite or out-of-range native HDR controls and invalid bounded tone-curve points before processing.
 pub fn validate(p: &HdrToning) -> Result<(), Error> {
     for (v, lo, hi) in [
         (p.radius, 1., 500.),
@@ -73,6 +79,7 @@ pub fn validate(p: &HdrToning) -> Result<(), Error> {
     }
     Ok(())
 }
+/// Admit only positive bounded edges and a checked pixel count within the native HDR workspace domain.
 fn geometry(w: usize, h: usize) -> Result<usize, Error> {
     if w == 0 || h == 0 || w > MAX_EDGE || h > MAX_EDGE {
         return Err(Error::InvalidGeometry);
@@ -81,6 +88,7 @@ fn geometry(w: usize, h: usize) -> Result<usize, Error> {
 }
 // The same six running-sum box passes as fxutil::gauss_blur_n, with preallocated scratch
 // and cooperative checks. f64 sums preserve the existing native arithmetic order.
+/// Apply the existing native box-approximation blur with bounded row/column passes and interrupt checks.
 fn blur(base: &mut [f32], w: usize, h: usize, scratch: &mut [f32], sigma: f32, ctl: &Interrupt<'_>) -> Result<(), Error> {
     for radius in gauss_box_radii(sigma) {
         let r = isize::try_from(radius).map_err(|_| Error::InvalidParameter)?;
@@ -206,6 +214,7 @@ pub fn process_with(px: &mut [[f32; 4]], w: usize, h: usize, p: &HdrToning, ctl:
     })?;
     check(ctl)
 }
+/// Visit clipped 64-by-64 publication regions and propagate the first callback error.
 fn tiles(r: Rect, mut f: impl FnMut(Rect) -> Result<(), Error>) -> Result<(), Error> {
     let mut y = r.y0;
     while y < r.y1 {
@@ -315,6 +324,7 @@ pub(crate) fn run_image(src: &crate::Image, out: Rect, ctx: &crate::Ctx, p: &Hdr
 mod tests {
     use super::*;
     #[test]
+    /// Compare checked HDR output to the existing native tone arithmetic, including unchanged alpha samples.
     fn matches_existing_native_arithmetic_and_alpha() {
         let mut input: Vec<_> = (0..72)
             .map(|i| {
@@ -333,6 +343,8 @@ mod tests {
         }
     }
     #[test]
+    /// Pin errors for mismatched geometry, cancellation, nonfinite pixels and controls before accepting native
+    /// processing.
     fn hostile_and_cancelled_work_is_rejected() {
         let mut px = vec![[0.5; 4]; 4];
         assert_eq!(process_with(&mut px, 3, 2, &HdrToning::default(), &Interrupt::NONE), Err(Error::InvalidGeometry));
@@ -344,6 +356,8 @@ mod tests {
         assert!(geometry(65_536, 65_536).is_err());
     }
     #[test]
+    /// Compare a parallel-sized workload exactly with the existing native counterpart to guard arithmetic and
+    /// reduction-order drift.
     fn native_parallel_chunks_keep_exact_counterpart_and_reduction_order() {
         let mut actual: Vec<_> = (0..256 * 256)
             .map(|i| {
@@ -358,6 +372,8 @@ mod tests {
         assert_eq!(actual, expected);
     }
     #[test]
+    /// Verify offset native surfaces at every supported depth against separately processed pixels, including selection
+    /// publication.
     fn native_depth_models_offsets_and_selection_match_native_counterpart() {
         use photocraft_color::{ColorMode, PixelFormat, SampleType};
         let bounds = Rect::new(-3, 5, 2, 8);
@@ -390,6 +406,8 @@ mod tests {
         }
     }
     #[test]
+    /// Require cancelled or oversized surface work to preserve the source and the raw adapter's valid identity
+    /// fallback.
     fn cancelled_surface_never_publishes_and_workspace_is_bounded() {
         use photocraft_color::{PixelFormat, SampleType};
         use std::sync::atomic::{AtomicUsize, Ordering};

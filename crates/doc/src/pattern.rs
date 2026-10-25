@@ -22,6 +22,7 @@ pub enum PatternBuildError {
 }
 
 impl std::fmt::Display for PatternBuildError {
+    /// Report pattern dimension, scratch, allocation and cancellation failures with the relevant bounded-build context.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidDimensions => f.write_str("pattern dimensions exceed native edge or paint limits"),
@@ -33,6 +34,7 @@ impl std::fmt::Display for PatternBuildError {
 }
 
 impl std::error::Error for PatternBuildError {
+    /// Expose an underlying allocation failure while keeping validation and cancellation errors self-contained.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Allocation(error) => Some(error),
@@ -194,6 +196,8 @@ mod tests {
     }
 
     #[test]
+    /// Compare streamed pattern creation with the existing content IDs across modes/depths, alpha layouts and sparse
+    /// row/tile boundaries.
     fn bounded_row_hash_matches_existing_ids_for_native_depths_models_and_alpha() {
         use photocraft_color::{ColorMode, SampleType};
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
@@ -214,6 +218,7 @@ mod tests {
     }
 
     #[test]
+    /// Refuse invalid dimensions and insufficient row scratch before reading or allocating pixel data.
     fn bounded_hash_rejects_hostile_extents_and_scratch_before_pixel_reads() {
         for (width, height) in [(0, 1), (1, 0), (MAX_EDGE + 1, 1), (1, MAX_EDGE + 1), (MAX_EDGE, MAX_EDGE), (u32::MAX, 1)] {
             let result = Pattern::try_new_in("Too large", Surface::new(PixelFormat::RGBA8), width, height, usize::MAX, &Interrupt::NONE);
@@ -226,6 +231,7 @@ mod tests {
     }
 
     #[test]
+    /// Verify cancellation is checked both before pattern work and during row-wise hashing.
     fn bounded_hash_checks_cancellation_before_and_between_rows() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let cancelled = || true;

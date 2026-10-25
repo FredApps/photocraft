@@ -222,6 +222,8 @@ fn channel_m(c: &AlphaChannel, sink: &mut dyn Sink) -> ChannelM {
     ChannelM { name: name.clone(), surface: surface_m(surface, sink), spot: *spot, color: *color, opacity: *opacity, indicates: *indicates }
 }
 
+/// Build native document manifest data, sending durable conversion provenance through the same bounded content sink as
+/// other stored data.
 pub(crate) fn doc_m(d: &Document, sink: &mut dyn Sink) -> Result<DocM> {
     let import_conversion = d.metadata.import_conversion.as_ref().map(|report| crate::import_conversion::to_manifest(report, sink)).transpose()?;
     Ok(DocM {
@@ -555,6 +557,8 @@ impl Loader<'_> {
         })
     }
 
+    /// Reconstruct checked native data while reserving/remapping IDs, validating resources and preserving references
+    /// plus opaque conversion provenance.
     pub(crate) fn document(&mut self, m: &DocM) -> Result<Document> {
         // Reserve every stored id before allocating identities missing from older bundles. If an
         // id is implausibly large, remap the whole document while retaining shared contents groups.

@@ -115,6 +115,8 @@ pub enum ConversionValidationError {
 }
 
 impl fmt::Display for ConversionValidationError {
+    /// Render bounded validation failures as actionable import-report errors without looking up live document
+    /// targets.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Limit(message) | Self::Invalid(message) => write!(f, "import conversion: {message}"),
@@ -129,11 +131,13 @@ type Validation = Result<(), ConversionValidationError>;
 struct Budget(usize);
 
 impl Budget {
+    /// Debit the report's independent byte allowance and reject overflow before accepting more retained data.
     fn charge(&mut self, n: usize) -> Validation {
         self.0 = self.0.checked_sub(n).ok_or(ConversionValidationError::Limit("report exceeds the separate 32 MiB allowance"))?;
         Ok(())
     }
 
+    /// Enforce the per-string ceiling before charging its UTF-8 bytes to the report budget.
     fn string(&mut self, s: &str) -> Validation {
         if s.len() > MAX_CONVERSION_STRING {
             return Err(ConversionValidationError::Limit("report string exceeds 1 MiB"));
@@ -141,6 +145,7 @@ impl Budget {
         self.charge(s.len())
     }
 
+    /// Bound source/target path depth and charge its stored components without traversing a document.
     fn path(&mut self, path: &[u32]) -> Validation {
         if path.len() > MAX_ITEM_PATH {
             return Err(ConversionValidationError::Limit("item path exceeds 64 components"));
@@ -148,6 +153,7 @@ impl Budget {
         self.charge(std::mem::size_of_val(path))
     }
 
+    /// Account for an item's kind, display name and historical path as inert report metadata.
     fn source(&mut self, source: &SourceItemRef) -> Validation {
         self.string(&source.kind)?;
         self.string(&source.name)?;
@@ -156,6 +162,7 @@ impl Budget {
 }
 
 impl ImportConversion {
+    /// Expose the known report schema or preserve an opaque future record's declared version.
     pub fn schema_version(&self) -> u32 {
         match self {
             Self::Report(_) => CONVERSION_SCHEMA_VERSION,
@@ -186,6 +193,8 @@ impl ImportConversion {
 }
 
 impl ConversionReport {
+    /// Validate report identities, references, counts and combined retained bytes without granting those references
+    /// authority.
     pub fn validate(&self) -> Validation {
         if self.source_format.is_empty() {
             return Err(ConversionValidationError::Invalid("source format is empty"));
@@ -231,15 +240,20 @@ impl ConversionReport {
 }
 
 // Limit element counts during deserialization, before accepting the next allocation.
+/// Deserialize at most the declared number of items and reject an extra element before accepting another
+/// allocation.
 fn bounded_sequence<'de, T: Deserialize<'de>, D: Deserializer<'de>, const MAX: usize>(d: D) -> Result<Vec<T>, D::Error> {
     struct Bounded<T, const MAX: usize>(std::marker::PhantomData<T>);
     impl<'de, T: Deserialize<'de>, const MAX: usize> Visitor<'de> for Bounded<T, MAX> {
         type Value = Vec<T>;
 
+        /// Describe the bounded report-array contract in deserialization errors.
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             write!(f, "an import conversion array of at most {MAX} items")
         }
 
+        /// Collect only the allowed sequence length and reject a trailing element instead of silently truncating
+        /// it.
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<T>, A::Error> {
             let mut out = Vec::new();
             while out.len() < MAX {
@@ -257,18 +271,23 @@ fn bounded_sequence<'de, T: Deserialize<'de>, D: Deserializer<'de>, const MAX: u
     d.deserialize_seq(Bounded::<T, MAX>(std::marker::PhantomData))
 }
 
+/// Apply the report-entry count limit during deserialization rather than after collecting unbounded input.
 fn entries<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ConversionEntry>, D::Error> {
     bounded_sequence::<'de, _, _, MAX_CONVERSION_ENTRIES>(d)
 }
+/// Bound retained attachment records while decoding their metadata array.
 fn attachments<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<RetainedImportData>, D::Error> {
     bounded_sequence::<'de, _, _, MAX_CONVERSION_ATTACHMENTS>(d)
 }
+/// Limit native target references while preserving their historical, non-executable meaning.
 fn targets<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<NativeTargetRef>, D::Error> {
     bounded_sequence::<'de, _, _, MAX_CONVERSION_ENTRIES>(d)
 }
+/// Bound attachment-reference counts before later report validation resolves their indices.
 fn indices<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u32>, D::Error> {
     bounded_sequence::<'de, _, _, MAX_CONVERSION_ATTACHMENTS>(d)
 }
+/// Reject historical item paths deeper than the report format permits during decoding.
 fn item_path<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u32>, D::Error> {
     bounded_sequence::<'de, _, _, MAX_ITEM_PATH>(d)
 }
@@ -278,6 +297,8 @@ mod tests {
     use super::*;
 
     #[test]
+    /// Check absent-report defaults and ensure historical source/target references do not become live document
+    /// state.
     fn reports_default_to_absent_and_have_no_document_authority() {
         assert!(crate::Metadata::default().import_conversion.is_none());
         let report = ImportConversion::Report(ConversionReport { source_format: "xcf".into(), ..Default::default() });
@@ -286,6 +307,7 @@ mod tests {
     }
 
     #[test]
+    /// Reject oversized strings and future opaque payloads under the independent report allowance.
     fn string_and_opaque_payload_limits_are_enforced() {
         let report = ConversionReport { source_format: "x".repeat(MAX_CONVERSION_STRING + 1), ..Default::default() };
         assert!(matches!(report.validate(), Err(ConversionValidationError::Limit(_))));
@@ -294,6 +316,7 @@ mod tests {
     }
 
     #[test]
+    /// Verify oversized arrays fail in bounded deserialization instead of being accepted then truncated.
     fn counts_are_limited_during_deserialization() {
         let owner = SourceItemRef::default();
         let mut value = serde_json::to_value(&owner).unwrap();
@@ -302,6 +325,7 @@ mod tests {
     }
 
     #[test]
+    /// Exercise attachment count and aggregate byte limits without borrowing the source metadata allowance.
     fn attachment_counts_and_totals_are_bounded_independently_of_source_metadata() {
         let empty = Arc::new(Vec::new());
         let count = ImportConversion::Opaque { schema_version: 2, record: empty.clone(), attachments: vec![empty; MAX_CONVERSION_ATTACHMENTS + 1] };

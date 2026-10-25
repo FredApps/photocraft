@@ -25,6 +25,7 @@ pub struct Params {
 pub use crate::coverage::Error;
 const MAX_WORK: u64 = 128_000_000_000;
 const TILE: i32 = 256;
+/// Reject unsupported radius, nonfinite/out-of-range percentile values and oversized channel selections.
 pub fn validate(p: &Params) -> Result<(), Error> {
     if p.radius == 0 || p.radius > 500 || [p.color_percentile, p.alpha_percentile].into_iter().any(|v| !v.is_finite() || !(0.0..=100.0).contains(&v)) {
         return Err(Error::InvalidParameter);
@@ -34,6 +35,7 @@ pub fn validate(p: &Params) -> Result<(), Error> {
     }
     Ok(())
 }
+/// Validate a positive bounded frame using widened arithmetic before sizing percentile workspaces.
 fn dimensions(r: Rect) -> Result<(usize, usize), Error> {
     let w = i64::from(r.x1) - i64::from(r.x0);
     let h = i64::from(r.y1) - i64::from(r.y0);
@@ -42,12 +44,14 @@ fn dimensions(r: Rect) -> Result<(usize, usize), Error> {
     }
     Ok((w as usize, h as usize))
 }
+/// Allocate initialized scratch fallibly so a failed reservation becomes an allocation error.
 fn zeroes<T: Clone>(n: usize, v: T) -> Result<Vec<T>, Error> {
     let mut out = Vec::new();
     out.try_reserve_exact(n).map_err(|_| Error::Allocation)?;
     out.resize(n, v);
     Ok(out)
 }
+/// Build each neighborhood row's support for square, diamond or the existing native Median disc footprint.
 fn rows(p: &Params) -> Result<Vec<usize>, Error> {
     let r = usize::from(p.radius);
     let mut out = Vec::new();
@@ -63,6 +67,7 @@ fn rows(p: &Params) -> Result<Vec<usize>, Error> {
     }
     Ok(out)
 }
+/// Price padded output tiles, halo scratch and order-statistic work before allocating or publishing output.
 fn preflight(s: &Surface, p: &Params, area: Rect, selection: Option<&Surface>) -> Result<(), Error> {
     let (w, h) = dimensions(area)?;
     let channels = s.channels();
@@ -110,6 +115,7 @@ fn preflight(s: &Surface, p: &Params, area: Rect, selection: Option<&Surface>) -
     Ok(())
 }
 // Fenwick counts permit independent percentile selection without scanning the value domain.
+/// Update Fenwick counts with checked arithmetic, rejecting invalid support indices or underflow.
 fn change(tree: &mut [u32], index: usize, add: bool) -> Result<(), Error> {
     let mut i = index.checked_add(1).ok_or(Error::InvalidGeometry)?;
     while i < tree.len() {
@@ -119,6 +125,7 @@ fn change(tree: &mut [u32], index: usize, add: bool) -> Result<(), Error> {
     }
     Ok(())
 }
+/// Locate an order statistic in Fenwick counts without scanning the sample-value domain.
 fn select(tree: &[u32], rank: u32) -> Result<usize, Error> {
     let mut index = 0usize;
     let mut remaining = rank;
@@ -141,6 +148,7 @@ fn select(tree: &[u32], rank: u32) -> Result<usize, Error> {
     }
     Ok(index)
 }
+/// Compute per-channel neighborhood ranks with separate alpha policy and cancellable bounded scratch.
 fn ranked(data: &[f32], width: usize, height: usize, channels: usize, p: &Params, alpha: bool, ctl: &Interrupt<'_>) -> Result<Vec<f32>, Error> {
     let r = usize::from(p.radius);
     let ww = width + 2 * r;
@@ -329,6 +337,7 @@ pub fn apply_with(s: &Surface, p: &Params, area: Rect, domain: Rect, selection: 
     }
     Ok(result)
 }
+/// Adapt raw float images to checked native percentile filtering, returning bounded identity data on rejected work.
 pub(crate) fn run_image(src: &Image, out: Rect, ctx: &Ctx, p: &Params) -> Vec<f32> {
     let run = || -> Result<Vec<f32>, Error> {
         validate(p)?;
@@ -369,9 +378,11 @@ pub(crate) fn run_image(src: &Image, out: Rect, ctx: &Ctx, p: &Params) -> Vec<f3
 mod tests {
     use super::*;
     use photocraft_color::ColorMode;
+    /// Build an all-channel percentile request with independently controlled color and alpha ranks.
     fn params(radius: u16, shape: Neighborhood, q: f32, a: f32) -> Params {
         Params { radius, shape, color_percentile: q, alpha_percentile: a, channels: None }
     }
+    /// Create reproducible native-depth samples, including signed HDR values, for order-statistic tests.
     fn source(mode: ColorMode, depth: SampleType, r: Rect) -> Surface {
         let fmt = PixelFormat::new(mode, depth, true);
         let mut s = Surface::new(fmt);
@@ -385,6 +396,7 @@ mod tests {
         s.try_write_region(r, &data).unwrap();
         s
     }
+    /// Sort an independently enumerated neighborhood to define expected ranks and clamped edge samples.
     fn oracle(s: &Surface, p: &Params, area: Rect, domain: Rect) -> Vec<f32> {
         let r = i32::from(p.radius);
         let mut out = Vec::new();
@@ -413,6 +425,7 @@ mod tests {
         out
     }
     #[test]
+    /// Compare every neighborhood/rank combination with direct sorting on signed HDR samples and shifted bounds.
     fn independent_oracle_all_shapes_ranks_edges_and_hdr() {
         let r = Rect::new(-3, 5, 6, 12);
         let s = source(ColorMode::Rgb, SampleType::F32, r);
@@ -426,6 +439,7 @@ mod tests {
         }
     }
     #[test]
+    /// Require the midpoint disc rank to match the established native Median across modes and depths.
     fn median50_matches_existing_native_median_all_models_depths() {
         let r = Rect::new(-3, -4, 12, 11);
         let out = Rect::new(0, 0, 9, 8);
@@ -452,6 +466,7 @@ mod tests {
         }
     }
     #[test]
+    /// Check endpoint percentiles against existing native extrema for an identical support footprint.
     fn extrema_match_native_minimum_maximum_same_footprint() {
         let r = Rect::new(-4, -4, 10, 10);
         let out = Rect::new(0, 0, 6, 6);
@@ -470,6 +485,7 @@ mod tests {
         }
     }
     #[test]
+    /// Verify crop invariance and selection behavior while cancellation leaves the original surface unchanged.
     fn tiled_crop_invariance_selection_and_cancellation_are_atomic() {
         let r = Rect::new(-1, 3, 260, 8);
         let s = source(ColorMode::Rgb, SampleType::F32, r);
@@ -486,6 +502,7 @@ mod tests {
         assert_eq!(s, before);
     }
     #[test]
+    /// Ensure fractional coverage cannot modify unselected channels or an explicitly empty channel selection.
     fn selected_channels_preserve_unselected_bits_through_fractional_selection_and_empty_masks() {
         let r = Rect::new(-2, 3, 5, 8);
         let mut s = source(ColorMode::Rgb, SampleType::F32, r);
@@ -520,6 +537,7 @@ mod tests {
         assert_eq!(restored, p);
     }
     #[test]
+    /// Reject hostile parameters and oversized padded/CPU work before returning a modified surface.
     fn invalid_inputs_and_padded_tile_or_cpu_budget_fail_before_publication() {
         let r = Rect::new(0, 0, 2, 2);
         let s = source(ColorMode::Rgb, SampleType::F32, r);

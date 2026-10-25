@@ -3,7 +3,7 @@
 //! Hole filling is boundary-connected grayscale reconstruction: each sample is raised to
 //! min(path to boundary) max(sample along path). This standard minimax definition is also
 //! described by Barnes/Lehman/Mulla, Computers & Geosciences62 (2014),117–127:
-//! https://doi.org/10.1016/j.cageo.2013.04.024 . Independent implementation; no source code copied.
+//! <https://doi.org/10.1016/j.cageo.2013.04.024>. Independent implementation; no source code copied.
 use crate::{Ctx, image::Image};
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_geom::Rect;
@@ -42,6 +42,7 @@ pub enum Error {
     Allocation,
 }
 impl std::fmt::Display for Error {
+    /// Describe checked coverage failures without exposing implementation-specific error values to callers.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Cancelled => "native coverage operation cancelled",
@@ -61,6 +62,7 @@ struct Shape {
     height: usize,
     pixels: usize,
 }
+/// Validate positive native dimensions and channel count, then bound pixel and reconstruction workspace arithmetic.
 fn shape(rect: Rect, channels: usize, operation: Operation<'_>) -> Result<Shape, Error> {
     let width = i64::from(rect.x1) - i64::from(rect.x0);
     let height = i64::from(rect.y1) - i64::from(rect.y0);
@@ -77,6 +79,7 @@ fn shape(rect: Rect, channels: usize, operation: Operation<'_>) -> Result<Shape,
     }
     Ok(Shape { width, height, pixels })
 }
+/// Admit padded output tiles, cloned sparse headers and selection/topology scratch before allocating any result.
 fn preflight(surface: &Surface, area: Rect, shape: Shape, operation: Operation<'_>, selection: Option<&Surface>) -> Result<(), Error> {
     let ts = i64::from(photocraft_geom::TILE_SIZE);
     let tile_count = |lo: i32, hi: i32| -> Result<usize, Error> {
@@ -107,6 +110,7 @@ fn preflight(surface: &Surface, area: Rect, shape: Shape, operation: Operation<'
     }
     Ok(())
 }
+/// Reserve fallibly and initialize bounded chunks, checking cancellation between chunks.
 fn zeroes<T: Clone>(len: usize, value: T, ctl: &Interrupt<'_>) -> Result<Vec<T>, Error> {
     let mut result = Vec::new();
     result.try_reserve_exact(len).map_err(|_| Error::Allocation)?;
@@ -119,6 +123,7 @@ fn zeroes<T: Clone>(len: usize, value: T, ctl: &Interrupt<'_>) -> Result<Vec<T>,
     }
     Ok(result)
 }
+/// Enforce finite coverage controls, exact curve shape and the alpha support required by each operation.
 fn validate(operation: Operation<'_>, alpha: bool) -> Result<(), Error> {
     match operation {
         Operation::AlphaCurve(values) if values.len() != 256 || values.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)) => {
@@ -137,6 +142,7 @@ fn validate(operation: Operation<'_>, alpha: bool) -> Result<(), Error> {
         _ => Ok(()),
     }
 }
+/// Evaluate native absolute alpha, strict threshold, clamp or piecewise-linear transfer rules on a finite sample.
 fn alpha_value(operation: Operation<'_>, current: f32) -> Result<f32, Error> {
     match operation {
         Operation::SetAlpha(value) => Ok(value),
@@ -153,6 +159,7 @@ fn alpha_value(operation: Operation<'_>, current: f32) -> Result<f32, Error> {
         _ => Err(Error::NonFiniteSample),
     }
 }
+/// Place normalized coverage on the current model's neutral axes and make the pixel opaque, without an RGB conversion.
 fn alpha_to_color(pixel: &mut [f32], mode: ColorMode) -> Result<(), Error> {
     let (alpha, color) = pixel.split_last_mut().ok_or(Error::AlphaRequired)?;
     if !alpha.is_finite() {
@@ -177,6 +184,7 @@ fn alpha_to_color(pixel: &mut [f32], mode: ColorMode) -> Result<(), Error> {
     *alpha = 1.;
     Ok(())
 }
+/// Visit clipped 64-by-64 regions and stop immediately when a region callback fails.
 fn tiles(rect: Rect, mut action: impl FnMut(Rect) -> Result<(), Error>) -> Result<(), Error> {
     let mut y = rect.y0;
     while y < rect.y1 {
@@ -197,21 +205,25 @@ struct Node {
     index: usize,
 }
 impl PartialEq for Node {
+    /// Compare queue nodes by both pixel index and the total ordering of their spill level.
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index && self.level.total_cmp(&other.level) == Ordering::Equal
     }
 }
 impl Eq for Node {}
 impl PartialOrd for Node {
+    /// Delegate to the deterministic total order used by the reconstruction heap.
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 impl Ord for Node {
+    /// Reverse level and index ordering so BinaryHeap removes the lowest deterministic spill candidate first.
     fn cmp(&self, other: &Self) -> Ordering {
         other.level.total_cmp(&self.level).then_with(|| other.index.cmp(&self.index))
     }
 }
+/// Visit only in-bounds four- or eight-connected neighbors using checked index arithmetic.
 fn neighbors(index: usize, shape: Shape, connectivity: u8, mut visit: impl FnMut(usize) -> Result<(), Error>) -> Result<(), Error> {
     let x = index % shape.width;
     let y = index / shape.width;
@@ -236,6 +248,8 @@ fn neighbors(index: usize, shape: Shape, connectivity: u8, mut visit: impl FnMut
     }
     Ok(())
 }
+/// Raise enclosed samples by boundary-connected minimax reconstruction with finite-input, allocation and cancellation
+/// checks.
 fn fill(plane: &mut [f32], shape: Shape, connectivity: u8, ctl: &Interrupt<'_>) -> Result<(), Error> {
     if plane.len() != shape.pixels {
         return Err(Error::InvalidGeometry);
@@ -282,6 +296,7 @@ fn fill(plane: &mut [f32], shape: Shape, connectivity: u8, ctl: &Interrupt<'_>) 
     }
     Ok(())
 }
+/// Extract one finite native channel into a checked whole-owner plane using bounded tile reads.
 fn plane_from(surface: &Surface, domain: Rect, shape: Shape, channel: usize, ctl: &Interrupt<'_>) -> Result<Vec<f32>, Error> {
     let mut plane = zeroes(shape.pixels, 0.0, ctl)?;
     let channels = surface.channels();
@@ -475,6 +490,7 @@ pub(crate) fn run_image(source: &Image, out: Rect, ctx: &Ctx, operation: Operati
     run().unwrap_or_else(|_| identity_region(source, out).unwrap_or_default())
 }
 
+/// Copy a valid contained raw-image region for the infallible adapter's rejected-operation fallback.
 fn identity_region(source: &Image, out: Rect) -> Result<Vec<f32>, Error> {
     let input = shape(source.rect, source.ch, Operation::SetAlpha(1.))?;
     let output = shape(out, source.ch, Operation::SetAlpha(1.))?;
@@ -504,15 +520,18 @@ fn identity_region(source: &Image, out: Rect) -> Result<Vec<f32>, Error> {
 mod tests {
     use super::*;
     use photocraft_color::ColorMode;
+    /// Encode explicit test samples at the requested native mode, depth and alpha layout.
     fn surface(mode: ColorMode, depth: SampleType, alpha: bool, rect: Rect, data: &[f32]) -> Surface {
         let mut s = Surface::new(PixelFormat::new(mode, depth, alpha));
         s.try_write_region(rect, data).unwrap();
         s
     }
+    /// Run a checked operation over the complete fixture domain with no selection or cancellation.
     fn apply(s: &Surface, op: Operation, r: Rect) -> Surface {
         apply_with(s, op, r, r, None, &Interrupt::NONE).unwrap()
     }
     #[test]
+    /// Compare heap-based reconstruction against a separately iterated grayscale relaxation oracle over varied inputs.
     fn grayscale_reconstruction_matches_independent_iterative_oracle() {
         let r = Rect::new(-3, 2, 4, 8);
         let (w, h) = (7usize, 6usize);
@@ -550,6 +569,7 @@ mod tests {
         }
     }
     #[test]
+    /// Pin the different diagonal escape rules and the exact enclosing spill level with small hand-authored planes.
     fn connectivity_distinguishes_diagonal_escape_and_preserves_spill_levels() {
         let r = Rect::new(0, 0, 3, 3);
         let input = [0., 1., 1., 1., 0.2, 1., 1., 1., 1.];
@@ -560,6 +580,7 @@ mod tests {
         assert_eq!(apply(&s, Operation::FillHoles { connectivity: 4, alpha_only: false }, r).pixel(1, 1), vec![0.7]);
     }
     #[test]
+    /// Require absolute alpha replacement to leave all stored color channels unchanged across native models and depths.
     fn every_native_model_depth_keeps_color_when_replacing_absolute_alpha() {
         let r = Rect::new(0, 0, 2, 1);
         for mode in [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab] {
@@ -603,6 +624,7 @@ mod tests {
         }
     }
     #[test]
+    /// Check native alpha bounds and strict greater-than thresholding against already quantized source samples.
     fn clamp_and_strict_threshold_preserve_native_color_and_quantized_boundary_rules() {
         let r = Rect::new(0, 0, 5, 1);
         for mode in [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab] {
@@ -633,6 +655,8 @@ mod tests {
         }
     }
     #[test]
+    /// Compare alpha transfer to independently calculated square samples and midpoint interpolation, including invalid
+    /// table rejection.
     fn native_alpha_transfer_interpolates_preserves_colors_and_respects_depth() {
         let values: Vec<f32> = (0..256).map(|i| (i as f32 / 255.).powi(2)).collect();
         let r = Rect::new(0, 0, 5, 1);
@@ -662,6 +686,7 @@ mod tests {
         }
     }
     #[test]
+    /// Verify mode-specific neutral encodings and opaque output, including native CMYK and Lab normalization.
     fn alpha_to_color_is_opaque_native_neutral_data_without_model_conversion() {
         let r = Rect::new(0, 0, 3, 1);
         for mode in [
@@ -717,6 +742,7 @@ mod tests {
         assert_eq!(&normalization[1..3], &[128. / 255., 128. / 255.]);
     }
     #[test]
+    /// Pin selection mixing once and require cancelled alpha transfers to leave their HDR source unchanged.
     fn alpha_transfer_selection_and_cancellation_are_atomic() {
         let r = Rect::new(0, 0, 128, 128);
         let mut s = Surface::new(PixelFormat::RGBA32F);
@@ -733,6 +759,7 @@ mod tests {
         assert_eq!(s.read_region(r), original);
     }
     #[test]
+    /// Fill an alpha hole without changing HDR color, then verify a half selection publishes half coverage only once.
     fn alpha_topology_preserves_hdr_color_and_selection_publishes_only_once() {
         let r = Rect::new(0, 0, 3, 3);
         let data: Vec<f32> = (0..9).flat_map(|i| [-2., 4., 0.3, if i == 4 { 0. } else { 1. }]).collect();
@@ -745,6 +772,7 @@ mod tests {
         assert_eq!(s.pixel(1, 1)[3], 0.);
     }
     #[test]
+    /// Ensure hole connectivity is computed over the full owner even when only a small result area is published.
     fn topology_uses_whole_owner_even_with_small_publication_and_filter_tiles() {
         let r = Rect::new(0, 0, 7, 7);
         let mut data = vec![1.; 49];
@@ -762,12 +790,14 @@ mod tests {
         }
     }
     #[test]
+    /// Require rejected alpha work on a non-alpha raw image to return the correctly shaped unchanged region.
     fn infallible_raw_adapter_keeps_valid_identity_shape_when_operation_is_rejected() {
         let image = Image { rect: Rect::new(0, 0, 3, 2), ch: 1, data: vec![0.3; 6] };
         let ctx = Ctx { mode: ColorMode::Grayscale, alpha: false, bounds: image.rect };
         assert_eq!(run_image(&image, Rect::new(1, 0, 3, 2), &ctx, Operation::SetAlpha(0.5)), vec![0.3; 4]);
     }
     #[test]
+    /// Reject an offset, thin surface whose padded native tiles exceed the workspace despite its smaller visible area.
     fn padded_output_tiles_are_charged_before_allocating_thin_or_unaligned_surfaces() {
         let s = Surface::new(PixelFormat::new(ColorMode::Cmyk, SampleType::F32, true));
         let rect = Rect::new(255, 0, 767, 65_536);
@@ -775,6 +805,7 @@ mod tests {
         assert_eq!(preflight(&s, rect, shape, Operation::FillHoles { connectivity: 4, alpha_only: false }, None), Err(Error::WorkspaceLimit));
     }
     #[test]
+    /// Exercise invalid controls, nonfinite samples and mid-work cancellation without mutating the original surface.
     fn hostile_input_and_midwork_cancellation_are_atomic() {
         let r = Rect::new(0, 0, 128, 128);
         let s = surface(ColorMode::Grayscale, SampleType::F32, false, r, &vec![0.2; 128 * 128]);

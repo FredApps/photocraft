@@ -12,6 +12,8 @@ pub struct Mean {
     count: f64,
 }
 impl Mean {
+    /// Accumulate the native selection/alpha-weighted color mean while preserving the established multiplication
+    /// order.
     pub fn push(&mut self, p: [f32; 4], coverage: f32) {
         let weight = f64::from(p[3] * coverage);
         for (sum, value) in self.sum.iter_mut().zip(p) {
@@ -21,6 +23,7 @@ impl Mean {
         self.alpha += f64::from(p[3] * coverage);
         self.count += f64::from(coverage);
     }
+    /// Return the normalized mean only when positive alpha weight exists, keeping the native average-alpha policy.
     pub fn rgba(&self) -> Option<[f32; 4]> {
         (self.weight > 0.).then(|| {
             [
@@ -33,9 +36,12 @@ impl Mean {
     }
 }
 
+/// Translate interruption into the shared checked native-filter cancellation error.
 fn check(ctl: &Interrupt) -> Result<(), Error> {
     ctl.check().map_err(|_| Error::Cancelled)
 }
+/// Average a bounded native area using fallible row storage and publish only finite, uncancelled selection-mixed
+/// output.
 pub fn apply_with(surface: &Surface, area: Rect, bounds: Rect, selection: Option<&Surface>, ctl: &Interrupt) -> Result<Surface, Error> {
     check(ctl)?;
     let area = area.intersect(&bounds);
@@ -113,6 +119,7 @@ pub fn apply_with(surface: &Surface, area: Rect, bounds: Rect, selection: Option
     Ok(out)
 }
 
+/// Adapt raw native float images to checked Average, preserving bounded identity fallback on rejected work.
 pub(crate) fn run_image(src: &crate::image::Image, out: Rect, ctx: &crate::Ctx) -> Vec<f32> {
     let format = photocraft_color::PixelFormat::new(ctx.mode, photocraft_color::SampleType::F32, ctx.alpha);
     let valid = [src.rect, out].into_iter().all(|r| {
@@ -156,6 +163,8 @@ mod tests {
     use photocraft_color::{ColorMode, PixelFormat, SampleType};
     #[test]
     #[ignore = "24MP native Average performance probe"]
+    /// Measure release Average on a full-size original surface with bounded rows rather than a whole-frame sample
+    /// copy.
     fn average_24mp_bounded_rows_benchmark() {
         let b = Rect::new(0, 0, 6000, 4000);
         let mut source = Surface::new(PixelFormat::RGBA32F);
@@ -168,6 +177,8 @@ mod tests {
         assert!((p[0] - 1. / 3.).abs() < 1e-6 && (p[2] - 2. / 3.).abs() < 1e-6 && p[3] == 0.75);
     }
     #[test]
+    /// Pin the ordinary Raster Average weighting and quantization policy across native depths and selection
+    /// coverage.
     fn original_rgba_weighted_mean_selection_and_depth_policy() {
         for mode in [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab] {
             for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
@@ -200,6 +211,7 @@ mod tests {
         }
     }
     #[test]
+    /// Compare with an independently calculated weighted mean and require cancellation to preserve source pixels.
     fn independent_mean_and_cancel_are_atomic() {
         let mut s = Surface::new(PixelFormat::RGBA32F);
         s.write_pixel(0, 0, &[1., 0., 0., 0.5]);
@@ -216,6 +228,7 @@ mod tests {
         assert!(apply_with(&s, Rect::new(0, 0, 100000, 100000), Rect::new(0, 0, 100000, 100000), None, &Interrupt::NONE).is_err());
     }
     #[test]
+    /// Cover opaque HDR, empty alpha support and delayed cancellation under the existing native Average policy.
     fn opaque_hdr_empty_alpha_and_mid_pass_cancel_keep_native_rules() {
         let b = Rect::new(0, 0, 2, 2);
         let mut opaque = Surface::new(PixelFormat::new(ColorMode::Rgb, SampleType::F32, false));
@@ -235,6 +248,7 @@ mod tests {
         assert_eq!(apply_with(&opaque, b, b, None, &Interrupt::NONE).unwrap_err(), Error::NonFiniteSample);
     }
     #[test]
+    /// Exercise extreme finite HDR selection mixtures so intermediate overflow cannot publish nonfinite pixels.
     fn finite_hdr_selection_intermediates_never_publish_infinity() {
         let b = Rect::new(0, 0, 2, 1);
         let mut source = Surface::new(PixelFormat::RGBA32F);

@@ -98,6 +98,8 @@ fn selection_mixing_without_alpha_keeps_every_channel_independent() {
 }
 
 #[test]
+/// Exercise shared selection mixing with extreme finite HDR through five independently checked native filter entry
+/// points.
 fn selected_finite_hdr_is_safe_through_all_five_checked_native_apis() {
     let ctl = photocraft_raster::Interrupt::NONE;
     let b = Rect::new(0, 0, 1, 1);
@@ -141,6 +143,8 @@ fn selected_finite_hdr_is_safe_through_all_five_checked_native_apis() {
 }
 
 #[test]
+/// Verify changed-alpha mixing handles finite HDR roundoff and rejects unrepresentable results without source
+/// mutation.
 fn changed_alpha_hdr_roundoff_and_unrepresentable_mix_do_not_corrupt_source() {
     let b = Rect::new(0, 0, 1, 1);
     let mut source = Surface::new(PixelFormat::RGBA32F);
@@ -170,6 +174,8 @@ fn changed_alpha_hdr_roundoff_and_unrepresentable_mix_do_not_corrupt_source() {
 }
 
 #[test]
+/// Pin ordinary finite selection arithmetic bit-for-bit so overflow safeguards do not alter established native
+/// output.
 fn finite_ordinary_selection_results_keep_legacy_float_bits() {
     let b = Rect::new(0, 0, 1, 1);
     for a in [0., 0.25, 0.75, 1.] {

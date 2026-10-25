@@ -12,6 +12,8 @@ static char *icon[] = {
 "#;
 
 #[test]
+/// Pin literal X11 palette values and reject unnormalized, non-ASCII, unknown or oversized names without CSS alias
+/// assumptions.
 fn exact_x11_lookup_has_bounded_input_and_preserves_x11_values() {
     use photocraft_codecs::x11_color_rgb;
     assert_eq!(x11_color_rgb("gray"), Some([190.0 / 255.0; 3]));

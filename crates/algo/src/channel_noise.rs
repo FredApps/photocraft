@@ -13,12 +13,14 @@ pub struct Params {
     pub relative: bool,
     pub seed: u32,
 }
+/// Require one finite bounded amplitude per native channel and reject unsupported channel counts.
 pub fn validate(p: &Params, channels: usize) -> Result<(), Error> {
     if channels == 0 || channels > 5 || p.amounts.len() != channels || p.amounts.iter().any(|v| !v.is_finite() || !(0.0..=400.).contains(v)) {
         return Err(Error::InvalidParameter);
     }
     Ok(())
 }
+/// Validate positive bounded extents with widened arithmetic before calculating a dense noise region.
 fn dimensions(r: Rect) -> Result<(usize, usize), Error> {
     let w = i64::from(r.x1) - i64::from(r.x0);
     let h = i64::from(r.y1) - i64::from(r.y0);
@@ -27,6 +29,7 @@ fn dimensions(r: Rect) -> Result<(usize, usize), Error> {
     }
     Ok((w as usize, h as usize))
 }
+/// Admit padded output tiles, cloned sparse headers and selection scratch before noise allocation.
 fn preflight(s: &Surface, area: Rect, selection: Option<&Surface>) -> Result<(), Error> {
     dimensions(area)?;
     let count = |lo: i32, hi: i32| -> Result<usize, Error> {
@@ -43,6 +46,8 @@ fn preflight(s: &Surface, area: Rect, selection: Option<&Surface>) -> Result<(),
     }
     Ok(())
 }
+/// Apply coordinate-seeded native noise per channel, preserving zero-amplitude channels and rejecting nonfinite results
+/// or cancellation.
 fn pixels(data: &mut [f32], rect: Rect, channels: usize, alpha: bool, p: &Params, ctl: &Interrupt<'_>) -> Result<(), Error> {
     let (w, h) = dimensions(rect)?;
     if data.len() != w * h * channels {
@@ -82,6 +87,8 @@ fn pixels(data: &mut [f32], rect: Rect, channels: usize, alpha: bool, p: &Params
     }
     Ok(())
 }
+/// Publish deterministic noise over the clipped domain with selection mixing, checked workspace and no source mutation
+/// on failure.
 pub fn apply_with(s: &Surface, p: &Params, area: Rect, domain: Rect, selection: Option<&Surface>, ctl: &Interrupt<'_>) -> Result<Surface, Error> {
     validate(p, s.channels())?;
     dimensions(domain)?;
@@ -131,6 +138,7 @@ pub fn apply_with(s: &Surface, p: &Params, area: Rect, domain: Rect, selection: 
     }
     Ok(result)
 }
+/// Copy a contained, structurally valid raw-image region for the infallible adapter's fallback.
 fn identity(src: &Image, out: Rect) -> Result<Vec<f32>, Error> {
     let (w, h) = dimensions(src.rect)?;
     let (ow, oh) = dimensions(out)?;
@@ -169,9 +177,11 @@ pub(crate) fn run_image(src: &Image, out: Rect, ctx: &Ctx, p: &Params) -> Vec<f3
 mod tests {
     use super::*;
     use photocraft_color::ColorMode;
+    /// Supply a reproducible uniform-noise configuration with independent channels and a fixed seed.
     fn p(amounts: Vec<f32>) -> Params {
         Params { amounts, distribution: Distribution::Uniform, monochromatic: false, relative: false, seed: 71 }
     }
+    /// Build a half-valued native surface so noise amplitudes and unchanged channels have explicit expected baselines.
     fn surface(mode: ColorMode, depth: SampleType, r: Rect) -> Surface {
         let fmt = PixelFormat::new(mode, depth, true);
         let mut s = Surface::new(fmt);
@@ -179,6 +189,8 @@ mod tests {
         s
     }
     #[test]
+    /// Compare uniform/Gaussian output to the existing native noise function and separately bound asymmetric channel
+    /// amplitudes.
     fn native_noise_counterpart_uniform_gaussian_and_independent_channel_amplitudes() {
         let r = Rect::new(-2, 5, 11, 12);
         let s = surface(ColorMode::Rgb, SampleType::F32, r);
@@ -203,6 +215,7 @@ mod tests {
         );
     }
     #[test]
+    /// Check alpha-only color preservation across models/depths and signal-relative noise on signed HDR channels.
     fn all_native_models_depths_alpha_only_and_relative_hdr_are_explicit() {
         let r = Rect::new(0, 0, 8, 4);
         for mode in [
@@ -241,6 +254,8 @@ mod tests {
         }
     }
     #[test]
+    /// Require crop-independent seeded output, zero-selection identity and unchanged sources after cancellation or
+    /// nonfinite overflow.
     fn coordinates_tiling_selection_cancellation_and_overflow_are_atomic() {
         let r = Rect::new(-3, 5, 130, 12);
         let s = surface(ColorMode::Rgb, SampleType::F32, r);
@@ -263,6 +278,7 @@ mod tests {
         assert_eq!(apply_with(&huge, &p, r, r, None, &Interrupt::NONE).unwrap_err(), Error::NonFiniteSample);
     }
     #[test]
+    /// Reject empty, mismatched, excessive and nonfinite amplitude arrays before native noise processing.
     fn strict_shape_and_numeric_validation() {
         for amounts in [vec![], vec![0.; 6], vec![f32::NAN; 4], vec![401.; 4], vec![-1.; 4]] {
             assert!(validate(&p(amounts), 4).is_err());

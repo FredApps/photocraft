@@ -680,6 +680,7 @@ pub enum Error {
     WorkspaceLimit,
 }
 impl std::fmt::Display for Error {
+    /// Describe checked native matting failures, including geometry, workspace, allocation and cancellation errors.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Cancelled => "native matting cancelled",
@@ -944,6 +945,8 @@ mod native_matte_tests {
     use photocraft_color::{ColorMode, SampleType};
     use photocraft_raster::{Interrupt, from_rgba_into, to_rgba};
     #[test]
+    /// Compare checked row output to independently evaluated native unpremultiplication across depth/model encodings
+    /// and restricted areas.
     fn native_black_matte_matches_independent_existing_equation_all_depths_and_models() {
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
             for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
@@ -981,6 +984,8 @@ mod native_matte_tests {
         }
     }
     #[test]
+    /// Pin the established matte equations and preserve zero-coverage or hidden HDR data where the native rule leaves
+    /// it unchanged.
     fn native_black_and_white_pixel_equations_and_hidden_hdr_are_unchanged() {
         let mut black = [0.1, 0.2, 0.3, 0.5];
         remove_matte_pixel(&mut black, false);
@@ -1000,6 +1005,7 @@ mod native_matte_tests {
         }
     }
     #[test]
+    /// Reject a sparsely populated huge extent before dense work, preserving its original tiles and pixels.
     fn sparse_hostile_geometry_is_rejected_before_dense_row_or_tile_allocation() {
         let mut source = Surface::new(PixelFormat::RGBA32F);
         source.fill_rect(Rect::new(0, 0, 1, 1), &[0.1, 0.2, 0.3, 0.5]);
@@ -1010,6 +1016,7 @@ mod native_matte_tests {
         assert_eq!(source.pixel(0, 0), vec![0.1, 0.2, 0.3, 0.5]);
     }
     #[test]
+    /// Keep non-alpha and empty-region inputs unchanged and require cancelled matte work to publish nothing.
     fn no_alpha_empty_bounds_and_cancel_are_atomic() {
         for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
             for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
