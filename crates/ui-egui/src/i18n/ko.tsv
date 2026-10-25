@@ -3667,3 +3667,9 @@ curves	Smooth	매끄럽게
 	Disc	원형
 	Each	각각
 	Value	값
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Aspect Ratio	종횡비
+	Category	카테고리
+	Target	대상
+	Units	단위

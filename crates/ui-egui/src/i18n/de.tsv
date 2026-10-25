@@ -3469,3 +3469,12 @@ curves	Smooth	Glätten
 	Disc	Kreisförmige Nachbarschaft
 	Each	Jeder Kanal
 	Value	Wert
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Aspect Ratio	Seitenverhältnis
+	Category	Kategorie
+	Color Table	Farbtabelle
+	Gamma	Gamma
+	Interpolation	Interpolation
+	Target	Ziel
+	Units	Einheiten

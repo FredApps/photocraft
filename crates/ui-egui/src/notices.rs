@@ -244,7 +244,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let mut dismiss_id = None;
     let mut conversion_report = false;
     // Clear the status bar (~24 px) and leave the dock's edge some air.
-    let area = egui::Area::new(egui::Id::new("photocraft-notices"))
+    let area = egui::Area::new(egui::Id::unique("photocraft-notices"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -36.0))
         .interactable(true)

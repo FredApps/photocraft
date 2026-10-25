@@ -4154,3 +4154,6 @@ curves	Smooth	Εξομάλυνση
 	Disc	Κυκλική γειτονιά
 	Each	Κάθε κανάλι
 	Value	Τιμή
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Target	Στόχος

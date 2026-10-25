@@ -3083,3 +3083,13 @@ curves	Smooth	平滑
 	Value	值
 	Repeat	重複
 	Wrap	環繞
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Aspect Ratio	外觀比例
+	Category	類別
+	Color Table	色彩表
+	Gamma	Gamma
+	Interpolation	內插
+	Profile	描述檔
+	Target	目標
+	Units	單位

@@ -3472,3 +3472,9 @@ curves	Smooth	Haluskan
 	Each	Setiap Kanal
 	Value	Nilai
 	Wrap	Bungkus
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Color Table	Tabel Warna
+	Gamma	Gamma
+	Profile	Profil
+	Target	Target

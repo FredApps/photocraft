@@ -4200,3 +4200,6 @@ cameraRaw	Dehaze	Odstranění oparu
 	Disc	Kruhové okolí
 	Each	Každý kanál
 	Value	Hodnota
+
+# Egui 0.37 migration controls (Aspect Ratio, Category, Color Table, Gamma, Interpolation, Profile, Target, Units, Demosaic)
+	Aspect Ratio	Poměr stran

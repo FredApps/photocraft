@@ -97,7 +97,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let tokens = crate::theme::Tokens::get(ctx);
     let mut close = false;
     let mut offset = None;
-    let modal = egui::Modal::new(egui::Id::new("import-conversion-report")).backdrop_color(egui::Color32::TRANSPARENT).show(ctx, |ui| {
+    let modal = egui::Modal::new(egui::Id::unique("import-conversion-report")).backdrop_color(egui::Color32::TRANSPARENT).show(ctx, |ui| {
         ui.set_width(640.0f32.min((ctx.content_rect().width() - 48.0).max(280.0)));
         ui.heading(tl!("Import Conversion Report"));
         if let Some(active) = app.session.active() {
