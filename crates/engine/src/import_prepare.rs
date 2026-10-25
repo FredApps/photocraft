@@ -151,6 +151,51 @@ impl Allowance {
         })?;
         self.bytes(bytes)
     }
+
+    /// Debit actual decoded non-native raster payload before recursive preparation or composition.
+    /// Format-specific decoders retain their own allocation limits; this is the shared preparation ledger.
+    fn decoded_surfaces(&mut self, doc: &Document, ctx: &JobCtx) -> Result<()> {
+        let mut groups = vec![doc.layers.iter()];
+        while let Some(children) = groups.last_mut() {
+            ctx.check()?;
+            let Some(layer) = children.next() else {
+                groups.pop();
+                continue;
+            };
+            if groups.len() > MAX_GROUP_DEPTH + 1 {
+                return Err(limit("native group depth"));
+            }
+            if let Some(surface) = layer.surface() {
+                self.cache(surface)?;
+            }
+            if let Some(mask) = &layer.mask {
+                self.cache(&mask.surface)?;
+            }
+            if let LayerContent::Smart(object) = &layer.content
+                && let Some(mask) = &object.filter_mask
+            {
+                self.cache(&mask.surface)?;
+            }
+            if let Some(children) = layer.children() {
+                groups.push(children.iter());
+            }
+        }
+        for channel in &doc.channels {
+            ctx.check()?;
+            self.cache(&channel.surface)?;
+        }
+        if let Some(channel) = &doc.quick_mask {
+            self.cache(&channel.surface)?;
+        }
+        if let Some(selection) = &doc.selection {
+            self.cache(selection)?;
+        }
+        for pattern in &doc.patterns {
+            ctx.check()?;
+            self.cache(&pattern.surface)?;
+        }
+        ctx.check()
+    }
 }
 
 /// Prepare private pending data after final native color policy, before install or export.
@@ -260,7 +305,7 @@ fn prepare_layers(doc: &mut Document, ids: Vec<LayerPath>, ctx: &JobCtx, depth: 
                 let (name, bytes) = smart_cmds::embedded_source_bytes(&doc.metadata, &object.source)
                     .ok_or_else(|| EngineError::Other("native smart cache is missing and its source needs explicit resource resolution".into()))?;
                 allowance.source(bytes.len())?;
-                if photocraft_format::is_pcraft(&bytes) && depth >= MAX_CONTENT_DEPTH {
+                if depth >= MAX_CONTENT_DEPTH {
                     return Err(limit("64 nested native contents"));
                 }
                 let memo_key = memo::Key::new(doc, object, &bytes, ctx)?;
@@ -284,7 +329,16 @@ fn prepare_layers(doc: &mut Document, ids: Vec<LayerPath>, ctx: &JobCtx, depth: 
                     let original_source = object.source.clone();
                     let original_bytes = bytes.clone();
                     let mut leaf_raster = false;
-                    let prepared_bytes = if photocraft_format::is_pcraft(&bytes) {
+                    let native_source = photocraft_format::is_pcraft(&bytes);
+                    let direct_svg = photocraft_io::svg::is_svg(&bytes) && object.stack_mode.is_none() && object.warp.is_none();
+                    let prepared_source;
+                    let prepared_bytes = if direct_svg {
+                        // The ordinary scale-aware renderer validates and rasterizes
+                        // this source once. Importing native shapes first would build
+                        // caches that this direct vector route immediately discards.
+                        prepared_source = None;
+                        bytes
+                    } else if native_source {
                         let opts = photocraft_format::LoadOptions {
                             max_total_bytes: allowance.remaining_bytes,
                             max_blob_bytes: usize::try_from(allowance.remaining_bytes).unwrap_or(usize::MAX).min(MAX_SOURCE_BYTES),
@@ -304,17 +358,43 @@ fn prepare_layers(doc: &mut Document, ids: Vec<LayerPath>, ctx: &JobCtx, depth: 
                         // Smart/filter/resource must retain its own preparation and
                         // authorization traversal, even if its outer Smart is plain.
                         leaf_raster = source.layers.iter().all(|layer| matches!(layer.content, LayerContent::Raster(_)) && layer.video.is_none());
-                        if prepare(&mut source, ctx, depth + 1, allowance)? { Arc::new(smart_cmds::encode_source(&source)?) } else { bytes }
+                        let changed = prepare(&mut source, ctx, depth + 1, allowance)?;
+                        let encoded = if changed { Arc::new(smart_cmds::encode_source(&source)?) } else { bytes };
+                        prepared_source = Some(source);
+                        encoded
                     } else {
+                        let imported = ctx
+                            .stage(0.0, 0.5, "Decoding embedded contents", |ctl| {
+                                photocraft_io::import_with_options_and_interrupt(&name, &bytes, &Default::default(), ctl)
+                            })
+                            .map_err(|error| {
+                                if ctx.cancelled() { EngineError::Cancelled } else { EngineError::Other(format!("cannot prepare embedded contents: {error}")) }
+                            })?;
+                        if imported.preview_only {
+                            return Err(EngineError::Other("preview-only embedded contents cannot supply a missing native cache".into()));
+                        }
+                        let mut source = imported.document;
+                        allowance.decoded_surfaces(&source, ctx)?;
+                        allowance.extend_render(temporary, Allowance::render_bytes(&source)?.saturating_sub(render_reservation))?;
+                        prepare(&mut source, ctx, depth + 1, allowance)?;
+                        prepared_source = Some(source);
                         bytes
                     };
+                    // Supply the prepared source directly: neither serialization nor a fresh
+                    // recursive decoder/preparation allowance is needed to render this layer.
+                    let image = prepared_source
+                        .as_ref()
+                        .map(|source| smart_cmds::prepared_source_image(source, doc.pixel_format(), object.stack_mode, ctx))
+                        .transpose()?;
                     // Embedded PSD UUIDs render from memory without enabling a filesystem link.
                     object.source = SmartSource::Embedded { file_name: name, bytes: prepared_bytes };
-                    crate::import_native_actions::materialize(doc, &mut layer, ctx, &mut |bytes| allowance.bytes(bytes))?;
-                    if !smart_cmds::prepare_layer(doc, &mut layer, ctx)? {
+                    crate::import_native_actions::materialize_with_source(doc, &mut layer, ctx, &mut |bytes| allowance.bytes(bytes), image.as_ref())?;
+                    if !smart_cmds::prepare_layer_with_source(doc, &mut layer, ctx, image.as_ref())? {
                         return Err(EngineError::Other("native smart contents could not be prepared".into()));
                     }
-                    if !source_was_embedded && let LayerContent::Smart(object) = &mut layer.content {
+                    if (!source_was_embedded || !native_source)
+                        && let LayerContent::Smart(object) = &mut layer.content
+                    {
                         object.source = original_source;
                     }
                     ctx.check()?;

@@ -81,7 +81,19 @@ fn fixed_parameters(
 
 /// Called only for private pending native contents, after their embedded source is prepared.
 /// Charge and authorization failures leave this layer untouched; publication remains caller-owned.
+#[cfg(test)]
 pub(crate) fn materialize(doc: &Document, layer: &mut Layer, ctx: &JobCtx, charge: &mut impl FnMut(u64) -> Result<()>) -> Result<bool> {
+    materialize_with_source(doc, layer, ctx, charge, None)
+}
+
+/// Resolve analysis against the shared preparer's already prepared source, keeping its original locator intact.
+pub(crate) fn materialize_with_source(
+    doc: &Document,
+    layer: &mut Layer,
+    ctx: &JobCtx,
+    charge: &mut impl FnMut(u64) -> Result<()>,
+    source: Option<&crate::smart_cmds::SourceImage>,
+) -> Result<bool> {
     ctx.check()?;
     if !has_pending(layer) {
         return Ok(false);
@@ -102,7 +114,7 @@ pub(crate) fn materialize(doc: &Document, layer: &mut Layer, ctx: &JobCtx, charg
         crate::jobs::authorize_render_command(&filter.command, &filter.params)?;
         let bytes = doc.size.area().checked_mul(32).ok_or_else(|| EngineError::Other("native auto analysis bounds overflow".into()))?;
         charge(bytes)?;
-        let source = crate::smart_cmds::render_below_filter_in(doc, &pending, index, ctx)?
+        let source = crate::smart_cmds::render_below_filter_with_source(doc, &pending, index, ctx, source)?
             .ok_or_else(|| EngineError::Other("native auto action has no prepared source pixels".into()))?;
         let levels = adjustment(&source, doc.bounds(), kind, ctx)?;
         let (command, params) = fixed_parameters(&levels, &source, ctx, charge)?;

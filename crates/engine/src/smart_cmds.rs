@@ -70,7 +70,52 @@ pub fn encode_source(doc: &Document) -> Result<Vec<u8>> {
 
 /// Decodes smart-object contents (a `.pcraft` bundle, PSD/PSB, or any flat image format).
 pub fn decode_source(file_name: &str, bytes: &[u8]) -> Result<Document> {
-    crate::file_cmds::import(file_name, bytes).map_err(|e| other(format!("can't read smart object contents \"{file_name}\": {e}")))
+    decode_source_in(file_name, bytes, &JobCtx::new())
+}
+
+/// Prepare one externally supplied source; nested contents share the preparer's ledger rather than re-entering here.
+fn decode_source_in(file_name: &str, bytes: &[u8], ctx: &JobCtx) -> Result<Document> {
+    decode_source_admitted_in(file_name, bytes, ctx).map(|(document, _)| document)
+}
+
+/// Establish cache reuse eligibility from raw native structure before preparation can materialize stored actions.
+fn decode_source_admitted_in(file_name: &str, bytes: &[u8], ctx: &JobCtx) -> Result<(Document, bool)> {
+    ctx.check()?;
+    crate::allocation::checkpoint("importing document")?;
+    let imported = ctx
+        .stage(0.0, 0.5, "Decoding Smart contents", |ctl| photocraft_io::import_with_options_and_interrupt(file_name, bytes, &Default::default(), ctl))
+        .map_err(|e| if ctx.cancelled() { EngineError::Cancelled } else { other(format!("can't read smart object contents \"{file_name}\": {e}")) })?;
+    if imported.preview_only {
+        return Err(other(format!(
+            "{file_name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
+        )));
+    }
+    let mut doc = imported.document;
+    let reusable = source_without_stored_commands(&doc, ctx)?;
+    crate::import_prepare::prepare_imported_document(&mut doc, ctx)?;
+    Ok((doc, reusable))
+}
+
+/// A bounded iterative raw-layer walk proves cache reuse cannot bypass Smart source or filter replay.
+fn source_without_stored_commands(doc: &Document, ctx: &JobCtx) -> Result<bool> {
+    let mut groups = vec![doc.layers.iter()];
+    while let Some(children) = groups.last_mut() {
+        ctx.check()?;
+        let Some(layer) = children.next() else {
+            groups.pop();
+            continue;
+        };
+        if groups.len() > photocraft_doc::MAX_GROUP_DEPTH + 1 {
+            return Ok(false);
+        }
+        if matches!(layer.content, LayerContent::Smart(_)) {
+            return Ok(false);
+        }
+        if let Some(children) = layer.children() {
+            groups.push(children.iter());
+        }
+    }
+    Ok(true)
 }
 
 fn base_name(path: &str) -> String {
@@ -146,10 +191,11 @@ struct CacheEntry {
     key: CacheKey,
     image: SourceImage,
     decodes: u32,
+    reusable_without_preparation: bool,
 }
 
-/// Decoded source composites by content hash, most recent last. Re-filtering or re-transforming
-/// a smart object never decodes its contents again.
+/// Decoded source composites by content hash, most recent last. Sources proven free of Smart
+/// content reuse decoded pixels; other sources revalidate stored commands under the current authority.
 static SOURCE_CACHE: Mutex<Vec<CacheEntry>> = Mutex::new(Vec::new());
 const CACHE_ENTRIES: usize = 32;
 const CACHE_BYTES: usize = 1 << 30;
@@ -158,29 +204,46 @@ fn cache_key(bytes: &[u8], fmt: PixelFormat) -> CacheKey {
     (*blake3::hash(bytes).as_bytes(), fmt)
 }
 
+/// Reuse only a raw-decoder proof, never an extension or a post-preparation document that hides pending actions.
+fn cache_get_without_preparation(key: &CacheKey) -> Option<SourceImage> {
+    let mut cache = SOURCE_CACHE.lock().ok()?;
+    let index = cache.iter().position(|entry| entry.key == *key && entry.reusable_without_preparation)?;
+    let entry = cache.remove(index);
+    let image = entry.image.clone();
+    cache.push(entry);
+    Some(image)
+}
+
 fn cache_get(key: &CacheKey) -> Option<SourceImage> {
+    cache_get_counted(key, false)
+}
+
+/// Count successful source redecodes even when the already composed image remains reusable.
+fn cache_get_counted(key: &CacheKey, decoded: bool) -> Option<SourceImage> {
     let mut c = SOURCE_CACHE.lock().ok()?;
     let i = c.iter().position(|e| e.key == *key)?;
-    let e = c.remove(i);
+    let mut e = c.remove(i);
+    e.decodes = e.decodes.saturating_add(u32::from(decoded));
     let img = e.image.clone();
     c.push(e);
     Some(img)
 }
 
-fn cache_put(key: CacheKey, image: SourceImage) {
+fn cache_put(key: CacheKey, image: SourceImage, reusable_without_preparation: bool, decoded: bool) {
     let Ok(mut c) = SOURCE_CACHE.lock() else { return };
     let decodes = match c.iter().position(|e| e.key == key) {
-        Some(i) => c.remove(i).decodes + 1,
-        None => 1,
+        Some(i) => c.remove(i).decodes.saturating_add(u32::from(decoded)),
+        None => u32::from(decoded),
     };
-    c.push(CacheEntry { key, image, decodes });
+    c.push(CacheEntry { key, image, decodes, reusable_without_preparation });
     let size = |e: &CacheEntry| e.image.bounds.width() as usize * e.image.bounds.height() as usize * e.key.1.channels() * 4;
     while c.len() > CACHE_ENTRIES || (c.len() > 1 && c.iter().map(size).sum::<usize>() > CACHE_BYTES) {
         c.remove(0);
     }
 }
 
-/// How many times these contents were decoded at this pixel format (0 = never / evicted).
+/// Successful source-image decodes since this cache entry was created (zero for seeded composites or evicted entries).
+/// Direct uncached [`decode_source`] calls are excluded; the diagnostic saturates at `u32::MAX`.
 pub fn source_decode_count(bytes: &[u8], fmt: PixelFormat) -> u32 {
     let key = cache_key(bytes, fmt);
     SOURCE_CACHE.lock().ok().and_then(|c| c.iter().find(|e| e.key == key).map(|e| e.decodes)).unwrap_or(0)
@@ -263,7 +326,7 @@ pub fn svg_source_image(bytes: &[u8], fmt: PixelFormat, scale: f64) -> Result<So
     }
     let buf = photocraft_io::svg::rasterize(bytes, scale as f32).map_err(|e| other(format!("can't render the SVG smart object: {e}")))?;
     let img = SourceImage { surface: Arc::new(buffer_to_surface(&buf, fmt)), bounds: buf.rect };
-    cache_put(key, img.clone());
+    cache_put(key, img.clone(), true, true);
     Ok(img)
 }
 
@@ -278,29 +341,61 @@ fn vector_scale(sm: &SmartObject) -> f64 {
     ((k * 16.0).ceil() / 16.0).clamp(1.0 / 16.0, 64.0)
 }
 
-/// The composited source image of `bytes` in pixel format `fmt` (decoded once, then cached).
+/// The composited source image in `fmt`; raw Smart-free sources reuse caches and other sources recheck authority.
 pub fn source_image(file_name: &str, bytes: &[u8], fmt: PixelFormat) -> Result<SourceImage> {
+    source_image_in(file_name, bytes, fmt, &JobCtx::new())
+}
+
+/// Check stored source authority before consulting a process-wide rendered-source cache.
+fn source_image_in(file_name: &str, bytes: &[u8], fmt: PixelFormat, ctx: &JobCtx) -> Result<SourceImage> {
+    ctx.check()?;
     let key = cache_key(bytes, fmt);
-    if let Some(img) = cache_get(&key) {
+    if let Some(image) = cache_get_without_preparation(&key) {
+        return Ok(image);
+    }
+    let (doc, reusable) = decode_source_admitted_in(file_name, bytes, ctx)?;
+    if let Some(img) = cache_get_counted(&key, true) {
         return Ok(img);
     }
-    let doc = decode_source(file_name, bytes)?;
-    let buf = photocraft_compose::flatten(&doc);
-    let img = SourceImage { surface: Arc::new(source_surface(&doc, &buf, fmt)?), bounds: doc.bounds() };
-    cache_put(key, img.clone());
+    let img = prepared_source_image(&doc, fmt, None, ctx)?;
+    cache_put(key, img.clone(), reusable, true);
     Ok(img)
 }
 
 /// Layer › Smart Objects › Stack Mode: the source's layers (or, when it holds a single group, the
 /// group's layers) combined per pixel with `mode`. Cached like [`source_image`], keyed by mode.
 pub fn stack_image(file_name: &str, bytes: &[u8], fmt: PixelFormat, mode: photocraft_doc::StackMode) -> Result<SourceImage> {
-    use photocraft_algo::stack::Stat;
+    stack_image_in(file_name, bytes, fmt, mode, &JobCtx::new())
+}
+
+/// Decode and authorize the complete source before a cached stack result can be reused.
+fn stack_image_in(file_name: &str, bytes: &[u8], fmt: PixelFormat, mode: photocraft_doc::StackMode, ctx: &JobCtx) -> Result<SourceImage> {
+    ctx.check()?;
     let mut key = cache_key(bytes, fmt);
     key.0 = *blake3::hash(&[&key.0[..], b"stack:", mode.id().as_bytes()].concat()).as_bytes();
-    if let Some(img) = cache_get(&key) {
+    if let Some(image) = cache_get_without_preparation(&key) {
+        return Ok(image);
+    }
+    let (doc, reusable) = decode_source_admitted_in(file_name, bytes, ctx)?;
+    if let Some(img) = cache_get_counted(&key, true) {
         return Ok(img);
     }
-    let doc = decode_source(file_name, bytes)?;
+    let img = prepared_source_image(&doc, fmt, Some(mode), ctx)?;
+    cache_put(key, img.clone(), reusable, true);
+    Ok(img)
+}
+
+/// Compose already prepared native contents without decoding or opening a second preparation allowance.
+pub(crate) fn prepared_source_image(doc: &Document, fmt: PixelFormat, mode: Option<photocraft_doc::StackMode>, ctx: &JobCtx) -> Result<SourceImage> {
+    ctx.check()?;
+    let Some(mode) = mode else {
+        let buf = photocraft_compose::flatten(doc);
+        ctx.check()?;
+        let image = SourceImage { surface: Arc::new(source_surface(doc, &buf, fmt)?), bounds: doc.bounds() };
+        ctx.check()?;
+        return Ok(image);
+    };
+    use photocraft_algo::stack::Stat;
     let layers: &[Layer] = match doc.layers.as_slice() {
         [only] if only.is_group() => only.children().unwrap_or_default(),
         all => all,
@@ -333,9 +428,10 @@ pub fn stack_image(file_name: &str, bytes: &[u8], fmt: PixelFormat, mode: photoc
         photocraft_doc::StackMode::Variance => Stat::Variance,
     };
     let buf = photocraft_compose::Buffer { rect: bounds, px: photocraft_algo::stack::combine(&frames, stat) };
-    let img = SourceImage { surface: Arc::new(source_surface(&doc, &buf, fmt)?), bounds };
-    cache_put(key, img.clone());
-    Ok(img)
+    ctx.check()?;
+    let image = SourceImage { surface: Arc::new(source_surface(doc, &buf, fmt)?), bounds };
+    ctx.check()?;
+    Ok(image)
 }
 
 // ---------- rendering ----------
@@ -402,10 +498,10 @@ fn apply_smart_filter_in(f: &SmartFilter, cur: &Surface, canvas: Rect, extent: R
 }
 
 /// The source placed in document pixels, before any smart filter.
-fn place(name: &str, bytes: &[u8], fmt: PixelFormat, sm: &SmartObject) -> Result<Surface> {
+fn place(name: &str, bytes: &[u8], fmt: PixelFormat, sm: &SmartObject, ctx: &JobCtx, prepared: Option<&SourceImage>) -> Result<Surface> {
     // A vector source is rendered at the placement's scale, and the placement is divided by
     // that scale so the rendered pixels land where the source units would.
-    if sm.stack_mode.is_none() && sm.warp.is_none() && photocraft_io::svg::is_svg(bytes) {
+    if prepared.is_none() && sm.stack_mode.is_none() && sm.warp.is_none() && photocraft_io::svg::is_svg(bytes) {
         let k = vector_scale(sm);
         let img = svg_source_image(bytes, fmt, k)?;
         return Ok(match &sm.perspective {
@@ -421,9 +517,12 @@ fn place(name: &str, bytes: &[u8], fmt: PixelFormat, sm: &SmartObject) -> Result
             }
         });
     }
-    let img = match sm.stack_mode {
-        Some(mode) => stack_image(name, bytes, fmt, mode)?,
-        None => source_image(name, bytes, fmt)?,
+    let img = match prepared {
+        Some(image) => image.clone(),
+        None => match sm.stack_mode {
+            Some(mode) => stack_image_in(name, bytes, fmt, mode, ctx)?,
+            None => source_image_in(name, bytes, fmt, ctx)?,
+        },
     };
     // Through the warp (source space) and the transform in one pass; whole-pixel moves are exact.
     Ok(match &sm.perspective {
@@ -456,6 +555,12 @@ pub fn render(doc: &Document, sm: &SmartObject) -> Result<Option<Surface>> {
 /// is cancelled. Gives the same pixels as [`apply_smart_filters`] on the placed source, but
 /// starts from the deepest stage of the stack already rendered (see [`stack_cache`]).
 fn render_in(doc: &Document, sm: &SmartObject, ctx: &JobCtx) -> Result<Option<Surface>> {
+    render_with_source_in(doc, sm, ctx, None)
+}
+
+/// Replay against a caller-prepared source using the same cancellation and authorization scope.
+fn render_with_source_in(doc: &Document, sm: &SmartObject, ctx: &JobCtx, prepared: Option<&SourceImage>) -> Result<Option<Surface>> {
+    ctx.check()?;
     // Stored filters can come from a file or another layer. Check before looking up cached
     // stages too: a trusted UI render may have populated this process-wide cache earlier.
     for filter in sm.smart_filters.iter().filter(|f| sm.filters_enabled && f.visible) {
@@ -463,12 +568,23 @@ fn render_in(doc: &Document, sm: &SmartObject, ctx: &JobCtx) -> Result<Option<Su
     }
     let Some((name, bytes)) = source_bytes(&doc.metadata, &sm.source) else { return Ok(None) };
     let (fmt, canvas) = (doc.pixel_format(), doc.bounds());
+    // Even an exact rendered-stage hit must not skip authorization of commands
+    // stored inside its source. Shared preparation supplies this already checked image.
+    let decoded_source = if prepared.is_none() && !photocraft_io::svg::is_svg(&bytes) {
+        Some(match sm.stack_mode {
+            Some(mode) => stack_image_in(&name, &bytes, fmt, mode, ctx)?,
+            None => source_image_in(&name, &bytes, fmt, ctx)?,
+        })
+    } else {
+        None
+    };
+    let prepared = prepared.or(decoded_source.as_ref());
     let placed_key = stack_cache::placed_key(&bytes, fmt, sm, canvas);
     let placed = || -> Result<Stage> {
         if let Some(stage) = stack_cache::get(&placed_key) {
             return Ok(stage);
         }
-        let surface = place(&name, &bytes, fmt, sm)?;
+        let surface = place(&name, &bytes, fmt, sm, ctx, prepared)?;
         // Edge pixels repeat at the canvas ∪ placed-content edge, as for layer filters.
         let stage = Stage { extent: canvas.union(&surface.content_bounds()), surface };
         stack_cache::put(placed_key, &stage);
@@ -476,7 +592,9 @@ fn render_in(doc: &Document, sm: &SmartObject, ctx: &JobCtx) -> Result<Option<Su
     };
     let filters: Vec<&SmartFilter> = sm.smart_filters.iter().filter(|f| sm.filters_enabled && f.visible).collect();
     if filters.is_empty() {
-        return Ok(Some(placed()?.surface));
+        let surface = placed()?.surface;
+        ctx.check()?;
+        return Ok(Some(surface));
     }
     let keys: Vec<StageKey> = filters
         .iter()
@@ -509,10 +627,12 @@ fn render_in(doc: &Document, sm: &SmartObject, ctx: &JobCtx) -> Result<Option<Su
         stack_cache::put(*key, &cur);
     }
     ctx.progress(1.0, "");
-    Ok(Some(match sm.filter_mask.as_ref().filter(|m| m.enabled) {
+    let surface = match sm.filter_mask.as_ref().filter(|m| m.enabled) {
         Some(m) => photocraft_compose::filter_mask::mix(&placed()?.surface, &cur.surface, m),
         None => cur.surface,
-    }))
+    };
+    ctx.check()?;
+    Ok(Some(surface))
 }
 
 /// Bytes held by rendered smart filter stages.
@@ -534,11 +654,22 @@ pub fn render_below_filter(doc: &Document, sm: &SmartObject, index: usize) -> Re
 
 /// The same native prefix render with the importing job's cancellation and authority.
 pub(crate) fn render_below_filter_in(doc: &Document, sm: &SmartObject, index: usize, ctx: &JobCtx) -> Result<Option<Surface>> {
+    render_below_filter_with_source(doc, sm, index, ctx, None)
+}
+
+/// Analyze a filter prefix from the shared preparer's actual prepared source instead of reopening its original bytes.
+pub(crate) fn render_below_filter_with_source(
+    doc: &Document,
+    sm: &SmartObject,
+    index: usize,
+    ctx: &JobCtx,
+    prepared: Option<&SourceImage>,
+) -> Result<Option<Surface>> {
     ctx.check()?;
     let mut below = sm.clone();
     below.smart_filters.truncate(index);
     below.filter_mask = None;
-    render_in(doc, &below, ctx)
+    render_with_source_in(doc, &below, ctx, prepared)
 }
 
 /// Re-renders smart layer `l` (which lives in `doc`) in place. Returns false if its source is
@@ -560,14 +691,23 @@ fn unapplied_filters(sm: &SmartObject) -> Vec<String> {
 
 /// A missing import cache must not silently omit a stored native filter. Valid imported caches
 /// are left alone by the caller, including caches for filters this build cannot reproduce.
-pub(crate) fn prepare_layer(doc: &Document, layer: &mut Layer, ctx: &JobCtx) -> Result<bool> {
+/// Install a cache only after replay from the supplied shared-ledger source succeeds.
+pub(crate) fn prepare_layer_with_source(doc: &Document, layer: &mut Layer, ctx: &JobCtx, prepared: Option<&SourceImage>) -> Result<bool> {
     if let LayerContent::Smart(sm) = &layer.content {
         let missing = unapplied_filters(sm);
         if !missing.is_empty() {
             return Err(other(format!("cannot prepare native smart layer: unavailable filter(s): {}", missing.join(", "))));
         }
     }
-    refresh_layer_in(doc, layer, ctx)
+    let LayerContent::Smart(object) = &mut layer.content else { return Ok(false) };
+    match render_with_source_in(doc, object, ctx, prepared)? {
+        Some(surface) => {
+            ctx.check()?;
+            object.cache = Some(surface);
+            Ok(true)
+        }
+        None => Ok(false),
+    }
 }
 
 fn refresh_layer_in(doc: &Document, l: &mut Layer, ctx: &JobCtx) -> Result<bool> {
@@ -852,7 +992,12 @@ pub fn layers_to_smart(doc: &Document, name: &str, layers: Vec<Layer>) -> Result
     sub.size = Size::new(b.width(), b.height());
     let bytes = encode_source(&sub)?;
     // Seed the decode cache with the composite we already have.
-    cache_put(cache_key(&bytes, fmt), SourceImage { surface: Arc::new(translate_surface(&cache, -b.x0, -b.y0)), bounds: sub.bounds() });
+    cache_put(
+        cache_key(&bytes, fmt),
+        SourceImage { surface: Arc::new(translate_surface(&cache, -b.x0, -b.y0)), bounds: sub.bounds() },
+        source_without_stored_commands(&sub, &JobCtx::new())?,
+        false,
+    );
 
     let source = SmartSource::Embedded { file_name: sub.name.clone(), bytes: Arc::new(bytes) };
     Ok(Layer::new(name, LayerContent::Smart(SmartObject::new(source, Affine::translate(b.x0 as f64, b.y0 as f64), Some(cache)))))
@@ -952,6 +1097,12 @@ fn set_source(s: &mut Session, p: &Value, label: &str, keep_psd: bool, make: imp
 
 // Keep the shared-instance transaction out of the per-command source-builder instantiations.
 fn set_shared_source(s: &mut Session, id: LayerId, label: &str, keep_psd: bool, new: SmartSource) -> Result<Value> {
+    set_shared_source_in(s, id, label, keep_psd, new, &JobCtx::new())
+}
+
+/// Keep all shared-instance refreshes and the final publication under the replacing job's cancellation context.
+fn set_shared_source_in(s: &mut Session, id: LayerId, label: &str, keep_psd: bool, new: SmartSource, ctx: &JobCtx) -> Result<Value> {
+    ctx.check()?;
     let (parent, contents_id, changed, warnings) = s.edit(label, |doc, _| {
         let contents_id = smart(doc, id)?.contents_id;
         let changed = instances(doc, contents_id);
@@ -963,8 +1114,9 @@ fn set_shared_source(s: &mut Session, id: LayerId, label: &str, keep_psd: bool, 
             }
             warnings
                 .extend(unapplied_filters(smart(doc, instance)?).into_iter().map(|n| format!("the {n} smart filter is not supported, so it was not applied")));
-            refresh_or_fail(doc, instance)?;
+            refresh_or_fail_in(doc, instance, ctx)?;
         }
+        ctx.check()?;
         Ok((doc.id, contents_id, changed, warnings))
     })?;
     // An old editor must not overwrite newly replaced/relinked contents on close. Keep its
@@ -991,8 +1143,21 @@ pub fn replace_contents_from_bytes(s: &mut Session, p: &Value, file_name: &str, 
 
 /// Replace Contents from a file's name and bytes: what the desktop and web file pickers hand over.
 pub fn replace_contents_bytes(s: &mut Session, id: LayerId, file_name: &str, bytes: Vec<u8>) -> Result<Value> {
-    decode_source(file_name, &bytes)?; // fail before touching the document
-    set_shared_source(s, id, "Replace Contents", false, SmartSource::Embedded { file_name: file_name.to_string(), bytes: Arc::new(bytes) })
+    let file_name = file_name.to_string();
+    let decode_name = file_name.clone();
+    let bytes = Arc::new(bytes);
+    let decode_bytes = bytes.clone();
+    crate::jobs::run(
+        s,
+        "Replace Contents",
+        true,
+        move |ctx| {
+            decode_source_in(&decode_name, &decode_bytes, ctx)?; // fail before touching the document
+            ctx.check()?;
+            Ok(ctx.clone())
+        },
+        move |s, ctx| set_shared_source_in(s, id, "Replace Contents", false, SmartSource::Embedded { file_name, bytes }, &ctx),
+    )
 }
 
 /// The file name and bytes of smart object `id`'s contents.

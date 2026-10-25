@@ -435,3 +435,147 @@ fn temporary_scope_does_not_refund_retained_bytes_on_error_or_cancel() {
     assert!(short.with_render(&doc, |_, _, _| Ok(())).is_err());
     assert_eq!(short.remaining_bytes, 31, "failed initial reservation is atomic");
 }
+
+/// Produce an original flat source so nested preparation exercises a non-native decoder without any external asset.
+fn png_smart() -> Layer {
+    let pixels = Document::with_background("Original flat pixels", Size::new(1, 1), ColorMode::Rgb, SampleType::U8, Color::rgb(0.2, 0.4, 0.6));
+    let bytes = photocraft_io::export(&pixels, "original.png", &Default::default()).unwrap().bytes;
+    Layer::new(
+        "Flat Smart source",
+        LayerContent::Smart(SmartObject::new(SmartSource::Embedded { file_name: "original.png".into(), bytes: Arc::new(bytes) }, Affine::IDENTITY, None)),
+    )
+}
+
+#[test]
+/// Decoded flat tiles are charged before rendering, and an insufficient shared allowance cannot publish a cache.
+fn non_native_source_tiles_share_the_preparation_work_allowance() {
+    let original = document(vec![png_smart()]);
+    let mut refused = original.clone();
+    let mut budget = allowance();
+    budget.remaining_bytes = 64;
+    assert!(prepare_with_allowance(&mut refused, &JobCtx::new(), &mut budget).is_err());
+    assert_eq!(refused, original);
+    let mut ready = original.clone();
+    prepare_with_allowance(&mut ready, &JobCtx::new(), &mut allowance()).unwrap();
+    assert!(ready.layers[0].surface().is_some());
+    let (LayerContent::Smart(a), LayerContent::Smart(b)) = (&original.layers[0].content, &ready.layers[0].content) else { panic!("Smart sources") };
+    assert_eq!(a.source, b.source, "preparation must preserve original non-native contents");
+}
+
+#[test]
+/// A native parent and flat child consume the same item counter; recursive decoding cannot reset admission.
+fn nested_non_native_source_keeps_one_item_ledger_and_cancellation_context() {
+    let inner = document(vec![png_smart()]);
+    let original = document(vec![smart(Arc::new(smart_cmds::encode_source(&inner).unwrap()))]);
+    let mut pending = original.clone();
+    let mut budget = allowance();
+    budget.items = 1;
+    assert!(prepare_with_allowance(&mut pending, &JobCtx::new(), &mut budget).is_err());
+    assert_eq!(budget.items, 0);
+    assert_eq!(pending, original);
+    let context = JobCtx::new();
+    context.cancel();
+    assert!(matches!(prepare_with_allowance(&mut pending, &context, &mut allowance()), Err(EngineError::Cancelled)));
+    assert_eq!(pending, original);
+    let mut exact = allowance();
+    exact.items = 2;
+    prepare_with_allowance(&mut pending, &JobCtx::new(), &mut exact).unwrap();
+    assert_eq!(exact.items, 0);
+    assert!(pending.layers[0].surface().is_some());
+}
+
+#[test]
+/// Warm Smart-free native and PNG sources bypass the decoder checkpoint, rather than merely reporting a stable counter.
+fn warm_smart_free_sources_reuse_pixels_without_reentering_the_decoder() {
+    let layer = png_smart();
+    let LayerContent::Smart(object) = layer.content else { panic!("PNG Smart") };
+    let SmartSource::Embedded { file_name, bytes } = object.source else { panic!("embedded PNG") };
+    let format = document(Vec::new()).pixel_format();
+    for (name, bytes) in [(file_name, bytes), ("raster.pcraft".into(), source(Color::rgb(0.71, 0.29, 0.43)))] {
+        let first = smart_cmds::source_image(&name, &bytes, format).unwrap();
+        crate::allocation::fail_next_for_test();
+        let reused = smart_cmds::source_image(&name, &bytes, format);
+        let untouched_failpoint = crate::allocation::checkpoint("proving decoder was skipped");
+        assert!(reused.is_ok(), "Smart-free warm source must not decode again: {name}");
+        assert!(untouched_failpoint.is_err(), "the warm hit must leave the decoder failpoint armed");
+        assert_eq!(first.surface.as_ref(), reused.unwrap().surface.as_ref());
+    }
+}
+
+#[test]
+/// A warm Smart-bearing source still enters preparation, and its decode counter advances on actual revalidation.
+fn warm_smart_source_revalidates_before_cache_reuse_and_counts_decodes() {
+    let mut layer = smart(source(Color::rgb(0.37, 0.19, 0.61)));
+    let LayerContent::Smart(object) = &mut layer.content else { panic!("native Smart") };
+    object.smart_filters.push(SmartFilter {
+        command: "image.adjustments.invert".into(),
+        params: serde_json::json!({}),
+        blend: BlendMode::Normal,
+        opacity: 1.0,
+        visible: true,
+    });
+    let doc = document(vec![layer]);
+    let bytes = smart_cmds::encode_source(&doc).unwrap();
+    smart_cmds::source_image("action.pcraft", &bytes, doc.pixel_format()).unwrap();
+    assert_eq!(smart_cmds::source_decode_count(&bytes, doc.pixel_format()), 1);
+    smart_cmds::source_image("action.pcraft", &bytes, doc.pixel_format()).unwrap();
+    assert_eq!(smart_cmds::source_decode_count(&bytes, doc.pixel_format()), 2);
+    crate::allocation::fail_next_for_test();
+    let refused = smart_cmds::source_image("action.pcraft", &bytes, doc.pixel_format());
+    let reset = crate::allocation::checkpoint("clear possible test failpoint");
+    assert!(refused.is_err(), "an action-bearing cache must not hide failed decoder admission");
+    assert!(reset.is_ok(), "the attempted decode must consume the armed failpoint");
+}
+
+/// Keep one simple vector shape in the actual SVG renderer rather than supplying a native cached substitute.
+fn svg_smart(stack: bool) -> Layer {
+    let mut object = SmartObject::new(
+        SmartSource::Embedded {
+            file_name: "original.svg".into(),
+            bytes: Arc::new(br##"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="#cc3366"/></svg>"##.to_vec()),
+        },
+        Affine::IDENTITY,
+        None,
+    );
+    if stack {
+        object.stack_mode = Some(photocraft_doc::StackMode::Mean);
+    }
+    Layer::new("Original SVG", LayerContent::Smart(object))
+}
+
+#[test]
+/// Direct SVG spends only its outer preparation item and retained cache; stacked SVG retains shared decoded-source admission.
+fn direct_svg_avoids_discarded_native_import_while_stacked_svg_keeps_shared_admission() {
+    let original = document(vec![svg_smart(false)]);
+    let mut ready = original.clone();
+    let mut measured = allowance();
+    measured.items = 1;
+    prepare_with_allowance(&mut ready, &JobCtx::new(), &mut measured).unwrap();
+    assert_eq!(measured.items, 0, "direct vector rendering needs only the outer Smart item");
+    let retained = MAX_PREPARATION_BYTES - measured.remaining_bytes;
+    let frame = Allowance::render_bytes(&original).unwrap();
+    let mut exact = allowance();
+    exact.items = 1;
+    exact.remaining_bytes = frame + retained;
+    let mut direct = original.clone();
+    prepare_with_allowance(&mut direct, &JobCtx::new(), &mut exact).unwrap();
+    assert_eq!(exact.remaining_bytes, frame);
+    assert_eq!(direct, ready);
+    let stacked = document(vec![svg_smart(true)]);
+    let mut refused = stacked.clone();
+    let mut insufficient = allowance();
+    insufficient.items = 1;
+    insufficient.remaining_bytes = frame + retained;
+    assert!(
+        prepare_with_allowance(&mut refused, &JobCtx::new(), &mut insufficient).is_err(),
+        "stacking must still admit the decoded SVG shape tiles alongside its output"
+    );
+    assert_eq!(refused, stacked);
+    let mut full = allowance();
+    full.items = 1;
+    prepare_with_allowance(&mut refused, &JobCtx::new(), &mut full).unwrap();
+    assert_eq!(full.items, 0, "the tiny imported shape already has a valid native cache");
+    let a = ready.layers[0].surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 1, 1));
+    let b = refused.layers[0].surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 1, 1));
+    assert_eq!(a, b, "one native SVG shape and its Mean stack have the same ordinary pixels");
+}
