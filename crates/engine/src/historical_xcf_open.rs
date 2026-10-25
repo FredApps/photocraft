@@ -622,6 +622,99 @@ mod tests {
         assert_eq!(s.jobs.historical_xcf.len(), MAX_HELD);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Observe completed worker threads without receiving or applying their queued payloads; yield only until a bounded deadline.
+    fn historical_workers_finished_without_poll(s: &Session) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !s.jobs.running.iter().all(|job| job.handle.as_ref().is_some_and(std::thread::JoinHandle::is_finished)) {
+            assert!(std::time::Instant::now() < deadline, "tiny historical-source workers must finish before the test deadline");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Apply simultaneous ready choices under the held-source count limit and release rejected or cancelled payloads without installing a document.
+    fn asynchronous_historical_choices_enforce_admission_when_ready_payloads_are_polled() {
+        use crate::jobs::JobOutcome;
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":2,"height":2})).unwrap();
+        let original = s.active().unwrap().doc.clone();
+        let mut identities = Vec::new();
+        let mut sources = Vec::new();
+        let source_len = source().len();
+        for index in 0..=MAX_HELD {
+            let bytes = source();
+            sources.push(Arc::downgrade(&bytes));
+            let Started::Job(id) = s.start_open_for_user_with_path(&format!("queued-{index}.xcf"), OpenSource::Bytes(bytes), None).unwrap() else {
+                panic!("historical fixture must start a native worker")
+            };
+            identities.push(id);
+        }
+        historical_workers_finished_without_poll(&s);
+        assert_eq!(s.jobs.running.len(), MAX_HELD + 1);
+        assert!(s.jobs.historical_xcf.is_empty(), "worker completion alone does not admit a held choice");
+        assert!(sources.iter().all(|bytes| bytes.strong_count() == 1), "each ready payload alone owns its distinct encoded source");
+        assert!(Arc::ptr_eq(&original, &s.active().unwrap().doc));
+        let events = s.poll_jobs();
+        assert_eq!(events.len(), MAX_HELD + 1);
+        assert_eq!(events.iter().filter(|event| matches!(event.outcome, JobOutcome::Done(_))).count(), MAX_HELD);
+        let failed: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.outcome {
+                JobOutcome::Failed(error) => Some((event.id, error)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].0, *identities.last().unwrap());
+        assert!(failed[0].1.contains("too many historical XCF sources"));
+        assert_eq!(s.jobs.historical_xcf.len(), MAX_HELD);
+        assert_eq!(s.jobs.historical_xcf.iter().map(|held| held.bytes.len()).sum::<usize>(), MAX_HELD * source_len);
+        assert!(sources.iter().take(MAX_HELD).all(|bytes| bytes.strong_count() == 1));
+        assert!(sources.last().unwrap().upgrade().is_none(), "capacity rejection releases its ready source payload");
+        assert!(s.jobs.running.is_empty());
+        assert!(s.held_opens.is_empty());
+        assert_eq!(s.documents().len(), 1);
+        assert!(Arc::ptr_eq(&original, &s.active().unwrap().doc));
+        let held_ids: Vec<_> = s.jobs.historical_xcf.iter().map(|held| held.id).collect();
+        for id in held_ids {
+            assert_eq!(s.execute("file.open", json!({"heldHistoricalXcfOpen":id,"cancel":true})).unwrap()["cancelled"], true);
+        }
+        assert!(sources.iter().all(|bytes| bytes.upgrade().is_none()), "cancelling admitted choices releases every retained source");
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Cancel a completed but unapplied choice and prove its queued encoded bytes are dropped without creating any hold.
+    fn cancelling_ready_historical_choice_releases_payload_before_polling() {
+        use crate::jobs::JobOutcome;
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":2,"height":2})).unwrap();
+        let original = s.active().unwrap().doc.clone();
+        let bytes = source();
+        let weak = Arc::downgrade(&bytes);
+        let Started::Job(id) = s.start_open_for_user_with_path("cancel-ready.xcf", OpenSource::Bytes(bytes), None).unwrap() else {
+            panic!("historical fixture must start a native worker")
+        };
+        historical_workers_finished_without_poll(&s);
+        assert_eq!(weak.strong_count(), 1, "completed ready payload retains its source before cancellation");
+        assert!(s.jobs.historical_xcf.is_empty());
+        assert!(s.cancel_job(id));
+        s.join_cancelled_jobs();
+        assert!(weak.upgrade().is_none(), "discarding the receiver drops the completed source payload");
+        assert!(!s.cancel_job(id), "a cancelled ready job cannot be consumed twice");
+        let events = s.poll_jobs();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, id);
+        assert_eq!(events[0].outcome, JobOutcome::Cancelled);
+        assert!(s.jobs.running.is_empty());
+        assert!(s.jobs.historical_xcf.is_empty());
+        assert!(s.held_opens.is_empty());
+        assert_eq!(s.documents().len(), 1);
+        assert!(Arc::ptr_eq(&original, &s.active().unwrap().doc));
+    }
+
     #[test]
     /// Consume held bytes after a valid resume even when decoding fails or the inline job is cancelled.
     fn historical_failed_and_cancelled_resume_release_encoded_source() {

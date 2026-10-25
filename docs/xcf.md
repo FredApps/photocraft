@@ -139,6 +139,23 @@ computed from the payload instead of trusted. Truncated files are covered by tes
 Generated native resources and embedded contents have separate bounded working/source
 allowances and cancellation checks. These component limits are not a whole-process memory claim.
 
+Focused security regressions exercise import, native persistence and reopening:
+
+- `source_free_native_reopen_keeps_xcf_filter_authorization_and_unknown_commands_inert`
+  imports a synthetic stored XCF effect through a rooted automation session, saves and reopens
+  `.pcraft` after deleting the XCF, opens its native Smart contents and then denies the persisted filter. Editing and
+  refresh must respect that denial even after a trusted render warmed the cache. Retained
+  command-shaped bytes remain inert; documents, history and unrelated files stay unchanged.
+- The asynchronous historical-choice tests admit at most 16 pending source choices when finished
+  workers are polled. They check that rejected and cancelled results release their encoded bytes
+  without installing a document. The 16-entry/1 GiB retained-choice limits do not cover every
+  completed worker result awaiting polling.
+
+Headless MCP/RPC opens serialize through their session lock. Desktop background opens can overlap,
+and neither these tests nor the per-import limits establish an aggregate process-memory ceiling
+or a process sandbox. Broader workload admission and continuous fuzzing remain repository-wide
+hardening work; see [Security overview](../book/src/security/overview.md).
+
 ## Verification
 
 Unit tests (`crates/io/src/xcf/tests.rs`) build XCF files from the specification with a small
