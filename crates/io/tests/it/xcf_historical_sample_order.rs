@@ -10,9 +10,11 @@ struct Wire {
     wide: bool,
 }
 impl Wire {
+    /// Append a structural big-endian word independently of the selected pixel sample order.
     fn word(&mut self, value: u32) {
         self.bytes.extend(value.to_be_bytes());
     }
+    /// Encode a structural offset using the declared XCF pointer width, always in big-endian order.
     fn pointer(&mut self, value: usize) {
         if self.wide {
             self.bytes.extend((value as u64).to_be_bytes());
@@ -20,11 +22,13 @@ impl Wire {
             self.word(value as u32);
         }
     }
+    /// Reserve a zero structural pointer and return its location for later fixture framing.
     fn slot(&mut self) -> usize {
         let at = self.bytes.len();
         self.pointer(0);
         at
     }
+    /// Resolve a reserved pointer to the current output position using its declared structural width.
     fn set(&mut self, slot: usize) {
         let at = self.bytes.len();
         if self.wide {
@@ -33,20 +37,24 @@ impl Wire {
             self.bytes[slot..slot + 4].copy_from_slice(&(at as u32).to_be_bytes());
         }
     }
+    /// Encode an independent NUL-terminated XCF string with its explicit byte count.
     fn string(&mut self, value: &str) {
         self.word(value.len() as u32 + 1);
         self.bytes.extend(value.as_bytes());
         self.bytes.push(0);
     }
+    /// Write a synthetic property kind, payload length and uninterpreted payload bytes.
     fn property(&mut self, kind: u32, bytes: &[u8]) {
         self.word(kind);
         self.word(bytes.len() as u32);
         self.bytes.extend(bytes);
     }
+    /// Terminate a synthetic property list with the documented zero record.
     fn end(&mut self) {
         self.word(0);
         self.word(0);
     }
+    /// Author two tile columns crossing the 64-pixel boundary, using explicit sample order and independent raw, planar RLE or zlib framing.
     fn pixels(&mut self, sample: Sample, order: Order, channels: usize, phase: usize, compression: u8) {
         self.word(65);
         self.word(2);
@@ -102,6 +110,7 @@ enum Sample {
     Double,
 }
 impl Sample {
+    /// Select the documented historical precision code for each independently modeled sample kind.
     fn precision(self) -> u32 {
         match self {
             Self::U16 => 250,
@@ -111,6 +120,7 @@ impl Sample {
             Self::Double => 750,
         }
     }
+    /// Return the stored component byte width rather than deriving it from the native destination format.
     fn width(self) -> usize {
         match self {
             Self::U16 | Self::Half => 2,
@@ -118,9 +128,11 @@ impl Sample {
             Self::Double => 8,
         }
     }
+    /// Choose native U16 for U16 source samples and native F32 for the other modeled historical high-depth encodings.
     fn native_depth(self) -> SampleType {
         if matches!(self, Self::U16) { SampleType::U16 } else { SampleType::F32 }
     }
+    /// Compute independent normalized integer or exactly representable floating values for the native sample oracle.
     fn expected(self, index: usize) -> f32 {
         match self {
             Self::U16 => f32::from([0x1234u16, 0x4567, 0x89ab, 0xcdef][index]) / 65535.,
@@ -128,6 +140,7 @@ impl Sample {
             Self::Half | Self::Float | Self::Double => [0.125, 0.25, 0.5, 0.75][index],
         }
     }
+    /// Encode the chosen source value in its explicit sample byte order without changing structural field order.
     fn bytes(self, index: usize, order: Order) -> Vec<u8> {
         let big = match self {
             Self::U16 => [0x1234u16, 0x4567, 0x89ab, 0xcdef][index].to_be_bytes().to_vec(),
@@ -139,6 +152,7 @@ impl Sample {
         if order == Order::LittleEndian { big.into_iter().rev().collect() } else { big }
     }
 }
+/// Build an independent historical wire image with an offset layer, mask, alpha channel and selection, all sharing declared sample framing.
 fn image(version: u32, sample: Sample, order: Order, gray: bool, compression: u8) -> Vec<u8> {
     let mut w = Wire { bytes: format!("gimp xcf v{version:03}\0").into_bytes(), wide: version >= 11 };
     for value in [65, 2, u32::from(gray), sample.precision()] {
@@ -191,12 +205,15 @@ fn image(version: u32, sample: Sample, order: Order, gray: bool, compression: u8
     w.pixels(sample, order, 1, 3, compression);
     w.bytes
 }
+/// Construct import options containing only the explicit historical sample-order choice.
 fn opts(order: Order) -> ImportOptions {
     ImportOptions { historical_xcf_sample_order: Some(order), ..Default::default() }
 }
+/// Import a synthetic source with an explicit byte-order contract and return its native document.
 fn open(bytes: &[u8], order: Order) -> Document {
     photocraft_io::import_with_options("original-wire.xcf", bytes, &opts(order)).unwrap().document
 }
+/// Compare independently specified native samples and depth at interior, tile-edge and offset coordinates for every coverage owner.
 fn assert_pixels(document: &Document, sample: Sample, gray: bool) {
     assert_eq!(document.mode, if gray { ColorMode::Grayscale } else { ColorMode::Rgb });
     assert_eq!(document.depth, sample.native_depth());
@@ -215,6 +232,7 @@ fn assert_pixels(document: &Document, sample: Sample, gray: bool) {
         assert!((document.selection.as_ref().unwrap().pixel(x, y)[0] - sample.expected((x as usize + y as usize + 3) % 4)).abs() <= 1e-7);
     }
 }
+/// Verify both explicit byte orders produce identical native pixels across historical versions, sample widths, models and compression modes.
 #[test]
 fn explicit_sample_order_covers_all_native_widths_roles_compressions_and_tile_edges() {
     for version in [7, 8, 9, 10, 11] {
@@ -237,7 +255,9 @@ fn explicit_sample_order_covers_all_native_widths_roles_compressions_and_tile_ed
 
 // One uncompressed LZMA2 block, CRC32 check and index/footer, independently
 // framed as in the existing native transport test (no encoder feature needed).
+/// Wrap a bounded fixture in an independently framed uncompressed LZMA2 block with valid XZ checksums and index.
 fn xz(bytes: &[u8]) -> Vec<u8> {
+    /// Encode an XZ variable-length integer for the independently authored block index.
     fn vli(mut value: usize, out: &mut Vec<u8>) {
         loop {
             let byte = (value & 127) as u8;
@@ -279,6 +299,7 @@ fn xz(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Verify all supported outer transports preserve the typed order request and native pixel planes, including source-free native persistence.
 #[test]
 fn wrapped_historical_sources_require_choice_and_decode_to_independent_native_samples() {
     use photocraft_color::PixelFormat;
@@ -347,6 +368,7 @@ fn wrapped_historical_sources_require_choice_and_decode_to_independent_native_sa
         assert!(reopened.metadata.import_conversion == result.document.metadata.import_conversion, "{name}: choice report persistence");
     }
 }
+/// Require explicit order for ambiguous historical samples, prioritize cancellation and prove overrides cannot alter modern canonical sample decoding.
 #[test]
 fn default_requires_explicit_order_before_decoding_and_cancellation_still_wins() {
     for version in [7, 8, 9, 10, 11] {

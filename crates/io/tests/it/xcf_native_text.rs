@@ -8,6 +8,8 @@ mod published {
     use photocraft_doc::{LayerContent, TextLayer};
     use photocraft_geom::Affine;
     #[test]
+    /// Compares published text with independently authored native typography and checks editable native
+    /// persistence.
     fn published_text_matches_independently_constructed_native_typography_and_reopens() {
         for name in ["text.xcf", "text-perceptual.xcf"] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/gimp").join(name);
@@ -54,39 +56,48 @@ mod synthetic {
     use photocraft_doc::LayerContent;
     struct Wire(Vec<u8>);
     impl Wire {
+        /// Writes a big-endian framing word for independent historical text fixtures.
         fn word(&mut self, n: u32) {
             self.0.extend(n.to_be_bytes());
         }
+        /// Writes a fixture pointer using the selected text fixture's 64-bit pointer representation.
         fn pointer(&mut self, n: usize) {
             self.0.extend((n as u64).to_be_bytes());
         }
+        /// Reserves a pointer for a layer or hierarchy record written later in the text fixture.
         fn slot(&mut self) -> usize {
             let at = self.0.len();
             self.pointer(0);
             at
         }
+        /// Patches a reserved pointer to the current fixture record without using importer internals.
         fn patch(&mut self, at: usize) {
             let offset = self.0.len() as u64;
             self.0[at..at + 8].copy_from_slice(&offset.to_be_bytes());
         }
+        /// Writes a length-prefixed source string and its required terminating NUL.
         fn text(&mut self, text: &str) {
             self.word(text.len() as u32 + 1);
             self.0.extend(text.as_bytes());
             self.0.push(0);
         }
+        /// Frames a controlled source property or parasite payload for text precedence tests.
         fn property(&mut self, kind: u32, data: &[u8]) {
             self.word(kind);
             self.word(data.len() as u32);
             self.0.extend(data);
         }
+        /// Terminates the fixture property list before layer or hierarchy pointers.
         fn end(&mut self) {
             self.word(0);
             self.word(0);
         }
     }
+    /// Builds modern and legacy text records with controlled modification flags and parasite order.
     fn source(modified: bool, modern: bool, reverse: bool) -> Vec<u8> {
         source_config(modified, modern, reverse, br#"(text "Modern wins") (font "Native requested family") (font-size 12)"#)
     }
+    /// Builds the text fixture using an explicitly supplied modern configuration alongside legacy data.
     fn source_config(modified: bool, modern: bool, reverse: bool, current: &[u8]) -> Vec<u8> {
         let mut w = Wire(b"gimp xcf v011\0".to_vec());
         for n in [1, 1, 0, 150] {
@@ -138,6 +149,7 @@ mod synthetic {
         w.0
     }
     #[test]
+    /// Checks a full historical GDynText record imports as editable native type and survives native reopen.
     fn historical_gdyntext_full_import_is_native_editable_and_persists() {
         let source = source(false, false, false);
         let imported = photocraft_io::import("legacy.xcf", &source).unwrap();
@@ -155,6 +167,7 @@ mod synthetic {
         assert_eq!(reopened.metadata.import_conversion, doc.metadata.import_conversion);
     }
     #[test]
+    /// Verifies modern text precedence and the raster fallback for destructively modified legacy text.
     fn modern_text_takes_priority_and_modified_legacy_keeps_its_own_pixels() {
         for reverse in [false, true] {
             let doc = photocraft_io::import("both.xcf", &source(false, true, reverse)).unwrap().document;
@@ -167,6 +180,8 @@ mod synthetic {
         assert!(imported.warnings.iter().any(|warning| warning.contains("modified text pixels")));
     }
     #[test]
+    /// Checks observed inactive legacy rotation does not invent a native text transform during import or
+    /// persistence.
     fn observed_inactive_legacy_rotation_imports_native_text_and_persists() {
         let mut bytes = source(false, false, false);
         let marker = b"}{0}{2}{c04020}";
@@ -189,6 +204,7 @@ mod synthetic {
         assert_eq!(reopened.layers, doc.layers);
     }
     #[test]
+    /// Verifies modern affine text placement excludes source offsets independently observed to be inactive.
     fn modern_affine_placement_does_not_add_observed_inactive_source_offsets() {
         let bytes =
             source_config(false, true, false, br#"(text "Position") (font-size 20) (transformation (matrix 1.2 0.3 -0.2 0.9)) (offset-x 20) (offset-y 10)"#);

@@ -15,25 +15,31 @@ struct Wire {
     wide: bool,
 }
 impl Wire {
+    /// Starts an independent historical-wire writer without importing any existing encoded XCF data.
     fn empty() -> Self {
         Self { bytes: Vec::new(), wide: false }
     }
+    /// Writes a big-endian framing word used by the documented historical records.
     fn word(&mut self, n: u32) {
         self.bytes.extend(n.to_be_bytes());
     }
+    /// Writes historical length-prefixed text with its terminating NUL byte.
     fn string(&mut self, s: &str) {
         self.word(s.len() as u32 + 1);
         self.bytes.extend(s.as_bytes());
         self.bytes.push(0);
     }
+    /// Writes a fixture pointer using the selected historical XCF version's pointer width.
     fn pointer(&mut self, n: usize) {
         if self.wide { self.bytes.extend((n as u64).to_be_bytes()) } else { self.word(n as u32) }
     }
+    /// Reserves a historical pointer field for a record written later in the fixture.
     fn slot(&mut self) -> usize {
         let slot = self.bytes.len();
         self.pointer(0);
         slot
     }
+    /// Patches a reserved historical pointer to the current independently authored record.
     fn set(&mut self, slot: usize) {
         let at = self.bytes.len();
         if self.wide {
@@ -42,19 +48,23 @@ impl Wire {
             self.bytes[slot..slot + 4].copy_from_slice(&(at as u32).to_be_bytes())
         }
     }
+    /// Writes an exact historical property header and payload for parser-boundary regressions.
     fn property(&mut self, kind: u32, raw: &[u8]) {
         self.word(kind);
         self.word(raw.len() as u32);
         self.bytes.extend(raw);
     }
+    /// Writes the documented terminator for a historical property list.
     fn end(&mut self) {
         self.word(0);
         self.word(0);
     }
 }
+/// Encodes a sequence of framing words independently of source parser helpers.
 fn words(values: &[u32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_be_bytes()).collect()
 }
+/// Constructs a named parasite record with explicit flags and payload length.
 fn parasite(name: &str, raw: &[u8]) -> Vec<u8> {
     let mut w = Wire::empty();
     w.string(name);
@@ -63,6 +73,7 @@ fn parasite(name: &str, raw: &[u8]) -> Vec<u8> {
     w.bytes.extend(raw);
     w.bytes
 }
+/// Builds a complete historical XCF fixture with controlled image, layer and parasite records.
 fn image(version: u32, image_props: &[(u32, Vec<u8>)], layer_props: &[(u32, Vec<u8>)]) -> Vec<u8> {
     let header = if version == 0 { "gimp xcf file\0".to_string() } else { format!("gimp xcf v{version:03}\0") };
     let mut w = Wire { bytes: header.into_bytes(), wide: version >= 11 };
@@ -115,11 +126,13 @@ fn image(version: u32, image_props: &[(u32, Vec<u8>)], layer_props: &[(u32, Vec<
     w.bytes.extend([17, 31, 57, 255]);
     w.bytes
 }
+/// Requires the documented-wire fixture to produce a usable native document through public import.
 fn open(bytes: &[u8]) -> Document {
     let imported = photocraft_io::import("historical.xcf", bytes).expect("documented-wire import");
     assert!(imported.source_read_only);
     imported.document
 }
+/// Checks native save/reopen preserves the converted document and its historical import metadata.
 fn roundtrip(doc: &Document) {
     let bytes = photocraft_format::save_to_bytes(doc, &Default::default()).unwrap();
     let reopened = photocraft_format::load_from_bytes(&bytes).unwrap();
@@ -129,6 +142,8 @@ fn roundtrip(doc: &Document) {
 }
 
 #[test]
+/// Verifies preferred historical font/text records outrank a stale GDynText parasite without losing native
+/// typography.
 fn old_font_description_beats_stale_gdyntext_at_the_full_parasite_boundary() {
     // The pre-resource font STRING and font-size have separate meanings. Point
     // size stays18pt even though the historical font description ends in30.
@@ -153,6 +168,7 @@ fn old_font_description_beats_stale_gdyntext_at_the_full_parasite_boundary() {
 }
 
 #[test]
+/// Checks Latin-1 GDynText decoding and invalid preferred records produce honest editable or raster outcomes.
 fn gdyntext_latin1_and_invalid_preferred_record_preserve_honest_native_outcomes() {
     let old = br"GDT10{caf\351}{1}{0}{0}{0}{ffffff}{0}{-misc-fixed-medium-r-normal--16-120-75-75-p-100-iso8859-1}";
     let old_property = parasite("plug_in_gdyntext/data", old);
@@ -172,6 +188,8 @@ fn gdyntext_latin1_and_invalid_preferred_record_preserve_honest_native_outcomes(
 }
 
 #[test]
+/// Verifies historical path versions preserve signed/fractional geometry and separate strokes through native
+/// persistence.
 fn legacy_paths_keep_signed_fractional_coordinates_and_new_stroke_partition_after_native_save() {
     for record_version in [1, 2, 3] {
         let shift = if record_version == 1 { 0. } else { 0.25 };
@@ -227,6 +245,8 @@ fn legacy_paths_keep_signed_fractional_coordinates_and_new_stroke_partition_afte
 }
 
 #[test]
+/// Checks link naming/monitor flags remain inert while independent legacy movement linkage maps to native
+/// data.
 fn link_rename_monitor_bits_stay_inert_while_legacy_movement_is_a_separate_native_field() {
     // LINK_LAYER bit1 preserves names, bit2 disables monitoring. Neither grants
     // filesystem permission, and neither is the independent legacy LINKED flag.
@@ -253,6 +273,8 @@ fn link_rename_monitor_bits_stay_inert_while_legacy_movement_is_a_separate_nativ
 #[cfg(feature = "corpus")]
 #[test]
 #[ignore = "Requires independently authored historical sources absent from the official corpus pin (T088)"]
+/// Verifies historical high-depth import uses explicit byte-order provenance and preserves editable native
+/// data after reopen.
 fn genuine_historical_highdepth_sources_use_explicit_provenance_order_and_editable_native_reopen() {
     use photocraft_color::{BlendMode, ColorMode, SampleType};
     use photocraft_io::{HistoricalXcfSampleOrder, ImportOptions, IoError};

@@ -7,10 +7,13 @@ use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, SmartFilter, SmartSource};
 use photocraft_geom::{Affine, Point, Rect};
 
+/// Resolves an explicit corpus fixture path for source-evidence tests that require published assets.
 fn fixture(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/gimp").join(name);
     std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}; requires expanded public upstream XCF corpus pin (T081)", path.display()))
 }
+/// Imports a corpus source and requires a usable native document rather than accepting a warning-only
+/// outcome.
 fn open(stem: &str) -> Document {
     let name = format!("{stem}.xcf");
     let result = photocraft_io::import(&name, &fixture(&name)).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -20,13 +23,16 @@ fn open(stem: &str) -> Document {
     assert_eq!(preview.size, result.document.size, "source preview dimensions: {stem}");
     result.document
 }
+/// Selects a named imported owner so evidence assertions cannot accidentally inspect another layer.
 fn layer<'a>(doc: &'a Document, name: &str) -> &'a Layer {
     doc.layers.iter().find(|layer| layer.name == name).unwrap_or_else(|| panic!("missing {name}"))
 }
+/// Requires editable native pixel storage when the source case is expected to remain raster data.
 fn raster(layer: &Layer) -> &photocraft_raster::Surface {
     let LayerContent::Raster(surface) = &layer.content else { panic!("{} must be editable native pixels", layer.name) };
     surface
 }
+/// Saves and reopens native data while checking document and conversion-history preservation.
 fn roundtrip(doc: &Document) {
     // No source pathname is supplied during native reopen.
     let bytes = photocraft_format::save_to_bytes(doc, &Default::default()).expect("native save");
@@ -38,12 +44,14 @@ fn roundtrip(doc: &Document) {
     assert_eq!(reopened.icc_profile, doc.icc_profile);
     assert!(reopened.metadata == doc.metadata, "historical metadata changed on reopen");
 }
+/// Compares independently specified numeric evidence with an explicit tolerance and useful failure context.
 fn near(actual: f64, expected: f64, tolerance: f64) {
     assert!((actual - expected).abs() <= tolerance, "actual {actual}, expected {expected}");
 }
 
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Checks independently saved precision cases against known sample values, placement and native persistence.
 fn saved_precision_samples_preserve_signed_hdr_rounding_offsets_and_native_reopen() {
     let cases: [(&str, usize, usize, &[f64], bool); 4] = [
         ("precision-u32-nonlinear", 17, 5, &[0., 1., 2., 16777215., 16777217., 2147483647., 2147483648., 4294967294., 4294967295.], true),
@@ -87,6 +95,7 @@ fn saved_precision_samples_preserve_signed_hdr_rounding_offsets_and_native_reope
 
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Verifies standard compressed wrappers produce the same native precision data as the underlying saved XCF.
 fn saved_standard_wrappers_open_the_same_native_precision_data() {
     let raw = open("precision-u32-nonlinear");
     for suffix in ["gz", "bz2", "xz"] {
@@ -106,6 +115,7 @@ fn saved_standard_wrappers_open_the_same_native_precision_data() {
 
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Checks original profile colorants and stored literal samples against native transfer/profile policy.
 fn saved_original_profile_colorants_and_literal_samples_follow_native_transfer_policy() {
     for model in ["rgb", "gray"] {
         for encoding in ["linear", "perceptual"] {
@@ -144,6 +154,8 @@ fn saved_original_profile_colorants_and_literal_samples_follow_native_transfer_p
 
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Verifies Unicode box text becomes editable native type while a destructively modified text cache remains
+/// pixels.
 fn saved_unicode_fixed_markup_is_native_type_and_modified_cache_stays_pixels() {
     let doc = open("text-unicode-fixed-markup");
     let native = doc.layers.iter().find_map(|l| if let LayerContent::Text(t) = &l.content { Some(t) } else { None }).expect("native editable text");
@@ -167,6 +179,7 @@ fn saved_unicode_fixed_markup_is_native_type_and_modified_cache_stays_pixels() {
 
 #[test]
 #[ignore = "Requires locally authored named-color source or expanded upstream XCF corpus pin"]
+/// Checks named source markup colors become ordinary editable native text runs with explicit expected paint.
 fn saved_named_markup_colors_become_native_editable_runs() {
     let doc = open("text-named-markup-colors");
     let native = doc.layers.iter().find_map(|l| if let LayerContent::Text(t) = &l.content { Some(t) } else { None }).expect("native editable named text");
@@ -214,6 +227,7 @@ fn saved_named_markup_colors_become_native_editable_runs() {
     roundtrip(&doc);
 }
 
+/// Checks independently specified path anchors and handles on native saved-path data.
 fn check_paths(doc: &Document, legacy_open_handles: bool) {
     assert_eq!(doc.paths.len(), 2);
     for (name, closed) in [("Open fractional cubic", false), ("Closed fractional cubic", true)] {
@@ -238,6 +252,8 @@ fn check_paths(doc: &Document, legacy_open_handles: bool) {
 }
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Verifies fractional paths and vector stroke remain editable while modified vector pixels keep their raster
+/// fallback.
 fn saved_fractional_paths_vector_stroke_and_modified_pixels_stay_native() {
     let paths = open("paths-fractional-open-closed");
     check_paths(&paths, true);
@@ -270,6 +286,7 @@ fn saved_fractional_paths_vector_stroke_and_modified_pixels_stay_native() {
 
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Checks saved floating content stays a separate native pixel layer rather than being silently anchored.
 fn saved_floating_pixels_remain_separate_editable_layers_without_anchoring() {
     for kind in ["rgb", "channel"] {
         let doc = open(&format!("floating-{kind}-negative-offset"));
@@ -301,6 +318,8 @@ fn saved_floating_pixels_remain_separate_editable_layers_without_anchoring() {
 
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Verifies a stored relative link remains inert metadata while its stored pixels and native channel are
+/// usable.
 fn saved_relative_link_uses_stored_pixels_and_metadata_channel_stays_native() {
     let doc = open("link-relative-stored-pixels");
     let cached = raster(layer(&doc, "Relative original resource"));
@@ -325,6 +344,7 @@ fn saved_relative_link_uses_stored_pixels_and_metadata_channel_stays_native() {
     roundtrip(&metadata);
 }
 
+/// Walks ordinary nested native contents so effect evidence can inspect actual editable owners.
 fn native_layers(layers: &[Layer], depth: usize, out: &mut Vec<Layer>) {
     assert!(depth < 16, "bounded ordinary native source nesting");
     for layer in layers {
@@ -345,11 +365,15 @@ fn native_layers(layers: &[Layer], depth: usize, out: &mut Vec<Layer>) {
         }
     }
 }
+/// Collects native Smart Filters from imported contents without treating source operation strings as
+/// commands.
 fn native_filters(layers: &[Layer]) -> Vec<SmartFilter> {
     layers.iter().filter_map(|l| if let LayerContent::Smart(s) = &l.content { Some(s.smart_filters.iter()) } else { None }).flatten().cloned().collect()
 }
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Checks saved effect controls, owner scope, masks and disabled stages against independent native
+/// structures.
 fn saved_effect_owner_parameters_scope_masks_and_disabled_stages_are_native_data() {
     let mut sibling = None;
     for (name, id, key, expected) in [
@@ -440,6 +464,8 @@ fn saved_effect_owner_parameters_scope_masks_and_disabled_stages_are_native_data
 
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Verifies active curve anchors, channel order and the native alpha table persist with their single mask
+/// envelope.
 fn saved_active_per_channel_curve_anchors_and_native_alpha_table_survive_native_save() {
     use photocraft_doc::adjust::{CurvePoint, ToneSpace};
     let doc = open("effect-curves-per-channel-owner");
@@ -497,6 +523,8 @@ fn saved_active_per_channel_curve_anchors_and_native_alpha_table_survive_native_
 
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Checks genuine historical v19 font objects, named cubic paths and precision survive native conversion and
+/// reopen.
 fn historical_v19_font_objects_named_cubic_paths_and_precision_are_native_and_persist() {
     for (suffix, depth) in [("u8", SampleType::U8), ("float", SampleType::F32)] {
         let stem = format!("historical-2-99-18-text-path-{suffix}");
@@ -530,6 +558,8 @@ fn historical_v19_font_objects_named_cubic_paths_and_precision_are_native_and_pe
 
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Verifies stock-writer-resaved bootstrap graph cases retain original pixels inside ordinary native
+/// contents.
 fn historical_stock_resaved_bootstrap_graphs_preserve_original_pixels_as_native_contents() {
     use photocraft_doc::import_conversion::{ConversionDisposition, ImportConversion};
     // Disclosed documented-wire seeds were loaded, saved to NEW XCF files, deleted,
@@ -585,6 +615,8 @@ fn historical_stock_resaved_bootstrap_graphs_preserve_original_pixels_as_native_
 
 #[test]
 #[ignore = "Requires expanded upstream XCF corpus pin (T081)"]
+/// Checks genuine v0 string-font and legacy path records become editable native data rather than opaque-only
+/// history.
 fn genuine_v0_string_font_and_legacy_property_path_are_editable_native_data() {
     // Independently authored, saved, deleted, reopened and queried in stock2.10.32.
     // This producer stores the string font and PROP_PATHS23, unlike v019 objects/list framing.

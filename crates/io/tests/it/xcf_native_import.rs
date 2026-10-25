@@ -7,6 +7,7 @@ use photocraft_doc::{Document, Layer, LayerContent, LayerMask};
 use photocraft_geom::{Rect, Size};
 use photocraft_raster::Surface;
 
+/// Load a pinned public corpus source and require layered read-only import rather than preview fallback.
 fn open(name: &str) -> Document {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/gimp").join(name);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}; run cargo xtask corpus --gimp", path.display()));
@@ -15,10 +16,12 @@ fn open(name: &str) -> Document {
     result.document
 }
 
+/// Recreate the published procedural sample formula independently for native reference surfaces.
 fn pattern(x: u32, y: u32, c: u32, max: u32) -> f32 {
     ((x * 31 + y * 17 + c * 101 + 7) * 13 % (max + 1)) as f32 / max as f32
 }
 
+/// Build a native reference raster from original procedural color and alpha formulas, including offsets and transparency locks.
 fn raster(name: &str, fmt: PixelFormat, width: u32, height: u32, offset: (i32, i32), seed: u32, opaque: bool) -> Layer {
     let mut layer = Layer::raster(name, fmt);
     let max = if fmt.sample == SampleType::U16 { 65535 } else { 255 };
@@ -35,6 +38,7 @@ fn raster(name: &str, fmt: PixelFormat, width: u32, height: u32, offset: (i32, i
     layer
 }
 
+/// Compare native layer properties, full off-canvas raster data, hierarchy and mask coverage with independent reference layers.
 fn assert_layer(actual: &Layer, expected: &Layer) {
     assert_eq!(
         (&actual.name, actual.blend, actual.opacity, actual.visible, actual.clipped, actual.locks, actual.label),
@@ -65,6 +69,7 @@ fn assert_layer(actual: &Layer, expected: &Layer) {
     }
 }
 
+/// Compare native document structure and ordinary CPU composition against an independently constructed reference document.
 fn compare(actual: Document, expected: Document) {
     assert_eq!((actual.size, actual.mode, actual.depth), (expected.size, expected.mode, expected.depth));
     assert_eq!(actual.layers.len(), expected.layers.len());
@@ -76,6 +81,7 @@ fn compare(actual: Document, expected: Document) {
     assert!(a.px.iter().zip(b.px).all(|(a, b)| a.iter().zip(b).all(|(a, b)| (a - b).abs() <= 2.0 / 255.0)), "ordinary native composition");
 }
 
+/// Verify public RGB sources translate to the same independently authored native layer data in both source transfer spaces.
 #[test]
 fn rgb_layers_and_off_canvas_pixels_match_native_data_in_both_source_spaces() {
     for name in ["layers-8bit.xcf", "layers-8bit-perceptual.xcf"] {
@@ -96,6 +102,7 @@ fn rgb_layers_and_off_canvas_pixels_match_native_data_in_both_source_spaces() {
     }
 }
 
+/// Compare imported grouping, isolation and pass-through behavior with ordinary native group constructors.
 #[test]
 fn isolated_and_pass_through_groups_match_native_groups() {
     let mut expected = Document::new("Native", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
@@ -114,6 +121,7 @@ fn isolated_and_pass_through_groups_match_native_groups() {
     compare(open("groups-perceptual.xcf"), expected);
 }
 
+/// Verify the public Gray16 source remains native grayscale U16 with the independent procedural pixels.
 #[test]
 fn gray16_matches_native_gray16_without_reducing_to_rgb8() {
     let mut expected = Document::new("Native", Size::new(40, 30), ColorMode::Grayscale, SampleType::U16);
@@ -122,6 +130,7 @@ fn gray16_matches_native_gray16_without_reducing_to_rgb8() {
     compare(open("gray16.xcf"), expected);
 }
 
+/// Compare enabled and disabled source masks with independent native coverage masks and native composition.
 #[test]
 fn enabled_and_disabled_masks_remain_native_coverage_masks() {
     let mut expected = Document::new("Native", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
@@ -151,6 +160,7 @@ fn enabled_and_disabled_masks_remain_native_coverage_masks() {
     compare(open("mask-perceptual.xcf"), expected);
 }
 
+/// Cancel while reading a public layered source and require an import cancellation error instead of a partial document.
 #[test]
 fn cancellation_during_a_real_layered_import_does_not_publish_a_partial_result() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -167,6 +177,7 @@ fn cancellation_during_a_real_layered_import_does_not_publish_a_partial_result()
     assert!(matches!(photocraft_io::import_with("layers-8bit.xcf", &bytes, &ctl), Err(photocraft_io::IoError::Cancelled)));
 }
 
+/// Check published text becomes editable native typography without using source raster pixels as its cache, and retain historical configuration inertly.
 #[test]
 fn published_text_becomes_native_editable_data_with_inert_configuration() {
     use photocraft_doc::import_conversion::{ConversionDisposition as D, ImportConversion};
@@ -194,6 +205,7 @@ fn published_text_becomes_native_editable_data_with_inert_configuration() {
     assert_eq!(text.transform, reopened_text.transform);
 }
 
+/// Verify native reopen preserves the conversion report, warns once and returns an ordinary writable native document.
 #[test]
 fn native_reopen_warns_once_about_historical_outcomes_and_remains_writable() {
     let doc = open("text-perceptual.xcf");
@@ -205,6 +217,7 @@ fn native_reopen_warns_once_about_historical_outcomes_and_remains_writable() {
     assert_eq!(reopened.warnings.iter().filter(|w| w.contains("historical import conversion report")).count(), 1);
 }
 
+/// Compare ordinary native export pixels while disclosing that nonnative formats cannot preserve the historical conversion report.
 #[test]
 fn ordinary_psd_and_flat_exports_keep_native_output_and_disclose_report_loss() {
     for name in ["layers-8bit-perceptual.xcf", "groups-perceptual.xcf", "mask-perceptual.xcf"] {

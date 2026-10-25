@@ -18,6 +18,8 @@ enum Encoding {
 }
 
 impl Encoding {
+    /// Returns independently encoded historical samples and expected native values for color or normalized
+    /// coverage.
     fn sample(self, index: usize, coverage: bool) -> (Vec<u8>, f32) {
         let index = index % 3;
         match self {
@@ -43,6 +45,7 @@ impl Encoding {
         }
     }
 
+    /// Selects the intended native storage depth for each historical fixture representation.
     fn depth(self) -> SampleType {
         match self {
             Self::Byte => SampleType::U8,
@@ -53,6 +56,8 @@ impl Encoding {
 }
 
 #[test]
+/// Checks historical big-endian tiled samples preserve partial edges, alpha and native storage across
+/// precision variants.
 fn historical_be_tiles_keep_partial_edges_alpha_and_native_storage() {
     // The same precision number has different meanings in the development tables.
     // 65×65 crosses both tile edges; v10/v11 cross the pointer-width boundary.
@@ -122,6 +127,7 @@ fn historical_be_tiles_keep_partial_edges_alpha_and_native_storage() {
 }
 
 #[test]
+/// Verifies historical assigned colorants and transfer interpretation persist with native sample data.
 fn historical_assigned_colorants_and_sample_encoding_survive_native_persistence() {
     // No sample conversion: only the transfer curve indicated by each historical
     // table changes. Native-authored profiles keep the expectation independent.
@@ -180,6 +186,8 @@ fn historical_assigned_colorants_and_sample_encoding_survive_native_persistence(
 }
 
 #[test]
+/// Checks ambiguous historical high-depth storage requires a user choice and records the resulting explicit
+/// native policy.
 fn ambiguous_development_high_depth_requires_choice_then_keeps_durable_explicit_policy() {
     use photocraft_doc::import_conversion::ImportConversion;
 

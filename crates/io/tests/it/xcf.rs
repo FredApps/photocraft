@@ -210,6 +210,8 @@ fn gray16_keeps_its_depth_and_mode() {
 }
 
 #[test]
+/// Checks the published float-linear fixture retains native F32 data and independently verified linear
+/// profile meaning.
 fn float_linear_opens_as_32_bit_float_with_a_linear_profile() {
     let d = open("float-linear.xcf").document;
     assert_eq!((d.mode, d.depth), (ColorMode::Rgb, SampleType::F32));
@@ -246,6 +248,8 @@ fn indexed_opens_as_rgb_with_a_note() {
 }
 
 #[test]
+/// Verifies the published text fixture opens as editable native type with native preparation required instead
+/// of trusting source pixels.
 fn text_layers_open_as_native_editable_data_without_source_cache() {
     let r = open("text.xcf");
     assert_eq!(names(&r.document.layers), ["Background", "XCF"]);

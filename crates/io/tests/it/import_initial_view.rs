@@ -3,6 +3,7 @@ use photocraft_doc::{AlphaChannel, Document, Layer, LayerId, LayerMask};
 use photocraft_geom::Size;
 use photocraft_io::{NativeImportTarget, NativeInitialView};
 
+/// Verify native format import preserves the document without manufacturing one-time source view state.
 #[test]
 fn ordinary_native_import_has_no_initial_view_override() {
     let doc = Document::new("Native", Size::new(8, 6), ColorMode::Rgb, SampleType::U8);
@@ -13,6 +14,7 @@ fn ordinary_native_import_has_no_initial_view_override() {
     assert!(NativeInitialView::default().validate(&doc).is_ok());
 }
 
+/// Exercise valid native targets and reject stale IDs, unavailable masks, bad channel/path indices and invalid samplers.
 #[test]
 fn initial_view_validates_native_ids_masks_channels_and_sampler_capacity() {
     let mut doc = Document::new("Initial view", Size::new(8, 6), ColorMode::Rgb, SampleType::U16);
@@ -45,6 +47,7 @@ fn initial_view_validates_native_ids_masks_channels_and_sampler_capacity() {
     assert!(valid.validate(&doc).is_err());
 }
 
+/// Reject duplicate native layer identities and hierarchy deeper than the native document limit.
 #[test]
 fn initial_view_rejects_ambiguous_ids_and_excessive_hierarchy() {
     let mut doc = Document::new("Invalid hierarchy", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);

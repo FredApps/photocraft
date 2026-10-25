@@ -4,6 +4,7 @@
 use super::*;
 use photocraft_raster::Interrupt;
 
+/// Require complete zlib trailers and exact decoded tile length, rejecting truncation, checksum corruption and extra samples.
 #[test]
 fn zlib_tiles_validate_trailer_and_exact_decoded_size() {
     use std::io::Write;
@@ -24,12 +25,14 @@ fn zlib_tiles_validate_trailer_and_exact_decoded_size() {
     assert!(decode(&encode(&[17, 31, 57, 255, 1])).is_err(), "extra decoded pixel data is invalid");
 }
 
+/// Reject extended zero-length RLE runs instead of allowing a nonadvancing decoder loop.
 #[test]
 fn rle_rejects_zero_length_extended_runs() {
     assert!(rle_decode(&[127, 0, 0, 33, 0, 1], 1, 1).is_err());
     assert!(rle_decode(&[128, 0, 0, 0, 1], 1, 1).is_err());
 }
 
+/// Verify version-specific unit-string framing leaves subsequent layer records and pixels aligned.
 #[test]
 fn custom_unit_string_count_uses_the_file_version_not_header_heuristics() {
     // Public XCF storage: epochs before21 have singular/plural names after the
@@ -57,6 +60,7 @@ fn custom_unit_string_count_uses_the_file_version_not_header_heuristics() {
     }
 }
 
+/// Ensure malformed optional path data leaves raster pixels available and is retained with an invalid-data outcome.
 #[test]
 fn invalid_optional_saved_paths_preserve_pixels_and_configuration() {
     use photocraft_doc::import_conversion::ImportConversion;
@@ -77,6 +81,7 @@ fn invalid_optional_saved_paths_preserve_pixels_and_configuration() {
     }
 }
 
+/// Skip an unknown framed path independently while retaining later native paths, source identities and image pixels.
 #[test]
 fn unknown_standalone_path_does_not_hide_later_paths_or_pixels() {
     use photocraft_doc::import_conversion::ImportConversion;
@@ -325,6 +330,7 @@ impl TestImage {
         }
     }
 
+    /// Serialize the synthetic image using independently declared version, precision and pointer-width tables, including masks and channel framing.
     pub fn write(&self) -> Vec<u8> {
         let mut w = W::new(self.version);
         w.u32(self.width);
@@ -444,6 +450,7 @@ impl TestImage {
     }
 }
 
+/// Import the documented synthetic big-endian sample contract with an explicit order, keeping public default-refusal tests separate.
 fn open(bytes: &[u8]) -> Result<ImportResult> {
     // This synthetic writer explicitly authors big-endian samples. Supply that
     // known test input contract; public default-refusal tests call import directly.
@@ -634,6 +641,7 @@ fn sixteen_bit_and_float_samples_are_big_endian() {
     }
 }
 
+/// Build a one-pixel source fixture with explicitly encoded half, float or double samples for numerical boundary tests.
 fn float_pixel_image(precision: u32, values: [f64; 4]) -> TestImage {
     let mut image = TestImage::rgb8(1, 1);
     image.precision = precision;
@@ -650,6 +658,7 @@ fn float_pixel_image(precision: u32, values: [f64; 4]) -> TestImage {
     image
 }
 
+/// Check independent historical wire precision tables against native depth and exact decoded sample bits.
 #[test]
 fn documented_historical_precision_tables_keep_their_distinct_sample_widths() {
     // Wire tables in the public XCF Header specification; not obtained from Precision.
@@ -708,6 +717,7 @@ fn documented_historical_precision_tables_keep_their_distinct_sample_widths() {
     }
 }
 
+/// Reject nonfinite floating samples and doubles outside the native finite range before publishing any document.
 #[test]
 fn nonfinite_and_unrepresentable_samples_are_rejected_before_publication() {
     for precision in [550, 650, 750] {
@@ -723,6 +733,7 @@ fn nonfinite_and_unrepresentable_samples_are_rejected_before_publication() {
     }
 }
 
+/// Verify U32 samples select native F32 with documented normalization bits and durable numerical-conversion disclosure.
 #[test]
 fn unsigned_32_samples_choose_native_float_and_preserve_normalization_boundaries() {
     use photocraft_doc::import_conversion::{ConversionReason, ImportConversion};
@@ -749,6 +760,7 @@ fn unsigned_32_samples_choose_native_float_and_preserve_normalization_boundaries
     }
 }
 
+/// Reject out-of-domain source coverage before narrowing can disguise it on layers, masks or channels.
 #[test]
 fn coverage_is_validated_before_float_narrowing_for_every_owner() {
     for value in [-1e-50, 1.0 + 2.0f64.powi(-24)] {
@@ -777,6 +789,7 @@ fn coverage_is_validated_before_float_narrowing_for_every_owner() {
     }
 }
 
+/// Preserve representable finite sample bits through native persistence without manufacturing underflow notices.
 #[test]
 fn finite_float_boundaries_preserve_native_bits_without_false_underflow() {
     use photocraft_doc::import_conversion::ImportConversion;
@@ -798,6 +811,7 @@ fn finite_float_boundaries_preserve_native_bits_without_false_underflow() {
     }
 }
 
+/// Pin double-to-native rounding and signed zero while limiting numerical-loss notices to one per affected owner.
 #[test]
 fn double_rounding_signed_zero_and_underflow_have_native_data_and_per_owner_notices() {
     use photocraft_doc::import_conversion::{ConversionReason, ImportConversion};
@@ -845,6 +859,7 @@ fn indexed_images_use_the_colormap() {
     assert!(r.warnings.iter().any(|w| w.contains("indexed")));
 }
 
+/// Reject invalid palettes and unsupported indexed precision rather than inventing grayscale pixels or discarding sample bytes.
 #[test]
 fn indexed_pixels_reject_missing_truncated_and_out_of_range_palettes() {
     for palette in [
@@ -875,6 +890,7 @@ fn indexed_pixels_reject_missing_truncated_and_out_of_range_palettes() {
     assert!(open(&image.write()).is_err(), "unsupported indexed precision must not discard stored sample bytes");
 }
 
+/// Verify repeated palette colors expand to identical RGB while each pixel keeps its own alpha.
 #[test]
 fn duplicate_palette_entries_expand_without_changing_alpha() {
     let mut image = TestImage::rgb8(2, 1);
@@ -901,6 +917,7 @@ fn channels_become_alpha_channels_and_the_selection() {
     assert_eq!(d.selection.as_ref().unwrap().read_region(Rect::new(0, 0, 1, 1))[0], 1.0);
 }
 
+/// Check supported profile, resolution, guide and comment metadata becomes the corresponding native document data.
 #[test]
 fn image_parasites_resolution_guides_and_comment() {
     let mut img = TestImage::rgb8(10, 10);
@@ -935,6 +952,7 @@ fn image_parasites_resolution_guides_and_comment() {
     assert_eq!(d.icc_profile.as_deref().map(|p| p.as_slice()), Some(photocraft_cms::Builtin::DisplayP3.profile().to_bytes().as_slice()));
 }
 
+/// Verify imported relationships and unsupported source features produce explicit outcomes alongside editable native layers.
 #[test]
 fn clipping_text_vector_effects_and_floating_selections_are_reported() {
     let mut img = TestImage::rgb8(4, 4);
@@ -961,6 +979,7 @@ fn clipping_text_vector_effects_and_floating_selections_are_reported() {
     }
 }
 
+/// Use duplicate layer names to prove stable source ordinals and offsets identify separate native conversion outcomes.
 #[test]
 fn native_conversion_distinguishes_duplicate_names_and_reports_source_policies() {
     use photocraft_doc::import_conversion::{ConversionDisposition as D, ImportConversion};
@@ -994,6 +1013,7 @@ fn native_conversion_distinguishes_duplicate_names_and_reports_source_policies()
     assert_eq!(before.px, photocraft_compose::flatten(&no_report).px, "report is not a compositing policy");
 }
 
+/// Compare the chosen native coverage approximation with an independently constructed native document even when no backdrop exists.
 #[test]
 fn source_backdrop_clipping_uses_native_coverage_even_without_a_backdrop() {
     let mut img = TestImage::rgb8(2, 1);
@@ -1012,6 +1032,7 @@ fn source_backdrop_clipping_uses_native_coverage_even_without_a_backdrop() {
     assert!(output.px.iter().all(|p| p[3] > 0.0), "native output remains visible with no backdrop");
 }
 
+/// Keep original item paths and tattoo identity in reporting when invalid hierarchy placement falls back to a native layer.
 #[test]
 fn historical_source_path_and_tattoo_survive_fallback_placement() {
     use photocraft_doc::import_conversion::ImportConversion;
@@ -1028,6 +1049,7 @@ fn historical_source_path_and_tattoo_survive_fallback_placement() {
     assert!(imported.warnings.iter().any(|w| w.contains("leads to no group")));
 }
 
+/// Verify unsupported bytes persist as inert attachments without masquerading as native vector or executable source features.
 #[test]
 fn unknown_configuration_is_retained_inertly_without_claiming_editable_source_features() {
     use photocraft_doc::import_conversion::{ConversionDisposition as D, ImportConversion};
@@ -1054,6 +1076,7 @@ fn unknown_configuration_is_retained_inertly_without_claiming_editable_source_fe
     assert_eq!(photocraft_compose::flatten(&reopened).px, photocraft_compose::flatten(&without).px);
 }
 
+/// Preserve a malformed optional parasite with an explicit invalid-data disposition instead of failing useful document pixels.
 #[test]
 fn malformed_optional_parasite_is_retained_with_an_invalid_data_reason() {
     use photocraft_doc::import_conversion::{ConversionDisposition as D, ConversionReason as R, ImportConversion};
@@ -1196,6 +1219,7 @@ fn limits_and_malformed_structures_are_errors() {
     assert!(open(&bytes).is_err());
 }
 
+/// Verify gzip content routing preserves source pixels and rejects truncated compressed input.
 #[test]
 fn gzipped_files_are_recognised_by_content_and_inflated() {
     use std::io::Write;
@@ -1296,6 +1320,7 @@ fn duplicate_parasites_keep_order_and_last_value() {
     assert_eq!(out[1].0, "gimp-image-grid", "insertion order preserved");
 }
 
+/// Compare every integer normalization endpoint with the checked scalar decoder and require malformed rows to leave output untouched.
 #[test]
 fn integer_row_fast_path_matches_checked_decoder_for_every_native_integer_encoding() {
     for (bytes, maximum) in [(1, u8::MAX as u32), (2, u16::MAX as u32)] {
@@ -1319,6 +1344,7 @@ fn integer_row_fast_path_matches_checked_decoder_for_every_native_integer_encodi
     }
 }
 
+/// Verify integer tile fast paths preserve native model, depth and coverage across compression modes and tile boundaries.
 #[test]
 fn integer_tile_rows_preserve_rgb_gray_alpha_masks_channels_and_native_depth() {
     for (precision, bytes, maximum, depth) in [

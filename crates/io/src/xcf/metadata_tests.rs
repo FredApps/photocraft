@@ -2,10 +2,12 @@ use super::tests::{TestImage, TestLayer, W, hierarchy};
 use super::*;
 use crate::initial_view::NativeImportTarget;
 
+/// Import independently authored metadata wire fixtures and require successful native document construction.
 fn open(bytes: &[u8]) -> ImportResult {
     import("metadata.xcf", bytes, &Interrupt::NONE).expect("valid independent synthetic XCF")
 }
 
+/// Encode one bounded synthetic parasite record with explicit flags and payload length.
 fn parasite(name: &str, payload: &[u8]) -> Vec<u8> {
     let mut out = W { out: Vec::new(), wide: true };
     out.string(name);
@@ -15,6 +17,7 @@ fn parasite(name: &str, payload: &[u8]) -> Vec<u8> {
     out.out
 }
 
+/// Verify comments, EXIF bytes and serialized text tags become native metadata that survives native persistence.
 #[test]
 fn metadata_comments_exif_and_serialized_tags_are_native_and_round_trip() {
     let mut image = TestImage::rgb8(3, 2);
@@ -42,6 +45,7 @@ fn metadata_comments_exif_and_serialized_tags_are_native_and_round_trip() {
     assert!(reopened.metadata.import_conversion.is_some());
 }
 
+/// Reject optional malformed metadata and external-entity XML while retaining the original bytes as inert report attachments.
 #[test]
 fn optional_invalid_xml_and_comment_remain_inert() {
     let mut image = TestImage::rgb8(2, 2);
@@ -59,6 +63,7 @@ fn optional_invalid_xml_and_comment_remain_inert() {
     assert_eq!(report.attachments.len(), 3);
 }
 
+/// Check historical guide domains, valid DPI and unsupported unit disclosures against the native metadata policy.
 #[test]
 fn guides_resolution_and_units_follow_native_limits_and_documented_versions() {
     for version in [11, 15] {
@@ -86,6 +91,7 @@ fn guides_resolution_and_units_follow_native_limits_and_documented_versions() {
     }
 }
 
+/// Prefer modern sampler records, enforce native sampler capacity and avoid replaying one-time view hints on native reopen.
 #[test]
 fn modern_samplers_win_and_native_capacity_bounds_and_inert_fields_are_preserved() {
     let mut image = TestImage::rgb8(20, 20);
@@ -106,6 +112,7 @@ fn modern_samplers_win_and_native_capacity_bounds_and_inert_fields_are_preserved
     assert!(crate::import("reopened.pcraft", &native).expect("reopen").initial_view.is_none());
 }
 
+/// Verify a valid active-mask marker selects the mapped native layer mask without changing its stored coverage.
 #[test]
 fn active_layer_mask_is_a_one_time_native_target() {
     let mut image = TestImage::rgb8(3, 2);
@@ -127,6 +134,7 @@ fn active_layer_mask_is_a_one_time_native_target() {
     assert_eq!(mask.surface.read_region(Rect::new(-1, 1, 1, 2)), vec![64.0 / 255.0, 1.0]);
 }
 
+/// Construct independent channel metadata and declared dimensions for overlay, selection and extent validation tests.
 fn channel_file(props: &[(u32, Vec<u8>)], declared_size: (u32, u32)) -> Vec<u8> {
     let mut w = W::new(11);
     w.u32(5);
@@ -153,6 +161,7 @@ fn channel_file(props: &[(u32, Vec<u8>)], declared_size: (u32, u32)) -> Vec<u8> 
     w.out
 }
 
+/// Check float overlay precedence, native opacity and coverage, and one-time active alpha-channel targeting.
 #[test]
 fn channel_overlay_and_active_target_use_native_channel_data() {
     let props = vec![
@@ -176,6 +185,7 @@ fn channel_overlay_and_active_target_use_native_channel_data() {
     assert!(import("bad.xcf", &channel_file(&props, (3, 1)), &Interrupt::NONE).is_err());
 }
 
+/// Preserve finite extended overlay colors while invalid float color or opacity fields remain inert with safe native fallback.
 #[test]
 fn finite_extended_overlay_colors_are_preserved_and_nonfinite_optional_values_stay_inert() {
     let props = vec![(16, vec![64, 128, 255]), (38, [(-0.25f32).to_be_bytes(), 1.5f32.to_be_bytes(), f32::MAX.to_be_bytes()].concat())];
@@ -194,6 +204,7 @@ fn finite_extended_overlay_colors_are_preserved_and_nonfinite_optional_values_st
     assert!(report.attachments.iter().any(|a| a.kind == "xcf.property.33"));
 }
 
+/// Verify independently sized source masks retain their full native extent at layer offsets and survive native reopen.
 #[test]
 fn differing_mask_extents_are_positioned_in_native_document_coordinates() {
     // Source layer 3x1 at (-2, 2), independently stored mask 2x3. A native surface has
@@ -242,6 +253,7 @@ fn differing_mask_extents_are_positioned_in_native_document_coordinates() {
     assert_eq!(reopened.layers[0].mask, result.document.layers[0].mask);
 }
 
+/// Keep the first source selection active and retain subsequent coverage records as ordinary native alpha channels.
 #[test]
 fn multiple_selection_records_preserve_all_coverage_without_overwriting_the_first() {
     let mut image = TestImage::rgb8(2, 1);
@@ -253,6 +265,7 @@ fn multiple_selection_records_preserve_all_coverage_without_overwriting_the_firs
     assert_eq!(result.document.channels[0].surface.read_region(Rect::new(0, 0, 2, 1)), vec![0.0, 128.0 / 255.0]);
 }
 
+/// Reject overlay hints that name unavailable or ambiguous native targets instead of inventing a view selection.
 #[test]
 fn native_view_overlay_hints_reject_ambiguous_or_absent_targets() {
     let mut document = Document::new("native", Size::new(3, 2), ColorMode::Rgb, SampleType::U8);
@@ -267,6 +280,7 @@ fn native_view_overlay_hints_reject_ambiguous_or_absent_targets() {
     view.validate(&document).expect("existing native alpha overlay");
 }
 
+/// Verify admitted XMP schemas become correctly escaped native RDF bags, sequences and language alternatives.
 #[test]
 fn source_xmp_schemas_become_native_rdf_arrays_and_language_alternatives() {
     let mut image = TestImage::rgb8(2, 2);
@@ -299,6 +313,7 @@ fn source_xmp_schemas_become_native_rdf_arrays_and_language_alternatives() {
     assert_eq!(reopened.metadata.text, result.document.metadata.text);
 }
 
+/// Compare synthesized native TIFF ASCII fields with independent tag IDs and bytes, excluding opaque maker notes and orientation replay.
 #[test]
 fn source_ascii_exif_fields_become_a_native_tiff_packet() {
     let mut image = TestImage::rgb8(2, 2);
@@ -323,6 +338,7 @@ fn source_ascii_exif_fields_become_a_native_tiff_packet() {
     assert_eq!(photocraft_format::load_from_bytes(&native).unwrap().metadata.exif, result.document.metadata.exif);
 }
 
+/// Retain ambiguous namespaces, unknown structures and duplicate scalar values as text without synthesizing misleading native packets.
 #[test]
 fn ambiguous_xmp_types_namespaces_and_duplicate_scalars_remain_inert() {
     let mut image = TestImage::rgb8(2, 2);

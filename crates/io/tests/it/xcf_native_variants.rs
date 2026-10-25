@@ -8,35 +8,43 @@ use photocraft_io::import;
 #[derive(Default)]
 struct Wire(Vec<u8>);
 impl Wire {
+    /// Writes an independently framed big-endian XCF word for synthetic import fixtures.
     fn word(&mut self, value: u32) {
         self.0.extend_from_slice(&value.to_be_bytes());
     }
+    /// Writes a v26 64-bit file pointer, separate from the drawable sample representation.
     fn pointer(&mut self, value: usize) {
         self.0.extend_from_slice(&(value as u64).to_be_bytes());
     }
+    /// Reserves a pointer field that can later target an independently written fixture record.
     fn slot(&mut self) -> usize {
         let at = self.0.len();
         self.pointer(0);
         at
     }
+    /// Patches a reserved fixture pointer to the current record position.
     fn set(&mut self, slot: usize) {
         let address = self.0.len() as u64;
         self.0[slot..slot + 8].copy_from_slice(&address.to_be_bytes());
     }
+    /// Writes the XCF length-prefixed, NUL-terminated string representation used by fixture records.
     fn string(&mut self, value: &str) {
         self.word(value.len() as u32 + 1);
         self.0.extend_from_slice(value.as_bytes());
         self.0.push(0);
     }
+    /// Frames an exact property kind and payload without consulting importer output.
     fn property(&mut self, kind: u32, data: &[u8]) {
         self.word(kind);
         self.word(data.len() as u32);
         self.0.extend_from_slice(data);
     }
+    /// Terminates a fixture property list with the documented zero-kind record.
     fn end(&mut self) {
         self.word(0);
         self.word(0);
     }
+    /// Writes a bounded single-tile hierarchy whose declared dimensions and byte count must agree.
     fn pixels(&mut self, width: u32, height: u32, bpp: u32, data: &[u8]) {
         assert!(width <= 64 && height <= 64);
         assert_eq!(data.len(), (width * height * bpp) as usize);
@@ -64,6 +72,7 @@ struct Drawable {
     mask: Option<Vec<u8>>,
     inert_effect: bool,
 }
+/// Creates a neutral drawable fixture before a test adds offsets, masks or retained effects.
 fn drawable(name: &'static str, width: u32, height: u32, kind: u32, data: Vec<u8>) -> Drawable {
     Drawable { name, width, height, kind, offset: (0, 0), data, mask: None, inert_effect: false }
 }
@@ -79,9 +88,11 @@ struct Image {
     channel: Option<(Vec<u8>, bool)>,
 }
 impl Image {
+    /// Starts a small image fixture with independently selected base model, precision code and sample width.
     fn new(base: u32, precision: u32, bytes: u32) -> Self {
         Self { width: 3, height: 2, base, precision, bytes, layers: Vec::new(), profile: None, palette: Vec::new(), channel: None }
     }
+    /// Serializes the original fixture image, drawable pointers, properties and uncompressed sample payloads.
     fn bytes(&self) -> Vec<u8> {
         let mut w = Wire(b"gimp xcf v026\0".to_vec());
         for value in [self.width, self.height, self.base, self.precision] {
@@ -176,22 +187,28 @@ impl Image {
         w.0
     }
 }
+/// Encodes independent F64 source samples in the modern big-endian tile representation.
 fn doubles(values: impl IntoIterator<Item = f64>) -> Vec<u8> {
     values.into_iter().flat_map(f64::to_be_bytes).collect()
 }
+/// Encodes independent unsigned integer source samples without narrowing their storage width.
 fn words(values: impl IntoIterator<Item = u32>) -> Vec<u8> {
     values.into_iter().flat_map(u32::to_be_bytes).collect()
 }
+/// Finds the named native layer whose independent fixture identity must survive import and reopen.
 fn layer<'a>(document: &'a Document, name: &str) -> &'a Layer {
     document.layers.iter().find(|layer| layer.name == name).unwrap()
 }
+/// Reads an editable native raster region, rejecting a special-layer substitution in these pixel tests.
 fn samples(layer: &Layer, rect: Rect) -> Vec<f32> {
     let LayerContent::Raster(surface) = &layer.content else { panic!("editable native raster") };
     surface.read_region(rect)
 }
+/// Exercises native save and load entirely in memory, without consulting the original XCF again.
 fn reopen(document: &Document) -> Document {
     photocraft_format::load_from_bytes(&photocraft_format::save_to_bytes(document, &Default::default()).unwrap()).unwrap()
 }
+/// Checks native geometry, profile, notices, masks, channels and exact stored sample bits after reopen.
 fn assert_native_equal(before: &Document, after: &Document) {
     assert_eq!((after.size, after.mode, after.depth), (before.size, before.mode, before.depth));
     assert_eq!(after.icc_profile, before.icc_profile);
@@ -210,6 +227,8 @@ fn assert_native_equal(before: &Document, after: &Document) {
 }
 
 #[test]
+/// Checks double-precision off-canvas RGB owners preserve native samples, masks, profile meaning and scoped
+/// loss notices.
 fn rgb_double_offcanvas_layers_masks_and_channel_keep_native_bits_profile_and_owner_notices() {
     let mut source = Image::new(0, 750, 8);
     source.profile = Some(photocraft_cms::Builtin::DisplayP3.profile().to_bytes().as_ref().clone());
@@ -247,6 +266,7 @@ fn rgb_double_offcanvas_layers_masks_and_channel_keep_native_bits_profile_and_ow
 }
 
 #[test]
+/// Verifies full-width Gray integer samples normalize directly to native float for color and coverage owners.
 fn gray_u32_color_alpha_mask_and_channel_normalize_to_native_float_without_u16_reduction() {
     let mut source = Image::new(1, 350, 4);
     source.width = 2;
@@ -275,6 +295,7 @@ fn gray_u32_color_alpha_mask_and_channel_normalize_to_native_float_without_u16_r
 }
 
 #[test]
+/// Checks indexed color and alpha expand into editable native RGB, including an opaque off-canvas layer.
 fn indexed_palette_alpha_and_opaque_offcanvas_layer_become_native_rgb_data() {
     let mut source = Image::new(2, 150, 1);
     source.palette = vec![[250, 7, 21], [14, 239, 35], [26, 48, 227]];
@@ -293,6 +314,7 @@ fn indexed_palette_alpha_and_opaque_offcanvas_layer_become_native_rgb_data() {
 }
 
 #[test]
+/// Verifies a later malformed off-canvas color sample prevents partial-document success.
 fn invalid_later_offcanvas_color_cannot_succeed_as_a_partially_imported_document() {
     for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX, f64::from_bits(f64::from(f32::MAX).to_bits() + 1)] {
         let mut source = Image::new(0, 750, 8);
@@ -306,6 +328,8 @@ fn invalid_later_offcanvas_color_cannot_succeed_as_a_partially_imported_document
 }
 
 #[test]
+/// Checks invalid coverage values are rejected before precision conversion, including clipped storage
+/// regions.
 fn coverage_outside_storage_domain_is_rejected_before_narrowing_even_when_offcanvas() {
     for value in [-2f64.powi(-150), 1. + 2f64.powi(-24)] {
         for owner in ["alpha", "mask", "channel", "selection"] {
@@ -326,6 +350,7 @@ fn coverage_outside_storage_domain_is_rejected_before_narrowing_even_when_offcan
 }
 
 #[test]
+/// Verifies native edits and resaves preserve inert source history without letting it control pixels.
 fn retained_source_configuration_stays_inert_when_native_pixels_are_edited_and_saved_again() {
     let mut source = Image::new(0, 750, 8);
     let mut raster = drawable("Native editing", 1, 1, 1, doubles([2., -1., 0.5, 1.]));
@@ -344,6 +369,7 @@ fn retained_source_configuration_stays_inert_when_native_pixels_are_edited_and_s
 
 #[cfg(feature = "corpus")]
 #[test]
+/// Checks a published linear-float fixture preserves native depth, profile and samples through persistence.
 fn published_float_linear_import_retains_native_profile_depth_and_samples_on_native_reopen() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/gimp/float-linear.xcf");
     let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}; run cargo xtask corpus --gimp", path.display()));

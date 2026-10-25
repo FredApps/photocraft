@@ -3,10 +3,12 @@ use super::effects::{NativeMapping, NativeStage, NativeStructure, native_filter,
 use super::*;
 use serde_json::json;
 
+/// Construct one native Exposure stage with an explicit earlier-input reference for admission tests.
 fn stage(input: usize, value: serde_json::Value) -> NativeStage {
     NativeStage::Apply { input, mapping: Box::new(NativeMapping { filters: vec![native_filter("image.adjustments.exposure", value)], ..Default::default() }) }
 }
 
+/// Verify parameter accounting sums every native Apply input rather than charging only the final output stage.
 #[test]
 fn native_plan_parameters_are_charged_across_all_actual_inputs() {
     let first = json!({"exposure": 0.75, "offset": 0.125});
@@ -22,6 +24,7 @@ fn native_plan_parameters_are_charged_across_all_actual_inputs() {
     assert_eq!(native_parameter_bytes(&mapping).unwrap(), expected);
 }
 
+/// Reject invalid references, nesting, output indices and Join or Knockout controls before any native plan can be materialized.
 #[test]
 fn native_plan_rejects_forward_cycles_nested_plans_and_invalid_outputs_before_materialization() {
     assert!(validate_stages(&[stage(1, json!({}))], 1).is_err());
@@ -44,6 +47,7 @@ fn native_plan_rejects_forward_cycles_nested_plans_and_invalid_outputs_before_ma
     assert!(validate_stages(&too_many, 65).is_err());
 }
 
+/// Ensure staged construction cannot hide oversized native parameters behind an otherwise valid flat plan.
 #[test]
 fn native_plan_cannot_bypass_the_existing_total_parameter_allowance() {
     let mapping = NativeMapping {
@@ -53,6 +57,7 @@ fn native_plan_cannot_bypass_the_existing_total_parameter_allowance() {
     assert!(native_parameter_bytes(&mapping).is_err());
 }
 
+/// Verify deferred map allowances accumulate and captured masks, channels, displacement and alignment require valid earlier inputs.
 #[test]
 fn captured_resource_stages_share_parameter_admission_and_reject_forward_inputs() {
     use super::effects::{NativeMapCoordinates, NativeMaskComponent};

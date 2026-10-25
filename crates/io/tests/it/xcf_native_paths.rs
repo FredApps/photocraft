@@ -9,38 +9,48 @@ use photocraft_geom::{Point, Rect};
 
 struct Wire(Vec<u8>);
 impl Wire {
+    /// Writes a documented big-endian framing word for original vector-layer fixtures.
     fn word(&mut self, value: u32) {
         self.0.extend(value.to_be_bytes());
     }
+    /// Encodes an independent binary32 coordinate or control value through its exact source bits.
     fn float(&mut self, value: f32) {
         self.word(value.to_bits());
     }
+    /// Writes a v26 pointer to a separately authored fixture record.
     fn ptr(&mut self, value: usize) {
         self.0.extend((value as u64).to_be_bytes());
     }
+    /// Reserves a pointer for a vector, layer or hierarchy record emitted later.
     fn slot(&mut self) -> usize {
         let at = self.0.len();
         self.ptr(0);
         at
     }
+    /// Points a reserved fixture field at the current independently written record.
     fn patch(&mut self, at: usize) {
         let offset = self.0.len() as u64;
         self.0[at..at + 8].copy_from_slice(&offset.to_be_bytes());
     }
+    /// Frames a source name or encoding string with its length and terminating NUL.
     fn text(&mut self, value: &str) {
         self.word(value.len() as u32 + 1);
         self.0.extend(value.as_bytes());
         self.0.push(0);
     }
+    /// Writes an exact source property payload without using the production vector encoder.
     fn property(&mut self, kind: u32, value: &[u8]) {
         self.word(kind);
         self.word(value.len() as u32);
         self.0.extend(value);
     }
+    /// Terminates a fixture property sequence with the documented zero record.
     fn end(&mut self) {
         self.word(0);
         self.word(0);
     }
+    /// Writes a portable source RGBA solid-paint record with explicit encoding and no external resource
+    /// permission.
     fn paint(&mut self, rgba: [u8; 4]) {
         self.word(0); // Solid paint.
         self.word(1); // Antialiased.
@@ -52,12 +62,15 @@ impl Wire {
     }
 }
 
+/// Defines independent signed cubic anchors and handles used by both source construction and native
+/// expectations.
 fn knots() -> Vec<Knot> {
     vec![
         Knot { anchor: Point::new(-2.0, 3.0), in_ctrl: Point::new(-3.0, 1.0), out_ctrl: Point::new(2.0, 8.0), smooth: false },
         Knot { anchor: Point::new(12.0, 7.0), in_ctrl: Point::new(8.0, -2.0), out_ctrl: Point::new(15.0, 10.0), smooth: false },
     ]
 }
+/// Builds the expected editable native cubic shape, fill and stroke from explicit independent geometry.
 fn expected() -> ShapeLayer {
     ShapeLayer {
         path: Path { subpaths: vec![Subpath { knots: knots(), closed: true, op: PathOp::Combine }], fill_rule: FillRule::EvenOdd, inverted: false },
@@ -75,6 +88,8 @@ fn expected() -> ShapeLayer {
     }
 }
 
+/// Constructs a v26 vector-layer fixture with controlled modification flags, path reference and auxiliary
+/// axes.
 fn source(modified: bool, referenced_tattoo: u32, axes: u32) -> Vec<u8> {
     let mut w = Wire(b"gimp xcf v026\0".to_vec());
     for value in [16, 12, 0, 150] {
@@ -150,6 +165,7 @@ fn source(modified: bool, referenced_tattoo: u32, axes: u32) -> Vec<u8> {
 }
 
 #[test]
+/// Compares imported cubic geometry and paint with an independent prepared native vector counterpart.
 fn cubic_shape_fill_stroke_and_auxiliary_axes_use_native_geometry_and_rendering() {
     for axes in [2, 6] {
         let result = photocraft_io::import("original.xcf", &source(false, 73, axes)).unwrap();
@@ -182,6 +198,7 @@ fn cubic_shape_fill_stroke_and_auxiliary_axes_use_native_geometry_and_rendering(
 }
 
 #[test]
+/// Checks modified or unresolved vector layers retain their own pixels and independently stored named path.
 fn modified_or_missing_vector_reference_preserves_separate_stored_pixels_and_saved_path() {
     for (modified, tattoo, reason) in [(true, 73, ConversionReason::NativePolicy), (false, 99, ConversionReason::InvalidOptionalData)] {
         let doc = photocraft_io::import("fallback.xcf", &source(modified, tattoo, 2)).unwrap().document;

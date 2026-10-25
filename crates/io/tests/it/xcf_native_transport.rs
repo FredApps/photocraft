@@ -3,24 +3,29 @@
 
 use std::io::Write;
 
+/// Read the pinned public layered XCF fixture, failing with the corpus-fetch instruction when it is unavailable.
 fn source() -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/gimp/layers-8bit.xcf");
     std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}; run cargo xtask corpus --gimp", path.display()))
 }
 
+/// Wrap source bytes in a complete gzip member using the ordinary encoder for transport validation tests.
 fn gzip(bytes: &[u8]) -> Vec<u8> {
     let mut writer = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     writer.write_all(bytes).unwrap();
     writer.finish().unwrap()
 }
 
+/// Create a complete bzip2 member around independently selected source-stream bytes.
 fn bzip2(bytes: &[u8]) -> Vec<u8> {
     crabz2::compress(bytes, crabz2::Level::default())
 }
 
 // Independent wire writer from the XZ/LZMA2 specifications: an uncompressed LZMA2 chunk,
 // CRC32 check, one block and one index record. No XZ encoder feature is enabled.
+/// Build an independent one-block XZ stream with an uncompressed LZMA2 payload, checksums and caller-selected dictionary property.
 fn xz(bytes: &[u8], dictionary: u8) -> Vec<u8> {
+    /// Write the XZ index integer encoding without depending on an XZ encoder implementation.
     fn vli(mut value: usize, out: &mut Vec<u8>) {
         loop {
             let mut byte = (value & 127) as u8;
@@ -65,6 +70,7 @@ fn xz(bytes: &[u8], dictionary: u8) -> Vec<u8> {
     out
 }
 
+/// Verify plain or compressed XCF signatures select layered native import even when the filename suggests another known format.
 #[test]
 fn xcf_content_wins_over_misleading_known_suffixes() {
     let source = source();
@@ -79,6 +85,7 @@ fn xcf_content_wins_over_misleading_known_suffixes() {
     }
 }
 
+/// Split source bytes across independently compressed gzip members and require one unchanged logical XCF image.
 #[test]
 fn gzip_members_form_one_verified_logical_xcf_stream() {
     let source = source();
@@ -91,6 +98,7 @@ fn gzip_members_form_one_verified_logical_xcf_stream() {
     }
 }
 
+/// Reject incomplete gzip trailers, bad checksums, unrelated tails and recursive transport rather than publishing partial XCF data.
 #[test]
 fn gzip_rejects_corruption_truncation_and_unrelated_compressed_trailing_bytes() {
     let wrapped = gzip(&source());
@@ -107,6 +115,7 @@ fn gzip_rejects_corruption_truncation_and_unrelated_compressed_trailing_bytes() 
     assert!(photocraft_io::import("recursive.xcf.gz", &gzip(&gzip(&source()))).is_err());
 }
 
+/// Keep ordinary compressed SVG routing intact while refusing a declared XCF wrapper whose content is not XCF.
 #[test]
 fn compressed_non_xcf_content_keeps_its_ordinary_route() {
     let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="7" height="5"><rect width="7" height="5" fill="red"/></svg>"#;
@@ -115,6 +124,7 @@ fn compressed_non_xcf_content_keeps_its_ordinary_route() {
     assert!(photocraft_io::import("not-xcf.xcf.gz", &gzip(b"unrelated text")).is_err());
 }
 
+/// Compare native import across bzip2/XZ while rejecting every truncation, checksum error, unrelated tail and oversized XZ dictionary.
 #[test]
 fn bzip2_and_xz_use_the_same_native_import_and_validate_complete_streams() {
     let source = source();
@@ -146,6 +156,7 @@ fn bzip2_and_xz_use_the_same_native_import_and_validate_complete_streams() {
     assert!(error.to_string().contains("mem_limit_kb"), "{error}");
 }
 
+/// Verify concatenated transport members and permitted XZ padding reconstruct one unchanged native source image.
 #[test]
 fn concatenated_bzip2_xz_and_xz_padding_form_one_source_stream() {
     let source = source();

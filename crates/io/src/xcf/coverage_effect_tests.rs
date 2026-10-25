@@ -11,9 +11,11 @@ enum Owner {
     LayerMask,
 }
 
+/// Builds a minimal stored channel record for coverage-owner framing tests.
 fn channel(w: &mut W, name: &str, selection: bool) -> (usize, usize) {
     channel_with_placement(w, name, selection, false)
 }
+/// Adds explicit placement metadata to a channel fixture so offset handling can be tested independently.
 fn channel_with_placement(w: &mut W, name: &str, selection: bool, placed: bool) -> (usize, usize) {
     let start = w.out.len();
     w.u32(2);
@@ -34,6 +36,7 @@ fn channel_with_placement(w: &mut W, name: &str, selection: bool, placed: bool) 
     (start, effect_slot)
 }
 
+/// Writes a stored effect fixture with its actual operation, enablement and auxiliary-mask pointer.
 fn effect(w: &mut W) -> (usize, usize) {
     let start = w.out.len();
     w.string("Coverage stage");
@@ -53,12 +56,15 @@ fn effect(w: &mut W) -> (usize, usize) {
     (start, mask)
 }
 
+/// Builds a v26 XCF fixture with default coverage placement and controlled stored effects.
 fn source(owner: Owner, nested: bool, cyclic: bool) -> Vec<u8> {
     source_with_offset(owner, nested, cyclic, (0, 0))
 }
+/// Builds a v26 coverage fixture with an explicit owner offset for placement regressions.
 fn source_with_offset(owner: Owner, nested: bool, cyclic: bool, offset: (i32, i32)) -> Vec<u8> {
     source_with_auxiliary_placement(owner, nested, cyclic, offset, false)
 }
+/// Constructs owner and auxiliary records independently to test source pointer and placement handling.
 fn source_with_auxiliary_placement(owner: Owner, nested: bool, cyclic: bool, offset: (i32, i32), placed: bool) -> Vec<u8> {
     let mut w = W::new(26);
     w.u32(2);
@@ -113,6 +119,7 @@ fn source_with_auxiliary_placement(owner: Owner, nested: bool, cyclic: bool, off
     w.out
 }
 
+/// Reads the durable conversion report attached to an imported fixture document.
 fn report(document: &Document) -> &photocraft_doc::import_conversion::ConversionReport {
     match document.metadata.import_conversion.as_ref().unwrap() {
         ImportConversion::Report(report) => report,
@@ -121,6 +128,7 @@ fn report(document: &Document) -> &photocraft_doc::import_conversion::Conversion
 }
 
 #[test]
+/// Checks coverage owners preserve native pixels and retain unexecuted effect records with honest notices.
 fn v26_channels_selection_and_layer_masks_keep_native_coverage_and_inert_effect_data() {
     for owner in [Owner::Channel, Owner::Selection, Owner::LayerMask] {
         let result = import("coverage.xcf", &source(owner, false, false), &Interrupt::NONE).unwrap();
@@ -148,6 +156,7 @@ fn v26_channels_selection_and_layer_masks_keep_native_coverage_and_inert_effect_
 }
 
 #[test]
+/// Verifies nested mask effects receive distinct source identities rather than inheriting the parent owner.
 fn v26_nested_effect_mask_envelopes_have_their_own_source_identity() {
     let document = import("nested.xcf", &source(Owner::Channel, true, false), &Interrupt::NONE).unwrap().document;
     let report = report(&document);
@@ -159,6 +168,7 @@ fn v26_nested_effect_mask_envelopes_have_their_own_source_identity() {
 }
 
 #[test]
+/// Checks repeated mask pointers remain bounded and preserve the original coverage surface.
 fn v26_reused_mask_references_are_bounded_and_do_not_change_coverage() {
     let document = import("cyclic.xcf", &source(Owner::Selection, false, true), &Interrupt::NONE).unwrap().document;
     assert_eq!(document.selection.as_ref().unwrap().read_region(Rect::new(0, 0, 2, 1)), vec![64.0 / 255.0, 192.0 / 255.0]);
@@ -166,6 +176,7 @@ fn v26_reused_mask_references_are_bounded_and_do_not_change_coverage() {
 }
 
 #[test]
+/// Verifies a malformed optional effect mask is retained without losing the usable native coverage owner.
 fn malformed_optional_coverage_effect_mask_does_not_discard_the_native_owner() {
     let mut bytes = source(Owner::Channel, true, false);
     let needle = b"Nested effect mask";
@@ -181,6 +192,7 @@ fn malformed_optional_coverage_effect_mask_does_not_discard_the_native_owner() {
 }
 
 #[test]
+/// Checks enabled effects produce native coverage pixels on channels, selections and masks.
 fn enabled_coverage_effects_translate_to_native_pixels_for_each_owner() {
     for owner in [Owner::Channel, Owner::Selection, Owner::LayerMask] {
         let mut bytes = source(owner, false, false);
@@ -210,6 +222,7 @@ fn enabled_coverage_effects_translate_to_native_pixels_for_each_owner() {
     }
 }
 
+/// Enables the fixture's stored effect visibility flags for active coverage and nested-mask regressions.
 fn enable_all_effects(bytes: &mut [u8]) {
     let flag = [0, 0, 0, 8, 0, 0, 0, 4, 0, 0, 0, 0];
     let offsets: Vec<_> = bytes.windows(flag.len()).enumerate().filter_map(|(i, value)| (value == flag).then_some(i)).collect();
@@ -234,6 +247,7 @@ fn native_exposure_counterpart(surface: &Surface, bounds: Rect, mask: Option<&Su
 }
 
 #[test]
+/// Compares nested active coverage masks with independently authored native Gray adjustments and placement.
 fn enabled_nested_auxiliary_masks_match_independent_native_gray_adjustments_and_mask_placement() {
     for (owner, offset) in [(Owner::Channel, (0, 0)), (Owner::Selection, (0, 0)), (Owner::LayerMask, (-1, 0))] {
         let mut bytes = source_with_offset(owner, true, false, offset);
@@ -279,6 +293,7 @@ fn enabled_nested_auxiliary_masks_match_independent_native_gray_adjustments_and_
 }
 
 #[test]
+/// Checks a cyclic auxiliary reference is retained rather than recursed through or applied to the owner.
 fn enabled_cyclic_auxiliary_reference_is_retained_and_preserves_owner_coverage() {
     let mut bytes = source(Owner::Selection, false, true);
     enable_all_effects(&mut bytes);
@@ -292,6 +307,8 @@ fn enabled_cyclic_auxiliary_reference_is_retained_and_preserves_owner_coverage()
 }
 
 #[test]
+/// Verifies malformed or unproven active-mask placement preserves original coverage and reports the omitted
+/// stage.
 fn active_malformed_or_unestablished_auxiliary_placement_preserves_native_coverage() {
     for malformed in [false, true] {
         let mut bytes = source_with_auxiliary_placement(Owner::Channel, true, false, (0, 0), !malformed);
@@ -311,6 +328,8 @@ fn active_malformed_or_unestablished_auxiliary_placement_preserves_native_covera
 }
 
 #[test]
+/// Checks skipping one unsupported coverage stage does not reorder later native effects or hide their
+/// outcomes.
 fn omitted_coverage_stage_preserves_later_native_stage_order_and_reports_downstream_effect() {
     let mut w = W::new(26);
     for value in [2, 1, 0, 150] {
@@ -353,6 +372,7 @@ fn omitted_coverage_stage_preserves_later_native_stage_order_and_reports_downstr
         && entry.native_description.contains("earlier source coverage stage was omitted")));
 }
 
+/// Builds a layer-effect fixture whose auxiliary coverage has its own nested stored effect.
 fn layer_effect_with_nested_mask(operation: &str) -> Vec<u8> {
     let mut w = W::new(26);
     for value in [2, 1, 0, 150] {
@@ -404,6 +424,7 @@ fn layer_effect_with_nested_mask(operation: &str) -> Vec<u8> {
 }
 
 #[test]
+/// Checks temporary mask conversions are reported applied only when the enclosing native effect commits.
 fn temporary_layer_effect_mask_results_are_only_reported_applied_after_parent_commits() {
     for (operation, committed) in [("gegl:invert-gamma", true), ("gegl:bevel", false)] {
         // Bevel becomes a native style; its separate source effect mask is
@@ -431,6 +452,7 @@ fn temporary_layer_effect_mask_results_are_only_reported_applied_after_parent_co
 }
 
 #[test]
+/// Verifies an uncommitted parent cannot leave a false applied outcome for a converted mask child.
 fn nested_coverage_child_is_not_claimed_applied_when_parent_mapping_is_missing() {
     let mut bytes = source(Owner::Channel, true, false);
     enable_all_effects(&mut bytes);
@@ -449,6 +471,7 @@ fn nested_coverage_child_is_not_claimed_applied_when_parent_mapping_is_missing()
 // Original5x3 scalar pattern: enough variation to expose neighborhood and
 // deformation behavior without a private corpus or converter-defined oracle.
 const ADAPTER_VALUES: [u8; 15] = [16, 64, 220, 80, 32, 96, 180, 240, 128, 48, 24, 80, 200, 160, 64];
+/// Encodes deterministic source samples at the selected precision for native coverage adapter fixtures.
 fn adapter_sample_bytes(values: &[f32], depth: SampleType) -> Vec<u8> {
     match depth {
         SampleType::U8 => values.iter().map(|v| (v * 255.).round() as u8).collect(),
@@ -456,6 +479,7 @@ fn adapter_sample_bytes(values: &[f32], depth: SampleType) -> Vec<u8> {
         SampleType::F32 => values.iter().flat_map(|v| v.to_be_bytes()).collect(),
     }
 }
+/// Builds an original stored-wire fixture for a requested native coverage adapter and owner type.
 fn adapter_source(owner: Owner, depth: SampleType, operation: &str, args: &[(&str, u32, Vec<u8>)]) -> Vec<u8> {
     let mut w = W::new(26);
     for value in [
@@ -540,6 +564,7 @@ fn adapter_source(owner: Owner, depth: SampleType, operation: &str, args: &[(&st
     w.ptr(0);
     w.out
 }
+/// Selects the imported fixture's coverage surface without deriving an expected result from the converter.
 fn adapter_coverage(document: &Document, owner: Owner) -> &Surface {
     match owner {
         Owner::Channel => &document.channels[0].surface,
@@ -547,11 +572,13 @@ fn adapter_coverage(document: &Document, owner: Owner) -> &Surface {
         Owner::LayerMask => &document.layers.iter().find(|layer| layer.name == "Owner").unwrap().mask.as_ref().unwrap().surface,
     }
 }
+/// Constructs the independent native input surface corresponding to the adapter fixture's stored samples.
 fn adapter_original(depth: SampleType) -> Surface {
     let mut surface = Surface::new(PixelFormat::new(ColorMode::Grayscale, depth, false));
     surface.write_region(Rect::new(0, 0, 5, 3), &ADAPTER_VALUES.map(|v| f32::from(v) / 255.));
     surface
 }
+/// Compares imported coverage with an independent native result and checks report and persistence invariants.
 fn assert_adapter_native_result(document: &Document, owner: Owner, expected: &Surface) {
     let actual = adapter_coverage(document, owner);
     let bounds = Rect::new(0, 0, 5, 3);
@@ -577,6 +604,8 @@ fn assert_adapter_native_result(document: &Document, owner: Owner, expected: &Su
     assert_eq!(reopened.metadata.import_conversion, document.metadata.import_conversion);
 }
 #[test]
+/// Compares stored Colorize coverage with an independently configured native adjustment at all supported
+/// depths.
 fn stored_coverage_ca01_colorize_matches_independent_native_adjustment_at_three_depths() {
     for (owner, depth) in [(Owner::Channel, SampleType::U8), (Owner::Selection, SampleType::U16), (Owner::LayerMask, SampleType::F32)] {
         let args = [("hue", 3, 0f32.to_be_bytes().to_vec()), ("saturation", 3, 0f32.to_be_bytes().to_vec()), ("lightness", 3, 0.2f32.to_be_bytes().to_vec())];
@@ -599,6 +628,7 @@ fn stored_coverage_ca01_colorize_matches_independent_native_adjustment_at_three_
     }
 }
 #[test]
+/// Compares stored Maximum coverage with the ordinary native neighborhood operator, not a source renderer.
 fn stored_coverage_ca02_maximum_matches_independent_native_neighborhood() {
     for (owner, depth) in [(Owner::LayerMask, SampleType::U8), (Owner::Channel, SampleType::U16), (Owner::Selection, SampleType::F32)] {
         let args = [("radius-x", 1, 2i32.to_be_bytes().to_vec()), ("radius-y", 1, 2i32.to_be_bytes().to_vec())];
@@ -620,6 +650,7 @@ fn stored_coverage_ca02_maximum_matches_independent_native_neighborhood() {
     }
 }
 #[test]
+/// Checks stored Pinch coverage against independently specified native geometry and persistence.
 fn stored_coverage_ca03_pinch_matches_independent_native_geometry() {
     for (owner, depth) in [(Owner::Selection, SampleType::U8), (Owner::LayerMask, SampleType::U16), (Owner::Channel, SampleType::F32)] {
         let args = [("whirl", 3, 0f32.to_be_bytes().to_vec()), ("pinch", 3, 0.4f32.to_be_bytes().to_vec()), ("radius", 3, 1f32.to_be_bytes().to_vec())];
@@ -634,6 +665,8 @@ fn stored_coverage_ca03_pinch_matches_independent_native_geometry() {
     }
 }
 #[test]
+/// Verifies scalar coverage without alpha is retained honestly instead of receiving a fabricated alpha
+/// channel.
 fn stored_coverage_ca04_alpha_extraction_does_not_invent_scalar_alpha() {
     for owner in [Owner::Channel, Owner::Selection, Owner::LayerMask] {
         let args = [("component", 5, 20i32.to_be_bytes().to_vec()), ("invert", 2, 1u32.to_be_bytes().to_vec())];
