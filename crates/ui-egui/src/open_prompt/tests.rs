@@ -51,24 +51,89 @@ fn historical_app(broken: bool) -> (PhotocraftApp, serde_json::Map<String, Value
 }
 
 #[test]
-/// A consumed source cannot be restored by an inline failed continuation; discard its stale dialog and admit the next file.
+/// Either answer discards a consumed source and admits the next file, through direct helpers and the actual control handler.
 fn historical_inline_failure_drops_consumed_identity_and_advances_queue() {
+    use crate::control::{ControlRequest, Outcome};
+    /// Refuse an answer before dispatch; a consumed identity must still not leave a dead UI prompt.
+    fn deny_answer(id: &str, _: &Value) -> photocraft_engine::Result<()> {
+        if id == "file.open" { Err(photocraft_engine::EngineError::Other("historical answer denied".into())) } else { Ok(()) }
+    }
+    for consume_by_cancel in [false, true] {
+        for accept in [true, false] {
+            for control in [false, true] {
+                for denied in [false, true] {
+                    let (mut app, fields, id) = historical_app(false);
+                    let existing = app.session.active().unwrap().doc.clone();
+                    let dialog = app.ui.dialogs.iter_mut().find(|dialog| owns_historical(&dialog.fields)).unwrap();
+                    dialog.fields = fields.clone();
+                    let dialog_id = dialog.id;
+                    arrive(&mut app, held("B.pcraft", NativeInitialView::default()));
+                    // Another accepted caller can either open or cancel the exact capability before the UI answers.
+                    let consumed = if consume_by_cancel {
+                        json!({"heldHistoricalXcfOpen":id,"cancel":true})
+                    } else {
+                        json!({"heldHistoricalXcfOpen":id,"historicalXcfSampleOrder":"little-endian"})
+                    };
+                    app.session.execute("file.open", consumed).unwrap();
+                    assert!(!app.session.holds_historical_xcf_open(id));
+                    app.session.authorize = if denied { Some(deny_answer) } else { None };
+                    let error = if control {
+                        let method = if accept { "ui.dialog.confirm" } else { "ui.dialog.cancel" };
+                        let (request, _receiver) = ControlRequest::new(method, json!({"dialog":dialog_id}));
+                        let Outcome::Done(response) = crate::control::handle(&mut app, &egui::Context::default(), &request) else {
+                            panic!("inline historical answer must finish immediately")
+                        };
+                        assert_eq!(response["ok"], false);
+                        response["error"].as_str().unwrap().to_string()
+                    } else {
+                        answer_historical(&mut app, &fields, accept).unwrap_err()
+                    };
+                    assert!(error.contains(if denied { "historical answer denied" } else { "no longer available" }));
+                    assert!(
+                        app.held_opens.is_empty(),
+                        "a consumed source must not trap B behind a dead question: cancel={consume_by_cancel}, accept={accept}, control={control}"
+                    );
+                    assert!(!app.ui.dialogs.iter().any(|dialog| dialog.fields.get(HISTORICAL_FIELD).and_then(Value::as_u64) == Some(id)));
+                    assert_eq!(app.session.active().unwrap().doc.name, "B.pcraft");
+                    assert!(app.session.active().unwrap().source_read_only);
+                    assert_eq!(app.session.documents().len(), if consume_by_cancel { 2 } else { 3 });
+                    assert!(std::sync::Arc::ptr_eq(&existing, &app.session.documents()[0].doc));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+/// A dispatch denial after successful preflight must preserve a live source, its prompt and the waiting next file.
+fn historical_cancel_dispatch_denial_retains_live_choice_until_retry() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    /// Admit the preflight but reject the subsequent engine dispatch, leaving the held capability live.
+    fn deny_dispatch(id: &str, _: &Value) -> photocraft_engine::Result<()> {
+        if id == "file.open" && CALLS.fetch_add(1, Ordering::SeqCst) > 0 {
+            Err(photocraft_engine::EngineError::Other("cancel dispatch denied".into()))
+        } else {
+            Ok(())
+        }
+    }
     let (mut app, fields, id) = historical_app(false);
     let existing = app.session.active().unwrap().doc.clone();
+    let dialogs = app.ui.dialogs.clone();
     arrive(&mut app, held("B.pcraft", NativeInitialView::default()));
-    // Another accepted engine caller can consume the exact capability before the UI answers.
-    app.session.execute("file.open", json!({"heldHistoricalXcfOpen":id,"historicalXcfSampleOrder":"little-endian"})).unwrap();
+    CALLS.store(0, Ordering::SeqCst);
+    app.session.authorize = Some(deny_dispatch);
+    assert!(answer_historical(&mut app, &fields, false).unwrap_err().contains("cancel dispatch denied"));
+    assert!(CALLS.load(Ordering::SeqCst) >= 2);
+    assert!(app.session.holds_historical_xcf_open(id));
+    assert_eq!(app.ui.dialogs, dialogs);
+    assert_eq!(app.held_opens.iter().map(Pending::name).collect::<Vec<_>>(), ["A.xcf", "B.pcraft"]);
+    assert!(std::sync::Arc::ptr_eq(&existing, &app.session.active().unwrap().doc));
+    app.session.authorize = None;
+    answer_historical(&mut app, &fields, false).unwrap();
     assert!(!app.session.holds_historical_xcf_open(id));
-    assert_eq!(app.session.documents().len(), 2);
-
-    let error = answer_historical(&mut app, &fields, true).unwrap_err();
-    assert!(error.contains("no longer available"));
-    assert!(app.held_opens.is_empty(), "a consumed source must not trap B behind a dead question");
-    assert!(!app.ui.dialogs.iter().any(|dialog| dialog.fields.get(HISTORICAL_FIELD).and_then(Value::as_u64) == Some(id)));
+    assert!(app.held_opens.is_empty());
     assert_eq!(app.session.active().unwrap().doc.name, "B.pcraft");
-    assert!(app.session.active().unwrap().source_read_only);
-    assert_eq!(app.session.documents().len(), 3);
-    assert!(std::sync::Arc::ptr_eq(&existing, &app.session.documents()[0].doc));
 }
 
 #[cfg(not(target_arch = "wasm32"))]

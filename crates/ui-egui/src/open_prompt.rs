@@ -364,23 +364,24 @@ pub(crate) fn answer_historical(app: &mut PhotocraftApp, fields: &serde_json::Ma
     } else {
         json!({"heldHistoricalXcfOpen":held.id,"cancel":true})
     };
-    authorize_historical(app, &params)?;
-    let result = if accept {
-        // Reserve A's exact place before inline or asynchronous completion can
-        // arrive, so later B cannot pass A's eventual profile question.
-        if let Some(front) = app.held_opens.front_mut() {
-            *front = Pending::Resuming { held: held.clone(), job: None };
+    let result = authorize_historical(app, &params).and_then(|()| {
+        if accept {
+            // Reserve A's exact place before inline or asynchronous completion can
+            // arrive, so later B cannot pass A's eventual profile question.
+            if let Some(front) = app.held_opens.front_mut() {
+                *front = Pending::Resuming { held: held.clone(), job: None };
+            }
+            crate::jobs_ui::resume_historical(app, &held, fields.get("historicalXcfSampleOrder").and_then(Value::as_str).unwrap_or_default())
+        } else {
+            app.run("file.open", params)
         }
-        crate::jobs_ui::resume_historical(app, &held, fields.get("historicalXcfSampleOrder").and_then(Value::as_str).unwrap_or_default())
-    } else {
-        app.run("file.open", params)
-    };
+    });
     if result.is_ok() {
         if !accept {
             app.held_opens.pop_front();
         }
         app.ui.dialogs.retain(|dialog| dialog.fields.get(HISTORICAL_FIELD).and_then(Value::as_u64) != Some(held.id));
-    } else if accept {
+    } else {
         historical_resume_failed(app, held.id);
         return result;
     }
@@ -430,9 +431,11 @@ pub(crate) fn arrive_continuation(app: &mut PhotocraftApp, id: Option<u64>, held
     }
 }
 
-/// Recover only while the engine still owns the source; a failed UI handoff after consumption must not revive a dead prompt.
+/// Recover failed answers or handoffs only while the engine owns the source; discard consumed choices rather than blocking later files.
 pub(crate) fn historical_resume_failed(app: &mut PhotocraftApp, id: u64) {
-    if let Some(index) = app.held_opens.iter().position(|pending| matches!(pending, Pending::Resuming { held, .. } if held.id == id)) {
+    if let Some(index) =
+        app.held_opens.iter().position(|pending| matches!(pending, Pending::Historical(held) | Pending::Resuming { held, .. } if held.id == id))
+    {
         if app.session.holds_historical_xcf_open(id) {
             if let Some(pending) = app.held_opens.get_mut(index)
                 && let Pending::Resuming { held, .. } = pending
