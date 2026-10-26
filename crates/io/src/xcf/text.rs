@@ -369,7 +369,12 @@ pub(super) fn decode(data: &[u8], dpi: f32, offset: (i32, i32)) -> Result<Decode
         }
     }
     style.kerning = if scalar(&fields, "kerning")?.unwrap_or("no") == "yes" { Kerning::Metrics } else { Kerning::Off };
-    style.tracking = (number(&fields, "letter-spacing", 0.0, -8192.0, 8192.0)? * scale * 1000.0 / f64::from(size_pt)) as f32;
+    // Base letter spacing is a device-pixel distance, independently of the font-size unit.
+    let tracking_pt = device_points(number(&fields, "letter-spacing", 0.0, -8192.0, 8192.0)?, dpi)?;
+    style.tracking = (f64::from(tracking_pt) * 1000.0 / f64::from(size_pt)) as f32;
+    if !style.tracking.is_finite() {
+        return Err(invalid("native text tracking exceeds finite bounds"));
+    }
     style.language = scalar(&fields, "language")?.filter(|s| !s.is_empty()).map(|s| s.replace('_', "-"));
     let extra_leading = number(&fields, "line-spacing", 0.0, -8192.0, 8192.0)? * scale;
     if extra_leading != 0.0 {
@@ -693,7 +698,7 @@ fn requested_font(fields: &[Value], style: &mut CharStyle) -> Result<()> {
     Ok(())
 }
 
-/// Convert explicit points or Pango-scaled lengths into finite bounded native point values.
+/// Decode explicit `pt` syntax or a Pango-scaled magnitude. Font sizes use points; device-distance attributes still require DPI conversion.
 fn pango_points(text: &str) -> Result<f32> {
     let value = if let Some(points) = text.strip_suffix("pt") { points.parse::<f32>() } else { text.parse::<f32>().map(|value| value / 1024.) }
         .map_err(|_| invalid("invalid markup point length"))?;
@@ -702,6 +707,15 @@ fn pango_points(text: &str) -> Result<f32> {
     }
     Ok(value)
 }
+/// Convert a finite device-pixel distance into native points without applying the font-size unit or permitting nonfinite native data.
+fn device_points(pixels: f64, dpi: f64) -> Result<f32> {
+    let points = pixels * 72. / dpi;
+    if !dpi.is_finite() || dpi <= 0. || !points.is_finite() || points.abs() > 8192. {
+        return Err(invalid("markup device distance exceeds native point bounds"));
+    }
+    Ok(points as f32)
+}
+
 /// Parse bounded OpenType feature settings, validate four-character tags and resolve repeated tags to their final values.
 fn features(text: &str) -> Result<Vec<FontFeature>> {
     let mut result = Vec::new();
@@ -972,8 +986,10 @@ fn markup_runs(markup: &str, base: &CharStyle, fonts: &HashMap<String, CharStyle
                         };
                         note(notes, "Source font stretch becomes native horizontal glyph scale; native font matching/shaping applies".into());
                     }
-                    "rise" => style.baseline_shift_pt = pango_points(a.value())?,
-                    "letter_spacing" => spacing_pt = pango_points(a.value())?,
+                    // Pango renders both numeric and `pt` rise syntax as device distances.
+                    // Font sizes below remain point-valued, unlike these placement distances.
+                    "rise" => style.baseline_shift_pt = device_points(f64::from(pango_points(a.value())?), dpi)?,
+                    "letter_spacing" => spacing_pt = device_points(f64::from(pango_points(a.value())?), dpi)?,
                     "font_features" => {
                         for feature in features(a.value())? {
                             if let Some(previous) = style.features.iter_mut().find(|previous| previous.tag == feature.tag) {
@@ -1259,8 +1275,8 @@ mod tests {
         assert_eq!(parsed.layer.text, "héλxy");
         let first = &parsed.layer.runs[0].style;
         assert_eq!(first.size_pt, 20.);
-        assert_eq!(first.baseline_shift_pt, 3.);
-        assert_eq!(first.tracking, 100.);
+        assert_eq!(first.baseline_shift_pt, 1.5);
+        assert_eq!(first.tracking, 50.);
         assert_eq!(first.leading_pt, Some(14.));
         assert_eq!(first.caps, Caps::SmallCaps);
         assert_eq!(first.horizontal_scale, 0.75);
@@ -1270,7 +1286,7 @@ mod tests {
             vec![FontFeature { tag: "liga".into(), value: 0 }, FontFeature { tag: "dlig".into(), value: 1 }, FontFeature { tag: "kern".into(), value: 0 }]
         );
         assert_eq!(parsed.layer.runs[1].style.size_pt, 40.);
-        assert_eq!(parsed.layer.runs[1].style.tracking, 50.);
+        assert_eq!(parsed.layer.runs[1].style.tracking, 25.);
         assert_eq!(parsed.layer.runs[2].style.baseline, FontBaseline::Subscript);
         assert_eq!(parsed.layer.runs[3].style.baseline, FontBaseline::Superscript);
         assert_eq!(parsed.layer.runs.iter().map(|run| run.len).sum::<usize>(), parsed.layer.text.len());
@@ -1278,6 +1294,77 @@ mod tests {
             assert!(run.style.size_pt.is_finite());
         }
     }
+    /// Device-distance markup uses pixel-to-point conversion while explicit and scaled font sizes keep point semantics, layout, and native persistence.
+    #[test]
+    fn non72_dpi_markup_distances_match_independent_native_text_and_reopen() {
+        use photocraft_color::{ColorMode, PixelFormat, SampleType};
+        use photocraft_doc::{Document, Layer, LayerContent};
+        use photocraft_geom::Size;
+        for (dpi, positive_rise, negative_rise, markup_tracking, inherited_tracking) in [(144., 1.5, -0.5, 50., 150.), (300., 0.72, -0.24, 24., 72.)] {
+            for rise in ["3072", "3pt"] {
+                let config = format!(
+                    r#"(markup "<markup><span size=\"20pt\" rise=\"{rise}\" letter_spacing=\"2048\">AA</span><span size=\"20480\" rise=\"-1024\">BB</span></markup>") (font "Sans") (font-size 24) (font-size-unit points) (letter-spacing 6)"#
+                );
+                let mut actual = decode(config.as_bytes(), dpi, (0, 0)).unwrap().layer;
+                assert_eq!(actual.text, "AABB");
+                assert_eq!(actual.runs.len(), 2);
+                let mut expected = actual.clone();
+                for (index, run) in expected.runs.iter_mut().enumerate() {
+                    run.style.size_pt = 20.;
+                    run.style.baseline_shift_pt = if index == 0 { positive_rise } else { negative_rise };
+                    run.style.tracking = if index == 0 { markup_tracking } else { inherited_tracking };
+                }
+                expected.sync_summary();
+                for (actual, expected) in actual.runs.iter().zip(&expected.runs) {
+                    assert_eq!(actual.style.size_pt, expected.style.size_pt, "font sizes are points rather than device distances");
+                    assert!((actual.style.baseline_shift_pt - expected.style.baseline_shift_pt).abs() < 1e-6);
+                    assert!((actual.style.tracking - expected.style.tracking).abs() < 1e-5);
+                }
+                let mut engine = photocraft_text::TextEngine::new();
+                let layout = engine.layout(&actual, dpi);
+                let oracle = engine.layout(&expected, dpi);
+                assert!(!oracle.glyphs.is_empty(), "independent native text must produce real glyphs");
+                assert_eq!(layout.glyphs.len(), oracle.glyphs.len());
+                for (actual, expected) in layout.glyphs.iter().zip(&oracle.glyphs) {
+                    assert_eq!((actual.id, actual.style), (expected.id, expected.style));
+                    assert!((actual.x - expected.x).abs() < 1e-4 && (actual.y - expected.y).abs() < 1e-4);
+                }
+                if dpi == 144. {
+                    // These half-point distances and tracking values are exactly
+                    // representable, allowing an exact independent raster oracle.
+                    let format = PixelFormat::new(ColorMode::Rgb, SampleType::U8, true);
+                    engine.render_layer(&mut actual, dpi, format);
+                    engine.render_layer(&mut expected, dpi, format);
+                    assert_eq!(actual.cache, expected.cache, "independently authored native point distances render identically");
+                }
+                let mut doc = Document::new("Device-distance native text", Size::new(384, 160), ColorMode::Rgb, SampleType::U8);
+                doc.resolution_dpi = dpi;
+                doc.layers.push(Layer::new("Editable native text", LayerContent::Text(actual.clone())));
+                let saved = photocraft_format::save_to_bytes(&doc, &Default::default()).unwrap();
+                let reopened = photocraft_format::load_from_bytes(&saved).unwrap();
+                let LayerContent::Text(reopened) = &reopened.layers[0].content else { panic!("native editable text") };
+                assert_eq!(reopened.runs, actual.runs);
+            }
+        }
+    }
+
+    /// Base letter spacing remains a device-pixel distance even when font sizes use points or another physical unit.
+    #[test]
+    fn base_letter_spacing_is_independent_of_font_size_unit_at_each_dpi() {
+        for (dpi, tracking) in [(72., 300.), (144., 150.), (300., 72.)] {
+            for (unit, size) in [("points", 20.), ("pixels", 20. * f64::from(dpi) / 72.), ("inches", 20. / 72.)] {
+                let config = format!("(text \"AB\") (font-size {size}) (font-size-unit {unit}) (letter-spacing 6)");
+                let text = decode(config.as_bytes(), dpi, (0, 0)).unwrap().layer;
+                assert!((text.runs[0].style.size_pt - 20.).abs() < 1e-5);
+                assert!((text.runs[0].style.tracking - tracking).abs() < 1e-4, "{dpi}DPI/{unit} must retain six device pixels of spacing");
+            }
+        }
+        for dpi in [0., f64::NAN, f64::INFINITY] {
+            assert!(device_points(2., dpi).is_err());
+        }
+        assert!(device_points(f64::MAX, 72.).is_err());
+    }
+
     /// Compare portable typed/profiled colors with the shared native color conversion, including grayscale document output.
     #[test]
     fn typed_text_profile_and_gray_colors_use_shared_native_cms() {
