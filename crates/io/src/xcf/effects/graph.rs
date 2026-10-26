@@ -196,6 +196,7 @@ fn tokens(input: &str) -> Result<Vec<String>> {
 enum NodeValue<'a> {
     Number(f64),
     Integer(i64),
+    UnsignedInteger(u32),
     Boolean(bool),
     Choice(i32),
     Text(&'a str),
@@ -287,6 +288,13 @@ impl<'a> Decoder<'a> {
                         return Err("Native graph integer is outside its source domain".into());
                     }
                     NodeValue::Integer(number)
+                }
+                Kind::UnsignedInteger { min: low, max: high } => {
+                    let number = value.parse::<u32>().map_err(|_| "Native graph property requires an exact unsigned integer")?;
+                    if !(low..=high).contains(&number) {
+                        return Err("Native graph unsigned integer is outside its source domain".into());
+                    }
+                    NodeValue::UnsignedInteger(number)
                 }
                 Kind::Boolean => NodeValue::Boolean(match value {
                     "true" => true,
@@ -756,12 +764,11 @@ fn with_effect<T>(node: Node<'_>, context: &MappingContext<'_>, convert: impl Fn
                     NodeValue::Integer(value) => {
                         if let Ok(value) = i32::try_from(*value) {
                             ArgumentValue::Int(value)
-                        } else if let Ok(value) = u32::try_from(*value) {
-                            ArgumentValue::UInt(value)
                         } else {
-                            return Err("Exact graph integer exceeds existing native importer scalar representation".into());
+                            return Err("Exact signed graph integer exceeds the importer signed scalar representation".into());
                         }
                     }
+                    NodeValue::UnsignedInteger(value) => ArgumentValue::UInt(*value),
                     NodeValue::Boolean(value) => ArgumentValue::Bool(*value),
                     NodeValue::Choice(value) => ArgumentValue::Enum(*value),
                     NodeValue::Text(value) => ArgumentValue::String(value),
@@ -960,6 +967,110 @@ mod tests {
     /// Parses a source graph through the actual mapping entry point for bounded native-plan assertions.
     fn run(input: &str, c: &MappingContext<'_>) -> Result<NativeMapping> {
         map(&StoredEffect::test("gegl:gegl", vec![Argument { name: "string", value: ArgumentValue::String(input) }]), c).unwrap()
+    }
+    /// Requires declared unsigned seeds and signed counts to retain their storage types across graph decoding.
+    #[test]
+    fn graph_integer_storage_follows_schema_signedness_not_literal_magnitude() {
+        for seed in [0u32, 1, i32::MAX as u32, u32::MAX] {
+            let text = format!("noise-spread amount-x=1 amount-y=0 seed={seed}");
+            let storage = tokens(&text).unwrap();
+            let mut decoder = Decoder {
+                tokens: storage.iter().map(String::as_str).collect(),
+                cursor: 0,
+                nodes: 0,
+                assignments: 0,
+                labels: Vec::new(),
+                steps: Vec::new(),
+                filters: 0,
+                remaining_generation: crate::xcf::MAX_PIXEL_BYTES,
+                remaining_metadata: crate::xcf::MAX_METADATA_BYTES,
+                notes: Vec::new(),
+            };
+            let parsed = decoder.read_node(&context()).unwrap();
+            with_effect(parsed, &context(), |effect| {
+                assert!(matches!(effect.argument("seed").unwrap(), Some(ArgumentValue::UInt(value)) if *value == seed));
+                assert!(matches!(effect.argument("amount-x").unwrap(), Some(ArgumentValue::Int(1))));
+                Ok(())
+            })
+            .unwrap();
+            let mapping = run(&text, &context()).unwrap();
+            assert_eq!(mapping.filters, vec![super::super::native_filter("filter.stylize.diffuse", json!({"mode":"normal","seed":seed}))]);
+        }
+        for offset in [i32::MIN, -1, 0, 1, i32::MAX] {
+            let text = format!("checkerboard x-offset={offset}");
+            let storage = tokens(&text).unwrap();
+            let mut decoder = Decoder {
+                tokens: storage.iter().map(String::as_str).collect(),
+                cursor: 0,
+                nodes: 0,
+                assignments: 0,
+                labels: Vec::new(),
+                steps: Vec::new(),
+                filters: 0,
+                remaining_generation: crate::xcf::MAX_PIXEL_BYTES,
+                remaining_metadata: crate::xcf::MAX_METADATA_BYTES,
+                notes: Vec::new(),
+            };
+            let parsed = decoder.read_node(&context()).unwrap();
+            with_effect(parsed, &context(), |effect| {
+                assert!(matches!(effect.argument("x-offset").unwrap(), Some(ArgumentValue::Int(value)) if *value == offset));
+                Ok(())
+            })
+            .unwrap();
+        }
+        for value in ["-1", "4294967296", "1.5"] {
+            assert!(run(&format!("noise-spread seed={value}"), &context()).is_err());
+        }
+        for value in ["-2147483649", "2147483648", "1.5"] {
+            assert!(run(&format!("checkerboard x-offset={value}"), &context()).is_err());
+        }
+    }
+
+    /// Compares seeded graph output with independently authored native Diffuse data before and after source-independent saving.
+    #[test]
+    fn unsigned_graph_seed_is_applied_as_editable_native_diffuse_and_survives_reopen() {
+        use crate::xcf::native_effects::{NativeEnvelope, NativeOwner};
+        let c = context();
+        let mut observed_diffusion = false;
+        for sample in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            let mut doc = Document::new("Unsigned source graph", Size::new(4, 2), ColorMode::Rgb, sample);
+            let mut pixels = Surface::new(doc.pixel_format());
+            pixels.write_region(doc.bounds(), &(0..8).flat_map(|i| [i as f32 / 8., (7 - i) as f32 / 8., (i % 3) as f32 / 3., 1.]).collect::<Vec<_>>());
+            let source = Layer::new("Original pixels", LayerContent::Raster(pixels));
+            for seed in [0u32, 1, i32::MAX as u32, u32::MAX] {
+                let mut allowance = crate::xcf::MAX_PIXEL_BYTES;
+                let mut actual = NativeOwner::new(&doc, &source, doc.bounds(), &mut allowance, &Interrupt::NONE).unwrap();
+                let mut expected = NativeOwner::new(&doc, &source, doc.bounds(), &mut allowance, &Interrupt::NONE).unwrap();
+                let envelope = || NativeEnvelope { opacity: 1., blend: photocraft_color::BlendMode::Normal, visible: true, mask: None };
+                actual
+                    .push(run(&format!("noise-spread amount-x=1 amount-y=0 seed={seed}"), &c).unwrap(), envelope(), &mut allowance, &Interrupt::NONE)
+                    .unwrap();
+                expected
+                    .push(
+                        NativeMapping {
+                            filters: vec![super::super::native_filter("filter.stylize.diffuse", json!({"mode":"normal","seed":seed}))],
+                            ..Default::default()
+                        },
+                        envelope(),
+                        &mut allowance,
+                        &Interrupt::NONE,
+                    )
+                    .unwrap();
+                let want = expected.snapshot(&mut allowance, &Interrupt::NONE).unwrap().read_region(doc.bounds());
+                observed_diffusion |= want != source.surface().unwrap().read_region(doc.bounds());
+                assert_eq!(actual.snapshot(&mut allowance, &Interrupt::NONE).unwrap().read_region(doc.bounds()), want, "{sample:?}, seed={seed}");
+                doc.layers = vec![Layer::new("Editable graph import", actual.content())];
+                drop(actual);
+                drop(expected);
+                let saved = photocraft_format::save_to_bytes(&doc, &Default::default()).unwrap();
+                let reopened = photocraft_format::load_from_bytes(&saved).unwrap();
+                let saved_again = photocraft_format::save_to_bytes(&reopened, &Default::default()).unwrap();
+                let got = crate::xcf::native_snapshot::capture(&saved_again, &reopened, &mut allowance, &Interrupt::NONE).unwrap();
+                assert_eq!(got.read_region(doc.bounds()), want, "reopened {sample:?}, seed={seed}");
+                doc.layers.clear();
+            }
+        }
+        assert!(observed_diffusion, "the native seeded filter must change the nonuniform raster rather than silently retaining its input");
     }
     /// Checks scalar conversion and noncommuting operation order against independently declared native filter sequences.
     #[test]

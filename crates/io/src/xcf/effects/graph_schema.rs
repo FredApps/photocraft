@@ -9,6 +9,7 @@
 pub(super) enum Kind {
     Number { min: f64, max: f64 },
     Integer { min: i64, max: i64 },
+    UnsignedInteger { min: u32, max: u32 },
     Boolean,
     Choice(&'static [(&'static str, i32)]),
     Text,
@@ -675,7 +676,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("rank", Kind::Integer { min: 1, max: 3 }),
             ("iterations", Kind::Integer { min: 1, max: 20 }),
             ("palettize", Kind::Boolean),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -826,7 +827,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("tile-size", Kind::Number { min: 0.0, max: 256.0 }),
             ("tile-saturation", Kind::Number { min: 0.0, max: 10.0 }),
             ("bg-color", Kind::Color),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -890,7 +891,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("blue-levels", Kind::Integer { min: 2, max: 65536 }),
             ("alpha-levels", Kind::Integer { min: 2, max: 65536 }),
             ("dither-method", Kind::Choice(CHOICES_14)),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -1130,7 +1131,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("y", Kind::Integer { min: 1, max: 2147483647 }),
             ("algorithm-type", Kind::Choice(CHOICES_30)),
             ("tileable", Kind::Boolean),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
             ("fg-color", Kind::Color),
             ("bg-color", Kind::Color),
         ],
@@ -1190,7 +1191,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("light-color", Kind::Color),
             ("light-dir", Kind::Number { min: 0.0, max: 360.0 }),
             ("antialiasing", Kind::Boolean),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -1266,7 +1267,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("lightness-distance", Kind::Number { min: 0.0, max: 100.0 }),
             ("chroma-distance", Kind::Number { min: 0.0, max: 100.0 }),
             ("hue-distance", Kind::Number { min: 0.0, max: 180.0 }),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -1276,7 +1277,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("hue-distance", Kind::Number { min: 0.0, max: 180.0 }),
             ("saturation-distance", Kind::Number { min: 0.0, max: 1.0 }),
             ("value-distance", Kind::Number { min: 0.0, max: 1.0 }),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -1284,7 +1285,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
         &[
             ("pct-random", Kind::Number { min: 0.0, max: 100.0 }),
             ("repeat", Kind::Integer { min: 1, max: 100 }),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -1292,7 +1293,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
         &[
             ("pct-random", Kind::Number { min: 0.0, max: 100.0 }),
             ("repeat", Kind::Integer { min: 1, max: 100 }),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     ("gegl:noise-reduction", &[("iterations", Kind::Integer { min: 0, max: 32 })]),
@@ -1307,7 +1308,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("green", Kind::Number { min: 0.0, max: 1.0 }),
             ("blue", Kind::Number { min: 0.0, max: 1.0 }),
             ("alpha", Kind::Number { min: 0.0, max: 1.0 }),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -1315,7 +1316,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
         &[
             ("pct-random", Kind::Number { min: 0.0, max: 100.0 }),
             ("repeat", Kind::Integer { min: 1, max: 100 }),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -1326,7 +1327,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("detail", Kind::Integer { min: 0, max: 15 }),
             ("tileable", Kind::Boolean),
             ("turbulent", Kind::Boolean),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
             ("width", Kind::Integer { min: 0, max: 2147483647 }),
             ("height", Kind::Integer { min: 0, max: 2147483647 }),
         ],
@@ -1336,7 +1337,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
         &[
             ("amount-x", Kind::Integer { min: 0, max: 512 }),
             ("amount-y", Kind::Integer { min: 0, max: 512 }),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -1412,7 +1413,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("y", Kind::Integer { min: -2147483648, max: 2147483647 }),
             ("width", Kind::Integer { min: 0, max: 2147483647 }),
             ("height", Kind::Integer { min: 0, max: 2147483647 }),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -1477,7 +1478,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
         &[
             ("shift", Kind::Integer { min: 0, max: 200 }),
             ("direction", Kind::Unavailable("declared enum has no frozen registered nick/integer domain")),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -1485,7 +1486,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
         &[
             ("scale", Kind::Number { min: 0.0, max: 20.0 }),
             ("iterations", Kind::Integer { min: 1, max: 20 }),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -1494,7 +1495,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("x-scale", Kind::Number { min: 0.0001, max: f64::MAX }),
             ("y-scale", Kind::Number { min: 0.0001, max: f64::MAX }),
             ("complexity", Kind::Number { min: 0.0, max: 15.0 }),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
             ("tiling", Kind::Boolean),
             ("perturbation", Kind::Boolean),
             ("color1", Kind::Color),
@@ -1639,7 +1640,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("spokes-count", Kind::Integer { min: 1, max: 1024 }),
             ("random-hue", Kind::Integer { min: 0, max: 360 }),
             ("color", Kind::Color),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     ("gegl:texturize-canvas", &[("direction", Kind::Choice(CHOICES_49)), ("depth", Kind::Integer { min: 1, max: 50 })]),
@@ -1655,7 +1656,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("centering", Kind::Boolean),
             ("background-type", Kind::Choice(CHOICES_51)),
             ("bg-color", Kind::Color),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     ("gegl:tile-seamless", &[]),
@@ -1741,7 +1742,7 @@ const TABLE: &[(&str, &[(&str, Kind)])] = &[
             ("edge", Kind::Choice(CHOICES_57)),
             ("threshold", Kind::Integer { min: 0, max: 50 }),
             ("strength", Kind::Integer { min: 1, max: 100 }),
-            ("seed", Kind::Integer { min: 0, max: 4294967295 }),
+            ("seed", Kind::UnsignedInteger { min: 0, max: 4294967295 }),
         ],
     ),
     (
@@ -2363,6 +2364,38 @@ mod tests {
         assert_eq!(field("gegl:abs", "not-a-field"), None);
     }
     #[test]
+    /// Pins the twenty declared `guint` seeds separately from signed counts and offsets, including nonnegative signed domains.
+    fn declared_unsigned_seeds_do_not_retype_signed_integer_properties() {
+        let unsigned = Kind::UnsignedInteger { min: 0, max: u32::MAX };
+        for operation in [
+            "cell-noise",
+            "cubism",
+            "dither",
+            "maze",
+            "mosaic",
+            "noise-cie-lch",
+            "noise-hsv",
+            "noise-hurl",
+            "noise-pick",
+            "noise-rgb",
+            "noise-slur",
+            "noise-solid",
+            "noise-spread",
+            "plasma",
+            "shift",
+            "simplex-noise",
+            "sinus",
+            "supernova",
+            "tile-paper",
+            "wind",
+        ] {
+            assert_eq!(field(operation, "seed"), Some(unsigned), "{operation}");
+        }
+        assert_eq!(TABLE.iter().flat_map(|(_, fields)| *fields).filter(|(_, kind)| matches!(kind, Kind::UnsignedInteger { .. })).count(), 20);
+        assert_eq!(field("noise-spread", "amount-x"), Some(Kind::Integer { min: 0, max: 512 }));
+        assert_eq!(field("checkerboard", "x-offset"), Some(Kind::Integer { min: i64::from(i32::MIN), max: i64::from(i32::MAX) }));
+    }
+    #[test]
     /// Hash declared schema facts and compare the pinned digest to detect accidental property-domain changes.
     fn generated_declarative_fact_digest_catches_schema_drift() {
         /// Accumulate raw schema-fact bytes with the fixed digest step; textual separators are added by the
@@ -2385,6 +2418,7 @@ mod tests {
                 let tag = match kind {
                     Kind::Number { .. } => 0,
                     Kind::Integer { .. } => 1,
+                    Kind::UnsignedInteger { .. } => 8,
                     Kind::Boolean => 2,
                     Kind::Choice(_) => 3,
                     Kind::Text => 4,
@@ -2399,6 +2433,10 @@ mod tests {
                         bytes(&mut hash, &max.to_le_bytes());
                     }
                     Kind::Integer { min, max } => {
+                        bytes(&mut hash, &min.to_le_bytes());
+                        bytes(&mut hash, &max.to_le_bytes());
+                    }
+                    Kind::UnsignedInteger { min, max } => {
                         bytes(&mut hash, &min.to_le_bytes());
                         bytes(&mut hash, &max.to_le_bytes());
                     }
@@ -2417,6 +2455,6 @@ mod tests {
             text(&mut hash, alias);
             text(&mut hash, canonical);
         }
-        assert_eq!(hash, 0x64be7619bba3363a);
+        assert_eq!(hash, 0xf89a7decf5f2a034);
     }
 }
