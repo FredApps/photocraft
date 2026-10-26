@@ -32,6 +32,7 @@ pub(crate) struct Historical {
 pub(crate) enum Pending {
     Decoded(Box<Held>),
     Historical(Historical),
+    Resuming { held: Historical, job: Option<photocraft_engine::jobs::JobId> },
 }
 impl Pending {
     /// Return the queued file's display name regardless of whether decoding awaits a historical-order choice.
@@ -39,6 +40,7 @@ impl Pending {
         match self {
             Self::Decoded(held) => &held.name,
             Self::Historical(held) => &held.name,
+            Self::Resuming { held, .. } => &held.name,
         }
     }
     /// Expose a decoded pending file without treating a historical sample-order question as document data.
@@ -105,6 +107,9 @@ pub(crate) fn arrive_historical(app: &mut PhotocraftApp, held: Historical) {
 /// Opens queued files in order until one needs its prompt, which is shown if it isn't yet.
 fn advance(app: &mut PhotocraftApp) {
     while let Some(front) = app.held_opens.front() {
+        if matches!(front, Pending::Resuming { .. }) {
+            return;
+        }
         if matches!(front, Pending::Historical(_)) {
             if !app.ui.dialogs.iter().any(|dialog| owns_historical(&dialog.fields)) {
                 show_historical(app);
@@ -191,11 +196,19 @@ pub fn answer(app: &mut PhotocraftApp, action: Option<&str>) -> Result<Value, St
     let Some(action) = action else {
         let dropped = app.held_opens.len();
         let name = app.held_opens.front().map(|h| h.name().to_string()).unwrap_or_default();
-        for pending in std::mem::take(&mut app.held_opens) {
-            if let Pending::Historical(held) = pending {
-                let _ = app.session.execute("file.open", json!({"heldHistoricalXcfOpen":held.id,"cancel":true}));
-            }
+        let historical: Vec<_> = app
+            .held_opens
+            .iter()
+            .filter_map(|pending| match pending {
+                Pending::Historical(held) | Pending::Resuming { held, .. } => Some(held.id),
+                _ => None,
+            })
+            .collect();
+        for id in &historical {
+            authorize_historical(app, &json!({"heldHistoricalXcfOpen":id,"cancel":true}))?;
         }
+        app.session.cancel_held_historical_xcf_opens(&historical).map_err(|error| error.to_string())?;
+        app.held_opens.clear();
         for job in app.jobs.opens.iter().map(|o| o.job).collect::<Vec<_>>() {
             app.session.cancel_job(job);
         }
@@ -343,25 +356,90 @@ pub(crate) fn answer_historical(app: &mut PhotocraftApp, fields: &serde_json::Ma
         return Err("XCF sample-order dialog is stale".into());
     }
     let held = held.clone();
-    let result = if accept {
+    let params = if accept {
         if !historical_can_confirm(fields) {
-            advance(app);
             return Err("choose Little-endian or Big-endian, or Cancel".into());
         }
-        // Inline completion can enqueue the decoded profile question immediately.
-        // Consume this question first so its reentrant advance cannot recreate it.
-        app.held_opens.pop_front();
-        app.ui.dialogs.retain(|dialog| dialog.fields.get(HISTORICAL_FIELD).and_then(Value::as_u64) != Some(held.id));
+        json!({"heldHistoricalXcfOpen":held.id,"historicalXcfSampleOrder":fields.get("historicalXcfSampleOrder").and_then(Value::as_str).unwrap_or_default(),"interactive":true})
+    } else {
+        json!({"heldHistoricalXcfOpen":held.id,"cancel":true})
+    };
+    authorize_historical(app, &params)?;
+    let result = if accept {
+        // Reserve A's exact place before inline or asynchronous completion can
+        // arrive, so later B cannot pass A's eventual profile question.
+        if let Some(front) = app.held_opens.front_mut() {
+            *front = Pending::Resuming { held: held.clone(), job: None };
+        }
         crate::jobs_ui::resume_historical(app, &held, fields.get("historicalXcfSampleOrder").and_then(Value::as_str).unwrap_or_default())
     } else {
-        app.session.execute("file.open", json!({"heldHistoricalXcfOpen":held.id,"cancel":true})).map_err(|error| error.to_string())
+        app.run("file.open", params)
     };
-    if !accept && result.is_ok() {
-        app.held_opens.pop_front();
+    if result.is_ok() {
+        if !accept {
+            app.held_opens.pop_front();
+        }
         app.ui.dialogs.retain(|dialog| dialog.fields.get(HISTORICAL_FIELD).and_then(Value::as_u64) != Some(held.id));
+    } else if accept
+        && let Some(front) = app.held_opens.front_mut()
+        && matches!(front, Pending::Resuming { held: pending, .. } if pending.id == held.id)
+    {
+        *front = Pending::Historical(held);
     }
     advance(app);
     result
+}
+
+/// Authorize only canonical parameters derived from the live queue entry, without closing or consuming its prompt.
+fn authorize_historical(app: &PhotocraftApp, params: &Value) -> Result<(), String> {
+    if app.automation_input || app.session.authorize.is_some() {
+        if let Some(authorize) = &app.services.automation_command {
+            authorize("file.open", params)?;
+        }
+        if let Some(authorize) = app.session.authorize.or(app.services.automation_authorize) {
+            authorize("file.open", params).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Associate the continuation worker with its reserved position without changing any other queued file.
+pub(crate) fn historical_job(app: &mut PhotocraftApp, id: u64, job: photocraft_engine::jobs::JobId) {
+    if let Some(Pending::Resuming { job: pending, .. }) =
+        app.held_opens.iter_mut().find(|pending| matches!(pending, Pending::Resuming { held, .. } if held.id == id))
+    {
+        *pending = Some(job);
+    }
+}
+
+/// Recover the exact held capability associated with a completed continuation worker.
+pub(crate) fn historical_for_job(app: &PhotocraftApp, job: photocraft_engine::jobs::JobId) -> Option<u64> {
+    app.held_opens.iter().find_map(|pending| match pending {
+        Pending::Resuming { held, job: Some(pending) } if *pending == job => Some(held.id),
+        _ => None,
+    })
+}
+
+/// Replace the reserved historical position with its decoded continuation, then ask/open in the original order.
+pub(crate) fn arrive_continuation(app: &mut PhotocraftApp, id: Option<u64>, held: Held) {
+    if let Some(index) = id.and_then(|id| app.held_opens.iter().position(|pending| matches!(pending, Pending::Resuming { held, .. } if held.id == id))) {
+        if let Some(pending) = app.held_opens.get_mut(index) {
+            *pending = Pending::Decoded(Box::new(held));
+        }
+        advance(app);
+    } else {
+        arrive(app, held);
+    }
+}
+
+/// Failed decoding or authorization leaves the encoded source available for a deliberate retry or cancellation.
+pub(crate) fn historical_resume_failed(app: &mut PhotocraftApp, id: u64) {
+    if let Some(pending) = app.held_opens.iter_mut().find(|pending| matches!(pending, Pending::Resuming { held, .. } if held.id == id))
+        && let Pending::Resuming { held, .. } = pending
+    {
+        *pending = Pending::Historical(held.clone());
+    }
+    advance(app);
 }
 
 /// Opens a queued file, applying `action` (the prompt's answer) or else the Color Settings

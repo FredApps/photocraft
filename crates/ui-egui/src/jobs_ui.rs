@@ -218,13 +218,14 @@ pub fn start_open(app: &mut PhotocraftApp, name: &str, path: Option<String>, sou
 /// state.
 pub(crate) fn resume_historical(app: &mut PhotocraftApp, held: &crate::open_prompt::Historical, order: &str) -> Result<Value, String> {
     let params = json!({"heldHistoricalXcfOpen":held.id,"historicalXcfSampleOrder":order,"interactive":true});
-    let started = if app.background_jobs { app.session.start(OPEN_JOB, params) } else { app.session.execute(OPEN_JOB, params).map(Started::Done) };
-    match started.map_err(|error| error.to_string())? {
-        Started::Done(value) => {
-            finish_open(app, &held.name, held.path.as_deref(), &value, held.slot)?;
+    let value = app.run(OPEN_JOB, params)?;
+    match value.get("job").and_then(Value::as_u64).map(JobId) {
+        None => {
+            finish_open_continuation(app, &held.name, held.path.as_deref(), &value, held.slot, Some(held.id))?;
             Ok(value)
         }
-        Started::Job(job) => {
+        Some(job) => {
+            crate::open_prompt::historical_job(app, held.id, job);
             app.jobs.opens.push(OpenTab { job, name: held.name.clone(), path: held.path.clone(), slot: held.slot, order: None });
             app.jobs.focus = Some(job);
             app.ui.chrome.home = None;
@@ -272,7 +273,8 @@ fn batch_slot(jobs: &mut JobsUi, order: OpenOrder) -> Option<usize> {
 /// [`JobsUi::opens`]: the document goes to the tab's slot, or to its place in its set.
 pub(crate) fn finish_open_tab(app: &mut PhotocraftApp, tab: &OpenTab, v: &Value) -> Result<(), String> {
     let slot = tab.slot.or_else(|| tab.order.and_then(|o| batch_slot(&mut app.jobs, o)));
-    let r = finish_open(app, &tab.name, tab.path.as_deref(), v, slot);
+    let continuation = crate::open_prompt::historical_for_job(app, tab.job);
+    let r = finish_open_continuation(app, &tab.name, tab.path.as_deref(), v, slot, continuation);
     end_batch(&mut app.jobs);
     r
 }
@@ -493,6 +495,7 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
     });
     // A Free Transform commit's session ends with its job (then reported like any job).
     crate::transform_tool::on_job_event(app, &e);
+    app.on_dropped_place_job(ctx, &e);
     if crate::prefs_ui::on_recovery_event(app, &e) {
         return;
     }
@@ -516,14 +519,26 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
     if e.command == OPEN_JOB {
         let Some(i) = app.jobs.opens.iter().position(|o| o.job == e.id) else { return };
         let tab = app.jobs.opens.remove(i);
+        let continuation = crate::open_prompt::historical_for_job(app, tab.job);
         match e.outcome {
             JobOutcome::Done(v) => {
                 if let Err(err) = finish_open_tab(app, &tab, &v) {
+                    if let Some(id) = continuation {
+                        crate::open_prompt::historical_resume_failed(app, id);
+                    }
                     app.open_failed(&tab.name, &err);
                 }
             }
-            JobOutcome::Failed(err) => app.open_failed(&tab.name, &err),
+            JobOutcome::Failed(err) => {
+                if let Some(id) = continuation {
+                    crate::open_prompt::historical_resume_failed(app, id);
+                }
+                app.open_failed(&tab.name, &err);
+            }
             JobOutcome::Cancelled => {
+                if let Some(id) = continuation {
+                    crate::open_prompt::historical_resume_failed(app, id);
+                }
                 app.ui.status = crate::i18n::fmt(tl!("Cancelled opening {name}"), &[("name", &tab.name)]);
                 app.ui.status_error = false;
             }
@@ -569,6 +584,18 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
 /// What [`crate::PhotocraftApp::open_bytes`] does after decoding, for a background open's result
 /// (`{document, docId, warnings, color}` or `{held, …}`).
 pub(crate) fn finish_open(app: &mut PhotocraftApp, name: &str, path: Option<&str>, v: &Value, slot: Option<usize>) -> Result<(), String> {
+    finish_open_continuation(app, name, path, v, slot, None)
+}
+
+/// Keep a resumed file's decoded profile question at its reserved queue position.
+fn finish_open_continuation(
+    app: &mut PhotocraftApp,
+    name: &str,
+    path: Option<&str>,
+    v: &Value,
+    slot: Option<usize>,
+    continuation: Option<u64>,
+) -> Result<(), String> {
     if let Some(id) = v.get("heldHistoricalXcfOpen").and_then(Value::as_u64) {
         let question = v.get("historicalXcfSampleOrderRequired").ok_or("missing historical XCF question")?;
         let version = question.get("version").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).ok_or("invalid XCF question version")?;
@@ -600,8 +627,9 @@ pub(crate) fn finish_open(app: &mut PhotocraftApp, name: &str, path: Option<&str
     // Held back for the profile prompt (Ask When Opening).
     if let Some(id) = v.get("held").and_then(Value::as_u64) {
         let pending = app.session.take_held_open_with_policy(id).ok_or("the open job's document is gone")?;
-        crate::open_prompt::arrive(
+        crate::open_prompt::arrive_continuation(
             app,
+            continuation,
             held(
                 pending.document,
                 pending.source_read_only,
@@ -637,7 +665,7 @@ pub(crate) fn finish_open(app: &mut PhotocraftApp, name: &str, path: Option<&str
             show_layer_mask: st.channel_view.layer_mask.is_some(),
         });
         let doc = Arc::try_unwrap(st.doc).unwrap_or_else(|d| (*d).clone());
-        crate::open_prompt::arrive(app, held(doc, read_only, initial_view, None, true, None, None));
+        crate::open_prompt::arrive_continuation(app, continuation, held(doc, read_only, initial_view, None, true, None, None));
         return Ok(());
     }
     if let Some(slot) = slot {

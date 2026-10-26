@@ -341,11 +341,29 @@ pub fn authorize_engine_command(id: &str, params: &Value) -> Result<(), Automati
 /// when their request parameters contain no path. Fresh headless sessions
 /// cannot acquire such settings through the automation interface.
 pub fn authorize_desktop_engine_command(id: &str, params: &Value) -> Result<(), AutomationError> {
+    if id == "file.open" && held_historical_open_only(params) {
+        return Ok(());
+    }
     authorize_engine_command(id, params)?;
     if id.starts_with("image.mode.") {
         return Err(command_error(id));
     }
     Ok(())
+}
+
+/// Continuing an existing session capability may use only its identity and an explicit choice or cancellation.
+/// No path, format override or unknown field can turn this exception into an ambient file open.
+fn held_historical_open_only(params: &Value) -> bool {
+    let Some(fields) = params.as_object() else { return false };
+    if fields.get("heldHistoricalXcfOpen").and_then(Value::as_u64).is_none_or(|id| id == 0) {
+        return false;
+    }
+    if fields.get("cancel") == Some(&Value::Bool(true)) {
+        return fields.keys().all(|key| matches!(key.as_str(), "heldHistoricalXcfOpen" | "cancel"));
+    }
+    fields.keys().all(|key| matches!(key.as_str(), "heldHistoricalXcfOpen" | "historicalXcfSampleOrder" | "interactive"))
+        && matches!(fields.get("historicalXcfSampleOrder").and_then(Value::as_str), Some("little-endian" | "big-endian"))
+        && fields.get("interactive").is_none_or(|value| value == &Value::Bool(true))
 }
 
 /// [`authorize_engine_command`] as the function pointer [`photocraft_engine::Session::authorize`]
@@ -512,6 +530,35 @@ impl Drop for ExportSequence {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    /// Only a typed existing-held decision bypasses desktop ambient-open denial; no locator or unrecognized control is accepted.
+    fn desktop_historical_continuation_gate_accepts_only_strict_held_capabilities() {
+        for params in [
+            serde_json::json!({"heldHistoricalXcfOpen":1,"historicalXcfSampleOrder":"little-endian","interactive":true}),
+            serde_json::json!({"heldHistoricalXcfOpen":2,"historicalXcfSampleOrder":"big-endian"}),
+            serde_json::json!({"heldHistoricalXcfOpen":3,"cancel":true}),
+        ] {
+            assert!(super::authorize_desktop_engine_step("file.open", &params).is_ok());
+            assert!(super::authorize_engine_step("file.open", &params).is_err(), "headless authority is not expanded");
+        }
+        for params in [
+            serde_json::json!({"path":"outside.xcf"}),
+            serde_json::json!({"heldHistoricalXcfOpen":1,"historicalXcfSampleOrder":"little-endian","path":"outside.xcf"}),
+            serde_json::json!({"heldHistoricalXcfOpen":1,"cancel":true,"path":"outside.xcf"}),
+            serde_json::json!({"heldHistoricalXcfOpen":1,"historicalXcfSampleOrder":"big-endian","as":"xcf"}),
+            serde_json::json!({"heldHistoricalXcfOpen":1,"historicalXcfSampleOrder":"big-endian","unknown":null}),
+            serde_json::json!({"heldHistoricalXcfOpen":0,"cancel":true}),
+            serde_json::json!({"heldHistoricalXcfOpen":"1","cancel":true}),
+            serde_json::json!({"heldHistoricalXcfOpen":1,"cancel":false}),
+            serde_json::json!({"heldHistoricalXcfOpen":1,"cancel":true,"historicalXcfSampleOrder":"big-endian"}),
+            serde_json::json!({"heldHistoricalXcfOpen":1,"historicalXcfSampleOrder":"native"}),
+            serde_json::json!({"heldHistoricalXcfOpen":1,"historicalXcfSampleOrder":"big-endian","interactive":false}),
+            serde_json::json!({"heldHistoricalXcfOpen":1}),
+        ] {
+            assert!(super::authorize_desktop_engine_step("file.open", &params).is_err(), "denied {params}");
+        }
+    }
+
     use super::*;
 
     fn roots(name: &str) -> (PathBuf, PathBuf, AuthorizedWorkspace) {

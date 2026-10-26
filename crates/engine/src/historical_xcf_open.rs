@@ -65,6 +65,18 @@ impl WorkerPolicy {
         }
         let mut color = crate::color_cmds::ColorState::default();
         color.settings = self.color.clone();
+        // A held source capability grants no new access to a user-configured ICC
+        // path. Check the actual captured working profile before resolving it.
+        let working = match crate::color_cmds::mode_space(imported.document.mode) {
+            photocraft_cms::ColorSpace::Rgb => Some(&self.color.working_rgb),
+            photocraft_cms::ColorSpace::Cmyk => Some(&self.color.working_cmyk),
+            photocraft_cms::ColorSpace::Gray => Some(&self.color.working_gray),
+            _ => None,
+        };
+        if let Some(profile) = working {
+            let _authority = self.authorize.map(|gate| crate::jobs::render_authorization_scope(Some(gate)));
+            crate::jobs::authorize_render_command("edit.profileInfo", &json!({"profile":profile}))?;
+        }
         let raw = imported.warnings.iter().any(|warning| warning.contains(photocraft_io::raw::DEVELOPED_NOTE));
         let question = color.open_question(&imported.document).filter(|_| !raw);
         let damaged = interactive && damaged;
@@ -189,16 +201,24 @@ pub(crate) fn command(s: &mut Session, params: &Value) -> Result<Value> {
             .to_string();
         Request { name: path.clone(), source: OpenSource::Path(path.clone()), path: Some(path), interactive, order, held: None }
     };
-    let resumed = request.held;
     let started = run(s, request, false);
-    // Once the worker owns the exact bytes, cancellation/failure releases them
-    // through the normal job lifetime rather than leaving an orphaned choice.
-    if let Some(id) = resumed {
-        s.jobs.historical_xcf.retain(|held| held.id != id);
-    }
+    // Successful installation consumes the held identity in `run`'s apply step.
+    // Failed authorization, decoding or cancellation keeps the capability retryable.
     match started? {
         Started::Done(value) => Ok(value),
         Started::Job(_) => Err(EngineError::Other("file.open: unexpected nested background job".into())),
+    }
+}
+
+impl Session {
+    /// Revoke only existing inert historical sources, validating the entire set before releasing any of them.
+    /// This cleanup capability accepts no path or decoding policy and performs no file access.
+    pub fn cancel_held_historical_xcf_opens(&mut self, ids: &[u64]) -> Result<()> {
+        if ids.len() > MAX_HELD || ids.iter().any(|id| !self.jobs.historical_xcf.iter().any(|held| held.id == *id)) {
+            return Err(EngineError::Other("historical source choice is no longer available".into()));
+        }
+        self.jobs.historical_xcf.retain(|held| !ids.contains(&held.id));
+        Ok(())
     }
 }
 
@@ -716,8 +736,8 @@ mod tests {
     }
 
     #[test]
-    /// Consume held bytes after a valid resume even when decoding fails or the inline job is cancelled.
-    fn historical_failed_and_cancelled_resume_release_encoded_source() {
+    /// Failed or cancelled continuation remains recoverable until an explicit held-only cancellation releases it.
+    fn historical_failed_and_cancelled_resume_keep_source_until_explicit_cancel() {
         for cancelled in [false, true] {
             let mut s = Session::new();
             s.execute("file.new", json!({"width":2,"height":2})).unwrap();
@@ -734,10 +754,28 @@ mod tests {
                 s.set_inline_job_ctx(Some(ctx));
             }
             assert!(s.execute("file.open", json!({"heldHistoricalXcfOpen":id,"historicalXcfSampleOrder":"little-endian"})).is_err());
-            assert!(s.jobs.historical_xcf.is_empty());
+            assert_eq!(s.jobs.historical_xcf.len(), 1);
             assert!(Arc::ptr_eq(&original, &s.active().unwrap().doc));
             assert_eq!(s.documents().len(), 1);
+            s.set_inline_job_ctx(None);
+            s.cancel_held_historical_xcf_opens(&[id]).unwrap();
+            assert!(s.jobs.historical_xcf.is_empty());
         }
+    }
+
+    #[test]
+    /// A stale member cannot partially cancel a held set, and cleanup never admits any of its source documents.
+    fn historical_batch_cancel_validates_every_capability_before_releasing_sources() {
+        let mut session = Session::new();
+        let first = hold(&mut session);
+        let second = hold(&mut session);
+        assert!(session.cancel_held_historical_xcf_opens(&[first, u64::MAX]).is_err());
+        assert_eq!(session.jobs.historical_xcf.len(), 2);
+        assert!(session.jobs.historical_xcf.iter().any(|held| held.id == first));
+        assert!(session.jobs.historical_xcf.iter().any(|held| held.id == second));
+        session.cancel_held_historical_xcf_opens(&[first, second]).unwrap();
+        assert!(session.jobs.historical_xcf.is_empty());
+        assert!(session.documents().is_empty());
     }
 
     #[test]

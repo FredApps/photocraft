@@ -817,6 +817,11 @@ fn file_command(fields: &Fields) -> Option<&'static str> {
 
 /// Confirm a dialog: run its action and close it. Used by the OK button and by automation.
 pub fn confirm(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
+    if let Some(fields) =
+        app.ui.dialogs.iter().find(|dialog| dialog.id == id && crate::open_prompt::owns_historical(&dialog.fields)).map(|dialog| dialog.fields.clone())
+    {
+        return crate::open_prompt::answer_historical(app, &fields, true);
+    }
     if crate::layer_style::color_picker::has_child(app, id) {
         return Err("confirm or cancel the Layer Style color picker first".into());
     }
@@ -941,6 +946,19 @@ pub fn confirm(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
 
 /// Cancel a dialog and its dependent Layer Style picker, without applying edits.
 pub fn cancel(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
+    if let Some(fields) = app.ui.dialogs.iter().find(|dialog| dialog.id == id).map(|dialog| dialog.fields.clone()) {
+        if crate::open_prompt::owns_historical(&fields) {
+            let value = crate::open_prompt::answer_historical(app, &fields, false)?;
+            crate::actions::stopped(app, &fields);
+            return Ok(value);
+        }
+        if crate::open_prompt::owns(&fields) {
+            let value = crate::open_prompt::answer(app, None)?;
+            app.ui.close_dialog(id);
+            crate::actions::stopped(app, &fields);
+            return Ok(value);
+        }
+    }
     let closed = app.ui.close_dialog(id).ok_or_else(|| format!("no dialog {id}"))?;
     crate::actions::stopped(app, &closed.fields);
     if crate::guide_layout_ui::owns(&closed.fields) {

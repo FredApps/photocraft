@@ -1487,6 +1487,95 @@ mod tests {
         }
     }
 
+    /// Original historical header with no drawable data; decoding must wait for an explicit component order.
+    fn historical_control_source() -> Vec<u8> {
+        let mut bytes = b"gimp xcf v007\0".to_vec();
+        for value in [1u32, 1, 0, 250, 0, 0, 0, 0] {
+            bytes.extend(value.to_be_bytes());
+        }
+        bytes
+    }
+
+    /// Match the desktop capability distinction for this production-handler test; the actual desktop gate is tested in automation and the app.
+    fn held_control_gate(id: &str, params: &Value) -> photocraft_engine::Result<()> {
+        if id == "file.open" {
+            let valid = params.as_object().is_some_and(|fields| {
+                fields.get("heldHistoricalXcfOpen").and_then(Value::as_u64).is_some_and(|id| id > 0)
+                    && (fields.get("cancel") == Some(&json!(true)) && fields.len() == 2
+                        || fields.keys().all(|key| matches!(key.as_str(), "heldHistoricalXcfOpen" | "historicalXcfSampleOrder" | "interactive"))
+                            && matches!(fields.get("historicalXcfSampleOrder").and_then(Value::as_str), Some("little-endian" | "big-endian")))
+            });
+            if valid {
+                return Ok(());
+            }
+        }
+        deny_ambient_file(id, params)
+    }
+
+    #[test]
+    /// Historical A keeps its place before ready B through inline/worker profile continuation; profile Cancel atomically discards B and held C.
+    fn historical_control_continuation_preserves_queue_order_and_atomic_profile_cancel() {
+        use photocraft_color::{Color, ColorMode, SampleType};
+        use photocraft_doc::Document;
+        use photocraft_geom::Size;
+        use std::sync::Arc;
+        for background in [false, true] {
+            let services = crate::Services {
+                automation_authorize: Some(held_control_gate),
+                import: Some(Box::new(|name, bytes, options| photocraft_io::import_with_options(name, bytes, options).map_err(|error| error.to_string()))),
+                ..Default::default()
+            };
+            let mut session = photocraft_engine::Session::new();
+            session.execute("file.new", json!({"width":2,"height":2})).unwrap();
+            let mut app = PhotocraftApp::new(session, services);
+            let original = app.session.active().unwrap().doc.clone();
+            app.background_jobs = false;
+            app.session.color.settings.working_rgb = photocraft_cms::Builtin::DisplayP3.id().into();
+            app.session.color.settings.ask_on_mismatch = true;
+            app.session.color.settings.ask_on_missing = true;
+            app.open_bytes("A.xcf", &historical_control_source()).unwrap();
+            let dialog = app.ui.dialogs.iter().find(|dialog| crate::open_prompt::owns_historical(&dialog.fields)).unwrap().id;
+            let mut matching = Document::with_background("B.pcraft", Size::new(1, 1), ColorMode::Rgb, SampleType::U8, Color::rgba(1., 0., 0., 1.));
+            matching.icc_profile = Some(photocraft_cms::Builtin::DisplayP3.profile().to_bytes());
+            let bytes = photocraft_format::save_to_bytes(&matching, &Default::default()).unwrap();
+            app.open_bytes("B.pcraft", &bytes).unwrap();
+            app.open_bytes("C.xcf", &historical_control_source()).unwrap();
+            let trailing = match app.held_opens.back().unwrap() {
+                crate::open_prompt::Pending::Historical(held) => held.id,
+                _ => panic!("C must remain a historical capability"),
+            };
+            let ctx = egui::Context::default();
+            assert_eq!(call(&mut app, &ctx, "ui.dialog.set", json!({"dialog":dialog,"field":"historicalXcfSampleOrder","value":"little-endian"}))["ok"], true);
+            app.background_jobs = background;
+            assert_eq!(call(&mut app, &ctx, "ui.dialog.confirm", json!({"dialog":dialog,"wait":false}))["ok"], true);
+            let start = std::time::Instant::now();
+            while !app.jobs.opens.is_empty() && start.elapsed() < std::time::Duration::from_secs(30) {
+                crate::jobs_ui::tick(&mut app, &ctx);
+                std::thread::yield_now();
+            }
+            assert!(app.jobs.opens.is_empty());
+            assert_eq!(app.held_opens.iter().map(|pending| pending.name()).collect::<Vec<_>>(), ["A.xcf", "B.pcraft", "C.xcf"]);
+            assert!(app.held_opens.front().and_then(crate::open_prompt::Pending::decoded).unwrap().question.is_some());
+            assert_eq!(app.session.documents().len(), 1, "B cannot open or fire its opened behavior ahead of A's profile answer");
+            let profile = app.ui.dialogs.iter().find(|dialog| crate::open_prompt::owns(&dialog.fields)).unwrap().id;
+            app.services.automation_authorize = Some(deny_ambient_file);
+            assert_eq!(call(&mut app, &ctx, "ui.dialog.cancel", json!({"dialog":profile}))["ok"], false);
+            assert_eq!(app.held_opens.len(), 3, "denied cancellation must not partially discard the queue");
+            assert!(app.ui.dialogs.iter().any(|dialog| dialog.id == profile));
+            assert!(Arc::ptr_eq(&original, &app.session.active().unwrap().doc));
+            app.services.automation_authorize = Some(held_control_gate);
+            assert_eq!(call(&mut app, &ctx, "ui.dialog.cancel", json!({"dialog":profile}))["ok"], true);
+            assert!(app.held_opens.is_empty());
+            assert_eq!(app.session.documents().len(), 1);
+            assert!(Arc::ptr_eq(&original, &app.session.active().unwrap().doc));
+            assert!(
+                app.session.execute("file.open", json!({"heldHistoricalXcfOpen":trailing,"cancel":true})).is_err(),
+                "whole-queue cancellation must release C's actual held bytes"
+            );
+            assert!(app.session.authorize.is_none());
+        }
+    }
+
     #[test]
     fn ui_set_turns_the_stroke_trace_on_and_off_at_runtime() {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());

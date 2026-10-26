@@ -279,9 +279,8 @@ fn historical_xcf_worker_resume_resets_home_error_status_and_focuses_the_open() 
 }
 
 #[test]
-/// Fail decoding after a valid historical header and verify the prompt and held bytes are consumed without replacing
-/// the current tab.
-fn historical_xcf_failed_resume_consumes_prompt_and_preserves_current_document() {
+/// Fail decoding after a valid historical header and retain the recoverable prompt/source until explicit cancellation.
+fn historical_xcf_failed_resume_retains_prompt_and_preserves_current_document() {
     let mut h = app_harness();
     h.state_mut().background_jobs = false;
     let original = h.state().session.active().unwrap().doc.clone();
@@ -291,10 +290,12 @@ fn historical_xcf_failed_resume_consumes_prompt_and_preserves_current_document()
     let mut fields = h.state().ui.dialogs.iter().find(|dialog| crate::open_prompt::owns_historical(&dialog.fields)).unwrap().fields.clone();
     fields.insert("historicalXcfSampleOrder".into(), json!("big-endian"));
     assert!(crate::open_prompt::answer_historical(h.state_mut(), &fields, true).is_err());
-    assert!(h.state().held_opens.is_empty());
+    assert_eq!(h.state().held_opens.len(), 1);
+    assert!(h.state().ui.dialogs.iter().any(|dialog| crate::open_prompt::owns_historical(&dialog.fields)));
     assert!(Arc::ptr_eq(&original, &h.state().session.active().unwrap().doc));
     assert_eq!(h.state().session.documents().len(), 1);
-    assert!(h.state_mut().session.execute("file.open", json!({"heldHistoricalXcfOpen":fields["__historicalXcfOpen"],"cancel":true})).is_err());
+    crate::open_prompt::answer_historical(h.state_mut(), &fields, false).unwrap();
+    assert!(h.state().held_opens.is_empty());
 }
 
 /// [`app_harness`] over the given services (the beep test records the hook's calls).
