@@ -603,7 +603,7 @@ fn stroke_controls(ui: &mut egui::Ui, value: &mut Option<photocraft_doc::ShapeSt
         if ui.color_edit_button_rgba_unmultiplied(&mut rgba).changed() {
             s.paint = photocraft_doc::Fill::Solid(photocraft_doc::Color::rgba(rgba[0], rgba[1], rgba[2], rgba[3]));
         }
-        crate::widgets::value_field(ui, &mut s.width, 0.0..=1000.0, "px", 58.0);
+        crate::widgets::value_field_named(ui, tl!("Stroke:"), &mut s.width, 0.0..=1000.0, "px", 58.0);
         egui::ComboBox::from_id_salt("frame-stroke-align")
             .selected_text(match s.align {
                 photocraft_doc::StrokeAlign::Inside => tl!("Inside"),
@@ -649,7 +649,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
     if app.ui.frame_tool.shape == "polygon" {
         ui.label(tl!("Sides:"));
         let mut n = app.ui.frame_tool.sides.clamp(3, 100) as f32;
-        crate::widgets::value_field(ui, &mut n, 3.0..=100.0, "", 44.);
+        crate::widgets::value_field_named(ui, tl!("Sides:"), &mut n, 3.0..=100.0, "", 44.);
         app.ui.frame_tool.sides = n as u32;
     }
     if app.ui.frame_tool.shape == "custom" {
@@ -689,7 +689,7 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, l: &Layer) {
         for (i, label) in [(0, tl!("W")), (1, tl!("H"))] {
             ui.label(label);
             if let Some(v) = values.get_mut(i) {
-                changed |= crate::widgets::value_field(ui, v, 1.0..=300_000.0, "px", 66.).changed();
+                changed |= crate::widgets::value_field_named(ui, label, v, 1.0..=300_000.0, "px", 66.).changed();
             }
         }
     });
@@ -697,7 +697,7 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, l: &Layer) {
         for (i, label) in [(2, tl!("X")), (3, tl!("Y"))] {
             ui.label(label);
             if let Some(v) = values.get_mut(i) {
-                changed |= crate::widgets::value_field(ui, v, -300_000.0..=300_000.0, "px", 66.).changed();
+                changed |= crate::widgets::value_field_named(ui, label, v, -300_000.0..=300_000.0, "px", 66.).changed();
             }
         }
     });
