@@ -27,6 +27,94 @@ fn held(name: &str, view: NativeInitialView) -> Held {
     }
 }
 
+/// Hold original specification-built v7 bytes; the optional truncation fails only after a sample order is supplied.
+fn historical_app(broken: bool) -> (PhotocraftApp, serde_json::Map<String, Value>, u64) {
+    let mut app = PhotocraftApp::new(Session::new(), crate::Services::default());
+    app.session.add_document(document("Existing"), None);
+    app.session.color.settings.ask_on_missing = false;
+    app.session.color.settings.ask_on_mismatch = false;
+    app.background_jobs = false;
+    let mut bytes = b"gimp xcf v007\0".to_vec();
+    for value in [1u32, 1, 0, 250, 0, 0, 0, 0] {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+    if broken {
+        bytes.truncate(30);
+    }
+    app.open_bytes("A.xcf", &bytes).unwrap();
+    let mut fields = app.ui.dialogs.iter().find(|dialog| owns_historical(&dialog.fields)).unwrap().fields.clone();
+    fields.insert("historicalXcfSampleOrder".into(), json!("little-endian"));
+    let id = fields[HISTORICAL_FIELD].as_u64().unwrap();
+    assert!(app.session.holds_historical_xcf_open(id));
+    assert!(!app.session.holds_historical_xcf_open(0));
+    (app, fields, id)
+}
+
+#[test]
+/// A consumed source cannot be restored by an inline failed continuation; discard its stale dialog and admit the next file.
+fn historical_inline_failure_drops_consumed_identity_and_advances_queue() {
+    let (mut app, fields, id) = historical_app(false);
+    let existing = app.session.active().unwrap().doc.clone();
+    arrive(&mut app, held("B.pcraft", NativeInitialView::default()));
+    // Another accepted engine caller can consume the exact capability before the UI answers.
+    app.session.execute("file.open", json!({"heldHistoricalXcfOpen":id,"historicalXcfSampleOrder":"little-endian"})).unwrap();
+    assert!(!app.session.holds_historical_xcf_open(id));
+    assert_eq!(app.session.documents().len(), 2);
+
+    let error = answer_historical(&mut app, &fields, true).unwrap_err();
+    assert!(error.contains("no longer available"));
+    assert!(app.held_opens.is_empty(), "a consumed source must not trap B behind a dead question");
+    assert!(!app.ui.dialogs.iter().any(|dialog| dialog.fields.get(HISTORICAL_FIELD).and_then(Value::as_u64) == Some(id)));
+    assert_eq!(app.session.active().unwrap().doc.name, "B.pcraft");
+    assert!(app.session.active().unwrap().source_read_only);
+    assert_eq!(app.session.documents().len(), 3);
+    assert!(std::sync::Arc::ptr_eq(&existing, &app.session.documents()[0].doc));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+/// Delay worker event delivery to distinguish a consumed source with a failed UI handoff from a retryable decode failure.
+fn historical_worker_failure_recovers_only_a_still_held_source() {
+    use photocraft_engine::jobs::JobId;
+    for broken in [false, true] {
+        let (mut app, fields, id) = historical_app(broken);
+        let existing = app.session.active().unwrap().doc.clone();
+        arrive(&mut app, held("B.pcraft", NativeInitialView::default()));
+        app.background_jobs = true;
+        let pending = answer_historical(&mut app, &fields, true).unwrap();
+        let job = JobId(pending["job"].as_u64().unwrap());
+        let completed = app.session.wait_job(job);
+        if broken {
+            assert!(completed.is_err());
+            assert!(app.session.holds_historical_xcf_open(id));
+        } else {
+            let completed = completed.unwrap();
+            assert!(!app.session.holds_historical_xcf_open(id));
+            // The engine has applied the success, but its shell event has not run yet.
+            // Closing that document makes the real finish_open_tab handoff fail.
+            let document = completed["docId"].as_u64().unwrap();
+            let index = app.session.documents().iter().position(|state| state.doc.id.0 == document).unwrap();
+            app.session.close(index).unwrap();
+        }
+        crate::jobs_ui::tick(&mut app, &egui::Context::default());
+        assert!(app.jobs.opens.is_empty());
+        if broken {
+            assert_eq!(app.held_opens.len(), 2, "a source still owned by the engine remains retryable ahead of B");
+            assert_eq!(app.session.documents().len(), 1);
+            let retry = app.ui.dialogs.iter().find(|dialog| owns_historical(&dialog.fields)).unwrap().fields.clone();
+            assert_eq!(retry[HISTORICAL_FIELD], id);
+            answer_historical(&mut app, &retry, false).unwrap();
+        }
+        assert!(!app.session.holds_historical_xcf_open(id));
+        assert!(app.held_opens.is_empty(), "a consumed source cannot be revived after the UI handoff fails");
+        assert!(!app.ui.dialogs.iter().any(|dialog| dialog.fields.get(HISTORICAL_FIELD).and_then(Value::as_u64) == Some(id)));
+        assert_eq!(app.session.documents().len(), 2);
+        assert_eq!(app.session.active().unwrap().doc.name, "B.pcraft");
+        assert!(app.session.active().unwrap().source_read_only);
+        assert!(std::sync::Arc::ptr_eq(&existing, &app.session.documents()[0].doc));
+    }
+}
+
 #[test]
 /// Require swallowed queue errors to post a named notice while preserving existing documents and their active
 /// index.

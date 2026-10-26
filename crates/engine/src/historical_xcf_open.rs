@@ -211,6 +211,11 @@ pub(crate) fn command(s: &mut Session, params: &Value) -> Result<Value> {
 }
 
 impl Session {
+    /// Whether this session still owns the encoded source for an unanswered historical XCF choice.
+    pub fn holds_historical_xcf_open(&self, id: u64) -> bool {
+        self.jobs.historical_xcf.iter().any(|held| held.id == id)
+    }
+
     /// Revoke only existing inert historical sources, validating the entire set before releasing any of them.
     /// This cleanup capability accepts no path or decoding policy and performs no file access.
     pub fn cancel_held_historical_xcf_opens(&mut self, ids: &[u64]) -> Result<()> {

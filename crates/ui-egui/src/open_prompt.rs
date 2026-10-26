@@ -380,11 +380,9 @@ pub(crate) fn answer_historical(app: &mut PhotocraftApp, fields: &serde_json::Ma
             app.held_opens.pop_front();
         }
         app.ui.dialogs.retain(|dialog| dialog.fields.get(HISTORICAL_FIELD).and_then(Value::as_u64) != Some(held.id));
-    } else if accept
-        && let Some(front) = app.held_opens.front_mut()
-        && matches!(front, Pending::Resuming { held: pending, .. } if pending.id == held.id)
-    {
-        *front = Pending::Historical(held);
+    } else if accept {
+        historical_resume_failed(app, held.id);
+        return result;
     }
     advance(app);
     result
@@ -432,12 +430,19 @@ pub(crate) fn arrive_continuation(app: &mut PhotocraftApp, id: Option<u64>, held
     }
 }
 
-/// Failed decoding or authorization leaves the encoded source available for a deliberate retry or cancellation.
+/// Recover only while the engine still owns the source; a failed UI handoff after consumption must not revive a dead prompt.
 pub(crate) fn historical_resume_failed(app: &mut PhotocraftApp, id: u64) {
-    if let Some(pending) = app.held_opens.iter_mut().find(|pending| matches!(pending, Pending::Resuming { held, .. } if held.id == id))
-        && let Pending::Resuming { held, .. } = pending
-    {
-        *pending = Pending::Historical(held.clone());
+    if let Some(index) = app.held_opens.iter().position(|pending| matches!(pending, Pending::Resuming { held, .. } if held.id == id)) {
+        if app.session.holds_historical_xcf_open(id) {
+            if let Some(pending) = app.held_opens.get_mut(index)
+                && let Pending::Resuming { held, .. } = pending
+            {
+                *pending = Pending::Historical(held.clone());
+            }
+        } else {
+            app.held_opens.remove(index);
+            app.ui.dialogs.retain(|dialog| dialog.fields.get(HISTORICAL_FIELD).and_then(Value::as_u64) != Some(id));
+        }
     }
     advance(app);
 }
