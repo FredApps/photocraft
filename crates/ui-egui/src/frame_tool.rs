@@ -656,8 +656,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         crate::preset_panels::shape_picker(app, ui);
     }
     crate::widgets::vline(ui, 22.);
-    let gesture = crate::vector_ui::paint_gesture(ui, ui.id().with("frame-options-gesture"));
-    let coalesce = format!("frame-stroke-{}-{gesture}", ui.id().value());
+    let gesture = crate::vector_ui::paint_gesture(ui, ui.scope_id().with("frame-options-gesture"));
+    let coalesce = format!("frame-stroke-{}-{gesture}", ui.scope_id().value());
     let mut stroke = selected(app).and_then(|l| l.frame.as_ref()).map_or_else(|| app.ui.frame_tool.stroke.clone(), |f| f.stroke.clone());
     if stroke_controls(ui, &mut stroke) {
         app.ui.frame_tool.stroke = stroke.clone();
@@ -678,7 +678,7 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, l: &Layer) {
     }) {
         ui.disable();
     }
-    let gesture = crate::vector_ui::paint_gesture(ui, ui.id().with("frame-properties-gesture"));
+    let gesture = crate::vector_ui::paint_gesture(ui, ui.scope_id().with("frame-properties-gesture"));
     let coalesce = format!("frame-properties-{}-{gesture}", l.id.0);
     let [a, b, c, d, x, y] = f.transform.m;
     let (w, h) = (a.hypot(b), c.hypot(d));
@@ -769,7 +769,7 @@ pub fn task_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &ViewXform) {
     );
     let ctx = ui.ctx().clone();
     let t = Tokens::get(&ctx);
-    egui::Area::new(egui::Id::new("frame-context-bar")).order(egui::Order::Middle).fixed_pos(at).show(&ctx, |ui| {
+    egui::Area::new(egui::Id::unique("frame-context-bar")).order(egui::Order::Middle).fixed_pos(at).show(&ctx, |ui| {
         egui::Frame::NONE.fill(t.card).stroke(Stroke::new(1., t.field_border)).corner_radius(t.radius).inner_margin(6.).show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button(if empty { tl!("Import Image…") } else { tl!("Replace Image…") }).clicked() {
