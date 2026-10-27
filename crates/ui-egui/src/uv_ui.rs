@@ -2751,8 +2751,8 @@ mod tests {
         h.get_by_label("UV shell selection").click();
         h.step();
         assert!(h.query_by_label("General margin, px").is_some());
-        assert!(h.query_by_label("Horizontal margin, px").is_some());
-        assert!(h.query_by_label("Vertical margin, px").is_some());
+        assert!(h.query_by_label("U margin, px").is_some());
+        assert!(h.query_by_label("V margin, px").is_some());
         for removed in ["Apply selection", "Protected layer", "Also protect open borders"] {
             assert!(h.query_by_label(removed).is_none());
         }
