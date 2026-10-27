@@ -541,7 +541,7 @@ fn overhanging_content_handles_start_transform_and_cancel() {
     app.session
         .edit("Photo", |doc, active| {
             let mut l = Layer::raster("Photo", doc.pixel_format());
-            l.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 200, 200), &[1., 0., 0., 1.]);
+            l.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 200, 100), &[1., 0., 0., 1.]);
             let id = l.id;
             doc.layers.push(l);
             *active = Some(id);
@@ -558,6 +558,7 @@ fn overhanging_content_handles_start_transform_and_cancel() {
     let frame = selected(&app).unwrap();
     let child = frame.children().unwrap().first().unwrap();
     let b = photocraft_engine::transform_cmds::transform_frame(&st.doc, child);
+    assert!(b.x0 < 20, "image must overhang the frame: {b:?}");
     let entries = st.history.entries();
     for (x, y) in [(f64::from(b.x0), f64::from(b.y0)), (f64::from(b.x0), f64::from(b.y0 + b.y1) / 2.)] {
         tool_event(&mut app, ToolEvent::Down { x, y, pressure: 1. }, egui::Modifiers::NONE);
