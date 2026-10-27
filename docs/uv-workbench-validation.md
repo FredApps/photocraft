@@ -75,3 +75,30 @@ The failing integration test files and `canvas/pixel_grid.rs` are identical to t
 With the UV feature enabled, the crop-ratio integration test overflowed its Windows test-thread stack at the standard 2 MiB Rust test-thread size. It passed at 16 MiB; the same default-feature exact passed at the standard size. This indicates higher stack use in that feature-enabled test path, but does not establish a production startup problem; a native `--help` smoke was deferred.
 
 Detailed gate logs were kept outside the repository checkout and are not part of the PR. Default UI check, native application check, panic hunt, layer check and default wasm check passed. Initial strict Clippy and core test attempts found a missing `PixelFormat` test import and `type_complexity` in the touched GPU cache path; narrow fixes are present, but strict Clippy and core tests were not rerun. Corpus assets were fetched and verified, but the release corpus test build was stopped before tests ran. UV-feature wasm, exact default-feature reproductions, perf, and native `--help` checks were deferred at the user's direction to publish the resolved merge without extending validation further.
+
+## 2026-10-27 refreshed upstream-main validation
+
+The follow-up merge candidate includes upstream `main` at
+`07bd794686ea4db0b557c978d58173a62760e4ca`. The only text conflict was the root
+workspace manifest: the UV workspace dependencies were retained and the shared
+`craft-libs` dependencies were advanced to upstream's `92d392cff132eaf53e13afff77f38b5c11b73aa0` pin.
+
+Scoped checks on this candidate:
+
+| Check | Result |
+|---|---|
+| `cargo check -p photocraft --features uv-workbench --locked` | Passed |
+| `cargo check -p photocraft --locked` | Passed |
+| UV container save/quit and workspace-scope regression | 1 passed |
+| UV 2D channel selection and preference round-trip regression | 1 passed |
+| Font-picker open/search focus regression | 1 passed |
+| Trackpad popup layering and selection regression | 1 passed |
+| `cargo clippy -p photocraft-ui-egui --all-targets --features uv-workbench -- -D warnings` | Passed |
+| `cargo xtask layers` | Passed, 32 crates |
+| `cargo xtask wasm` | Passed, 25 crates plus `photocraft-codecs --features heif` |
+
+The updated upstream Clippy rule disallows `egui::ComboBox`; the two UV toolbar
+channel selectors now use the workspace's pinned `craft_ui::ComboBox`. This
+refresh does not rerun the full UI integration suite. The six pixel assertions
+listed above remain deferred, and the prior results remain evidence only for
+their recorded source revision.

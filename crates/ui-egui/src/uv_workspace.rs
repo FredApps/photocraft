@@ -347,7 +347,7 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
             if s.channel != Channel::Material && !available.contains(&s.channel) {
                 s.channel = Channel::Material;
             }
-            let response = egui::ComboBox::from_id_salt("uv-display-channel")
+            let response = craft_ui::ComboBox::from_id_salt("uv-display-channel")
                 .width(170.0)
                 .selected_text(s.channel.label())
                 .show_ui(ui, |ui| {
@@ -367,7 +367,7 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let before = app.ui.uv_workbench.channel_2d;
                     let mut selected = before;
-                    let response = egui::ComboBox::from_id_salt("uv-2d-channel")
+                    let response = craft_ui::ComboBox::from_id_salt("uv-2d-channel")
                         .width(150.0)
                         .selected_text(selected.label())
                         .show_ui(ui, |ui| {

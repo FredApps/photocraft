@@ -73,3 +73,14 @@ Additional scoped gates passed:
 - `cargo check -p photocraft-ui-egui --all-targets` — passed.
 - `cargo xtask layers` — passed, 32 crates with no violations.
 - `cargo xtask wasm` — passed for 25 crates and `photocraft-codecs --features heif`.
+
+## 2026-10-27 refreshed upstream-main check
+
+The PR branch was refreshed to upstream `main` at
+`07bd794686ea4db0b557c978d58173a62760e4ca`; the shared `craft-libs` pin is now
+`92d392cff132eaf53e13afff77f38b5c11b73aa0`. The upstream Clippy policy also
+replaces the two UV toolbar `egui::ComboBox` calls with `craft_ui::ComboBox`.
+The UV-feature native check, default native check, UV save/workspace regression,
+font-picker regression, popup layering regression, strict UI Clippy, layering,
+and wasm checks passed. Exact commands and the scope of this validation are
+recorded in [`uv-workbench-validation.md`](uv-workbench-validation.md).
