@@ -79,6 +79,11 @@ CLI `convert`, `info`, `run` and `batch` accept
 imports refuse ambiguous high-depth files rather than publish potentially wrong pixels. The
 public IO API exposes the same choice through `ImportOptions::historical_xcf_sample_order`.
 
+CLI `batch` defaults XCF inputs to editable `.pcraft` output when `--format` is omitted.
+It removes the complete XCF transport suffix: `portrait.XCF.GZ` becomes `portrait.pcraft`,
+or `portrait.png` with `--format png`. This also covers `.xcfgz`, `.xcfbz2` and `.xcfxz`
+aliases. Inputs that map to the same output name are reported instead of overwriting one another.
+
 Place Embedded prepares imported content before creating pixels or a Smart Object preview.
 For ambiguous historical files with an explicit byte-order choice, embedded Smart contents
 become native `.pcraft` data so refresh and Edit Contents need no further XCF interpretation.

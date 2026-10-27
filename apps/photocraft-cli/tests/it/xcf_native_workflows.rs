@@ -261,12 +261,7 @@ impl RouteFiles {
 impl Drop for RouteFiles {
     /// Remove the temporary route artifacts and directory after a test finishes.
     fn drop(&mut self) {
-        if let Ok(entries) = std::fs::read_dir(&self.0) {
-            for entry in entries.flatten() {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-        let _ = std::fs::remove_dir(&self.0);
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -275,6 +270,105 @@ fn call(args: Vec<String>) -> (i32, String, String) {
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = photocraft_cli::run(&args, &mut out, &mut err);
     (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+}
+
+#[test]
+/// Batch every declared XCF suffix into editable native files by default, preserving Unicode stems, explicit formats and ordinary image defaults.
+fn batch_xcf_defaults_to_native_and_preserves_explicit_formats() {
+    let files = RouteFiles::new();
+    let input = files.0.join("input");
+    std::fs::create_dir(&input).unwrap();
+    let wrapped = wrapped_sources();
+    let mut sources = vec![
+        ("λ画像.layer.plain.XCF", "λ画像.layer.plain", wrapped[0].1.clone()),
+        ("gzip.multi.XCF.GZ", "gzip.multi", wrapped[1].1.clone()),
+        ("bzip.multi.xcf.bz2", "bzip.multi", wrapped[2].1.clone()),
+        ("xz.multi.XcF.Xz", "xz.multi", wrapped[3].1.clone()),
+        ("alias.gzip.XCFGZ", "alias.gzip", wrapped[1].1.clone()),
+        ("alias.bzip.xcfbz2", "alias.bzip", wrapped[2].1.clone()),
+        ("alias.xz.XCFXZ", "alias.xz", wrapped[3].1.clone()),
+    ];
+    for (name, _, bytes) in &sources {
+        std::fs::write(input.join(name), bytes).unwrap();
+    }
+    let ordinary = input.join("ordinary.multi.png");
+    let (code, _, err) = call(vec!["convert".into(), input.join(sources[0].0).to_string_lossy().into_owned(), ordinary.to_string_lossy().into_owned()]);
+    assert_eq!(code, 0, "{err}");
+    sources.push(("ordinary.multi.png", "ordinary.multi", std::fs::read(&ordinary).unwrap()));
+    let actions = files.path("actions.json");
+    std::fs::write(&actions, br#"[["layer.setProps",{"opacity":0.5}]]"#).unwrap();
+    for (route, format) in [("default", None), ("explicit-native", Some("pcraft")), ("explicit-png", Some(".png"))] {
+        let output = files.0.join(route);
+        let mut args = vec![
+            "batch".into(),
+            "--actions".into(),
+            actions.clone(),
+            "--in".into(),
+            input.to_string_lossy().into_owned(),
+            "--out".into(),
+            output.to_string_lossy().into_owned(),
+        ];
+        if let Some(format) = format {
+            args.extend(["--format".into(), format.into()]);
+        }
+        let (code, stdout, err) = call(args);
+        assert_eq!(code, 0, "{route}: {stdout}{err}");
+        assert!(stdout.contains("8 succeeded, 0 failed"), "{stdout}{err}");
+        let mut expected_names = std::collections::BTreeSet::new();
+        for (name, stem, bytes) in &sources {
+            let ext = format.map(|value| value.trim_start_matches('.')).unwrap_or(if name.ends_with(".png") { "png" } else { "pcraft" });
+            let output_name = format!("{stem}.{ext}");
+            expected_names.insert(output_name.clone());
+            let doc = photocraft_io::import(&output_name, &std::fs::read(output.join(&output_name)).unwrap()).unwrap().document;
+            assert_eq!(doc.layers.len(), 1);
+            let pixels = doc.layers[0].surface().unwrap().read_region(doc.bounds());
+            if ext == "pcraft" {
+                assert_eq!(doc.layers[0].opacity, 0.5, "native output retains editable opacity");
+                assert_eq!(pixels, vec![128. / 255., 64. / 255., 32. / 255., 1.]);
+            } else {
+                for (actual, expected) in pixels.iter().zip([128. / 255., 64. / 255., 32. / 255., 0.5]) {
+                    assert!((actual - expected).abs() <= 1. / 255., "{route}/{output_name}: {pixels:?}");
+                }
+            }
+            assert_eq!(std::fs::read(input.join(name)).unwrap(), *bytes, "batch must retain each source");
+        }
+        let actual_names: std::collections::BTreeSet<_> =
+            std::fs::read_dir(&output).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(actual_names, expected_names, "strip only the complete XCF transport suffix");
+    }
+}
+
+#[test]
+/// Plain and compressed inputs sharing a stem must claim one native output rather than overwrite one another.
+fn batch_xcf_native_defaults_reject_colliding_output_stems() {
+    let files = RouteFiles::new();
+    let input = files.0.join("input");
+    std::fs::create_dir(&input).unwrap();
+    let source = layered_xcf();
+    let compressed = stored_gzip(&source);
+    std::fs::write(input.join("same.xcf"), &source).unwrap();
+    std::fs::write(input.join("same.xcf.gz"), &compressed).unwrap();
+    let actions = files.path("actions.json");
+    std::fs::write(&actions, b"[]").unwrap();
+    let output = files.0.join("output");
+    let (code, stdout, err) = call(vec![
+        "batch".into(),
+        "--actions".into(),
+        actions,
+        "--in".into(),
+        input.to_string_lossy().into_owned(),
+        "--out".into(),
+        output.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(code, 1, "{stdout}{err}");
+    assert!(stdout.contains("1 succeeded, 1 failed"), "{stdout}{err}");
+    assert!(err.contains("already holds the result") && err.contains("same output name"), "{err}");
+    assert_eq!(std::fs::read_dir(&output).unwrap().count(), 1);
+    let native = std::fs::read(output.join("same.pcraft")).unwrap();
+    let doc = photocraft_io::import("same.pcraft", &native).unwrap().document;
+    assert_eq!(doc.layers[0].surface().unwrap().read_region(doc.bounds()), vec![128. / 255., 64. / 255., 32. / 255., 1.]);
+    assert_eq!(std::fs::read(input.join("same.xcf")).unwrap(), source);
+    assert_eq!(std::fs::read(input.join("same.xcf.gz")).unwrap(), compressed);
 }
 
 #[test]

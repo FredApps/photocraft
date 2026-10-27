@@ -250,10 +250,9 @@ fn batch_imports_historical_xcf_and_wrappers_instead_of_silently_skipping_them()
     assert!(stdout.contains("4 succeeded, 0 failed"), "{stdout}");
     assert_eq!(stdout.matches("ok    ").count(), 4, "{stdout}");
     assert_eq!(std::fs::read_dir(&output).unwrap().count(), 4);
-    for (name, original) in inputs {
+    for ((name, original), output_name) in inputs.into_iter().zip(["plain.pcraft", "gzip.pcraft", "bzip.pcraft", "xz.pcraft"]) {
         let source_path = input_dir.join(name);
-        let stem = source_path.file_stem().unwrap().to_str().unwrap();
-        let doc = photocraft_format::load_path(&output.join(format!("{stem}.pcraft"))).unwrap();
+        let doc = photocraft_format::load_path(&output.join(output_name)).unwrap();
         let pixels = doc.layers[0].surface().unwrap().read_region(doc.bounds());
         assert_eq!(pixels.len(), 4, "{name}: one native RGBA pixel");
         for (actual, expected) in pixels.iter().zip([0x1234u16, 0x3456, 0x789a, 0x4000]) {
