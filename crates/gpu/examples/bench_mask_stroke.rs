@@ -56,6 +56,8 @@ struct ResultSet {
     dirty_pixels: Vec<[f32; 4]>,
 }
 
+type RenderCapture = (Vec<[f32; 4]>, Stats);
+
 fn render_capture(
     comp: &mut Compositor,
     device: &wgpu::Device,
@@ -63,7 +65,7 @@ fn render_capture(
     doc: &Document,
     render_region: Rect,
     capture_region: Rect,
-) -> Result<(Vec<[f32; 4]>, Stats), Box<dyn Error>> {
+) -> Result<RenderCapture, Box<dyn Error>> {
     let mut bytes_per_pixel = 8u32;
     let mut copied = false;
     let mut row = 0u32;
