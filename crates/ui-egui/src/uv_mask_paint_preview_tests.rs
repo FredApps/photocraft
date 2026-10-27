@@ -245,6 +245,49 @@ fn cpu_fallback_materializes_nested_transient_paint_masks() {
 }
 
 #[test]
+fn partial_cpu_materialization_matches_full_mask_values_with_feather_and_stays_damage_bounded() {
+    let (mut app, layer) = app();
+    let doc = {
+        let state = app.session.active_mut().unwrap();
+        let doc = std::sync::Arc::make_mut(&mut state.doc);
+        let canvas = doc.bounds();
+        doc.layer_mut(layer).unwrap().surface_mut().unwrap().fill_rect(canvas, &[1.0, 0.0, 0.0, 1.0]);
+        let mask = doc.layer_mut(layer).unwrap().mask.as_mut().unwrap();
+        mask.feather = 2.0;
+        let stack = mask.paint.as_mut().unwrap();
+        stack.layers[0].kind = EffectKind::Fill { value: 0.9, rotation: 0.0, repeat_u: false, repeat_v: false, mirror_u: false, mirror_v: false };
+        stack.layers[0].fill_bounds = Some([8, 6, 24, 20]);
+        state.doc.as_ref().clone()
+    };
+    let damage = photocraft_geom::Rect::new(12, 10, 18, 16);
+    let partial = crate::gpu_canvas::materialize_paint_masks_region(&doc, damage);
+    let full = crate::gpu_canvas::materialize_paint_masks(&doc);
+    let p = &partial.layer(layer).unwrap().mask.as_ref().unwrap().surface;
+    let f = &full.layer(layer).unwrap().mask.as_ref().unwrap().surface;
+    for y in damage.y0..damage.y1 {
+        for x in damage.x0..damage.x1 {
+            assert!((p.sample_channel(x, y, 0) - f.sample_channel(x, y, 0)).abs() < 1e-6, "mask pixel ({x},{y})");
+        }
+    }
+    assert_eq!(p.sample_channel(9, 7, 0), f.sample_channel(9, 7, 0), "the feather halo includes nearby mask pixels");
+    let partial_render = photocraft_compose::render(&partial, damage);
+    let full_render = photocraft_compose::render(&full, damage);
+    for (i, (a, b)) in partial_render.px.iter().zip(&full_render.px).enumerate() {
+        assert!(a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6), "composited feathered pixel {i}: {a:?} != {b:?}");
+    }
+    assert!(full_render.px.iter().any(|px| px[0] > 0.05 && px[3] > 0.05), "the red layer is visible through the materialized mask");
+    let unmaterialized_render = photocraft_compose::render(&doc, damage);
+    assert!(full_render.px.iter().zip(&unmaterialized_render.px).any(|(a, b)| (a[0] - b[0]).abs() > 0.1), "materialization changes the rendered mask result");
+
+    let mut huge = doc.clone();
+    huge.size.width = 100_000;
+    huge.size.height = 100_000;
+    let tiny = crate::gpu_canvas::materialize_paint_masks_region(&huge, photocraft_geom::Rect::new(12, 10, 18, 16));
+    let tiles = tiny.layer(layer).unwrap().mask.as_ref().unwrap().surface.tiles().count();
+    assert!(tiles <= 1, "a tiny damaged rect on a huge canvas materializes at most its one tile, got {tiles}");
+}
+
+#[test]
 fn fill_bounds_preview_uses_low_res_proxy_and_commits_once_on_release() {
     let (mut app, layer) = app();
     {
@@ -334,7 +377,8 @@ fn gray_fill_preview_skips_full_cpu_worker_for_both_mask_target_forms() {
     assert_eq!(cache.preview_key, proxy.key, "the texture key matches the sampled transform");
     let mut view = app.session.active().unwrap().channel_view.clone();
     // `ensure` normalizes target-only mask selection to this explicit display descriptor.
-    view.layer_mask = Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, filter: false, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
+    view.layer_mask =
+        Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, filter: false, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
     let pixels = crate::channel_view::render_fill_mask_proxy(
         &doc,
         &view,

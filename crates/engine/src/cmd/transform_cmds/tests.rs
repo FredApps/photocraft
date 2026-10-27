@@ -422,6 +422,33 @@ fn masked_depth(hide: &[Rect], linked: bool, depth: u32) -> Session {
     s
 }
 
+#[test]
+fn group_transform_allows_unlinked_descendant_paint_masks_and_rejects_linked_ones_atomically() {
+    for linked in [false, true] {
+        let mut s = masked(&[Rect::new(10, 10, 15, 15)], linked);
+        let child = s.active().unwrap().active_layer.unwrap();
+        s.edit("Add editable mask stack", |doc, _| {
+            let mask = doc.layer_mut(child).unwrap().mask.as_mut().unwrap();
+            mask.paint = Some(photocraft_doc::mask_paint::Stack { base: mask.surface.clone(), layers: Vec::new(), active: 0 });
+            Ok(())
+        })
+        .unwrap();
+        s.execute("layer.groupLayers", json!({})).unwrap();
+        let group = s.active().unwrap().active_layer.unwrap();
+        let before = s.active().unwrap().doc.clone();
+        let result = s.execute("edit.transform", json!({"layer":group.0,"dx":4,"dy":0}));
+        if linked {
+            assert!(result.is_err(), "a linked descendant mask moves with the group and cannot lose its editable stack");
+            assert_eq!(s.active().unwrap().doc, before, "linked-stack rejection is atomic");
+        } else {
+            assert!(result.is_ok(), "an unlinked descendant mask stays fixed while its group pixels move: {result:?}");
+            let layer = s.active().unwrap().doc.layer(child).unwrap();
+            assert_eq!(layer.mask.as_ref().unwrap().surface.content_bounds(), before.layer(child).unwrap().mask.as_ref().unwrap().surface.content_bounds());
+            assert_eq!(layer.surface().unwrap().content_bounds(), Rect::new(14, 10, 34, 20));
+        }
+    }
+}
+
 fn mask_at(s: &Session, x: i32, y: i32) -> f32 {
     let st = s.active().unwrap();
     st.doc.layer(st.active_layer.unwrap()).unwrap().mask.as_ref().unwrap().surface.sample_channel(x, y, 0)

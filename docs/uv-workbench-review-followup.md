@@ -26,6 +26,8 @@ The review is available at [PR #8805](https://github.com/storytold/photocraft/pu
 | 14 | Validation documentation described intermediate merge state and linked local logs. | Align the validation note with the finalized merge state and portable references. |
 | 15 | Invalid geometry construction permanently discarded the UV renderer. | Keep the existing renderer available so a later valid model can recover. |
 | 16 | Several UV workspace labels were hard-coded and missing Russian localization. | Route the labels through translation keys and add Russian catalog entries. |
+| 17 | Transform rejection included unlinked descendant masks that a group pixel transform leaves fixed. | Reject editable mask-stack transforms only when the chosen target actually moves those masks; cover unlinked group success and linked group atomic rejection. |
+| 18 | A synchronous CPU fallback materialized every editable mask stack even for a small damage rect. | Materialize only damage plus each pixel mask's feather support for rect rendering; retain complete snapshots for full and deferred redraws. |
 
 ## Focused validation
 
@@ -40,10 +42,25 @@ The focused checks passed:
 - `cargo test -p photocraft-ui-egui --features uv-workbench mac_control_right_brush_resize_is_scoped_to_the_uv_workspace` — 1 passed.
 - `cargo clippy -p photocraft-compose -p photocraft-engine -p photocraft-format -p photocraft-ui-egui --all-targets --features photocraft-ui-egui/uv-workbench -- -D warnings` — passed.
 - `cargo check -p photocraft-ui-egui --all-targets` — passed.
-- `cargo test -p photocraft-engine --test panic_hunt -- --ignored` — adversarial command panic hunt passed (1 test).
+- `cargo test -p photocraft-engine --test panic_hunt -- --ignored` — adversarial command panic hunt passed (1 test, 15.36 s).
 - `cargo xtask layers` — passed, 32 crates with no layering violations.
 - `cargo xtask wasm` — passed for 25 crates and the codecs `heif` feature check.
 
 These focused checks do not replace the broader validation documented in
 [`uv-workbench-validation.md`](uv-workbench-validation.md). The six previously
 recorded pixel assertions remain deferred.
+
+## 2026-10-27 latest review follow-up
+
+The latest two CodeRabbit findings are addressed in the working tree. Focused
+regressions passed:
+
+- `cargo test -p photocraft-engine --features uv-workbench --lib group_transform_allows_unlinked_descendant_paint_masks_and_rejects_linked_ones_atomically` — 1 passed.
+- `cargo test -p photocraft-ui-egui --features uv-workbench --lib partial_cpu_materialization_matches_full_mask_values_with_feather_and_stays_damage_bounded` — 1 passed; compares the rendered rect with a full snapshot and verifies a tiny-damage snapshot on a 100,000 × 100,000 canvas touches at most one mask tile.
+
+Additional scoped gates passed:
+
+- `cargo clippy -p photocraft-engine -p photocraft-compose -p photocraft-ui-egui --all-targets --features photocraft-ui-egui/uv-workbench -- -D warnings` — passed.
+- `cargo check -p photocraft-ui-egui --all-targets` — passed.
+- `cargo xtask layers` — passed, 32 crates with no violations.
+- `cargo xtask wasm` — passed for 25 crates and `photocraft-codecs --features heif`.

@@ -64,17 +64,17 @@ use resources::{DocTextures, Resources, identity_lut_bytes, lut_bind_group};
 use setup::device_limits_for;
 use setup::texture_buffer;
 pub use setup::{Refresh, device_descriptor, device_limits, display_texels, timing_features, use_adapter_limits, use_adapter_limits_with, wgpu_setup};
-#[cfg(test)]
-use shaders::{CANVAS_WGSL, ENCODE_WGSL};
 #[cfg(any(test, feature = "uv-workbench"))]
 pub(crate) use shaders::MIP_WGSL;
-#[cfg(not(target_arch = "wasm32"))]
-use texels::texel_to_f32;
-pub use texels::{LayerFit, premultiply_rgba8, premultiply_rgba16f};
+#[cfg(test)]
+use shaders::{CANVAS_WGSL, ENCODE_WGSL};
 #[cfg(test)]
 use texels::f16_to_f32;
 #[cfg(any(test, feature = "uv-workbench"))]
 pub(crate) use texels::f32_to_f16;
+#[cfg(not(target_arch = "wasm32"))]
+use texels::texel_to_f32;
+pub use texels::{LayerFit, premultiply_rgba8, premultiply_rgba16f};
 use texels::{texel_bytes, texels, texels_into};
 
 /// Default tile side; documents up to this size (and the device limit) use a single texture.
@@ -756,7 +756,10 @@ impl GpuCanvas {
         // Materialize only for a synchronous CPU draw. Deferred jobs take one durable flattened
         // snapshot in `textures::ensure_gpu` after this method returns.
         let has_paint_masks = doc.walk().iter().any(|(_, _, layer)| layer.mask.as_ref().is_some_and(|mask| mask.paint.is_some()));
-        let cpu_doc = out.fallback.as_ref().filter(|_| has_paint_masks).map(|_| materialize_paint_masks(doc));
+        let cpu_doc = out.fallback.as_ref().filter(|_| has_paint_masks).map(|_| match damage {
+            Some(region) => materialize_paint_masks_region(doc, region),
+            None => materialize_paint_masks(doc),
+        });
         let doc = cpu_doc.as_ref().unwrap_or(doc);
         if let Some(r) = damage {
             if r.is_empty() {
@@ -773,7 +776,14 @@ impl GpuCanvas {
                 return out;
             }
         }
-        self.upload_composite(key, doc, display);
+        if damage.is_some() && out.fallback.is_some() && has_paint_masks {
+            // A failed rect upload falls through to a whole-canvas upload; that snapshot must be
+            // complete, since the partial materialization above only covers this damage + halo.
+            let full_doc = materialize_paint_masks(doc);
+            self.upload_composite(key, &full_doc, display);
+        } else {
+            self.upload_composite(key, doc, display);
+        }
         out.kind = "full";
         out.px = bounds.width() as u64 * bounds.height() as u64;
         out.composite_ms = now_ms() - t0;
@@ -969,15 +979,28 @@ impl GpuCanvas {
 /// Flatten transient Paint mask stacks into a private document copy for CPU consumers.
 /// The live/display document remains GPU-first and its canonical surface is not mutated.
 pub(crate) fn materialize_paint_masks(doc: &photocraft_doc::Document) -> photocraft_doc::Document {
+    materialize_paint_masks_region(doc, doc.bounds())
+}
+
+/// Flatten only the mask pixels needed by a CPU rect render. Feathered pixel masks need the
+/// three-sigma support around the render rect so the compositor's feathered mask cache sees the
+/// same input as a full materialization. A deferred/full upload must use [`materialize_paint_masks`].
+pub(crate) fn materialize_paint_masks_region(doc: &photocraft_doc::Document, region: photocraft_geom::Rect) -> photocraft_doc::Document {
     let mut materialized = doc.clone();
     let canvas = materialized.bounds();
+    let region = region.intersect(&canvas);
+    if region.is_empty() {
+        return materialized;
+    }
     let mask_ids: Vec<_> =
         materialized.walk().iter().filter_map(|(_, _, layer)| layer.mask.as_ref().filter(|mask| mask.paint.is_some()).map(|_| layer.id)).collect();
     for id in mask_ids {
         if let Some(mask) = materialized.layer_mut(id).and_then(|layer| layer.mask.as_mut())
             && mask.paint.is_some()
         {
-            photocraft_compose::mask_paint::refresh_in_canvas(mask, canvas);
+            let feather = photocraft_vector::feather::feather_sigma(mask.feather);
+            let needed = photocraft_vector::feather::grow(region, feather).intersect(&canvas);
+            photocraft_compose::mask_paint::refresh(mask, Some(needed));
         }
     }
     materialized

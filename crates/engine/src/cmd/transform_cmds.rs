@@ -21,10 +21,10 @@ fn bad(msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: "edit.transform".into(), msg: msg.into() }
 }
 
-fn has_mask_paint_stack(layer: &Layer) -> bool {
+fn has_linked_mask_paint_stack(layer: &Layer) -> bool {
     let mut pending = vec![layer];
     while let Some(layer) = pending.pop() {
-        if layer.mask.as_ref().is_some_and(|mask| mask.paint.is_some()) {
+        if layer.mask.as_ref().is_some_and(|mask| mask.linked && mask.paint.is_some()) {
             return true;
         }
         if let LayerContent::Group(group) = &layer.content {
@@ -761,8 +761,8 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(layer) = id.and_then(|id| st.doc.layer(id)) {
         let target = crate::channel_cmds::target_of(p);
         let unsupported = match target {
-            crate::channel_cmds::Target::Mask => has_mask_paint_stack(layer),
-            crate::channel_cmds::Target::Pixels if layer.is_group() => has_mask_paint_stack(layer),
+            crate::channel_cmds::Target::Mask => layer.mask.as_ref().is_some_and(|mask| mask.paint.is_some()),
+            crate::channel_cmds::Target::Pixels if layer.is_group() => has_linked_mask_paint_stack(layer),
             crate::channel_cmds::Target::Pixels => layer.mask.as_ref().is_some_and(|mask| mask.linked && mask.paint.is_some()),
             _ => false,
         };
