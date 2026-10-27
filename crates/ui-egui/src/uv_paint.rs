@@ -590,7 +590,7 @@ mod tests {
         let view = make_view(&scene, &g, &maps);
         let at = screen(&view, 0);
         app.tool_override = Some(Tool::Move);
-        sample(&mut app, &mut State::default(), &view, at, Action::CloneSource);
+        sample(&mut app, &egui::Context::default(), &mut State::default(), &view, at, Action::CloneSource);
         assert!(app.session.presets.clone.active().source.is_some());
         assert!(app.drag.is_none());
         app.tool_override = None;
@@ -602,7 +602,7 @@ mod tests {
         output.textures_delta.clear();
         let before = app.session.active().unwrap().history.past_len();
         let mut paint = State::default();
-        sample(&mut app, &mut paint, &view, at, Action::Paint);
+        sample(&mut app, &egui::Context::default(), &mut paint, &view, at, Action::Paint);
         finish(&mut app, &mut paint);
         assert!(app.session.active().unwrap().history.past_len() <= before + 1);
     }
@@ -685,7 +685,7 @@ mod tests {
                     let normalized = std::array::from_fn(|j| (world[j] - g.center[j]) / g.diameter);
                     let at = g.project_normalized(view.camera, normalized, view.size).unwrap();
                     let p = view.rect.min + egui::vec2(at[0] as f32 * view.rect.width(), at[1] as f32 * view.rect.height());
-                    sample(&mut app, &mut paint, &view, p, Action::Paint);
+                    sample(&mut app, &egui::Context::default(), &mut paint, &view, p, Action::Paint);
                 }
                 app.defer_live_stroke = false;
                 canvas::feed_live_stroke(&mut app);
@@ -715,7 +715,7 @@ mod tests {
         app.uv_paint_key = Some("first-undo".into());
         let first = screen(&view, 0);
         let mut paint = State::default();
-        sample(&mut app, &mut paint, &view, first, Action::Paint);
+        sample(&mut app, &egui::Context::default(), &mut paint, &view, first, Action::Paint);
         assert!(app.live_stroke.is_some());
         app.uv_cache.paint_for_test(paint);
         app.run("edit.undo", json!({})).unwrap();
@@ -723,7 +723,7 @@ mod tests {
         assert_eq!(app.session.active().unwrap().doc.layers[0].surface(), before.layers[0].surface());
         app.ui.tool = Tool::Eyedropper;
         app.run("tools.setColors", json!({"foreground":"#000000"})).unwrap();
-        sample(&mut app, &mut State::default(), &view, first, Action::Paint);
+        sample(&mut app, &egui::Context::default(), &mut State::default(), &view, first, Action::Paint);
         assert!(app.session.tools.foreground[..3].iter().all(|v| *v > 0.99));
     }
     #[test]
@@ -737,13 +737,13 @@ mod tests {
         app.uv_paint_key = Some("one-uv-gesture".into());
         let mut state = State::default();
         let first = screen(&view, 0);
-        sample(&mut app, &mut state, &view, first, Action::Paint);
+        sample(&mut app, &egui::Context::default(), &mut state, &view, first, Action::Paint);
         assert!(app.live_stroke.is_some());
         let index = app.session.active_index().unwrap();
         let (preview, key) = canvas::display_doc(&mut app, index);
         assert_ne!(key, 0);
         assert_ne!(preview.layers[0].surface().unwrap(), before.layers[0].surface().unwrap());
-        sample(&mut app, &mut state, &view, screen(&view, 2), Action::Paint);
+        sample(&mut app, &egui::Context::default(), &mut state, &view, screen(&view, 2), Action::Paint);
         finish(&mut app, &mut state);
         let after = app.session.active().unwrap().doc.clone();
         assert_eq!(app.session.active().unwrap().history.past_len(), history + 1);
@@ -763,19 +763,19 @@ mod tests {
         app.run("uv.mask.apply", json!({})).unwrap();
         let history = app.session.active().unwrap().history.past_len();
         let mut state = State::default();
-        sample(&mut app, &mut state, &view, screen(&view, 0), Action::Paint);
+        sample(&mut app, &egui::Context::default(), &mut state, &view, screen(&view, 0), Action::Paint);
         finish(&mut app, &mut state);
         assert_eq!(before.layers[0].surface().unwrap(), app.session.active().unwrap().doc.layers[0].surface().unwrap());
         assert_eq!(app.session.active().unwrap().history.past_len(), history, "masked-out live brush must not add an empty Undo step");
         app.run("select.deselect", json!({})).unwrap();
         app.ui.tool = Tool::Eraser;
-        sample(&mut app, &mut state, &view, screen(&view, 0), Action::Paint);
+        sample(&mut app, &egui::Context::default(), &mut state, &view, screen(&view, 0), Action::Paint);
         finish(&mut app, &mut state);
         assert!(app.session.active().unwrap().doc.layers[0].surface().unwrap().read_region(before.bounds()).iter().any(|v| *v < 0.9));
         let hidden = Materials { hidden: std::collections::BTreeSet::from([scene.triangles[0].material]), ..Default::default() };
         let view = make_view(&scene, &g, &hidden);
         let revision = app.session.active().unwrap().revision;
-        sample(&mut app, &mut state, &view, screen(&view, 0), Action::Paint);
+        sample(&mut app, &egui::Context::default(), &mut state, &view, screen(&view, 0), Action::Paint);
         finish(&mut app, &mut state);
         assert_eq!(app.session.active().unwrap().revision, revision);
     }
