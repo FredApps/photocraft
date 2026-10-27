@@ -1717,6 +1717,11 @@ pub fn alt_click(id: String, alt: bool) -> String {
 pub fn apply_workspace(app: &mut PhotocraftApp) {
     #[cfg(feature = "uv-workbench")]
     crate::uv_workspace::sync_workspace(app);
+    #[cfg(feature = "uv-workbench")]
+    if app.ui.workspace == "3D" && matches!(app.ui.tool, crate::state::Tool::Crop | crate::state::Tool::PerspectiveCrop) {
+        // Image crop tools cannot operate on the isolated 3D/UV workspace.
+        app.ui.tool = crate::state::Tool::Move;
+    }
     // Saved workspaces (Window › Workspace › New Workspace…) restore their own layout.
     if crate::workspace_ui::apply_custom(app) {
         return;

@@ -20,7 +20,7 @@ struct Material { color:vec4<f32>, flags:vec4<f32> }
 struct Vertex {
     @location(0) position:vec3<f32>, @location(1) normal:vec3<f32>,
     @location(2) face:vec3<f32>, @location(3) tangent:vec3<f32>,
-    @location(4) bitangent:vec3<f32>, @location(5) uv:vec2<f32>, @location(6) shell:u32,
+    @location(4) bitangent:vec3<f32>, @location(5) uv:vec2<f32>, @location(6) triangle:u32,
 }
 struct Fragment {
     @builtin(position) position:vec4<f32>, @location(0) normal:vec3<f32>,
@@ -54,8 +54,29 @@ fn rotate(p:vec3<f32>) -> vec3<f32> {
     out.bitangent=v.bitangent;
     out.uv=vec2<f32>(v.uv.x,1.0-v.uv.y);
     out.selected=0u;
-    if v.shell<arrayLength(&selection) {out.selected=selection[v.shell];}
+    if v.triangle<arrayLength(&selection) {out.selected=selection[v.triangle];}
     return out;
+}
+struct WireVertex { @location(0) position:vec3<f32>, @location(1) face:vec3<f32> }
+struct WireFragment { @builtin(position) position:vec4<f32>, @location(0) @interpolate(flat) face:vec3<f32> }
+@vertex fn vs_wireframe(v:WireVertex)->WireFragment {
+    let r=rotate(v.position);
+    let xy=(r.xy+camera.projection.zw)*camera.projection.xy;
+    var out:WireFragment;
+    if camera.normal.z>0.0 {
+        let d=camera.normal.z+camera.normal.w-r.z;
+        let near=max(camera.normal.z*0.001,1e-8);
+        let far=camera.normal.z+2.0;
+        out.position=vec4<f32>(xy,far/(far-near)*d-near*far/(far-near),d);
+    } else {
+        out.position=vec4<f32>(xy,0.5-r.z*0.9,1.0);
+    }
+    out.face=v.face;
+    return out;
+}
+@fragment fn fs_wireframe(v:WireFragment)->@location(0) vec4<f32> {
+    if camera.reserved1.x>0.5 && rotate(v.face).z*camera.options.z<=0.0 { discard; }
+    return camera.reserved0;
 }
 fn shade(v:Fragment,texel:vec4<f32>,dx:vec2<f32>,dy:vec2<f32>)->vec4<f32> {
     if material.flags.z>0.5 {

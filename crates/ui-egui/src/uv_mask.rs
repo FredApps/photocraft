@@ -1,12 +1,20 @@
 //! Native channel/mask display projected through each material UV, independent of source maps.
 use crate::PhotocraftApp;
+
+/// Whether `material` has any source map bound to the displayed mask document. Mask display may
+/// come from Color, Roughness, Normal, or another UV channel; keep this predicate shared by the
+/// preview renderer and the paint hit-target gate.
+pub(crate) fn has_mask_binding(app: &PhotocraftApp, material: usize, document: photocraft_doc::DocId) -> bool {
+    photocraft_uv::preview::Channel::MAPS.iter().any(|kind| app.session.uv.map_bindings(*kind).get(material) == Some(&Some(document)))
+}
+
 pub(crate) fn source(app: &PhotocraftApp, material: usize) -> Option<usize> {
     let index = app.session.active_index()?;
     let st = app.session.documents().get(index)?;
     if st.channel_view.is_plain(&st.doc) {
         return None;
     }
-    photocraft_uv::preview::Channel::MAPS.iter().any(|kind| app.session.uv.map_bindings(*kind).get(material) == Some(&Some(st.doc.id))).then_some(index)
+    has_mask_binding(app, material, st.doc.id).then_some(index)
 }
 pub(crate) fn key(app: &PhotocraftApp, index: usize) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -19,9 +27,18 @@ pub(crate) fn key(app: &PhotocraftApp, index: usize) -> u64 {
     look.in_color.hash(&mut h);
     look.mask_rgb.map(f32::to_bits).hash(&mut h);
     look.mask_opacity.to_bits().hash(&mut h);
+    crate::uv_mask_paint_preview::sampled_fill_proxy(app, index).map(|proxy| proxy.key).hash(&mut h);
     h.finish()
 }
-pub(crate) fn overlay(app: &PhotocraftApp, index: usize, doc: &photocraft_doc::Document, rect: photocraft_geom::Rect, pixels: &mut [[f32; 4]], factor: u32) {
+pub(crate) fn overlay(
+    app: &PhotocraftApp,
+    index: usize,
+    doc: &photocraft_doc::Document,
+    rect: photocraft_geom::Rect,
+    output_size: [u32; 2],
+    pixels: &mut [[f32; 4]],
+    factor: u32,
+) {
     let Some(st) = app.session.documents().get(index) else {
         return;
     };
@@ -31,7 +48,15 @@ pub(crate) fn overlay(app: &PhotocraftApp, index: usize, doc: &photocraft_doc::D
     {
         view.layer_mask = Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
     }
-    if let Some(px) = crate::channel_view::render(doc, &view, rect, factor, crate::channel_view::Look::of(&app.session), st.active_layer) {
+    let look = crate::channel_view::Look::of(&app.session);
+    let live_fill = crate::uv_mask_paint_preview::sampled_fill_proxy(app, index)
+        .filter(|proxy| view.layer_mask.is_some_and(|shown| shown.layer == proxy.layer) && view.shown_layer_mask(doc).is_some());
+    let px = if let Some(proxy) = live_fill {
+        crate::channel_view::render_fill_mask_proxy(doc, &view, rect, output_size, look, &proxy)
+    } else {
+        crate::channel_view::render(doc, &view, rect, factor, look, st.active_layer)
+    };
+    if let Some(px) = px {
         for (out, p) in pixels.iter_mut().zip(px) {
             let rgba = p.to_array().map(|v| v as f32 / 255.0);
             for i in 0..3 {

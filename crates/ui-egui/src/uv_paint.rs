@@ -1,4 +1,4 @@
-//! Visible-surface picking maps native brush events into the bound texture document.
+//! Visible-surface picking maps native 2D tool events into the bound texture document.
 use crate::{
     PhotocraftApp,
     canvas::{self, ToolEvent},
@@ -22,43 +22,96 @@ struct Sample {
 pub(crate) struct State {
     held: bool,
     wrapped: bool,
+    action: Action,
+    modifiers: Modifiers,
+    selection_split_pending: bool,
+    contour_sample: Option<Sample>,
+    contour_tool: Option<Tool>,
+    contour_doc: Option<photocraft_doc::DocId>,
     material: Option<usize>,
     doc: Option<photocraft_doc::DocId>,
     tool: Option<Tool>,
     last: Option<Sample>,
     screen: Option<Pos2>,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Action {
+    #[default]
+    Paint,
+    CloneSource,
+    Eyedropper,
+}
 pub(crate) fn pending(state: &State) -> bool {
-    state.doc.is_some() && state.last.is_some()
+    state.doc.is_some() && state.last.is_some() && state.tool.is_some_and(canvas::strokes_live)
 }
 pub(crate) fn active_document(state: &State) -> Option<photocraft_doc::DocId> {
     pending(state).then_some(state.doc).flatten()
 }
-fn mods() -> Modifiers {
-    Modifiers::NONE
+fn close_selection_contour(app: &mut PhotocraftApp, state: &mut State) {
+    match state.tool {
+        Some(Tool::PolygonLasso) if app.ui.polygon.len() >= 3 => canvas::commit_polygon(app),
+        Some(Tool::PolygonLasso) => {
+            app.ui.polygon.clear();
+            app.ui.polygon_mode.clear();
+        }
+        Some(Tool::MagneticLasso) if app.ui.magnetic.path.len() + app.ui.magnetic.live.len() >= 3 => {
+            crate::magnetic_lasso_ui::close(app, true);
+        }
+        Some(Tool::MagneticLasso) => crate::magnetic_lasso_ui::cancel(app),
+        _ => {}
+    }
+    state.contour_sample = None;
+    state.selection_split_pending = true;
 }
-fn end_segment(app: &mut PhotocraftApp, state: &mut State) {
-    if let Some(last) = state.last.take()
-        && app.drag.is_some()
-    {
+
+fn end_segment(app: &mut PhotocraftApp, state: &mut State, close_contour: bool) {
+    if let Some(last) = state.last.take() {
+        if state.tool.is_some_and(crate::tool_feedback::is_selection_tool) && !matches!(state.tool, Some(Tool::PolygonLasso | Tool::MagneticLasso)) {
+            // A surface stroke can cross UV seams. Commit this island, then add subsequent
+            // islands to it so a default Replace gesture doesn't discard the earlier segment.
+            state.selection_split_pending = true;
+        }
         if app.session.active().is_none_or(|st| Some(st.doc.id) != state.doc) {
             app.drag = None;
             app.live_stroke = None;
             app.session.clear_live_stroke();
             return;
         }
-        let deferred = std::mem::replace(&mut app.defer_live_stroke, false);
-        canvas::feed_live_stroke(app);
-        app.defer_live_stroke = deferred;
-        canvas::tool_event(app, ToolEvent::Up { x: last.point[0], y: last.point[1] }, mods());
+        if app.drag.is_some() {
+            let deferred = std::mem::replace(&mut app.defer_live_stroke, false);
+            canvas::feed_live_stroke(app);
+            app.defer_live_stroke = deferred;
+        }
+        canvas::tool_event(app, ToolEvent::Up { x: last.point[0], y: last.point[1] }, state.modifiers);
+    }
+    if close_contour && matches!(state.tool, Some(Tool::PolygonLasso | Tool::MagneticLasso)) {
+        close_selection_contour(app, state);
     }
 }
 pub(crate) fn finish(app: &mut PhotocraftApp, state: &mut State) {
-    end_segment(app, state);
+    finish_inner(app, state, false);
+}
+fn finish_contour(app: &mut PhotocraftApp, state: &mut State) {
+    finish_inner(app, state, true);
+}
+fn finish_inner(app: &mut PhotocraftApp, state: &mut State, preserve_contour: bool) {
+    end_segment(app, state, false);
     if state.wrapped {
         let _ = app.run("paint.uvWrap", json!({"end":true}));
     }
-    *state = State::default();
+    let keep = preserve_contour
+        && state.action == Action::Paint
+        && matches!(state.tool, Some(Tool::PolygonLasso | Tool::MagneticLasso))
+        && state.contour_sample.is_some();
+    if keep {
+        let contour_sample = state.contour_sample;
+        let contour_tool = state.tool;
+        let contour_doc = state.doc;
+        let selection_split_pending = state.selection_split_pending;
+        *state = State { contour_sample, contour_tool, contour_doc, selection_split_pending, ..Default::default() };
+    } else {
+        *state = State::default();
+    }
     app.uv_paint_key = None;
 }
 fn adjacent(scene: &Scene, a: usize, b: usize) -> bool {
@@ -77,28 +130,44 @@ struct View<'a> {
     size: [u32; 2],
     rect: egui::Rect,
 }
-fn sample(app: &mut PhotocraftApp, state: &mut State, view: &View<'_>, p: Pos2, source: bool) {
+fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view: &View<'_>, p: Pos2, action: Action) {
     let at = (p - view.rect.min) / view.rect.size();
     let hit = view.rect.contains(p).then(|| view.geometry.hit(view.scene, view.camera, view.maps, [f64::from(at.x), f64::from(at.y)], view.size)).flatten();
     let Some(hit) = hit else {
-        end_segment(app, state);
+        end_segment(app, state, true);
         return;
     };
     let Some(triangle) = view.geometry.triangles.get(hit.triangle) else { return };
     if hit.uv.iter().any(|v| !(0.0..=1.0).contains(v)) {
-        end_segment(app, state);
+        end_segment(app, state, true);
         return;
     }
     let material = triangle.material;
+    if crate::uv_mask_paint::levels_picker_active(app, ctx) {
+        if state.last.is_none() {
+            crate::uv_mask_paint::sample_levels_at_uv(app, ctx, material, hit.uv);
+        }
+        finish(app, state);
+        return;
+    }
+    // In grayscale mask view only surfaces whose color texture is the displayed document are
+    // editable. A checker on another material is a visual placeholder, never a paint target.
+    if let Some(mask_doc) = app.session.active().and_then(|st| photocraft_engine::mask_view_cmds::current(st).map(|_| st.doc.id))
+        && (!crate::uv_mask::has_mask_binding(app, material, mask_doc)
+            || app.session.uv.map_bindings(app.session.uv.current_channel()).get(material).copied().flatten() != Some(mask_doc))
+    {
+        end_segment(app, state, true);
+        return;
+    }
     // One physical gesture targets one material/document, so it has one predictable Undo.
     if state.material.is_some_and(|m| m != material) {
-        end_segment(app, state);
+        end_segment(app, state, true);
         return;
     }
     let bindings = app.session.uv.map_bindings(app.session.uv.current_channel());
     let Some(id) = bindings.get(material).copied().flatten() else {
         app.ui.status = tl!("Assign a texture to this material before painting").into();
-        end_segment(app, state);
+        end_segment(app, state, true);
         return;
     };
     if state.material.is_none() {
@@ -119,13 +188,34 @@ fn sample(app: &mut PhotocraftApp, state: &mut State, view: &View<'_>, p: Pos2, 
         finish(app, state);
         return;
     }
-    let Some(st) = app.session.active() else { return };
-    let point = [
-        (hit.uv[0] * f64::from(st.doc.size.width)).min(f64::from(st.doc.size.width) - 1e-6),
-        ((1.0 - hit.uv[1]) * f64::from(st.doc.size.height)).min(f64::from(st.doc.size.height) - 1e-6),
-    ];
-    if view.wrap && matches!(app.active_tool(), Tool::Brush | Tool::Pencil | Tool::Eraser) && !source {
-        end_segment(app, state);
+    let (doc_id, doc_size, point) = {
+        let Some(st) = app.session.active() else { return };
+        let point = [
+            (hit.uv[0] * f64::from(st.doc.size.width)).min(f64::from(st.doc.size.width) - 1e-6),
+            ((1.0 - hit.uv[1]) * f64::from(st.doc.size.height)).min(f64::from(st.doc.size.height) - 1e-6),
+        ];
+        (st.doc.id, st.doc.size, point)
+    };
+    let contour_tool = state.tool.unwrap_or_else(|| app.active_tool());
+    if state.last.is_none()
+        && matches!(contour_tool, Tool::PolygonLasso | Tool::MagneticLasso)
+        && state.contour_tool == Some(contour_tool)
+        && state.contour_doc.is_some_and(|doc| doc == doc_id)
+        && state.contour_sample.is_some_and(|sample| sample.shell != triangle.shell)
+    {
+        close_selection_contour(app, state);
+    } else if state.contour_doc.is_some_and(|doc| doc != doc_id) {
+        // Pending lasso contours belong to one document; never commit them into a newly
+        // selected material document.
+        canvas::polygon_cancel_stale(app);
+        crate::magnetic_lasso_ui::cancel(app);
+        state.contour_sample = None;
+        state.contour_tool = None;
+        state.contour_doc = None;
+        state.selection_split_pending = false;
+    }
+    if view.wrap && matches!(app.active_tool(), Tool::Brush | Tool::Pencil | Tool::Eraser) && action == Action::Paint {
+        end_segment(app, state, false);
         let tool = app.active_tool();
         let target = canvas::paint_target(app);
         let result = app.run("paint.uvWrap", json!({"triangle":hit.triangle,"position":hit.position,"pressure":app.stylus.pressure(),"erase":tool == Tool::Eraser,"pencil":tool == Tool::Pencil || crate::eraser_ui::pencil_mode(app, tool),"target":target}));
@@ -139,22 +229,74 @@ fn sample(app: &mut PhotocraftApp, state: &mut State, view: &View<'_>, p: Pos2, 
     if state.last.is_some_and(|last| {
         last.shell != triangle.shell
             || (!adjacent(view.scene, last.triangle, hit.triangle)
-                && (last.point[0] - point[0]).hypot(last.point[1] - point[1]) > f64::from(st.doc.size.width.max(st.doc.size.height)) * 0.02)
+                && (last.point[0] - point[0]).hypot(last.point[1] - point[1]) > f64::from(doc_size.width.max(doc_size.height)) * 0.02)
     }) {
-        end_segment(app, state);
+        let shell_changed = state.last.is_some_and(|last| last.shell != triangle.shell);
+        end_segment(app, state, shell_changed);
     }
     let pressure = app.stylus.pressure();
-    if source {
+    if action == Action::CloneSource {
         crate::retouch_ui::set_source(app, point[0], point[1]);
         return;
     }
-    let event = if state.last.is_some() && app.drag.is_some() {
+    if action == Action::Eyedropper {
+        if let Some([r, g, b]) = canvas::eyedropper_color(app, point[0], point[1]) {
+            let _ = app.run("tools.setColors", json!({"foreground":[r,g,b,1.0]}));
+        }
+        return;
+    }
+    let event = if state.last.is_some() {
         ToolEvent::Move { x: point[0], y: point[1], pressure }
     } else {
+        if state.selection_split_pending
+            && state.tool.is_some_and(crate::tool_feedback::is_selection_tool)
+            && crate::canvas::selection_mode(app, state.modifiers) == "replace"
+        {
+            state.modifiers.shift = true;
+        }
+        state.selection_split_pending = false;
         ToolEvent::Down { x: point[0], y: point[1], pressure }
     };
-    canvas::tool_event(app, event, mods());
-    state.last = app.drag.is_some().then_some(Sample { triangle: hit.triangle, shell: triangle.shell, point });
+    canvas::tool_event(app, event, state.modifiers);
+    let sample = Sample { triangle: hit.triangle, shell: triangle.shell, point };
+    state.last = Some(sample);
+    if state.tool == Some(Tool::PolygonLasso) && app.ui.polygon.is_empty() || state.tool == Some(Tool::MagneticLasso) && !app.ui.magnetic.active() {
+        // The user explicitly closed the contour in the viewport. Do not carry its UV island
+        // into the next independent lasso selection.
+        state.contour_sample = None;
+        state.contour_tool = None;
+        state.contour_doc = None;
+        state.selection_split_pending = false;
+    } else if matches!(state.tool, Some(Tool::PolygonLasso | Tool::MagneticLasso)) && action == Action::Paint {
+        state.contour_sample = Some(sample);
+        state.contour_tool = state.tool;
+        state.contour_doc = Some(doc_id);
+    }
+}
+
+fn surface_tool(tool: Tool) -> bool {
+    canvas::strokes_live(tool)
+        || matches!(
+            tool,
+            Tool::Eyedropper
+                | Tool::RectMarquee
+                | Tool::EllipseMarquee
+                | Tool::SingleRowMarquee
+                | Tool::SingleColumnMarquee
+                | Tool::Lasso
+                | Tool::PolygonLasso
+                | Tool::MagneticLasso
+                | Tool::ObjectSelection
+                | Tool::QuickSelection
+                | Tool::MagicWand
+                | Tool::Type
+                | Tool::VerticalType
+                | Tool::HorizontalTypeMask
+                | Tool::VerticalTypeMask
+                | Tool::Pen
+                | Tool::FreeformPen
+                | Tool::CurvaturePen
+        )
 }
 /// Ctrl+RMB owns its drag until release, including after Ctrl is released.
 pub(crate) fn resize_brush(app: &mut PhotocraftApp, ui: &egui::Ui, response: &Response, enabled: bool) -> bool {
@@ -223,7 +365,9 @@ pub(crate) fn input(
     app.stylus.set_pressure_curve(&app.session.prefs().tools.pressure_curve.clone());
     app.stylus.update_for_frame(ui.ctx().cumulative_frame_nr(), &ui.input(|i| i.events.clone()));
     crate::stylus::Stylus::sync_eraser_tool(app);
+    crate::uv_mask_paint::prune_levels_picker(app, ui.ctx());
     let tool = if ui.input(|i| i.modifiers.ctrl) && matches!(app.ui.tool, Tool::CloneStamp | Tool::Healing) { app.ui.tool } else { app.active_tool() };
+    let levels_picker = crate::uv_mask_paint::levels_picker_active(app, ui.ctx());
     if app.brush_resize.is_some_and(|r| r.screen) {
         finish(app, state);
         let view = View { wrap, geometry, scene, camera, maps, size, rect: response.rect };
@@ -237,7 +381,7 @@ pub(crate) fn input(
         || app.ui.brush_picker.is_some()
         || !crate::menus::modal_allows(app, "paint.stroke")
         || app.ui.transform.is_some()
-        || (!canvas::strokes_live(tool) && tool != Tool::Eyedropper)
+        || (!surface_tool(tool) && !levels_picker)
         || state.tool.is_some_and(|old| old != tool)
         || ui.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused)
     {
@@ -254,50 +398,72 @@ pub(crate) fn input(
             egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers }
                 if !modifiers.alt && response.contains_pointer() =>
             {
-                finish(app, state);
+                finish_contour(app, state);
                 static GESTURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                 app.uv_paint_key = Some(format!("uv3d-{}", GESTURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
                 state.held = true;
                 state.tool = Some(tool);
                 state.screen = Some(pos);
-                let source = modifiers.ctrl && matches!(tool, Tool::CloneStamp | Tool::Healing);
-                sample(app, state, &view, pos, source);
-                if source {
+                state.modifiers = modifiers;
+                let action = if (modifiers.shift || modifiers.ctrl) && matches!(tool, Tool::CloneStamp | Tool::Healing) {
+                    Action::CloneSource
+                } else if modifiers.shift && tool == Tool::Brush {
+                    Action::Eyedropper
+                } else {
+                    Action::Paint
+                };
+                state.action = action;
+                sample(app, ui.ctx(), state, &view, pos, action);
+                if action != Action::Paint || tool == Tool::MagicWand {
                     finish(app, state);
                 }
             }
-            egui::Event::PointerMoved(pos) if state.held => {
+            egui::Event::PointerMoved(pos) if state.held && state.tool != Some(Tool::MagicWand) => {
+                state.modifiers = ui.input(|i| i.modifiers);
                 let previous = state.screen.replace(pos).unwrap_or(pos);
                 let steps = ((pos - previous).length() / 1.5).ceil().clamp(1.0, 128.0) as usize;
                 for i in 1..=steps {
-                    sample(app, state, &view, previous.lerp(pos, i as f32 / steps as f32), false);
+                    sample(app, ui.ctx(), state, &view, previous.lerp(pos, i as f32 / steps as f32), state.action);
                 }
             }
-            egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed: false, .. } => finish(app, state),
-            egui::Event::PointerGone => finish(app, state),
+            egui::Event::PointerButton { button: egui::PointerButton::Primary, pressed: false, modifiers, .. } => {
+                state.modifiers = modifiers;
+                finish_contour(app, state);
+            }
+            egui::Event::PointerGone => finish_contour(app, state),
             _ => {}
         }
     }
     if state.held && !ui.input(|i| i.pointer.primary_down()) {
-        finish(app, state);
+        finish_contour(app, state);
     }
     if state.held
         && !state.wrapped
         && let Some(last) = state.last
     {
-        canvas::tool_event(app, ToolEvent::Move { x: last.point[0], y: last.point[1], pressure: app.stylus.pressure() }, mods());
+        canvas::tool_event(app, ToolEvent::Move { x: last.point[0], y: last.point[1], pressure: app.stylus.pressure() }, state.modifiers);
     }
     app.defer_live_stroke = deferred;
     if !deferred {
         canvas::feed_live_stroke(app);
     }
     if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-        if tool != Tool::Eyedropper {
+        if levels_picker {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        } else if tool.is_type() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        } else if tool == Tool::Brush && ui.input(|i| i.modifiers.shift) {
+            if let Some(point) = ui.input(|i| i.pointer.hover_pos()) {
+                ui.ctx().set_cursor_icon(crate::canvas::pipette_cursor(ui.ctx(), point));
+            }
+        } else if canvas::strokes_live(tool) || tool == Tool::QuickSelection {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
             cursor(app, ui, &view);
             if tool == Tool::CloneStamp {
                 crate::uv_clone::preview(app, ui, geometry, scene, camera, maps, size, response.rect);
             }
+        } else if surface_tool(tool) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
     }
     if state.held {
@@ -424,7 +590,7 @@ mod tests {
         let view = make_view(&scene, &g, &maps);
         let at = screen(&view, 0);
         app.tool_override = Some(Tool::Move);
-        sample(&mut app, &mut State::default(), &view, at, true);
+        sample(&mut app, &mut State::default(), &view, at, Action::CloneSource);
         assert!(app.session.presets.clone.active().source.is_some());
         assert!(app.drag.is_none());
         app.tool_override = None;
@@ -436,7 +602,7 @@ mod tests {
         output.textures_delta.clear();
         let before = app.session.active().unwrap().history.past_len();
         let mut paint = State::default();
-        sample(&mut app, &mut paint, &view, at, false);
+        sample(&mut app, &mut paint, &view, at, Action::Paint);
         finish(&mut app, &mut paint);
         assert!(app.session.active().unwrap().history.past_len() <= before + 1);
     }
@@ -519,7 +685,7 @@ mod tests {
                     let normalized = std::array::from_fn(|j| (world[j] - g.center[j]) / g.diameter);
                     let at = g.project_normalized(view.camera, normalized, view.size).unwrap();
                     let p = view.rect.min + egui::vec2(at[0] as f32 * view.rect.width(), at[1] as f32 * view.rect.height());
-                    sample(&mut app, &mut paint, &view, p, false);
+                    sample(&mut app, &mut paint, &view, p, Action::Paint);
                 }
                 app.defer_live_stroke = false;
                 canvas::feed_live_stroke(&mut app);
@@ -549,7 +715,7 @@ mod tests {
         app.uv_paint_key = Some("first-undo".into());
         let first = screen(&view, 0);
         let mut paint = State::default();
-        sample(&mut app, &mut paint, &view, first, false);
+        sample(&mut app, &mut paint, &view, first, Action::Paint);
         assert!(app.live_stroke.is_some());
         app.uv_cache.paint_for_test(paint);
         app.run("edit.undo", json!({})).unwrap();
@@ -557,7 +723,7 @@ mod tests {
         assert_eq!(app.session.active().unwrap().doc.layers[0].surface(), before.layers[0].surface());
         app.ui.tool = Tool::Eyedropper;
         app.run("tools.setColors", json!({"foreground":"#000000"})).unwrap();
-        sample(&mut app, &mut State::default(), &view, first, false);
+        sample(&mut app, &mut State::default(), &view, first, Action::Paint);
         assert!(app.session.tools.foreground[..3].iter().all(|v| *v > 0.99));
     }
     #[test]
@@ -571,13 +737,13 @@ mod tests {
         app.uv_paint_key = Some("one-uv-gesture".into());
         let mut state = State::default();
         let first = screen(&view, 0);
-        sample(&mut app, &mut state, &view, first, false);
+        sample(&mut app, &mut state, &view, first, Action::Paint);
         assert!(app.live_stroke.is_some());
         let index = app.session.active_index().unwrap();
         let (preview, key) = canvas::display_doc(&mut app, index);
         assert_ne!(key, 0);
         assert_ne!(preview.layers[0].surface().unwrap(), before.layers[0].surface().unwrap());
-        sample(&mut app, &mut state, &view, screen(&view, 2), false);
+        sample(&mut app, &mut state, &view, screen(&view, 2), Action::Paint);
         finish(&mut app, &mut state);
         let after = app.session.active().unwrap().doc.clone();
         assert_eq!(app.session.active().unwrap().history.past_len(), history + 1);
@@ -597,19 +763,19 @@ mod tests {
         app.run("uv.mask.apply", json!({})).unwrap();
         let history = app.session.active().unwrap().history.past_len();
         let mut state = State::default();
-        sample(&mut app, &mut state, &view, screen(&view, 0), false);
+        sample(&mut app, &mut state, &view, screen(&view, 0), Action::Paint);
         finish(&mut app, &mut state);
         assert_eq!(before.layers[0].surface().unwrap(), app.session.active().unwrap().doc.layers[0].surface().unwrap());
         assert_eq!(app.session.active().unwrap().history.past_len(), history, "masked-out live brush must not add an empty Undo step");
         app.run("select.deselect", json!({})).unwrap();
         app.ui.tool = Tool::Eraser;
-        sample(&mut app, &mut state, &view, screen(&view, 0), false);
+        sample(&mut app, &mut state, &view, screen(&view, 0), Action::Paint);
         finish(&mut app, &mut state);
         assert!(app.session.active().unwrap().doc.layers[0].surface().unwrap().read_region(before.bounds()).iter().any(|v| *v < 0.9));
         let hidden = Materials { hidden: std::collections::BTreeSet::from([scene.triangles[0].material]), ..Default::default() };
         let view = make_view(&scene, &g, &hidden);
         let revision = app.session.active().unwrap().revision;
-        sample(&mut app, &mut state, &view, screen(&view, 0), false);
+        sample(&mut app, &mut state, &view, screen(&view, 0), Action::Paint);
         finish(&mut app, &mut state);
         assert_eq!(app.session.active().unwrap().revision, revision);
     }

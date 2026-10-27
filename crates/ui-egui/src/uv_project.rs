@@ -70,9 +70,15 @@ pub(crate) fn restore(app: &mut PhotocraftApp, view: &Value) -> Result<(), Strin
             }
         }
     }
-    if let Some(path) = view.get("environment").and_then(Value::as_str) {
-        crate::uv_lighting::select_environment(app, String::new())?;
-        crate::uv_lighting::select_environment(app, path.to_owned())?;
+    crate::uv_lighting::select_environment(app, String::new())?;
+    if let Some(path) = view.get("environment").and_then(Value::as_str).filter(|path| !path.is_empty()) {
+        let has_embedded_environment =
+            app.session.uv.environment.is_some() && app.session.uv.project_view.get("environment").and_then(Value::as_str) == Some(path);
+        if has_embedded_environment {
+            crate::uv_lighting::select_environment(app, path.to_owned())?;
+        } else {
+            app.ui.uv_workbench.status = tl!("This project does not contain its HDR/EXR environment map. Choose the map again.").into();
+        }
     }
     Ok(())
 }
@@ -295,6 +301,17 @@ mod tests {
 #[cfg(test)]
 mod container_tests {
     use super::*;
+    #[test]
+    fn restoring_external_only_environment_uses_studio_without_opening_the_path() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        let view = json!({"environment":"missing-project-resource.exr"});
+        app.session.uv.project_view = view.clone();
+        restore(&mut app, &view).unwrap();
+        assert!(app.uv_cache.lighting.path.is_empty());
+        assert!(!crate::uv_lighting::pending(&app.uv_cache.lighting), "metadata never starts a filesystem loading task");
+        assert!(app.ui.uv_workbench.status.contains("Choose the map again"));
+    }
+
     fn app() -> PhotocraftApp {
         let mut s = photocraft_engine::Session::new();
         s.execute("file.new", json!({"width":16,"height":16})).unwrap();

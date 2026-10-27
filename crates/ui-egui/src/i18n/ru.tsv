@@ -4662,6 +4662,8 @@ shape	Appearance	Оформление
 	Orthographic view            F6	Ортографический вид          F6
 	3D display	Отображение 3D
 	Show polygon wireframe	Показывать полигональную сетку
+	Wireframe opacity	Непрозрачность сетки
+	Wireframe color	Цвет сетки
 	MSAA antialiasing	Сглаживание MSAA
 	Smooth navigation	Плавная навигация
 	Up to 1600 px while navigating; source maps stay full size and full viewport resolution returns when you release the mouse.	До 1600 px во время жеста; исходные карты и полное разрешение после отпускания мыши.
@@ -4696,11 +4698,14 @@ shape	Appearance	Оформление
 	The source model changed — click ReImport	Исходная модель изменена — нажмите ReImport
 	Source maps require more than 4 GiB of CPU cache. Remove unused material bindings; maps are not downscaled automatically.	Исходные карты требуют более 4 GiB CPU-кэша. Освободите ненужные привязки материалов; карты не уменьшаются автоматически.
 	Marquee:	Рамка:
+	Selection mode:	Режим выделения:
+	UV shells	UV-шеллы
+	Polygons	Полигоны
 	Intersecting	Затронутые
 	Fully enclosed	Полностью внутри
 	General margin, px	Общий отступ, px
-	Horizontal margin, px	По горизонтали, px
-	Vertical margin, px	По вертикали, px
+	U margin, px	По U, px
+	V margin, px	По V, px
 	Inward feather, px	Растушёвка внутрь, px
 	Outward padding, px	Внешний отступ, px
 	Drop one file onto the texture slot	Перетащите один файл в карточку текстуры
@@ -4756,3 +4761,5 @@ shape	Appearance	Оформление
 	Drag inside with right mouse to move; drag the handles to resize the Fill mask.	Перетаскивайте прямоугольник правой кнопкой; маркеры меняют размер маски заливки.
 	Image from the Images tab	Изображение из вкладки «Изображения»
 	Uniform grayscale Fill	Однотонная заливка серым
+	Refining mask preview…	Уточнение предпросмотра маски…
+	This project does not contain its HDR/EXR environment map. Choose the map again.	В проекте нет встроенной карты окружения HDR/EXR. Выберите её заново.

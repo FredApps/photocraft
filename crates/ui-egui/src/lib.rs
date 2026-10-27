@@ -1334,6 +1334,14 @@ impl PhotocraftApp {
     /// Run an engine command, reporting errors in the status bar.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         #[cfg(feature = "uv-workbench")]
+        if id == "select.deselect" && !self.ui.uv_workbench.selected_polygons.is_empty() {
+            let can_deselect = self.session.is_enabled("select.deselect");
+            crate::uv_ui::clear_polygon_selection(self);
+            if self.session.active().is_none_or(|st| st.doc.selection.is_none()) && !can_deselect {
+                return Ok(Value::Null);
+            }
+        }
+        #[cfg(feature = "uv-workbench")]
         if matches!(id, "edit.undo" | "edit.redo") {
             crate::uv_ui::finish_paint(self);
         }
@@ -1419,6 +1427,7 @@ impl PhotocraftApp {
         #[cfg(feature = "uv-workbench")]
         if result.is_ok() && id == "select.deselect" {
             self.ui.uv_workbench.overlap.clear();
+            crate::uv_ui::clear_polygon_selection(self);
             self.ui.uv_workbench.status.clear();
             self.uv_cache.mask_settings_pending = false;
         }

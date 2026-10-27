@@ -304,7 +304,7 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
             ],
             active: 2,
         });
-        photocraft_compose::mask_paint::refresh(&mut mask, None);
+        photocraft_compose::mask_paint::refresh(&mut mask, Some(Rect::new(0, 0, width as i32, 4)));
         let stack = mask.paint.as_ref().unwrap();
         let mut expected_default = stack.base.default_pixel()[0];
         for paint in stack.layers.iter().filter(|paint| paint.visible) {
@@ -350,6 +350,64 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
         photocraft_compose::mask_paint::refresh_changes(mask, Some(&old));
         check(&mut g, &d, &format!("paint mask opacity rerender {sample:?}"));
     }
+}
+
+#[test]
+fn spatial_mask_fill_repeats_match_across_page_cells() {
+    let Some(mut g) = gpu() else { return };
+    let mut doc = Document::new("spatial mask Fill", Size::new(TILE_SIZE as u32 + 4, 4), ColorMode::Rgb, SampleType::U8);
+    let mut layer = Layer::raster("masked", PixelFormat::RGBA8);
+    *layer.surface_mut().unwrap() = photocraft_raster::Surface::with_default(PixelFormat::RGBA8, &[1.0, 1.0, 1.0, 1.0]);
+    let mut mask = LayerMask::reveal_all();
+    mask.surface = photocraft_raster::Surface::with_default(PixelFormat::GRAY8, &[0.0]);
+    let mut map = photocraft_raster::Surface::with_default(PixelFormat::GRAY8, &[0.0]);
+    // More than two upload strips, with a padded row: catches a wrong upload origin or stride.
+    let pixels: Vec<f32> = (0..130).flat_map(|y| [y as f32 / 130.0, 1.0 - y as f32 / 130.0]).collect();
+    map.write_region(Rect::new(0, 0, 2, 130), &pixels);
+    mask.paint = Some(Stack {
+        base: mask.surface.clone(),
+        layers: vec![Paint {
+            name: "Fill".into(),
+            visible: true,
+            opacity: 1.0,
+            surface: photocraft_raster::Surface::new(PixelFormat::RGBA8),
+            fill_map: Some(map),
+            fill_map_size: [2, 130],
+            fill_bounds: Some([0, 0, 8, 4]),
+            kind: EffectKind::Fill { value: 0.0, rotation: 0.0, repeat_u: true, repeat_v: true, mirror_u: false, mirror_v: false },
+        }],
+        active: 0,
+    });
+    photocraft_compose::mask_paint::refresh(&mut mask, Some(Rect::new(0, 0, TILE_SIZE + 4, 4)));
+    layer.mask = Some(mask);
+    doc.layers.push(layer);
+    check(&mut g, &doc, "spatial Fill repeat across page cells");
+    assert_eq!(g.comp.mask_fill_cache_bytes(), 64 * 130 * 4);
+    let bounds = doc.bounds();
+    let mask = doc.layers[0].mask.as_mut().unwrap();
+    let paint = &mut mask.paint.as_mut().unwrap().layers[0];
+    paint.fill_bounds = Some([-3, -2, 9, 6]);
+    paint.kind = EffectKind::Fill { value: 0.0, rotation: 37.0, repeat_u: true, repeat_v: true, mirror_u: true, mirror_v: true };
+    photocraft_compose::mask_paint::refresh(mask, Some(bounds));
+    let stats = g.comp.render(&g.device, &g.queue, &doc, doc.bounds(), |_, _| {}).unwrap();
+    assert_eq!(stats.mask_fill_uploads, 0, "transform-only edits reuse the source texture");
+    assert_eq!(stats.mask_fill_bytes_uploaded, 0);
+    check(&mut g, &doc, "rotated mirrored Fill reuses source");
+    let mask = doc.layers[0].mask.as_mut().unwrap();
+    mask.paint.as_mut().unwrap().layers[0].fill_map.as_mut().unwrap().write_region(Rect::new(0, 0, 2, 130), &vec![0.8; 2 * 130]);
+    photocraft_compose::mask_paint::refresh(mask, Some(bounds));
+    let stats = g.comp.render(&g.device, &g.queue, &doc, bounds, |_, _| {}).unwrap();
+    assert_eq!(stats.mask_fill_uploads, 1, "source edits invalidate cached texels even when no caller retains the old source");
+    check(&mut g, &doc, "edited source texels replace the cached Fill");
+    let mask = doc.layers[0].mask.as_mut().unwrap();
+    let fill = &mut mask.paint.as_mut().unwrap().layers[0];
+    fill.fill_map.as_mut().unwrap().write_region(Rect::new(0, 0, 2, 2), &[0.1, 0.3, 0.7, 0.9]);
+    fill.fill_bounds = None;
+    fill.kind = EffectKind::Fill { value: 0.0, rotation: 0.0, repeat_u: true, repeat_v: false, mirror_u: true, mirror_v: false };
+    photocraft_compose::mask_paint::refresh(mask, Some(bounds));
+    check(&mut g, &doc, "legacy Fill without spatial bounds retains source-size repeats");
+    g.comp.retain_docs(|_| false);
+    assert_eq!(g.comp.mask_fill_cache_bytes(), 0, "closing the document frees its Fill source");
 }
 
 /// Growing a layer's tile footprint keeps the old texels in the overlap (`keep_overlap`)

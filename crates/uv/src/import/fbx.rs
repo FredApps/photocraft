@@ -7,6 +7,183 @@ use fbxcel::{
 use glam::{DMat4, DQuat, DVec3, EulerRot};
 use std::collections::{BTreeMap, BTreeSet};
 
+// `fbxcel::AnyTree` owns every node and attribute, including arrays which the
+// mesh importer may never use. Bound that allocation before constructing it.
+const FBX_HEADER_LEN: usize = 27;
+const FBX_MAX_DEPTH: usize = 256;
+const FBX_MAX_NODES: usize = 1_000_000;
+const FBX_MAX_ATTRIBUTES: u64 = 2_000_000;
+const FBX_MAX_ARRAY_BYTES: u64 = 128 * 1024 * 1024;
+const FBX_MAX_DECODED_BYTES: u64 = 384 * 1024 * 1024;
+
+#[derive(Default)]
+struct PreflightBudget {
+    nodes: usize,
+    attributes: u64,
+    decoded_bytes: u64,
+}
+
+fn preflight_error() -> Error {
+    Error("FBX structure exceeds safe import limits or is malformed".into())
+}
+
+fn checked_end(start: usize, length: usize, bound: usize) -> Result<usize> {
+    let end = start.checked_add(length).ok_or_else(preflight_error)?;
+    if end > bound {
+        return Err(preflight_error());
+    }
+    Ok(end)
+}
+
+fn read_u32(bytes: &[u8], offset: usize, bound: usize) -> Result<(u32, usize)> {
+    let end = checked_end(offset, 4, bound)?;
+    let value = u32::from_le_bytes(bytes.get(offset..end).ok_or_else(preflight_error)?.try_into().map_err(|_| preflight_error())?);
+    Ok((value, end))
+}
+
+fn account_decoded(budget: &mut PreflightBudget, amount: u64) -> Result<()> {
+    budget.decoded_bytes = budget.decoded_bytes.checked_add(amount).ok_or_else(preflight_error)?;
+    if budget.decoded_bytes > FBX_MAX_DECODED_BYTES {
+        return Err(preflight_error());
+    }
+    Ok(())
+}
+
+fn scan_attributes(bytes: &[u8], mut offset: usize, count: u64, end: usize, budget: &mut PreflightBudget) -> Result<()> {
+    budget.attributes = budget.attributes.checked_add(count).ok_or_else(preflight_error)?;
+    if budget.attributes > FBX_MAX_ATTRIBUTES {
+        return Err(preflight_error());
+    }
+    for _ in 0..count {
+        let code = *bytes.get(offset).filter(|_| offset < end).ok_or_else(preflight_error)?;
+        offset = offset.checked_add(1).ok_or_else(preflight_error)?;
+        let scalar_size = match code {
+            b'C' => Some(1),
+            b'Y' => Some(2),
+            b'I' | b'F' => Some(4),
+            b'L' | b'D' => Some(8),
+            _ => None,
+        };
+        if let Some(size) = scalar_size {
+            offset = checked_end(offset, size, end)?;
+            account_decoded(budget, size as u64)?;
+            continue;
+        }
+        let element_size = match code {
+            b'b' => 1_u64,
+            b'i' | b'f' => 4,
+            b'l' | b'd' => 8,
+            b'R' | b'S' => {
+                let (length, data_start) = read_u32(bytes, offset, end)?;
+                let data_end = checked_end(data_start, usize::try_from(length).map_err(|_| preflight_error())?, end)?;
+                account_decoded(budget, u64::from(length))?;
+                offset = data_end;
+                continue;
+            }
+            _ => return Err(preflight_error()),
+        };
+
+        // ArrayAttributeHeader is (u32 count, u32 encoding, u32 byte length).
+        let (elements, p) = read_u32(bytes, offset, end)?;
+        let (encoding, p) = read_u32(bytes, p, end)?;
+        let (stored_len, payload) = read_u32(bytes, p, end)?;
+        if encoding > 1 {
+            return Err(preflight_error());
+        }
+        let decoded_len = u64::from(elements).checked_mul(element_size).ok_or_else(preflight_error)?;
+        if decoded_len > FBX_MAX_ARRAY_BYTES {
+            return Err(preflight_error());
+        }
+        let stored_len_usize = usize::try_from(stored_len).map_err(|_| preflight_error())?;
+        let data_end = checked_end(payload, stored_len_usize, end)?;
+        match encoding {
+            0 if u64::from(stored_len) != decoded_len => return Err(preflight_error()),
+            1 if decoded_len != 0 && stored_len == 0 => return Err(preflight_error()),
+            _ => {}
+        }
+        account_decoded(budget, decoded_len)?;
+        offset = data_end;
+    }
+    if offset > end {
+        return Err(preflight_error());
+    }
+    // FBX permits unused bytes in the declared property block; fbxcel skips
+    // them after reading the declared attribute count.
+    Ok(())
+}
+
+fn scan_nodes(bytes: &[u8], mut offset: usize, bound: usize, root: bool, depth: usize, width: usize, budget: &mut PreflightBudget) -> Result<usize> {
+    if depth > FBX_MAX_DEPTH {
+        return Err(preflight_error());
+    }
+    while offset < bound {
+        let header_end = checked_end(offset, width, bound)?;
+        let (node_end, attr_count, attr_len, name_len, header_end) = if width == 13 {
+            let (node_end, p) = read_u32(bytes, offset, bound)?;
+            let (attrs, p) = read_u32(bytes, p, bound)?;
+            let (attr_bytes, p) = read_u32(bytes, p, bound)?;
+            let name_len = *bytes.get(p).filter(|_| p < bound).ok_or_else(preflight_error)?;
+            (u64::from(node_end), u64::from(attrs), u64::from(attr_bytes), name_len, p + 1)
+        } else {
+            let end = bytes.get(offset..header_end).ok_or_else(preflight_error)?;
+            let node_end = u64::from_le_bytes(end.get(0..8).ok_or_else(preflight_error)?.try_into().map_err(|_| preflight_error())?);
+            let attrs = u64::from_le_bytes(end.get(8..16).ok_or_else(preflight_error)?.try_into().map_err(|_| preflight_error())?);
+            let attr_bytes = u64::from_le_bytes(end.get(16..24).ok_or_else(preflight_error)?.try_into().map_err(|_| preflight_error())?);
+            let name_len = *end.get(24).ok_or_else(preflight_error)?;
+            (node_end, attrs, attr_bytes, name_len, header_end)
+        };
+        if node_end == 0 && attr_count == 0 && attr_len == 0 && name_len == 0 {
+            let after_marker = header_end;
+            if !root && after_marker != bound {
+                return Err(preflight_error());
+            }
+            return Ok(after_marker);
+        }
+        budget.nodes = budget.nodes.checked_add(1).ok_or_else(preflight_error)?;
+        if budget.nodes > FBX_MAX_NODES {
+            return Err(preflight_error());
+        }
+        let node_end = usize::try_from(node_end).map_err(|_| preflight_error())?;
+        if node_end <= offset || node_end > bound {
+            return Err(preflight_error());
+        }
+        let name_end = checked_end(header_end, usize::from(name_len), node_end)?;
+        let attr_len = usize::try_from(attr_len).map_err(|_| preflight_error())?;
+        let attrs_end = checked_end(name_end, attr_len, node_end)?;
+        let estimated_metadata = attr_count.checked_mul(32).and_then(|n| n.checked_add(u64::from(name_len) + 64)).ok_or_else(preflight_error)?;
+        account_decoded(budget, estimated_metadata)?;
+        scan_attributes(bytes, name_end, attr_count, attrs_end, budget)?;
+        let child_end = scan_nodes(bytes, attrs_end, node_end, false, depth + 1, width, budget)?;
+        if child_end != node_end {
+            return Err(preflight_error());
+        }
+        offset = node_end;
+    }
+    if offset != bound {
+        return Err(preflight_error());
+    }
+    if root {
+        // A binary FBX document ends its top-level nodes with a null record.
+        return Err(preflight_error());
+    }
+    Ok(offset)
+}
+
+fn preflight_binary(bytes: &[u8]) -> Result<()> {
+    const MAGIC: &[u8] = b"Kaydara FBX Binary  \x00\x1a\x00";
+    if bytes.len() < FBX_HEADER_LEN || !bytes.starts_with(MAGIC) {
+        return Err(preflight_error());
+    }
+    let version = u32::from_le_bytes(bytes.get(23..27).ok_or_else(preflight_error)?.try_into().map_err(|_| preflight_error())?);
+    if !(7400..8000).contains(&version) {
+        return Err(Error("Unsupported FBX version".into()));
+    }
+    let width = if version < 7500 { 13 } else { 25 };
+    let mut budget = PreflightBudget::default();
+    let _ = scan_nodes(bytes, FBX_HEADER_LEN, bytes.len(), true, 0, width, &mut budget)?;
+    Ok(())
+}
+
 fn child<'a>(n: NodeHandle<'a>, name: &str) -> Option<NodeHandle<'a>> {
     n.first_child_by_name(name)
 }
@@ -87,6 +264,7 @@ pub(super) fn load(bytes: &[u8], uv_set: usize) -> Result<Scene> {
     if !bytes.starts_with(b"Kaydara FBX Binary") {
         return Err(Error("This build imports binary FBX 7.4+; export FBX as Binary from Maya (ASCII FBX is not supported)".into()));
     }
+    preflight_binary(bytes)?;
     let tree = AnyTree::from_seekable_reader(std::io::Cursor::new(bytes)).map_err(|e| Error(format!("FBX: {e}")))?;
     let AnyTree::V7400(_, tree, _) = tree else { return Err(Error("Unsupported FBX version".into())) };
     let root = tree.root();
@@ -304,4 +482,86 @@ pub(super) fn load(bytes: &[u8], uv_set: usize) -> Result<Scene> {
     scene.warnings.sort();
     scene.warnings.dedup();
     Ok(scene)
+}
+
+#[cfg(test)]
+mod preflight_tests {
+    use super::*;
+
+    fn file_with_attributes(attribute_count: u32, declared_attribute_bytes: u32, attributes: &[u8]) -> Vec<u8> {
+        const NODE_HEADER: usize = 13;
+        const END_MARKER: usize = NODE_HEADER;
+        let node_start = FBX_HEADER_LEN;
+        let node_end = node_start + NODE_HEADER + 1 + declared_attribute_bytes as usize;
+        let mut bytes = b"Kaydara FBX Binary  \x00\x1a\x00".to_vec();
+        bytes.extend_from_slice(&7400_u32.to_le_bytes());
+        bytes.extend_from_slice(&(node_end as u32).to_le_bytes());
+        bytes.extend_from_slice(&attribute_count.to_le_bytes());
+        bytes.extend_from_slice(&declared_attribute_bytes.to_le_bytes());
+        bytes.push(1); // name length
+        bytes.push(b'N');
+        bytes.extend_from_slice(attributes);
+        bytes.resize(bytes.len() + END_MARKER, 0); // root end marker
+        bytes
+    }
+
+    fn nested_file(depth: usize) -> Vec<u8> {
+        fn append_node(bytes: &mut Vec<u8>, descendants: usize) {
+            let start = bytes.len();
+            bytes.resize(start + 14, 0); // 32-bit node header plus one-byte name
+            bytes[start + 13] = 1;
+            bytes.push(b'N');
+            if descendants != 0 {
+                append_node(bytes, descendants - 1);
+            }
+            bytes.resize(bytes.len() + 13, 0); // required node end marker
+            let end = bytes.len() as u32;
+            bytes[start..start + 4].copy_from_slice(&end.to_le_bytes());
+        }
+
+        let mut bytes = b"Kaydara FBX Binary  \x00\x1a\x00".to_vec();
+        bytes.extend_from_slice(&7400_u32.to_le_bytes());
+        append_node(&mut bytes, depth.saturating_sub(1));
+        bytes.resize(bytes.len() + 13, 0); // implicit root end marker
+        bytes
+    }
+
+    #[test]
+    fn bounded_preflight_accepts_normal_scalar_attributes() {
+        let mut attributes = vec![b'I'];
+        attributes.extend_from_slice(&17_i32.to_le_bytes());
+        assert!(preflight_binary(&file_with_attributes(1, attributes.len() as u32, &attributes)).is_ok());
+    }
+
+    #[test]
+    fn bounded_preflight_rejects_huge_declared_arrays_before_tree_loading() {
+        let mut attributes = vec![b'd'];
+        attributes.extend_from_slice(&u32::MAX.to_le_bytes());
+        attributes.extend_from_slice(&1_u32.to_le_bytes()); // zlib
+        attributes.extend_from_slice(&1_u32.to_le_bytes());
+        attributes.push(0x78);
+        assert!(preflight_binary(&file_with_attributes(1, attributes.len() as u32, &attributes)).is_err());
+    }
+
+    #[test]
+    fn bounded_preflight_rejects_unknown_codecs_and_truncated_payloads() {
+        let mut unknown_codec = vec![b'i'];
+        unknown_codec.extend_from_slice(&1_u32.to_le_bytes());
+        unknown_codec.extend_from_slice(&9_u32.to_le_bytes());
+        unknown_codec.extend_from_slice(&4_u32.to_le_bytes());
+        unknown_codec.extend_from_slice(&[0; 4]);
+        assert!(preflight_binary(&file_with_attributes(1, unknown_codec.len() as u32, &unknown_codec)).is_err());
+
+        let mut truncated = vec![b'f'];
+        truncated.extend_from_slice(&1_u32.to_le_bytes());
+        truncated.extend_from_slice(&0_u32.to_le_bytes()); // direct
+        truncated.extend_from_slice(&4_u32.to_le_bytes());
+        truncated.push(0);
+        assert!(preflight_binary(&file_with_attributes(1, truncated.len() as u32, &truncated)).is_err());
+    }
+
+    #[test]
+    fn bounded_preflight_rejects_excessive_nesting() {
+        assert!(preflight_binary(&nested_file(FBX_MAX_DEPTH + 1)).is_err());
+    }
 }

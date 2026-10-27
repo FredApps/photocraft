@@ -59,14 +59,25 @@ fn slot_tool(ui: &egui::Ui, current: Tool, slot: &[Tool], key: egui::Id) -> Tool
 /// slot keeps only its visible tools, so its flyout lists just those; a slot with none left is
 /// dropped, and so is a section with no slots. Each slot carries its index in `TOOL_SECTIONS`,
 /// so its remembered tool and flyout stay put when other slots are hidden.
+#[cfg(test)]
 fn visible_sections(hidden: &[String]) -> Vec<Vec<(usize, Vec<Tool>)>> {
+    visible_sections_for_workspace(hidden, false)
+}
+
+/// Crop tools operate on the 2D document bounds and have no useful target in the 3D workspace.
+fn visible_sections_for_workspace(hidden: &[String], is_3d: bool) -> Vec<Vec<(usize, Vec<Tool>)>> {
     let hidden: Vec<Tool> = hidden.iter().map(String::as_str).filter_map(Tool::from_name).collect();
     let mut index = 0usize;
     let mut sections = Vec::new();
     for section in TOOL_SECTIONS {
         let mut slots = Vec::new();
         for slot in section.iter() {
-            let tools: Vec<Tool> = slot.iter().copied().filter(|tool| !hidden.contains(tool)).collect();
+            let tools: Vec<Tool> = slot
+                .iter()
+                .copied()
+                .filter(|tool| !hidden.contains(tool))
+                .filter(|tool| !is_3d || !matches!(tool, Tool::Crop | Tool::PerspectiveCrop))
+                .collect();
             if !tools.is_empty() {
                 slots.push((index, tools));
             }
@@ -91,9 +102,14 @@ fn tool_flyout_release(row: Rect, pointer: Option<Pos2>, released: bool, from_bu
 }
 
 pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    // Workspace may have been restored from preferences without passing through the selector.
+    // Don't leave an image-cropping tool selected when its toolbar group is hidden in 3D.
+    if app.ui.workspace == "3D" && matches!(app.ui.tool, Tool::Crop | Tool::PerspectiveCrop) {
+        app.ui.tool = Tool::Move;
+    }
     let t = Tokens::get(ui.ctx());
     let (w1, bx, m) = if t.pro { (40.0, 30.0, 5i8) } else { (50.0, 36.0, 7i8) };
-    let sections = visible_sections(&app.session.prefs().toolbar.hidden);
+    let sections = visible_sections_for_workspace(&app.session.prefs().toolbar.hidden, app.ui.workspace == "3D");
     // Two columns when the header chevron asks for them; a column that doesn't fit scrolls.
     let double = app.ui.panels.toolbar_double;
     let w = if double { w1 + bx + 2.0 } else { w1 };
@@ -2985,7 +3001,10 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             crate::type_tool::commit(app);
         }
         if id == "ui.maskTarget" {
-            app.ui.mask_target = p.as_bool().unwrap_or(false);
+            let enabled = p.get("enabled").and_then(Value::as_bool).or_else(|| p.as_bool()).unwrap_or(false);
+            #[cfg(feature = "uv-workbench")]
+            let explicit_view = p.get("show").and_then(Value::as_bool);
+            app.ui.mask_target = enabled;
             app.ui.vector_mask_target = false;
             #[cfg(feature = "uv-workbench")]
             if app.ui.mask_target
@@ -2997,7 +3016,8 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             #[cfg(feature = "uv-workbench")]
             if app.ui.workspace == "3D" {
                 let mask_view = app.session.active().and_then(photocraft_engine::mask_view_cmds::current);
-                if app.ui.mask_target {
+                let show = explicit_view.unwrap_or(app.ui.mask_target);
+                if show {
                     if let Err(error) = app.run("view.layerMask", json!({"mode":"gray"})) {
                         app.ui.uv_workbench.status = error;
                     }
@@ -3005,6 +3025,16 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     && let Err(error) = app.run("view.layerMask", json!({"mode":"off"}))
                 {
                     app.ui.uv_workbench.status = error;
+                }
+                // Mask Paint sublayers remain the brush target when their Properties are open,
+                // while the model and 2D canvas show the ordinary composite. Keep the engine's
+                // paint target on the mask, but move the display channel back to Composite.
+                if explicit_view == Some(false) && enabled {
+                    if let Err(error) = app.run("channel.target.composite", json!({})) {
+                        app.ui.uv_workbench.status = error;
+                    }
+                    app.ui.mask_target = true;
+                    app.session.tools.target_mask(true);
                 }
             }
             continue;
@@ -3037,6 +3067,13 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         #[cfg(feature = "uv-workbench")]
         if app.ui.workspace == "3D" {
             if id == "uv.maskPaint.select" {
+                if let Some((doc, layer, index)) = app.session.active().and_then(|st| {
+                    let layer_id = st.active_layer?;
+                    let index = st.doc.layer(layer_id)?.mask.as_ref()?.paint.as_ref()?.active;
+                    Some((st.doc.id.0, layer_id.0, index))
+                }) {
+                    crate::uv_mask_paint::select_effect(&ctx, doc, layer, index);
+                }
                 let levels = app.session.active().and_then(|st| st.active_layer.and_then(|id| st.doc.layer(id))).and_then(|layer| {
                     let stack = layer.mask.as_ref()?.paint.as_ref()?;
                     Some(matches!(
@@ -3416,7 +3453,22 @@ fn layer_row(
     if let Some(p) = thumb_load {
         actions.push(("select.loadSelection".into(), p));
     } else if let Some(cmd) = mask_toggle {
+        #[cfg(feature = "uv-workbench")]
+        if app.ui.workspace == "3D"
+            && ui.input(|i| i.modifiers.alt)
+            && resp.interact_pointer_pos().and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Pixel)
+        {
+            crate::uv_mask_paint::clear_effect_selection(ctx, doc.id.0, l.id.0);
+            crate::uv_mask_paint::expand_effects(ctx, doc.id.0, l.id.0);
+        }
         actions.push(cmd);
+        #[cfg(feature = "uv-workbench")]
+        if app.ui.workspace == "3D"
+            && ui.input(|i| i.modifiers.alt)
+            && resp.interact_pointer_pos().and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Pixel)
+        {
+            actions.push(("ui.maskTarget".into(), json!({"enabled":true,"show":true})));
+        }
     } else if resp.clicked() && !eye_resp.clicked() && !toggled && !fx_toggled && !masks.clicked {
         let m = ui.input(|i| i.modifiers);
         let pos = resp.interact_pointer_pos();
@@ -3432,6 +3484,10 @@ fn layer_row(
         let on_vector = pos.and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Vector);
         // Clicking the layer thumbnail leaves mask view (#196).
         let viewing = app.session.active().and_then(photocraft_engine::mask_view_cmds::current).is_some_and(|v| v.layer == l.id);
+        #[cfg(feature = "uv-workbench")]
+        if app.ui.workspace == "3D" && !on_mask {
+            crate::uv_mask_paint::collapse_effects(ctx);
+        }
         if on_thumb && viewing {
             actions.push((photocraft_engine::mask_view_cmds::ID.into(), json!({"layer": l.id.0, "mode": "off"})));
         }
@@ -3452,6 +3508,17 @@ fn layer_row(
                 // The mask thumbnail also switches Properties to the mask (#3369).
                 app.ui.properties_layer = None;
             }
+            #[cfg(feature = "uv-workbench")]
+            if app.ui.workspace == "3D" && on_mask {
+                // A regular click expands the mask's editable stack; Alt-click is reserved for
+                // displaying the grayscale mask in the 2D/3D views.
+                crate::uv_mask_paint::clear_effect_selection(ctx, doc.id.0, l.id.0);
+                crate::uv_mask_paint::expand_effects(ctx, doc.id.0, l.id.0);
+                actions.push(("ui.maskTarget".into(), json!(false)));
+            } else {
+                actions.push(("ui.maskTarget".into(), json!(true)));
+            }
+            #[cfg(not(feature = "uv-workbench"))]
             actions.push(("ui.maskTarget".into(), json!(true)));
         } else if content_click {
             actions.push(("ui.maskTarget".into(), json!(false)));

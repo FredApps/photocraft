@@ -3,12 +3,136 @@ use crate::{PhotocraftApp, theme::Tokens};
 use photocraft_doc::{Layer, mask_paint::EffectKind};
 use serde_json::{Value, json};
 
+#[derive(Clone, Copy)]
+struct LevelsPicker {
+    doc: u64,
+    layer: u64,
+    index: usize,
+    point: u8,
+    tool: crate::state::Tool,
+}
+
+fn levels_picker_id() -> egui::Id {
+    egui::Id::new("uv-mask-levels-picker")
+}
+
+pub(crate) fn levels_picker_active(app: &PhotocraftApp, ctx: &egui::Context) -> bool {
+    ctx.data(|data| data.get_temp::<LevelsPicker>(levels_picker_id())).is_some_and(|picker| {
+        picker.tool == app.ui.tool
+            && app.session.active().is_some_and(|st| {
+                st.doc.id.0 == picker.doc
+                    && st.active_layer.is_some_and(|layer| layer.0 == picker.layer)
+                    && selected_effect(ctx, picker.doc, picker.layer) == Some(picker.index)
+            })
+    })
+}
+
+fn picker_point(app: &PhotocraftApp, ctx: &egui::Context) -> Option<LevelsPicker> {
+    ctx.data(|data| data.get_temp::<LevelsPicker>(levels_picker_id())).filter(|picker| {
+        picker.tool == app.ui.tool
+            && app.session.active().is_some_and(|st| {
+                st.doc.id.0 == picker.doc
+                    && st.active_layer.is_some_and(|layer| layer.0 == picker.layer)
+                    && selected_effect(ctx, picker.doc, picker.layer) == Some(picker.index)
+            })
+    })
+}
+
+/// Apply one bounded grayscale sample from the Levels input prefix.
+pub(crate) fn sample_levels_at(app: &mut PhotocraftApp, ctx: &egui::Context, point: [f64; 2]) -> bool {
+    sample_levels_at_inner(app, ctx, point)
+}
+
+pub(crate) fn sample_levels_at_uv(app: &mut PhotocraftApp, ctx: &egui::Context, material: usize, uv: [f64; 2]) -> bool {
+    let Some(picker) = picker_point(app, ctx) else { return false };
+    let Some(st) = app.session.active() else { return false };
+    if uv.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
+        return true;
+    }
+    let channel = app.session.uv.current_channel();
+    if app.session.uv.map_bindings(channel).get(material).copied().flatten() != Some(st.doc.id) {
+        return true;
+    }
+    let point = [uv[0] * f64::from(st.doc.size.width), (1.0 - uv[1]) * f64::from(st.doc.size.height)];
+    let _ = picker;
+    sample_levels_at_inner(app, ctx, point)
+}
+
+fn sample_levels_at_inner(app: &mut PhotocraftApp, ctx: &egui::Context, point: [f64; 2]) -> bool {
+    let Some(picker) = picker_point(app, ctx) else { return false };
+    let Some(st) = app.session.active() else { return false };
+    if !point[0].is_finite()
+        || !point[1].is_finite()
+        || point[0] < 0.0
+        || point[1] < 0.0
+        || point[0] >= f64::from(st.doc.size.width)
+        || point[1] >= f64::from(st.doc.size.height)
+    {
+        return true;
+    }
+    let Some(stack) = st.doc.layer(photocraft_doc::LayerId(picker.layer)).and_then(|layer| layer.mask.as_ref()).and_then(|mask| mask.paint.as_ref()) else {
+        return false;
+    };
+    let (x, y) = (point[0].floor() as i32, point[1].floor() as i32);
+    let Some(sample) =
+        photocraft_compose::mask_paint::compose_prefix(stack, picker.index, photocraft_geom::Rect::new(x, y, x.saturating_add(1), y.saturating_add(1)))
+            .and_then(|values| values.first().copied())
+    else {
+        return true;
+    };
+    let Some(effect) = stack.layers.get(picker.index) else { return true };
+    let EffectKind::Levels { input_black, input_white, .. } = &effect.kind else { return true };
+    let sample = sample.clamp(0.0, 1.0);
+    let params = match picker.point {
+        0 => json!({"layer":picker.layer,"index":picker.index,"input_black":sample.min(*input_white - 0.002)}),
+        1 => {
+            let t = ((sample - *input_black) / (*input_white - *input_black).max(0.002)).clamp(0.01, 0.99);
+            let next_gamma = (t.ln() / 0.5f32.ln()).clamp(0.01, 9.99);
+            json!({"layer":picker.layer,"index":picker.index,"gamma":next_gamma})
+        }
+        _ => json!({"layer":picker.layer,"index":picker.index,"input_white":sample.max(*input_black + 0.002)}),
+    };
+    if let Err(error) = app.run("uv.maskPaint.modify", params) {
+        app.ui.status = error;
+        app.ui.status_error = true;
+    }
+    true
+}
+
+pub(crate) fn prune_levels_picker(app: &PhotocraftApp, ctx: &egui::Context) {
+    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) || !levels_picker_active(app, ctx) {
+        ctx.data_mut(|data| data.remove::<LevelsPicker>(levels_picker_id()));
+    }
+}
+
 fn effect_selection_id(doc: u64, layer: u64) -> egui::Id {
     egui::Id::new(("uv-mask-effect-selection", doc, layer))
 }
 
+fn expanded_effects_id() -> egui::Id {
+    egui::Id::new("uv-mask-paint-expanded-layer")
+}
+
+/// Open the selected layer's mask stack without switching the canvas to mask display.
+pub(crate) fn expand_effects(ctx: &egui::Context, doc: u64, layer: u64) {
+    ctx.data_mut(|data| data.insert_temp(expanded_effects_id(), (doc, layer)));
+}
+
+/// Collapse the mask stack when the user returns to the layer's image thumbnail/row.
+pub(crate) fn collapse_effects(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove_temp::<(u64, u64)>(expanded_effects_id()));
+}
+
+fn effects_expanded(ctx: &egui::Context, doc: u64, layer: u64) -> bool {
+    ctx.data(|data| data.get_temp::<(u64, u64)>(expanded_effects_id())) == Some((doc, layer))
+}
+
 pub(crate) fn clear_effect_selection(ctx: &egui::Context, doc: u64, layer: u64) {
     ctx.data_mut(|data| data.remove::<usize>(effect_selection_id(doc, layer)));
+}
+
+pub(crate) fn select_effect(ctx: &egui::Context, doc: u64, layer: u64, index: usize) {
+    ctx.data_mut(|data| data.insert_temp(effect_selection_id(doc, layer), index));
 }
 
 pub(crate) fn selected_effect(ctx: &egui::Context, doc: u64, layer: u64) -> Option<usize> {
@@ -20,11 +144,11 @@ fn effect_is_selected(ctx: &egui::Context, doc: u64, layer: u64, index: usize) -
 }
 
 pub(crate) fn rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, actions: &mut Vec<(String, Value)>) -> bool {
-    if app.ui.workspace != "3D" || !app.ui.mask_target || app.session.active().and_then(|s| s.active_layer) != Some(layer.id) {
+    let Some(doc_id) = app.session.active().map(|st| st.doc.id.0) else { return false };
+    if app.ui.workspace != "3D" || !effects_expanded(ui.ctx(), doc_id, layer.id.0) || app.session.active().and_then(|s| s.active_layer) != Some(layer.id) {
         return false;
     }
     let Some(stack) = layer.mask.as_ref().and_then(|m| m.paint.as_ref()) else { return false };
-    let Some(doc_id) = app.session.active().map(|st| st.doc.id.0) else { return false };
     let tokens = Tokens::get(ui.ctx());
     for (index, paint) in stack.layers.iter().enumerate().rev() {
         ui.push_id(("mask-paint", layer.id.0, index), |ui| {
@@ -53,7 +177,8 @@ pub(crate) fn rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, ac
                     let selected = effect_is_selected(ui.ctx(), doc_id, layer.id.0, index);
                     let name = ui.selectable_label(selected, &paint.name);
                     if name.clicked() || icon_response.clicked() {
-                        ui.ctx().data_mut(|data| data.insert_temp(effect_selection_id(doc_id, layer.id.0), index));
+                        let show_mask = ui.input(|i| i.modifiers.alt);
+                        actions.push(("ui.maskTarget".into(), json!({"enabled":true,"show":show_mask})));
                         actions.push(("uv.maskPaint.select".into(), json!({"layer":layer.id.0,"index":index})));
                     }
                     name.context_menu(|ui| {
@@ -97,7 +222,7 @@ pub(crate) fn rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, ac
                     }
                 })
                 .response;
-            if effect_is_selected(ui.ctx(), doc_id, layer.id.0, index) && matches!(&paint.kind, EffectKind::Fill { .. }) {
+            if matches!(&paint.kind, EffectKind::Fill { .. }) {
                 let drop_rect =
                     egui::Rect::from_min_max(egui::pos2(row_bounds.left(), response.rect.top()), egui::pos2(row_bounds.right(), response.rect.bottom()));
                 app.uv_cache.library.fill_targets.push((drop_rect, doc_id, layer.id.0, index));
@@ -110,7 +235,7 @@ pub(crate) fn rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, ac
 
 /// Levels mask effects use the familiar Properties tab instead of expanding controls in Layers.
 pub(crate) fn levels_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
-    if app.ui.workspace != "3D" || !app.ui.mask_target {
+    if app.ui.workspace != "3D" {
         return false;
     }
     let Some(st) = app.session.active() else { return false };
@@ -119,25 +244,103 @@ pub(crate) fn levels_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> b
     let Some(index) = selected_effect(ui.ctx(), st.doc.id.0, layer.id.0).filter(|index| *index == stack.active) else { return false };
     let Some(effect) = stack.layers.get(index) else { return false };
     let EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } = &effect.kind else { return false };
+    let (doc_id, revision, size) = (st.doc.id.0, st.revision, st.doc.size);
     let (layer_id, index) = (layer.id, index);
+    let effect_name = effect.name.clone();
+    let mut visible = effect.visible;
+    let (input_black, gamma, input_white, output_black, output_white) = (*input_black, *gamma, *input_white, *output_black, *output_white);
+    let canonical = serde_json::json!({
+        "inBlack": (input_black * 255.0).round(),
+        "gamma": gamma,
+        "inWhite": (input_white * 255.0).round(),
+        "outBlack": (output_black * 255.0).round(),
+        "outWhite": (output_white * 255.0).round(),
+    });
+    let values_id = egui::Id::new(("mask-levels-values", doc_id, layer_id.0, index));
+    let mut values = ui
+        .ctx()
+        .data(|data| data.get_temp::<(u64, Value)>(values_id))
+        .filter(|(cached_revision, _)| *cached_revision == revision)
+        .map_or(canonical, |(_, values)| values);
+    let hist = mask_levels_histogram(ui.ctx(), doc_id, revision, layer_id.0, index, stack, size);
+    let cx = crate::adjust_editors::EditorCx {
+        mem: egui::Id::new(("mask-levels", doc_id, layer_id.0, index)),
+        hist: Some(hist),
+        gray: true,
+        swatches: [[0.0; 3]; 2],
+        gradients: Vec::new(),
+        dialog: false,
+        dynamic_color_sliders: false,
+        isolated_curve: None,
+    };
     let mut actions = Vec::new();
+    let mut arm_picker = None;
     ui.horizontal(|ui| {
         let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 20.0), egui::Sense::hover());
         crate::icons::paint(ui, icon_rect, "contrast", 16.0, Tokens::get(ui.ctx()).icon);
-        ui.strong(&effect.name);
+        ui.strong(&effect_name);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.weak(tl!("Levels"));
         });
     });
+    ui.horizontal(|ui| {
+        let current =
+            picker_point(app, ui.ctx()).filter(|picker| picker.doc == doc_id && picker.layer == layer_id.0 && picker.index == index).map(|picker| picker.point);
+        let choices = [
+            (0, tl!("Set Black Point"), egui::Color32::BLACK),
+            (1, tl!("Set Neutral Gray Point"), egui::Color32::from_gray(128)),
+            (2, tl!("Set White Point"), egui::Color32::WHITE),
+        ];
+        for (point, label, color) in choices {
+            if crate::adjust_dialog::picker_button(ui, current == Some(point), true, label, color).clicked() {
+                if current == Some(point) {
+                    ui.ctx().data_mut(|data| data.remove::<LevelsPicker>(levels_picker_id()));
+                } else {
+                    arm_picker = Some(point);
+                }
+            }
+        }
+    });
     ui.add_space(8.0);
-    for (key, label, value, range) in [
-        ("input_black", tl!("Input Black"), *input_black, 0.0..=0.999),
-        ("gamma", tl!("Gamma"), *gamma, 0.01..=9.99),
-        ("input_white", tl!("Input White"), *input_white, 0.001..=1.0),
-        ("output_black", tl!("Output Black"), *output_black, 0.0..=1.0),
-        ("output_white", tl!("Output White"), *output_white, 0.0..=1.0),
-    ] {
-        edit_parameter(ui, st.doc.id.0, st.revision, layer_id.0, index, key, label, value, range, &mut actions);
+    let edit = crate::adjust_editors::editor(ui, "levels", &mut values, &cx);
+    if edit.changed && !edit.commit {
+        ui.ctx().data_mut(|data| data.insert_temp(values_id, (revision, values.clone())));
+    }
+    if edit.commit {
+        let scale = 1.0 / 255.0;
+        let black = values["inBlack"].as_f64().unwrap_or(0.0) as f32 * scale;
+        let white = values["inWhite"].as_f64().unwrap_or(255.0) as f32 * scale;
+        let out_black = values["outBlack"].as_f64().unwrap_or(0.0) as f32 * scale;
+        let out_white = values["outWhite"].as_f64().unwrap_or(255.0) as f32 * scale;
+        let next_gamma = values["gamma"].as_f64().unwrap_or(1.0) as f32;
+        if black != input_black || white != input_white || out_black != output_black || out_white != output_white || next_gamma != gamma {
+            actions.push((
+                "uv.maskPaint.modify".to_string(),
+                serde_json::json!({
+                    "layer":layer_id.0,"index":index,
+                    "input_black":black,"gamma":next_gamma,"input_white":white,
+                    "output_black":out_black,"output_white":out_white
+                }),
+            ));
+        }
+        ui.ctx().data_mut(|data| data.remove::<(u64, Value)>(values_id));
+    }
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut visible, tl!("Visible")).changed() {
+            actions.push(("uv.maskPaint.modify".to_string(), serde_json::json!({"layer":layer_id.0,"index":index,"visible":visible})));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button(tl!("Reset")).clicked() {
+                ui.ctx().data_mut(|data| data.remove::<(u64, Value)>(values_id));
+                actions.push((
+                    "uv.maskPaint.modify".to_string(),
+                    serde_json::json!({"layer":layer_id.0,"index":index,"input_black":0.0,"gamma":1.0,"input_white":1.0,"output_black":0.0,"output_white":1.0}),
+                ));
+            }
+        });
+    });
+    if edit.changed {
+        ui.ctx().request_repaint();
     }
     for (command, params) in actions {
         if let Err(error) = app.run(&command, params) {
@@ -145,12 +348,56 @@ pub(crate) fn levels_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> b
             app.ui.status_error = true;
         }
     }
+    if let Some(point) = arm_picker {
+        if !app.ui.uv_workbench.select_shells || crate::uv_ui::commit_current_polygon_selection(app) {
+            app.ui.uv_workbench.select_shells = false;
+            ui.ctx().data_mut(|data| data.insert_temp(levels_picker_id(), LevelsPicker { doc: doc_id, layer: layer_id.0, index, point, tool: app.ui.tool }));
+        }
+    }
     true
+}
+
+/// A small, distributed histogram of the editable prefix before the selected Levels layer.
+/// Sampling 32×32 spread-out 4×4 patches keeps this useful on 4k masks without recompositing the
+/// full mask on every Properties frame. The cached entry is replaced after any document revision.
+fn mask_levels_histogram(
+    ctx: &egui::Context,
+    doc: u64,
+    revision: u64,
+    layer: u64,
+    index: usize,
+    stack: &photocraft_doc::mask_paint::Stack,
+    size: photocraft_doc::Size,
+) -> std::sync::Arc<crate::tone::Histograms> {
+    let id = egui::Id::new(("mask-levels-histogram", doc, layer, index));
+    if let Some((cached_revision, cached)) = ctx.data(|data| data.get_temp::<(u64, std::sync::Arc<crate::tone::Histograms>)>(id))
+        && cached_revision == revision
+    {
+        return cached;
+    }
+    let mut bins = [0u32; 256];
+    let (width, height) = (size.width as i32, size.height as i32);
+    for gy in 0..32 {
+        for gx in 0..32 {
+            let x = (gx * width / 32).min((width - 1).max(0));
+            let y = (gy * height / 32).min((height - 1).max(0));
+            let rect = photocraft_geom::Rect::new(x, y, (x + 4).min(width), (y + 4).min(height));
+            if let Some(values) = photocraft_compose::mask_paint::compose_prefix(stack, index, rect) {
+                for value in values {
+                    let bin = (value.clamp(0.0, 1.0) * 255.0).round() as usize;
+                    bins[bin] = bins[bin].saturating_add(1);
+                }
+            }
+        }
+    }
+    let cached = std::sync::Arc::new(crate::tone::Histograms { tag: doc ^ revision ^ layer ^ index as u64, ch: vec![bins], level: 0 });
+    ctx.data_mut(|data| data.insert_temp(id, (revision, cached.clone())));
+    cached
 }
 
 /// Fill settings live in Properties; the rectangle itself is edited directly on the 2D canvas.
 pub(crate) fn fill_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
-    if app.ui.workspace != "3D" || !app.ui.mask_target {
+    if app.ui.workspace != "3D" {
         return false;
     }
     let Some(st) = app.session.active() else { return false };
@@ -198,8 +445,8 @@ pub(crate) fn fill_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> boo
         let [source_w, source_h] = effect.fill_map_size;
         if source_w > 0 && source_h > 0 {
             ui.add_space(6.0);
-            let preview_w = ui.available_width().min(120.0).max(1.0);
-            let preview_h = (preview_w * (source_h as f32 / source_w as f32)).min(72.0).max(1.0);
+            let preview_w = ui.available_width().clamp(1.0, 120.0);
+            let preview_h = (preview_w * (source_h as f32 / source_w as f32)).clamp(1.0, 72.0);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(preview_w, preview_h), egui::Sense::hover());
             let tex_w = 120usize;
             let tex_h = ((source_h as f64 / source_w as f64 * tex_w as f64).round() as usize).clamp(1, 72);
@@ -284,25 +531,6 @@ fn gradient_parameter(ui: &mut egui::Ui, doc: u64, revision: u64, layer: u64, in
             actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer,"index":index,"value":staged})));
         }
     }
-}
-
-/// Parameter widgets keep their changing value in egui memory and send one document command when
-/// the gesture ends. That gives immediate feedback in the control without flattening a 4K mask on
-/// every pointer update or creating one undo entry per frame.
-#[allow(clippy::too_many_arguments)] // The fields form one explicit UI parameter binding.
-fn edit_parameter(
-    ui: &mut egui::Ui,
-    doc: u64,
-    revision: u64,
-    layer: u64,
-    index: usize,
-    key: &'static str,
-    label: &str,
-    canonical: f32,
-    range: std::ops::RangeInclusive<f32>,
-    actions: &mut Vec<(String, Value)>,
-) {
-    edit_parameter_speed(ui, doc, revision, layer, index, key, label, canonical, range, 0.005, actions);
 }
 
 #[allow(clippy::too_many_arguments)] // The fields form one explicit UI parameter binding.

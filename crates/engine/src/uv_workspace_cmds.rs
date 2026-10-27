@@ -18,6 +18,10 @@ impl Session {
     pub fn uv_documents(&self) -> &[DocState] {
         if self.uv_workspace.initialized && !self.uv_workspace.active { &self.uv_workspace.parked } else { &self.docs }
     }
+
+    pub(crate) fn uv_documents_mut(&mut self) -> &mut [DocState] {
+        if self.uv_workspace.initialized && !self.uv_workspace.active { &mut self.uv_workspace.parked } else { &mut self.docs }
+    }
 }
 fn switch(s: &mut Session, p: &Value) -> Result<Value> {
     let active = p.get("active").and_then(Value::as_bool).ok_or_else(|| EngineError::Other("active must be boolean".into()))?;

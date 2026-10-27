@@ -2086,6 +2086,11 @@ fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, visible:
     else {
         return false;
     };
+    // Spatial Fill's GPU planner consumes effect params directly. Give it the live immutable
+    // snapshot while CPU fallback paths keep using display_doc's matching materialized key.
+    #[cfg(feature = "uv-workbench")]
+    let (doc, raw_key) = crate::uv_mask_paint_preview::gpu_display_doc(app, idx).unwrap_or_else(|| display_doc(app, idx));
+    #[cfg(not(feature = "uv-workbench"))]
     let (doc, raw_key) = display_doc(app, idx);
     let (display, _) = canvas_display(app, &doc, None);
     // Repeated pattern tiles sample the same texture, including pixels outside the unwrapped
@@ -3699,7 +3704,15 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         // A flipped or pixel-aspect-corrected view draws through the CPU path (the GPU canvas shader
         // has no mirroring or non-square pixels). Rotation stays on the GPU: it is a view uniform.
         let gpu_ok = crate::gpu_canvas::gpu_view_ok(flip, view.rotation, aspect);
-        if app.gpu.is_some()
+        #[cfg(feature = "uv-workbench")]
+        let opaque_fill_preview = crate::uv_mask_paint_preview::current_fill_gray_mask(app, idx);
+        #[cfg(not(feature = "uv-workbench"))]
+        let opaque_fill_preview = false;
+        if opaque_fill_preview {
+            // The opaque channel-view mask is painted over this image below. Keep the existing
+            // canvas GPU cache untouched and avoid refreshing the hidden full-resolution map.
+            app.navigator_gpu.remove(&doc.id);
+        } else if app.gpu.is_some()
             && gpu_ok
             && let Some((k, key, preview_size)) = ensure_adjust_proxy(app, idx, render_zoom)
                 .or_else(|| ensure_filter_preview(app, idx, &ctx))
@@ -4050,6 +4063,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     crate::magnetic_lasso_ui::frame(app);
     // A Properties Levels/Curves eyedropper left behind by a tool or layer switch is dropped.
     crate::layer_picker::prune(app);
+    #[cfg(feature = "uv-workbench")]
+    crate::uv_mask_paint::prune_levels_picker(app, &ctx);
     // Held keys (hold_keys.rs): Space repositions a crop frame, marquee, lasso or shape being
     // drawn; otherwise Space is the Hand and ⌘Space / ⌥Space the Zoom tool while held.
     let reposition = crate::hold_keys::reposition_held(app, &ctx);
@@ -4246,8 +4261,22 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         // The Fill overlay consumed this canvas gesture. Its preview and final command belong to
         // the mask Fill; do not let Move/Free Transform, layer picking, or a native transform box
         // process the same press or release.
-    } else if primary && !stroke_dismissal && temporary.is_none() && !middle && crate::layer_picker::armed(app).is_some() {
-        // A Properties Levels/Curves eyedropper (layer_picker.rs) owns the image until Esc or another
+    } else if primary
+        && !stroke_dismissal
+        && temporary.is_none()
+        && !middle
+        && (crate::layer_picker::armed(app).is_some() || {
+            #[cfg(feature = "uv-workbench")]
+            {
+                crate::uv_mask_paint::levels_picker_active(app, &ctx)
+            }
+            #[cfg(not(feature = "uv-workbench"))]
+            {
+                false
+            }
+        })
+    {
+        // A Levels/Curves or mask Paint Levels eyedropper owns the image until Esc or another
         // tool; Space and the middle button still pan. It samples on the press.
         if response.hovered()
             && let Some(p) = ui.input(|i| i.pointer.hover_pos())
@@ -4263,7 +4292,16 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             && let Some(p) = ui.input(|i| i.pointer.interact_pos())
         {
             let d = xf.to_doc(p);
-            crate::layer_picker::sample_at(app, d[0], d[1]);
+            #[cfg(feature = "uv-workbench")]
+            let mask_picker = crate::uv_mask_paint::levels_picker_active(app, &ctx);
+            #[cfg(not(feature = "uv-workbench"))]
+            let mask_picker = false;
+            if mask_picker {
+                #[cfg(feature = "uv-workbench")]
+                crate::uv_mask_paint::sample_levels_at(app, &ctx, d);
+            } else {
+                crate::layer_picker::sample_at(app, d[0], d[1]);
+            }
         }
     } else if primary && !stroke_dismissal && temporary.is_none() && !middle && {
         #[cfg(feature = "uv-workbench")]
@@ -10044,7 +10082,9 @@ mod fill_canvas_gesture_tests {
         let doc_id = app.session.active().unwrap().doc.id;
         let canvas_idx = app.session.active_index().unwrap();
         let layer_id = app.session.active().unwrap().active_layer.unwrap();
+        crate::uv_mask_paint::select_effect(&ctx, doc_id.0, layer_id.0, 0);
         let original = app.session.active().unwrap().doc.layer(layer_id).unwrap().surface().cloned();
+        let original_mask = app.session.active().unwrap().doc.layer(layer_id).unwrap().mask.as_ref().unwrap().surface.clone();
         let initial_bounds = app.session.active().unwrap().doc.layer(layer_id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].fill_bounds;
         let history = app.session.active().unwrap().history.past_len();
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
@@ -10074,12 +10114,37 @@ mod fill_canvas_gesture_tests {
         let press = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         frame(&mut app, vec![egui::Event::PointerMoved(start)]);
         frame(&mut app, vec![press(start, true)]);
+        frame(&mut app, vec![egui::Event::PointerMoved(xf.to_screen(30.0, 30.0))]);
+        frame(&mut app, vec![egui::Event::PointerMoved(xf.to_screen(29.0, 29.0))]);
         frame(&mut app, vec![egui::Event::PointerMoved(end)]);
-        let (shown, _) = crate::uv_mask_paint_preview::display_doc(&mut app, canvas_idx).expect("Fill gets a live document preview during the drag");
-        let live = shown.layer(layer_id).unwrap().mask.as_ref().unwrap();
-        assert!(live.surface.sample_channel(4, 4, 0) > 0.95, "the live Fill effect remains visible in the mask pixels");
-        assert!(live.surface.sample_channel(30, 30, 0) < 0.01, "resize changes actual mask pixels before release");
+        assert_eq!(crate::uv_mask_paint_preview::fill_transform(&app, layer_id, 0, initial_bounds.unwrap(), 0.0), ([0, 0, 26, 28], 0.0));
+        let (shown, key) = crate::uv_mask_paint_preview::display_doc(&mut app, canvas_idx).expect("canonical document remains available during Fill resize");
+        assert_eq!(key, 0, "the Fill snapshot does not materialize a full-resolution document during the gesture");
+        assert_eq!(shown.layer(layer_id).unwrap().mask.as_ref().unwrap().surface, original_mask, "canonical mask pixels remain unchanged before release");
         assert_eq!(shown.layer(layer_id).unwrap().surface(), original.as_ref(), "the raster layer is unchanged during the gesture");
+        let sample_started = std::time::Instant::now();
+        let sample_deadline = sample_started + std::time::Duration::from_secs(2);
+        let mut fake_now = sample_started;
+        let current_key = crate::uv_mask_paint_preview::current_fill_key(&app, canvas_idx).expect("current Fill transform key");
+        let mut proxy = None;
+        while proxy.as_ref().is_none_or(|proxy: &crate::uv_mask_paint_preview::FillMaskProxy| proxy.key != current_key) {
+            let (next_proxy, _) = crate::uv_mask_paint_preview::fill_mask_proxy_at(&mut app, canvas_idx, fake_now);
+            proxy = next_proxy;
+            if proxy.as_ref().is_some_and(|proxy| proxy.key == current_key) {
+                break;
+            }
+            assert!(std::time::Instant::now() < sample_deadline, "the live Fill mask proxy completes within two seconds");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            fake_now += std::time::Duration::from_millis(50);
+        }
+        let proxy = proxy.expect("current Fill mask proxy");
+        assert_eq!(proxy.key, current_key, "proxy samples the exact current transform");
+        let pixel = |x: usize, y: usize| proxy.values[y * proxy.size[0] as usize + x];
+        assert!(pixel(4, 4) > 0.95, "the current resize proxy contains the Fill interior");
+        assert!(pixel(30, 30) < 0.01, "the current resize proxy excludes pixels beyond the Fill bounds");
+        let canonical = app.session.active().unwrap().doc.layer(layer_id).unwrap();
+        assert_eq!(canonical.mask.as_ref().unwrap().surface, original_mask, "proxy sampling never mutates canonical mask pixels");
+        assert_eq!(canonical.mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].fill_bounds, initial_bounds, "proxy sampling never commits Fill bounds");
         assert_eq!(app.session.active().unwrap().history.past_len(), history, "preview does not add history");
         frame(&mut app, vec![press(end, false)]);
         let stack = app.session.active().unwrap().doc.layer(layer_id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap();
@@ -10094,9 +10159,11 @@ mod fill_canvas_gesture_tests {
         frame(&mut app, vec![egui::Event::PointerMoved(rotate_start)]);
         frame(&mut app, vec![press(rotate_start, true)]);
         frame(&mut app, vec![egui::Event::PointerMoved(rotate_end)]);
-        let (shown, _) = crate::uv_mask_paint_preview::display_doc(&mut app, canvas_idx).expect("rotation updates the live Fill snapshot");
-        let live_fill = &shown.layer(layer_id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0];
-        assert!(matches!(&live_fill.kind, photocraft_doc::mask_paint::EffectKind::Fill { rotation, .. } if *rotation > 0.0));
+        assert_eq!(crate::uv_mask_paint_preview::fill_transform(&app, layer_id, 0, [0, 0, 26, 28], 0.0).0, [0, 0, 26, 28]);
+        assert!(crate::uv_mask_paint_preview::fill_transform(&app, layer_id, 0, [0, 0, 26, 28], 0.0).1 > 0.0, "rotation updates transient Fill parameters");
+        let (shown, key) = crate::uv_mask_paint_preview::display_doc(&mut app, canvas_idx).expect("canonical document remains available during rotation");
+        assert_eq!(key, 0);
+        assert_eq!(shown.layer(layer_id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].fill_bounds, Some([0, 0, 26, 28]));
         frame(&mut app, vec![press(rotate_end, false)]);
         assert_eq!(app.session.active().unwrap().history.past_len(), rotated_history + 1, "rotation commits as one Fill edit");
         assert_eq!(app.session.active().unwrap().doc.layer(layer_id).unwrap().surface(), original.as_ref());
@@ -10145,17 +10212,73 @@ mod fill_canvas_gesture_tests {
         let xf = ViewXform::active(&app).unwrap();
         let start = xf.to_screen(16.0, 16.0);
         let end = xf.to_screen(21.0, 19.0);
-        let secondary = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+        let primary = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         frame(&mut app, vec![egui::Event::PointerMoved(start)]);
-        frame(&mut app, vec![secondary(start, true)]);
+        frame(&mut app, vec![primary(start, true)]);
         frame(&mut app, vec![egui::Event::PointerMoved(end)]);
-        let (shown, _) = crate::uv_mask_paint_preview::display_doc(&mut app, canvas_idx).expect("right drag updates Fill before release");
-        assert_eq!(shown.layer(layer_id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].fill_bounds, Some([5, 3, 37, 35]));
+        assert_eq!(
+            crate::uv_mask_paint_preview::fill_transform(&app, layer_id, 0, initial_bounds.unwrap(), 0.0).0,
+            [5, 3, 37, 35],
+            "left drag updates transient Fill bounds before release"
+        );
+        let (shown, key) = crate::uv_mask_paint_preview::display_doc(&mut app, canvas_idx).expect("canonical document remains available during move");
+        assert_eq!(key, 0);
+        assert_eq!(shown.layer(layer_id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].fill_bounds, initial_bounds);
         assert_eq!(shown.layer(layer_id).unwrap().surface(), original.as_ref());
         assert_eq!(app.session.active().unwrap().history.past_len(), move_history);
-        frame(&mut app, vec![secondary(end, false)]);
+        frame(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: Some(egui::Key::Escape),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.uv_mask_paint_preview.is_none(), "Escape drops the live transform preview");
+        assert_eq!(app.session.active().unwrap().history.past_len(), move_history, "Escape does not add an undo entry");
+        assert_eq!(
+            app.session.active().unwrap().doc.layer(layer_id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].fill_bounds,
+            initial_bounds
+        );
+        frame(&mut app, vec![primary(end, false)]);
+
+        frame(&mut app, vec![egui::Event::PointerMoved(start)]);
+        frame(&mut app, vec![primary(start, true)]);
+        frame(&mut app, vec![egui::Event::PointerMoved(end)]);
+        frame(&mut app, vec![primary(end, false)]);
         assert_eq!(app.session.active().unwrap().history.past_len(), move_history + 1);
         assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
+        let committed_bounds = app.session.active().unwrap().doc.layer(layer_id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].fill_bounds;
+        let click_history = app.session.active().unwrap().history.past_len();
+        let xf = ViewXform::active(&app).unwrap();
+        let click = xf.to_screen(20.0, 20.0);
+        frame(&mut app, vec![egui::Event::PointerMoved(click)]);
+        frame(&mut app, vec![primary(click, true)]);
+        frame(&mut app, vec![primary(click, false)]);
+        assert_eq!(app.session.active().unwrap().history.past_len(), click_history, "a click without movement adds no undo entry");
+        assert_eq!(
+            app.session.active().unwrap().doc.layer(layer_id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].fill_bounds,
+            committed_bounds
+        );
+        let outside_release_history = app.session.active().unwrap().history.past_len();
+        let current_xf = ViewXform::active(&app).unwrap();
+        let current_bounds = committed_bounds.expect("committed Fill has spatial bounds");
+        let center = current_xf.to_screen((current_bounds[0] + current_bounds[2]) as f32 * 0.5, (current_bounds[1] + current_bounds[3]) as f32 * 0.5);
+        let outside = rect.right_bottom() + vec2(30.0, 30.0);
+        frame(&mut app, vec![egui::Event::PointerMoved(center)]);
+        frame(&mut app, vec![primary(center, true)]);
+        frame(&mut app, vec![egui::Event::PointerMoved(outside)]);
+        frame(&mut app, vec![primary(outside, false)]);
+        assert_eq!(
+            app.session.active().unwrap().history.past_len(),
+            outside_release_history + 1,
+            "release outside the canvas commits the owned Fill move once"
+        );
+        assert!(app.ui.transform.is_none() && app.transform_preview.is_none(), "outside release never opens or leaves a parent transform");
+        assert!(app.uv_mask_paint_preview.is_none(), "outside release clears the transient Fill gesture");
+        assert_eq!(app.session.active().unwrap().doc.layer(layer_id).unwrap().surface(), original.as_ref());
     }
 }
 

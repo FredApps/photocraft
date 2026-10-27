@@ -754,6 +754,9 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if cycle_shift || pressed(k) {
             #[cfg(feature = "uv-workbench")]
             {
+                if !crate::uv_ui::commit_current_polygon_selection(app) {
+                    continue;
+                }
                 app.ui.uv_workbench.select_shells = false;
                 app.uv_cache.shell_tool_owner = None;
             }

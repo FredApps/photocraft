@@ -43,6 +43,12 @@ struct Op {
 const F_MASK: u32 = 1u;          // layer has an enabled mask
 const F_MASK_TEX: u32 = 2u;      // mask pixels live in `mask_tex`
 const F_MASK_SLOT: u32 = 2097152u; // flattened editable Paint mask lives in a planner slot
+const F_MASK_FILL: u32 = 4194304u;
+const F_MASK_FILL_REPEAT_U: u32 = 8388608u;
+const F_MASK_FILL_REPEAT_V: u32 = 16777216u;
+const F_MASK_FILL_MIRROR_U: u32 = 33554432u;
+const F_MASK_FILL_MIRROR_V: u32 = 67108864u;
+const F_MASK_FILL_LEGACY: u32 = 134217728u;
 const F_TEX: u32 = 4u;           // layer pixels live in `layer_tex`
 const F_GRADIENT: u32 = 8u;      // gradient fill (stops in `lut_tex`)
 const F_KNOCKOUT: u32 = 16u;     // effect paint: the layer knocks out the coverage (drop shadow)
@@ -142,6 +148,51 @@ fn fs_mask_stack(in: VOut) -> @location(0) vec4<f32> {
         let normalized = clamp((below - input_black) / max(input_white - input_black, 0.0000001), 0.0, 1.0);
         let adjusted = output_black + pow(normalized, 1.0 / gamma) * (output_white - output_black);
         let value = adjusted * op.opacity + below * (1.0 - op.opacity);
+        return vec4(value, value, value, value);
+    }
+    if (op.kind == 5 && (op.flags & F_MASK_FILL) != 0u) {
+        let bounds = op.p0;
+        let span = bounds.zw - bounds.xy;
+        if (span.x <= 0.0 || span.y <= 0.0) {
+            return vec4(below, below, below, below);
+        }
+        let legacy = (op.flags & F_MASK_FILL_LEGACY) != 0u;
+        let repeat_u = (op.flags & F_MASK_FILL_REPEAT_U) != 0u;
+        let repeat_v = (op.flags & F_MASK_FILL_REPEAT_V) != 0u;
+        let source_size = vec2<i32>(op.p2.xy);
+        var uv: vec2<f32>;
+        if (legacy) {
+            // Old fills without spatial bounds repeated at the source image's pixel size.
+            uv = max(vec2<f32>(d), vec2<f32>(0.0)) / 2147483647.0;
+            if (repeat_u && source_size.x > 0) { uv.x = (f32(d.x) + 0.5) / f32(source_size.x); }
+            if (repeat_v && source_size.y > 0) { uv.y = (f32(d.y) + 0.5) / f32(source_size.y); }
+        } else {
+            let center = (bounds.xy + bounds.zw) * 0.5;
+            let delta = vec2<f32>(d) + vec2<f32>(0.5) - center;
+            let sin_a = op.p1.x;
+            let cos_a = op.p1.y;
+            let source_local = vec2<f32>(cos_a * delta.x + sin_a * delta.y, -sin_a * delta.x + cos_a * delta.y);
+            uv = (source_local + center - bounds.xy) / span;
+        }
+        if (!legacy && ((!repeat_u && (uv.x < 0.0 || uv.x >= 1.0)) || (!repeat_v && (uv.y < 0.0 || uv.y >= 1.0)))) {
+            return vec4(below, below, below, below);
+        }
+        let tile = floor(uv);
+        var fraction = uv - tile;
+        if (legacy && !repeat_u) { fraction.x = uv.x; }
+        if (legacy && !repeat_v) { fraction.y = uv.y; }
+        if (repeat_u && (op.flags & F_MASK_FILL_MIRROR_U) != 0u && rem_euclid(tile.x, 2.0) == 1.0) {
+            fraction.x = 1.0 - fraction.x;
+        }
+        if (repeat_v && (op.flags & F_MASK_FILL_MIRROR_V) != 0u && rem_euclid(tile.y, 2.0) == 1.0) {
+            fraction.y = 1.0 - fraction.y;
+        }
+        var sample_value = op.color.r;
+        if (source_size.x > 0 && source_size.y > 0) {
+            let source = clamp(vec2<i32>(floor(fraction * vec2<f32>(source_size))), vec2<i32>(0), source_size - vec2<i32>(1));
+            sample_value = textureLoad(pat_tex, source, 0).r;
+        }
+        let value = sample_value * op.opacity + below * (1.0 - op.opacity);
         return vec4(value, value, value, value);
     }
     var source = op.color;

@@ -465,7 +465,7 @@ fn selected_adjustment_skips_zero_coverage_tiles_without_changing_pixels_at_any_
         selection.write_pixel(900, 900, &[0.0]); // Allocated empty mask tile inside the bounds.
         let expected = one_pass(&original, &Adjustment::Invert, Some(&selection), ColorMode::Rgb);
         let mut got = original.clone();
-        adjust_surface(&mut got, &Adjustment::Invert, Some(&selection), ColorMode::Rgb);
+        adjust_surface(&mut got, &Adjustment::Invert, Some(&selection), ColorMode::Rgb).unwrap();
         assert!(same_pixels(&got, &expected));
         for (coord, tile) in original.tiles().filter(|(coord, _)| coord.tx != 0 || coord.ty != 0) {
             assert!(std::sync::Arc::ptr_eq(tile, got.tile(*coord).unwrap()), "unselected tile copied at {depth:?}");
@@ -500,7 +500,7 @@ fn benchmark_uv_selected_adjustment_24mp() {
     let before = start.elapsed();
     let mut got = original.clone();
     let start = Instant::now();
-    adjust_surface(&mut got, &Adjustment::Invert, Some(&selection), ColorMode::Rgb);
+    adjust_surface(&mut got, &Adjustment::Invert, Some(&selection), ColorMode::Rgb).unwrap();
     let after = start.elapsed();
     assert!(same_pixels(&got, &baseline));
     println!("24MP selected adjustment: old tile processing {before:?}, skip empty selection {after:?}");

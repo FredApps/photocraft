@@ -164,6 +164,35 @@ pub fn refresh(mask: &mut LayerMask, region: Option<Rect>) {
     }
 }
 
+/// Evaluate one output pixel of a Paint mask stack without allocating or materializing its
+/// flattened surface. This is used for bounded transient display sampling; commits still call
+/// [`refresh`] for the full-quality cache.
+pub fn sample_stack_pixel(stack: &Stack, x: i32, y: i32) -> f32 {
+    let mut value = stack.base.sample_channel(x, y, 0);
+    for layer in &stack.layers {
+        if !layer.visible || layer.opacity <= 0.0 {
+            continue;
+        }
+        match &layer.kind {
+            EffectKind::Paint => {
+                let source = layer.surface.sample_channel(x, y, 0);
+                let alpha = if layer.surface.channels() > 3 { layer.surface.sample_channel(x, y, 3) } else { 0.0 } * layer.opacity;
+                value = source * alpha + value * (1.0 - alpha);
+            }
+            EffectKind::Fill { value: fill, .. } => {
+                if let Some(fill) = fill_sample(layer, *fill, x, y) {
+                    value = fill * layer.opacity + value * (1.0 - layer.opacity);
+                }
+            }
+            EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
+                let adjusted = levels(value, *input_black, *gamma, *input_white, *output_black, *output_white);
+                value = adjusted * layer.opacity + value * (1.0 - layer.opacity);
+            }
+        }
+    }
+    value
+}
+
 fn composite_default(stack: &Stack) -> f32 {
     let mut value = stack.base.default_pixel().first().copied().unwrap_or(1.0);
     for layer in &stack.layers {
@@ -330,63 +359,68 @@ fn refresh_tiles(mask: &mut LayerMask, coords: Vec<photocraft_geom::TileCoord>) 
 }
 
 fn fill_sample(layer: &photocraft_doc::mask_paint::Paint, value: f32, x: i32, y: i32) -> Option<f32> {
-    let bounds = layer.fill_bounds;
-    let (local_x, local_y, span_x, span_y) = if let Some([x0, y0, x1, y1]) = bounds {
-        if x1 <= x0 || y1 <= y0 {
-            return None;
+    let photocraft_doc::mask_paint::EffectKind::Fill { rotation, repeat_u, repeat_v, mirror_u, mirror_v, .. } = &layer.kind else { return Some(value) };
+    if layer.fill_bounds.is_none() {
+        // Legacy unbounded fills use canvas-pixel coordinates. Keep this path
+        // separate from the normalized UV mapping used by spatial fills below.
+        let Some(map) = &layer.fill_map else { return Some(value) };
+        let [width, height] = layer.fill_map_size;
+        if width == 0 || height == 0 {
+            return Some(value);
         }
-        let (repeat_u, repeat_v) = match &layer.kind {
-            EffectKind::Fill { repeat_u, repeat_v, .. } if layer.fill_map.is_some() => (*repeat_u, *repeat_v),
-            _ => (false, false),
-        };
-        let rotation = match &layer.kind {
-            EffectKind::Fill { rotation, .. } => *rotation,
-            _ => return Some(value),
-        };
-        if !rotation.is_finite() || rotation.rem_euclid(360.0) == 0.0 {
-            if (!repeat_u && (x < x0 || x >= x1)) || (!repeat_v && (y < y0 || y >= y1)) {
-                return None;
+        let sample_axis = |local: i32, map_size: u32, repeat: bool, mirror: bool| {
+            let size = i64::from(map_size);
+            let local = i64::from(local);
+            if repeat {
+                let tile = local.div_euclid(size);
+                let offset = local.rem_euclid(size);
+                if mirror && tile.rem_euclid(2) == 1 { (size - 1 - offset) as i32 } else { offset as i32 }
+            } else {
+                ((local.max(0) * size / i64::from(i32::MAX)).min(size - 1)) as i32
             }
-            ((x - x0) as f32, (y - y0) as f32, x1 - x0, y1 - y0)
-        } else {
-            let angle = rotation.rem_euclid(360.0).to_radians();
-            let (sin, cos) = angle.sin_cos();
-            let center_x = (x0 as f32 + x1 as f32) * 0.5;
-            let center_y = (y0 as f32 + y1 as f32) * 0.5;
-            let dx = x as f32 + 0.5 - center_x;
-            let dy = y as f32 + 0.5 - center_y;
-            let source_x = cos * dx + sin * dy + center_x;
-            let source_y = -sin * dx + cos * dy + center_y;
-            // Keep continuous pixel-center coordinates until the image map is sampled.
-            let local_x = source_x - x0 as f32 - 0.5;
-            let local_y = source_y - y0 as f32 - 0.5;
-            if (!repeat_u && (local_x < 0.0 || local_x >= (x1 - x0) as f32)) || (!repeat_v && (local_y < 0.0 || local_y >= (y1 - y0) as f32)) {
-                return None;
-            }
-            (local_x, local_y, x1 - x0, y1 - y0)
-        }
+        };
+        return Some(map.sample_channel(sample_axis(x, width, *repeat_u, *mirror_u), sample_axis(y, height, *repeat_v, *mirror_v), 0));
+    }
+
+    let [x0, y0, x1, y1] = layer.fill_bounds?;
+    let repeat_u = layer.fill_map.is_some() && *repeat_u;
+    let repeat_v = layer.fill_map.is_some() && *repeat_v;
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let span_x = (x1 - x0) as f32;
+    let span_y = (y1 - y0) as f32;
+    let (doc_x, doc_y) = if rotation.is_finite() && rotation.rem_euclid(360.0) != 0.0 {
+        let angle = rotation.rem_euclid(360.0).to_radians();
+        let (sin, cos) = angle.sin_cos();
+        let center_x = (x0 as f32 + x1 as f32) * 0.5;
+        let center_y = (y0 as f32 + y1 as f32) * 0.5;
+        let dx = x as f32 + 0.5 - center_x;
+        let dy = y as f32 + 0.5 - center_y;
+        (cos * dx + sin * dy + center_x, -sin * dx + cos * dy + center_y)
     } else {
-        (x as f32, y as f32, i32::MAX, i32::MAX)
+        (x as f32 + 0.5, y as f32 + 0.5)
     };
+    let u = (doc_x - x0 as f32) / span_x;
+    let v = (doc_y - y0 as f32) / span_y;
+    if (!repeat_u && !(0.0..1.0).contains(&u)) || (!repeat_v && !(0.0..1.0).contains(&v)) {
+        return None;
+    }
     let Some(map) = &layer.fill_map else { return Some(value) };
     let [width, height] = layer.fill_map_size;
     if width == 0 || height == 0 {
         return Some(value);
     }
-    let EffectKind::Fill { repeat_u, repeat_v, mirror_u, mirror_v, .. } = &layer.kind else { return Some(value) };
-    let sample_axis = |local: f32, map_size: u32, span: i32, repeat: bool, mirror: bool| {
-        let size = i64::from(map_size);
-        let local = local.floor() as i64;
-        if repeat {
-            let tile = local.div_euclid(size);
-            let offset = local.rem_euclid(size);
-            if mirror && tile.rem_euclid(2) == 1 { (size - 1 - offset) as i32 } else { offset as i32 }
-        } else {
-            ((local.max(0) * size / i64::from(span.max(1))).min(size - 1)) as i32
+    let sample_axis = |coordinate: f32, map_size: u32, repeat: bool, mirror: bool| {
+        let tile = coordinate.floor() as i64;
+        let mut fraction = coordinate - tile as f32;
+        if repeat && mirror && tile.rem_euclid(2) == 1 {
+            fraction = 1.0 - fraction;
         }
+        (fraction * map_size as f32).floor().clamp(0.0, (map_size - 1) as f32) as i32
     };
-    let sx = sample_axis(local_x, width, span_x, *repeat_u, *mirror_u);
-    let sy = sample_axis(local_y, height, span_y, *repeat_v, *mirror_v);
+    let sx = sample_axis(u, width, repeat_u, *mirror_u);
+    let sy = sample_axis(v, height, repeat_v, *mirror_v);
     Some(map.sample_channel(sx, sy, 0))
 }
 
@@ -459,6 +493,21 @@ mod tests {
         assert!(mask.surface.tiles().count() <= 1);
     }
 
+    #[test]
+    fn unbounded_fill_keeps_legacy_repeat_and_constant_sampling() {
+        let mut fill_layer = layer(EffectKind::Fill { value: 0.37, rotation: 0.0, repeat_u: true, repeat_v: false, mirror_u: true, mirror_v: false }, 1.0);
+        let mut map = Surface::with_default(PixelFormat::GRAY8, &[0.0]);
+        map.write_region(Rect::new(0, 0, 2, 2), &[0.1, 0.2, 0.7, 0.9]);
+        fill_layer.fill_map = Some(map);
+        fill_layer.fill_map_size = [2, 2];
+        assert!((fill_sample(&fill_layer, 0.37, -1, -1).unwrap_or_default() - 0.1).abs() < 0.01);
+        assert!((fill_sample(&fill_layer, 0.37, -2, -1).unwrap_or_default() - 0.2).abs() < 0.01);
+        assert!((fill_sample(&fill_layer, 0.37, -2, i32::MAX).unwrap_or_default() - 0.9).abs() < 0.01);
+
+        let constant = layer(EffectKind::Fill { value: 0.37, rotation: 0.0, repeat_u: false, repeat_v: false, mirror_u: false, mirror_v: false }, 1.0);
+        assert_eq!(fill_sample(&constant, 0.37, -12, -34), Some(0.37));
+    }
+
     fn layer(kind: EffectKind, opacity: f32) -> Paint {
         Paint {
             name: "effect".into(),
@@ -469,6 +518,46 @@ mod tests {
             fill_map_size: [0, 0],
             fill_bounds: None,
             kind,
+        }
+    }
+
+    #[test]
+    fn bounded_point_sampling_matches_refreshed_mask_stack() {
+        let mut base = Surface::with_default(PixelFormat::GRAY8, &[0.2]);
+        base.write_region(Rect::new(3, 4, 4, 5), &[0.8]);
+        let mut paint_surface = Surface::with_default(PixelFormat::RGBA8, &[0.6, 0.0, 0.0, 0.5]);
+        paint_surface.write_region(Rect::new(8, 9, 9, 10), &[0.9, 0.0, 0.0, 0.75]);
+        let mut fill = layer(EffectKind::Fill { value: 0.3, rotation: 27.0, repeat_u: true, repeat_v: false, mirror_u: true, mirror_v: false }, 0.7);
+        fill.fill_bounds = Some([4, 3, 20, 19]);
+        fill.fill_map = Some(Surface::with_default(PixelFormat::GRAY8, &[0.4]));
+        fill.fill_map_size = [4, 4];
+        let levels = layer(EffectKind::Levels { input_black: 0.05, gamma: 1.7, input_white: 0.9, output_black: 0.1, output_white: 0.95 }, 0.6);
+        let mut mask = LayerMask::hide_all();
+        mask.paint = Some(Stack {
+            base,
+            layers: vec![
+                Paint {
+                    name: "paint".into(),
+                    visible: true,
+                    opacity: 0.8,
+                    surface: paint_surface,
+                    fill_map: None,
+                    fill_map_size: [0, 0],
+                    fill_bounds: None,
+                    kind: EffectKind::Paint,
+                },
+                fill,
+                levels,
+            ],
+            active: 2,
+        });
+
+        refresh(&mut mask, Some(Rect::new(0, 0, 32, 32)));
+        let stack = mask.paint.as_ref().unwrap();
+        for (x, y) in [(0, 0), (3, 4), (8, 9), (12, 8), (19, 18), (26, 25)] {
+            let sampled = sample_stack_pixel(stack, x, y);
+            let cached = mask.surface.sample_channel(x, y, 0);
+            assert!((sampled - cached).abs() <= 0.01, "point ({x},{y}): sampled {sampled}, refreshed {cached}");
         }
     }
 
@@ -668,7 +757,7 @@ mod tests {
 
         refresh(&mut mask, None);
         let bounds = Rect::new(0, 0, 4, 4);
-        let expected = [0.0, 0.25, 0.0, 0.25, 0.5, 0.75, 0.5, 0.75, 0.0, 0.25, 0.0, 0.25, 0.5, 0.75, 0.5, 0.75];
+        let expected = [0.0, 0.0, 0.25, 0.25, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 0.5, 0.5, 0.75, 0.75];
         assert!(mask.surface.read_region(bounds).iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() < 0.01));
 
         let fill = mask.paint.as_mut().and_then(|stack| stack.layers.first_mut());
@@ -679,8 +768,22 @@ mod tests {
             *mirror_v = true;
         }
         refresh(&mut mask, None);
-        let expected = [0.0, 0.25, 0.25, 0.0, 0.5, 0.75, 0.75, 0.5, 0.5, 0.75, 0.75, 0.5, 0.0, 0.25, 0.25, 0.0];
-        assert!(mask.surface.read_region(bounds).iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() < 0.01));
+        let mirrored = mask.surface.read_region(bounds);
+        assert!(mirrored.iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() < 0.01), "Mirror does not alter the base tile");
+
+        let base_tile = mirrored;
+        let fill = mask.paint.as_mut().and_then(|stack| stack.layers.first_mut());
+        if let Some(fill) = fill
+            && let EffectKind::Fill { repeat_u, repeat_v, .. } = &mut fill.kind
+        {
+            *repeat_u = false;
+            *repeat_v = false;
+        }
+        refresh(&mut mask, None);
+        assert!(
+            mask.surface.read_region(bounds).iter().zip(base_tile).all(|(actual, expected)| (actual - expected).abs() < 0.01),
+            "toggling Repeat preserves pixels in the original Fill tile"
+        );
     }
 
     #[test]
@@ -710,7 +813,8 @@ mod tests {
         }
         refresh(&mut mask, Some(bounds));
         let expected_top = [0.75, 0.5, 0.5, 0.75, 0.75, 0.5];
-        assert!(mask.surface.read_region(Rect::new(0, 0, 6, 1)).iter().zip(expected_top).all(|(actual, expected)| (actual - expected).abs() < 0.01));
+        let actual_top = mask.surface.read_region(Rect::new(0, 0, 6, 1));
+        assert!(actual_top.iter().zip(expected_top).all(|(actual, expected)| (actual - expected).abs() < 0.01), "{actual_top:?}");
         assert!((mask.surface.read_region(Rect::new(4, 4, 5, 5))[0] - 0.75).abs() < 0.01);
     }
 
@@ -729,8 +833,9 @@ mod tests {
 
         refresh(&mut mask, None);
         let region = Rect::new(1, 3, 5, 5);
-        let expected = [0.5, 0.0, 0.5, 0.0, 0.75, 0.25, 0.75, 0.25];
-        assert!(mask.surface.read_region(region).iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() < 0.01));
+        let expected = [0.5, 0.5, 0.0, 0.0, 0.75, 0.75, 0.25, 0.25];
+        let actual = mask.surface.read_region(region);
+        assert!(actual.iter().zip(expected).all(|(actual, expected)| (actual - expected).abs() < 0.01), "{actual:?}");
         // (1, 3) lies outside the unrotated bounds [2, 2, 4, 6], but inside the rotated fill.
         assert!((mask.surface.read_region(Rect::new(1, 3, 2, 4))[0] - 0.5).abs() < 0.01);
     }

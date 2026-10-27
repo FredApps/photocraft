@@ -796,6 +796,7 @@ fn project_save(s: &mut Session, p: &Value) -> Result<Value> {
     if !path.to_ascii_lowercase().ends_with(".pcuv") {
         return Err(err("UV projects must use the .pcuv extension"));
     }
+    let explicit_view = p.get("view").is_some();
     let view = p.get("view").unwrap_or(&s.uv.project_view);
     validate_view(view)?;
     let view = view.clone();
@@ -816,13 +817,17 @@ fn project_save(s: &mut Session, p: &Value) -> Result<Value> {
             .copied()
             .chain(s.uv.map_bindings.values().flat_map(|ids| (0..count).map(move |i| ids.get(i).copied().flatten())))
             .collect();
+    let uv_docs = s.uv_documents();
+    if slots.iter().flatten().any(|id| !uv_docs.iter().any(|doc| doc.doc.id == *id)) {
+        return Err(err("A bound UV document is missing from the UV workspace"));
+    }
     let mut zip = photocraft_format::zip::ZipWriter::new();
     let mut documents = Vec::new();
     let mut saved = std::collections::BTreeMap::<u64, String>::new();
     let mut document_paths = std::collections::BTreeMap::new();
     let mut dirty_documents = BTreeSet::new();
     for (i, id) in slots.iter().enumerate() {
-        if let Some(doc) = id.and_then(|id| s.documents().iter().find(|d| d.doc.id == id)) {
+        if let Some(doc) = id.and_then(|id| uv_docs.iter().find(|d| d.doc.id == id)) {
             if let Some(name) = saved.get(&doc.doc.id.0) {
                 documents.push(Some(name.clone()));
                 continue;
@@ -843,23 +848,21 @@ fn project_save(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     let mut loose_documents = Vec::new();
-    if s.uv_workspace.active {
-        for doc in s.documents() {
-            if saved.contains_key(&doc.doc.id.0) {
-                continue;
-            }
-            let name = format!("documents/loose-{}.pcraft", loose_documents.len());
-            let bytes = photocraft_format::save_to_bytes(&doc.doc, &Default::default()).map_err(|e| err(e.to_string()))?;
-            zip.add(&name, &bytes).map_err(|e| err(e.to_string()))?;
-            if let Some(path) = &doc.path {
-                document_paths.insert(name.clone(), path.clone());
-            }
-            if s.uv.needs_export(doc) {
-                dirty_documents.insert(name.clone());
-            }
-            saved.insert(doc.doc.id.0, name.clone());
-            loose_documents.push(name);
+    for doc in uv_docs {
+        if saved.contains_key(&doc.doc.id.0) {
+            continue;
         }
+        let name = format!("documents/loose-{}.pcraft", loose_documents.len());
+        let bytes = photocraft_format::save_to_bytes(&doc.doc, &Default::default()).map_err(|e| err(e.to_string()))?;
+        zip.add(&name, &bytes).map_err(|e| err(e.to_string()))?;
+        if let Some(path) = &doc.path {
+            document_paths.insert(name.clone(), path.clone());
+        }
+        if s.uv.needs_export(doc) {
+            dirty_documents.insert(name.clone());
+        }
+        saved.insert(doc.doc.id.0, name.clone());
+        loose_documents.push(name);
     }
     let mut assets = Vec::new();
     for asset in &s.uv.assets {
@@ -870,10 +873,12 @@ fn project_save(s: &mut Session, p: &Value) -> Result<Value> {
     let environment_resource = if let Some(source) = view.get("environment").and_then(Value::as_str).filter(|v| !v.is_empty()) {
         if s.uv.project_view.get("environment").and_then(Value::as_str) == Some(source) && s.uv.environment.is_some() {
             s.uv.environment.clone()
-        } else {
+        } else if explicit_view {
             let bytes = read_limited(source, crate::uv_asset_cmds::MAX_ASSET_BYTES)?;
             let name = Path::new(source).file_name().map_or_else(|| "sky.exr".into(), |n| n.to_string_lossy().into_owned());
             Some(crate::uv_asset_cmds::Resource { name, bytes: Arc::new(bytes) })
+        } else {
+            None
         }
     } else {
         None
@@ -905,7 +910,7 @@ fn project_save(s: &mut Session, p: &Value) -> Result<Value> {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, id)| {
-                    id.and_then(|id| s.documents().iter().find(|d| d.doc.id == id))
+                    id.and_then(|id| uv_docs.iter().find(|d| d.doc.id == id))
                         .filter(|doc| s.uv.selection_masks.get(&doc.doc.id.0).is_some_and(|mask| doc.doc.selection.as_ref() == Some(mask)))
                         .map(|_| i)
                 })
@@ -943,13 +948,17 @@ fn project_save(s: &mut Session, p: &Value) -> Result<Value> {
     crate::file_cmds::write_file(path, &bytes)?;
     // Checkpoints change only after the atomic container write succeeded. External
     // exports have their own revision: saving a project never writes source textures.
-    s.uv.saved_revisions.clear();
-    for st in &mut s.docs {
+    let mut saved_state = Vec::new();
+    for st in s.uv_documents_mut() {
         if saved.contains_key(&st.doc.id.0) {
-            s.uv.exported_revisions.entry(st.doc.id).or_insert(st.saved_revision.saturating_sub(st.view_revision));
-            s.uv.saved_revisions.insert(st.doc.id, st.revision.saturating_sub(st.view_revision));
+            saved_state.push((st.doc.id, st.saved_revision.saturating_sub(st.view_revision), st.revision.saturating_sub(st.view_revision)));
             st.saved_revision = st.revision;
         }
+    }
+    s.uv.saved_revisions.clear();
+    for (id, exported_revision, revision) in saved_state {
+        s.uv.exported_revisions.entry(id).or_insert(exported_revision);
+        s.uv.saved_revisions.insert(id, revision);
     }
     s.uv.saved_generation = s.uv.generation;
     s.uv.project_path = path.to_owned();

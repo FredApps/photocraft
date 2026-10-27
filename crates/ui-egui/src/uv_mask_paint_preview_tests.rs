@@ -6,7 +6,7 @@ use photocraft_doc::{
 use photocraft_raster::Surface;
 use serde_json::json;
 
-use super::{cancel, cpu_document, display_doc, set, set_fill, value};
+use super::{cancel, cpu_document, display_doc, gpu_display_doc, set, set_fill, value};
 use crate::{PhotocraftApp, Services};
 
 fn app() -> (PhotocraftApp, LayerId) {
@@ -245,7 +245,7 @@ fn cpu_fallback_materializes_nested_transient_paint_masks() {
 }
 
 #[test]
-fn fill_bounds_preview_updates_pixels_and_commits_once_on_release() {
+fn fill_bounds_preview_uses_low_res_proxy_and_commits_once_on_release() {
     let (mut app, layer) = app();
     {
         let state = app.session.active_mut().unwrap();
@@ -256,12 +256,20 @@ fn fill_bounds_preview_updates_pixels_and_commits_once_on_release() {
     let next = [4, 4, 20, 16];
     set_fill(&mut app, layer, 0, next, 20.0);
 
-    let (shown, key) = display_doc(&mut app, 0).expect("Fill preview snapshot");
-    let preview_mask = shown.layer(layer).unwrap().mask.as_ref().unwrap();
-    assert!(preview_mask.surface.sample_channel(8, 8, 0) > 0.95, "Fill pixels update before release");
-    assert!(preview_mask.surface.sample_channel(2, 2, 0) < 0.25, "pixels outside Fill remain unchanged");
-    let cpu = cpu_document(&mut app, shown, key);
-    assert!(cpu.layer(layer).unwrap().mask.as_ref().unwrap().surface.sample_channel(8, 8, 0) > 0.95);
+    let (shown, key) = display_doc(&mut app, 0).expect("canonical canvas stays available during Fill manipulation");
+    assert_eq!(key, 0);
+    assert!(shown.layer(layer).unwrap().mask.as_ref().unwrap().surface.sample_channel(8, 8, 0) < 0.01, "pointer moves do not recompose full-resolution pixels");
+    let now = std::time::Instant::now();
+    let (mut proxy, _) = super::fill_mask_proxy_at(&mut app, 0, now);
+    let deadline = now + std::time::Duration::from_secs(2);
+    while proxy.as_ref().is_none_or(|proxy| proxy.key != super::current_fill_key(&app, 0).unwrap()) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        (proxy, _) = super::fill_mask_proxy_at(&mut app, 0, std::time::Instant::now());
+        assert!(std::time::Instant::now() < deadline, "bounded Fill proxy completes off-thread");
+    }
+    let proxy = proxy.unwrap();
+    assert!(proxy.size[0] <= 256 && proxy.size[1] <= 256);
+    assert!(proxy.values.iter().any(|value| *value > 0.95), "proxy includes the selected Fill");
     assert_eq!(app.session.active().unwrap().history.past_len(), history, "preview is transient");
 
     let commit = super::pending(&app).expect("latest Fill preview is pending");
@@ -278,9 +286,81 @@ fn fill_bounds_preview_updates_pixels_and_commits_once_on_release() {
 }
 
 #[test]
-fn fill_transform_preview_recomposes_only_damaged_tiles() {
+fn gray_fill_preview_skips_full_cpu_worker_for_both_mask_target_forms() {
     let mut session = photocraft_engine::Session::new();
-    session.execute("file.new", json!({"width":512,"height":128})).unwrap();
+    session.execute("file.new", json!({"width":512,"height":129})).unwrap();
+    let layer = session.active().unwrap().active_layer.unwrap();
+    let state = session.active_mut().unwrap();
+    let mut mask = LayerMask::hide_all();
+    mask.paint = Some(Stack {
+        base: Surface::with_default(PixelFormat::GRAY8, &[0.2]),
+        layers: vec![Paint {
+            name: "Fill".into(),
+            visible: true,
+            opacity: 1.0,
+            surface: Surface::with_default(PixelFormat::RGBA8, &[0.0, 0.0, 0.0, 0.0]),
+            fill_map: None,
+            fill_map_size: [0, 0],
+            fill_bounds: Some([0, 0, 32, 32]),
+            kind: EffectKind::Fill { value: 1.0, rotation: 0.0, repeat_u: false, repeat_v: false, mirror_u: false, mirror_v: false },
+        }],
+        active: 0,
+    });
+    photocraft_compose::mask_paint::refresh(&mut mask, Some(state.doc.bounds()));
+    std::sync::Arc::make_mut(&mut state.doc).layer_mut(layer).unwrap().mask = Some(mask);
+    state.channel_view.target = photocraft_engine::channel_cmds::ChannelTarget::LayerMask;
+    state.channel_view.layer_mask = None;
+    let mut app = PhotocraftApp::new(session, Services::default());
+    set_fill(&mut app, layer, 0, [8, 0, 40, 32], 0.0);
+    assert!(super::current_fill_gray_mask(&app, 0), "the target-only mask selection is opaque Gray");
+    assert!(super::display_doc(&mut app, 0).is_some());
+    let ui_ctx = egui::Context::default();
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_secs(2);
+    let proxy = loop {
+        let _ = crate::channel_view::ensure(&mut app, &ui_ctx, 0);
+        if let Some(proxy) = super::sampled_fill_proxy(&app, 0)
+            && proxy.key == super::current_fill_key(&app, 0).unwrap()
+        {
+            break proxy;
+        }
+        assert!(std::time::Instant::now() < deadline, "2D preview worker publishes its first proxy");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert!(proxy.size[0] <= 256 && proxy.size[1] <= 256);
+    assert!(crate::channel_view::ensure(&mut app, &ui_ctx, 0).is_some());
+    let doc = app.session.active().unwrap().doc.clone();
+    let cache = app.channel_views.get(&doc.id.0).unwrap();
+    assert_eq!(cache.preview_key, proxy.key, "the texture key matches the sampled transform");
+    let mut view = app.session.active().unwrap().channel_view.clone();
+    // `ensure` normalizes target-only mask selection to this explicit display descriptor.
+    view.layer_mask = Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
+    let pixels = crate::channel_view::render_fill_mask_proxy(
+        &doc,
+        &view,
+        photocraft_geom::Rect::new(0, 0, proxy.size[0] as i32, proxy.size[1] as i32),
+        proxy.size,
+        crate::channel_view::Look::default(),
+        &proxy,
+    )
+    .unwrap();
+    let px = (16 * proxy.size[1] as usize / 129) * proxy.size[0] as usize + (24 * proxy.size[0] as usize / 512);
+    assert_eq!(pixels[px], egui::Color32::WHITE);
+
+    let state = app.session.active_mut().unwrap();
+    state.channel_view.target = photocraft_engine::channel_cmds::ChannelTarget::Composite;
+    state.channel_view.layer_mask =
+        Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
+    assert!(super::current_fill_gray_mask(&app, 0), "the explicit mask-view selection is also opaque Gray");
+    assert!(super::display_doc(&mut app, 0).is_some());
+    assert!(crate::channel_view::ensure(&mut app, &ui_ctx, 0).is_some());
+}
+
+#[test]
+fn fill_sampler_throttles_samples_but_commit_keeps_latest_raw_transform() {
+    let mut session = photocraft_engine::Session::new();
+    session.execute("file.new", json!({"width":512,"height":129})).unwrap();
+    session.uv.scene = Some(std::sync::Arc::new(photocraft_uv::Scene::default()));
     let layer = session.active().unwrap().active_layer.unwrap();
     let state = session.active_mut().unwrap();
     let mut base = Surface::with_default(PixelFormat::GRAY8, &[0.2]);
@@ -303,21 +383,114 @@ fn fill_transform_preview_recomposes_only_damaged_tiles() {
     photocraft_compose::mask_paint::refresh(&mut mask, Some(state.doc.bounds()));
     std::sync::Arc::make_mut(&mut state.doc).layer_mut(layer).unwrap().mask = Some(mask);
     let mut app = PhotocraftApp::new(session, Services::default());
+    let t0 = std::time::Instant::now();
     set_fill(&mut app, layer, 0, [8, 0, 40, 32], 0.0);
+    let _ = super::fill_mask_proxy_at(&mut app, 0, t0);
+    let first_key = super::current_fill_key(&app, 0).unwrap();
+    set_fill(&mut app, layer, 0, [24, 0, 56, 32], 17.0);
+    let (still_unready, next) = super::fill_mask_proxy_at(&mut app, 0, t0 + std::time::Duration::from_millis(20));
+    let latest_key = super::current_fill_key(&app, 0).unwrap();
+    assert!(still_unready.is_none_or(|proxy| proxy.key != latest_key), "no result can claim parameters that have not been sampled yet");
+    assert!(next.is_some(), "a repaint is scheduled while the worker or cadence is pending");
+    assert_ne!(super::current_fill_key(&app, 0).unwrap(), first_key);
+    let latest = super::pending(&app).unwrap();
+    assert_eq!(latest.bounds, Some([24, 0, 56, 32]));
+    assert_eq!(latest.rotation, Some(17.0), "release keeps the raw latest manipulator parameters");
 
-    let (shown, _) = display_doc(&mut app, 0).expect("Fill transform preview");
-    let shown_mask = shown.layer(layer).unwrap().mask.as_ref().unwrap();
-    let untouched = photocraft_geom::TileCoord::new(1, 0);
-    let canonical = app.session.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap();
-    assert!(std::sync::Arc::ptr_eq(canonical.surface.tile(untouched).unwrap(), shown_mask.surface.tile(untouched).unwrap()));
-    assert!(shown_mask.surface.sample_channel(34, 8, 0) > 0.95, "new Fill extent is recomposed in the damaged tile");
-    assert!(shown_mask.surface.sample_channel(2, 8, 0) < 0.25, "old Fill extent is cleared in the same damage update");
+    let t50 = t0 + std::time::Duration::from_millis(50);
+    let (mut proxy, _) = super::fill_mask_proxy_at(&mut app, 0, t50);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while proxy.as_ref().is_none_or(|proxy| proxy.key != latest_key) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        (proxy, _) = super::fill_mask_proxy_at(&mut app, 0, std::time::Instant::now());
+        assert!(std::time::Instant::now() < deadline, "worker publishes the latest coalesced transform");
+    }
+    assert_eq!(proxy.unwrap().key, latest_key);
+    assert!(!super::fill_preview_pending(&app, layer, 0));
+    app.run("uv.maskPaint.modify", latest.params()).unwrap();
+    let committed = app.session.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].clone();
+    assert_eq!(committed.fill_bounds, Some([24, 0, 56, 32]));
+    assert!(matches!(committed.kind, EffectKind::Fill { rotation, .. } if rotation == 17.0));
 }
 
 #[test]
-fn fill_transform_preview_is_rate_limited_without_changing_pointer_state() {
-    let now = std::time::Instant::now();
-    assert!(super::fill_preview_refresh_due(None, now), "the first transform preview is immediate");
-    assert!(!super::fill_preview_refresh_due(Some(now - std::time::Duration::from_millis(50)), now));
-    assert!(super::fill_preview_refresh_due(Some(now - std::time::Duration::from_millis(90)), now));
+fn canvas_fill_snapshot_stays_canonical_while_commit_keeps_raw_latest_parameters() {
+    let mut session = photocraft_engine::Session::new();
+    session.execute("file.new", json!({"width":512,"height":129})).unwrap();
+    let layer = session.active().unwrap().active_layer.unwrap();
+    let state = session.active_mut().unwrap();
+    let mut mask = LayerMask::hide_all();
+    mask.paint = Some(Stack {
+        base: Surface::with_default(PixelFormat::GRAY8, &[0.2]),
+        layers: vec![Paint {
+            name: "Fill".into(),
+            visible: true,
+            opacity: 1.0,
+            surface: Surface::with_default(PixelFormat::RGBA8, &[0.0, 0.0, 0.0, 0.0]),
+            fill_map: None,
+            fill_map_size: [0, 0],
+            fill_bounds: Some([0, 0, 32, 32]),
+            kind: EffectKind::Fill { value: 1.0, rotation: 0.0, repeat_u: false, repeat_v: false, mirror_u: false, mirror_v: false },
+        }],
+        active: 0,
+    });
+    photocraft_compose::mask_paint::refresh(&mut mask, Some(state.doc.bounds()));
+    std::sync::Arc::make_mut(&mut state.doc).layer_mut(layer).unwrap().mask = Some(mask);
+    let mut app = PhotocraftApp::new(session, Services::default());
+    let next_bounds = [24, 8, 56, 40];
+    set_fill(&mut app, layer, 0, next_bounds, 31.0);
+
+    let (gpu, gpu_key) = gpu_display_doc(&mut app, 0).expect("canvas keeps its canonical document");
+    assert_eq!(gpu_key, 0);
+    let gpu_paint = &gpu.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0];
+    assert_eq!(gpu_paint.fill_bounds, Some([0, 0, 32, 32]), "canvas source is not the raw manipulator snapshot");
+    assert!(matches!(gpu_paint.kind, EffectKind::Fill { rotation, .. } if rotation == 0.0));
+    assert_eq!(gpu_paint.surface.sample_channel(30, 12, 0), 0.0, "canonical flattened cache is left untouched during manipulation");
+    let commit = super::pending(&app).unwrap();
+    assert_eq!(commit.bounds, Some(next_bounds));
+    assert_eq!(commit.rotation, Some(31.0));
+}
+
+#[test]
+fn fill_proxy_scheduler_coalesces_to_latest_key_at_twenty_hz() {
+    let t0 = std::time::Instant::now();
+    let mut schedule = super::FillSampleSchedule::default();
+    assert!(schedule.accept(t0, 10), "first sample is immediate");
+    assert!(!schedule.accept(t0 + std::time::Duration::from_millis(12), 11));
+    assert!(!schedule.accept(t0 + std::time::Duration::from_millis(35), 12));
+    assert_eq!(schedule.latest_key, Some(10), "intermediate pointer states are coalesced");
+    assert_eq!(schedule.until_next(t0 + std::time::Duration::from_millis(35)), Some(std::time::Duration::from_millis(15)));
+    assert!(schedule.accept(t0 + std::time::Duration::from_millis(50), 12), "the latest pointer state is accepted at 20 Hz");
+    assert_eq!(schedule.latest_key, Some(12));
+    assert!(!schedule.accept(t0 + std::time::Duration::from_millis(100), 12), "an unchanged state is not resampled");
+}
+
+#[test]
+fn sampled_fill_proxy_is_rejected_after_revision_change_or_cancel() {
+    let (mut app, layer) = app();
+    {
+        let state = app.session.active_mut().unwrap();
+        let paint = std::sync::Arc::make_mut(&mut state.doc).layer_mut(layer).unwrap().mask.as_mut().unwrap().paint.as_mut().unwrap();
+        paint.layers[0].kind = EffectKind::Fill { value: 1.0, rotation: 0.0, repeat_u: false, repeat_v: false, mirror_u: false, mirror_v: false };
+    }
+    set_fill(&mut app, layer, 0, [2, 3, 20, 18], 0.0);
+    let key = super::current_fill_key(&app, 0).unwrap();
+    let preview = app.uv_mask_paint_preview.as_mut().unwrap();
+    let proxy = super::FillMaskProxy {
+        generation: preview.generation,
+        doc: preview.doc,
+        revision: preview.revision,
+        layer,
+        index: 0,
+        key,
+        size: [1, 1],
+        values: std::sync::Arc::new(vec![1.0]),
+    };
+    preview.mask_sampler.ready = Some(proxy);
+    assert!(super::sampled_fill_proxy(&app, 0).is_some());
+    app.session.active_mut().unwrap().revision += 1;
+    assert!(super::sampled_fill_proxy(&app, 0).is_none(), "result from an earlier document revision is ignored");
+    app.session.active_mut().unwrap().revision -= 1;
+    cancel(&mut app);
+    assert!(super::sampled_fill_proxy(&app, 0).is_none(), "cancelling drops the sampler generation");
 }

@@ -94,13 +94,29 @@ fn refresh_impl(app: &mut PhotocraftApp, maps: &mut SurfaceMaps, allow_gpu: bool
                 }
                 continue;
             };
+            if allow_gpu && crate::uv_mask_paint_preview::fill_manipulation_active(app, index) {
+                // UV workbench refreshes the bounded mask proxy separately. Keep all source
+                // material maps canonical while the Fill controls move; release refreshes them.
+                continue;
+            }
             let revision = app.session.documents().get(index).map_or(0, |s| s.revision);
-            let (doc, live) = crate::canvas::display_doc(app, index);
+            let gpu_candidate =
+                allow_gpu.then(|| crate::uv_mask_paint_preview::gpu_display_doc(app, index).unwrap_or_else(|| crate::canvas::display_doc(app, index)));
+            let gpu_candidate = gpu_candidate.and_then(|(doc, live)| gpu_color_encoding(&doc, channel).map(|encoding| (doc, live, encoding)));
+            // A spatial Fill's GPU snapshot is parameter-current and does not enqueue a CPU
+            // materialization. Fall back to the coalesced CPU path only when this map cannot use
+            // the GPU planner.
+            let (doc, live, gpu_encoding) = if let Some((doc, live, encoding)) = gpu_candidate {
+                (doc, live, Some(encoding))
+            } else {
+                let (doc, live) = crate::canvas::display_doc(app, index);
+                (doc, live, None)
+            };
             let colored = matches!(channel, Channel::Color | Channel::Emissive);
             // Profile assignment/conversion is a document revision. Avoid parsing an ICC
             // profile for every unchanged slot, including numeric maps, on every refresh.
             let key = (doc.id.0, revision, live, 0);
-            let gpu_request = allow_gpu.then(|| gpu_color_encoding(&doc, channel)).flatten().map(|linear_srgb| GpuMapRequest {
+            let gpu_request = gpu_encoding.map(|linear_srgb| GpuMapRequest {
                 doc: doc.clone(),
                 key: (doc.id.0, revision, live, photocraft_engine::color_cmds::composite_profile(&doc).content_hash()),
                 linear_srgb,

@@ -4,13 +4,13 @@ use crate::{
     theme::Tokens,
     uv_ui::{self, OrbitPivot},
 };
-use egui::{Rect, Sense, Ui, vec2};
+use egui::{Color32, Rect, Sense, Ui, vec2};
 use serde_json::Value;
 
 /// Only small view preferences are remembered: no file paths, status, strokes or open dialogs.
 pub(crate) fn preferences(app: &PhotocraftApp) -> Value {
     let s = &app.ui.uv_workbench;
-    serde_json::json!({"paint_wrap":s.paint_wrap,"show_overlay":s.show_overlay,"split_view":s.split_view,"swap_views":s.swap_views,"split_ratio":s.split_ratio,"view_3d":s.view_3d,"perspective":s.perspective,"antialias":s.antialias,"fast_navigation":s.fast_navigation,"orbit_pivot":s.orbit_pivot,"shaded":s.shaded,"channel":s.channel,"channel_2d":s.channel_2d,"shell_enclosed":s.shell_enclosed,"cull_backfaces":s.cull_backfaces,"flip_faces":s.flip_faces,"lighting":s.lighting,"normal_strength":s.normal_strength,"flip_normal_y":s.flip_normal_y})
+    serde_json::json!({"paint_wrap":s.paint_wrap,"show_overlay":s.show_overlay,"show_wireframe":s.show_wireframe,"wireframe_opacity":s.wireframe_opacity,"wireframe_color":s.wireframe_color,"split_view":s.split_view,"swap_views":s.swap_views,"split_ratio":s.split_ratio,"view_3d":s.view_3d,"perspective":s.perspective,"antialias":s.antialias,"fast_navigation":s.fast_navigation,"orbit_pivot":s.orbit_pivot,"shaded":s.shaded,"channel":s.channel,"channel_2d":s.channel_2d,"shell_enclosed":s.shell_enclosed,"cull_backfaces":s.cull_backfaces,"flip_faces":s.flip_faces,"lighting":s.lighting,"normal_strength":s.normal_strength,"flip_normal_y":s.flip_normal_y})
 }
 pub(crate) fn restore_preferences(app: &mut PhotocraftApp, value: Option<&Value>) {
     let Some(value) = value else {
@@ -21,6 +21,9 @@ pub(crate) fn restore_preferences(app: &mut PhotocraftApp, value: Option<&Value>
     };
     let s = &mut app.ui.uv_workbench;
     s.show_overlay = saved.show_overlay;
+    s.show_wireframe = saved.show_wireframe;
+    s.wireframe_opacity = if saved.wireframe_opacity.is_finite() { saved.wireframe_opacity.clamp(0.0, 1.0) } else { uv_ui::State::default().wireframe_opacity };
+    s.wireframe_color = saved.wireframe_color;
     s.paint_wrap = saved.paint_wrap;
     s.split_view = saved.split_view;
     s.swap_views = saved.swap_views;
@@ -197,13 +200,28 @@ pub(crate) fn shell_tool(app: &mut PhotocraftApp, ui: &mut Ui, size: f32) {
     });
 }
 fn icon_menu<R>(ui: &mut Ui, icon: &str, tip: &str, body: impl FnOnce(&mut Ui) -> R) {
+    icon_menu_with_close_behavior(ui, icon, tip, egui::PopupCloseBehavior::CloseOnClick, body);
+}
+fn icon_menu_with_close_behavior<R>(ui: &mut Ui, icon: &str, tip: &str, close_behavior: egui::PopupCloseBehavior, body: impl FnOnce(&mut Ui) -> R) {
     let image = icons::image(icon, 17.0, Tokens::get(ui.ctx()).icon);
-    let (response, _) = egui::containers::menu::MenuButton::from_button(egui::Button::image(image).min_size(vec2(32.0, 26.0))).ui(ui, body);
+    let config = egui::containers::menu::MenuConfig::new().close_behavior(close_behavior);
+    let (response, _) = egui::containers::menu::MenuButton::from_button(egui::Button::image(image).min_size(vec2(32.0, 26.0))).config(config).ui(ui, body);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
     response.on_hover_text(tip);
 }
+
+fn wireframe_menu_rect_id() -> egui::Id {
+    egui::Id::new("uv-wireframe-parent-menu-rect")
+}
+
+fn wireframe_picker_rect_id() -> egui::Id {
+    egui::Id::new("uv-wireframe-picker-rect")
+}
+
 fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
+    let mut display_menu_rect = None;
+    let mut display_menu_button = None;
     egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin::symmetric(5, 2)).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -252,26 +270,43 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
                 }
             });
             ui.separator();
-            icon_menu(ui, "sun", tl!("3D display"), |ui| {
-                let s = &mut app.ui.uv_workbench;
-                ui.checkbox(&mut s.shaded, tl!("Lighting"));
-                ui.checkbox(&mut s.show_wireframe, tl!("Show polygon wireframe"));
-                ui.checkbox(&mut s.antialias, tl!("MSAA antialiasing"));
-                ui.checkbox(&mut s.fast_navigation, tl!("Smooth navigation")).on_hover_text(tl!(
-                    "Up to 1600 px while navigating; source maps stay full size and full viewport resolution returns when you release the mouse."
-                ));
-                ui.checkbox(&mut s.cull_backfaces, tl!("Cull backfaces"));
-                ui.checkbox(&mut s.flip_faces, tl!("Flip faces"));
-                ui.checkbox(&mut s.lighting.pbr, "PBR · Roughness / Metallic");
-                ui.add(egui::Slider::new(&mut s.normal_strength, 0.0..=4.0).text(tl!("Normal strength")));
-                ui.checkbox(&mut s.flip_normal_y, "Normal: DirectX Y−");
-                if let Some(gpu) = &app.uv_cache.gpu
-                    && let Some((size, samples)) = gpu.frame_info()
-                {
-                    ui.separator();
-                    ui.weak(format!("GPU · {} × {} · MSAA {}×", size[0], size[1], samples)).on_hover_text(gpu.adapter_label());
-                }
-            });
+            let image = icons::image("sun", 17.0, t.icon);
+            let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+            let (response, _) =
+                egui::containers::menu::MenuButton::from_button(egui::Button::image(image).min_size(vec2(32.0, 26.0))).config(config).ui(ui, |ui| {
+                    let s = &mut app.ui.uv_workbench;
+                    ui.checkbox(&mut s.shaded, tl!("Lighting"));
+                    ui.checkbox(&mut s.show_wireframe, tl!("Show polygon wireframe"));
+                    if s.show_wireframe {
+                        ui.add(egui::Slider::new(&mut s.wireframe_opacity, 0.0..=1.0).text(tl!("Wireframe opacity")));
+                        ui.horizontal(|ui| {
+                            ui.label(tl!("Wireframe color"));
+                            let color = Color32::from_rgba_unmultiplied(s.wireframe_color[0], s.wireframe_color[1], s.wireframe_color[2], s.wireframe_color[3]);
+                            if crate::widgets::color_swatch_button(ui, color, tl!("Wireframe color")).clicked() {
+                                s.wireframe_picker_open = true;
+                            }
+                        });
+                    }
+                    ui.checkbox(&mut s.antialias, tl!("MSAA antialiasing"));
+                    ui.checkbox(&mut s.fast_navigation, tl!("Smooth navigation")).on_hover_text(tl!(
+                        "Up to 1600 px while navigating; source maps stay full size and full viewport resolution returns when you release the mouse."
+                    ));
+                    ui.checkbox(&mut s.cull_backfaces, tl!("Cull backfaces"));
+                    ui.checkbox(&mut s.flip_faces, tl!("Flip faces"));
+                    ui.checkbox(&mut s.lighting.pbr, "PBR · Roughness / Metallic");
+                    ui.add(egui::Slider::new(&mut s.normal_strength, 0.0..=4.0).text(tl!("Normal strength")));
+                    ui.checkbox(&mut s.flip_normal_y, "Normal: DirectX Y−");
+                    if let Some(gpu) = &app.uv_cache.gpu
+                        && let Some((size, samples)) = gpu.frame_info()
+                    {
+                        ui.separator();
+                        ui.weak(format!("GPU · {} × {} · MSAA {}×", size[0], size[1], samples)).on_hover_text(gpu.adapter_label());
+                    }
+                    display_menu_rect = Some(ui.min_rect().expand(4.0));
+                });
+            let response = response.on_hover_text(tl!("3D display"));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("3D display")));
+            display_menu_button = Some(response);
             icon_menu(ui, "sliders-horizontal", tl!("Camera navigation"), |ui| {
                 ui.label(tl!("Orbit pivot"));
                 for mode in [OrbitPivot::ViewCenter, OrbitPivot::Cursor, OrbitPivot::Fixed] {
@@ -351,6 +386,74 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
             }
         });
     });
+    let ctx = ui.ctx().clone();
+    let parent_rect = display_menu_rect.or_else(|| ctx.data(|d| d.get_temp::<Rect>(wireframe_menu_rect_id())));
+    if let Some(rect) = display_menu_rect {
+        ctx.data_mut(|d| d.insert_temp(wireframe_menu_rect_id(), rect));
+    }
+    let parent_id = display_menu_button.as_ref().map(egui::Popup::default_response_id);
+    let parent_was_clicked = display_menu_button.as_ref().is_some_and(egui::Response::clicked);
+    if parent_was_clicked && app.ui.uv_workbench.wireframe_picker_open {
+        // Clicking the parent button dismisses only the palette and leaves its menu open.
+        app.ui.uv_workbench.wireframe_picker_open = false;
+        if let Some(id) = parent_id {
+            egui::Popup::open_id(&ctx, id);
+        }
+    }
+    if app.ui.uv_workbench.wireframe_picker_open {
+        let mut open = true;
+        let mut color = Color32::from_rgba_unmultiplied(
+            app.ui.uv_workbench.wireframe_color[0],
+            app.ui.uv_workbench.wireframe_color[1],
+            app.ui.uv_workbench.wireframe_color[2],
+            app.ui.uv_workbench.wireframe_color[3],
+        );
+        let mut changed = false;
+        let position = parent_rect.map_or_else(|| ui.next_widget_position(), |r| egui::pos2(r.right() + 5.0, r.top()));
+        let shown = egui::Window::new(tl!("Wireframe color"))
+            .id(egui::Id::new("uv-wireframe-color-picker"))
+            .open(&mut open)
+            .fixed_pos(position)
+            .default_width(350.0)
+            .resizable(false)
+            .collapsible(false)
+            .show(ui.ctx(), |ui| {
+                ui.set_min_width(330.0);
+                changed = egui::color_picker::color_picker_color32(ui, &mut color, egui::color_picker::Alpha::BlendOrAdditive);
+            });
+        if let Some(shown) = shown {
+            ctx.data_mut(|d| d.insert_temp(wireframe_picker_rect_id(), shown.response.rect));
+        }
+
+        // The picker is a sibling window, so preserve the 3D menu while it receives clicks.
+        // A click outside both windows dismisses the picker; the menu's own close behavior then
+        // dismisses its popup as usual.
+        let picker_rect = ctx.data(|d| d.get_temp::<Rect>(wireframe_picker_rect_id()));
+        let (click_pos, clicked) = ctx.input(|i| {
+            let pressed = i.pointer.button_pressed(egui::PointerButton::Primary)
+                || i.pointer.button_pressed(egui::PointerButton::Secondary)
+                || i.pointer.button_pressed(egui::PointerButton::Middle);
+            (i.pointer.interact_pos(), pressed)
+        });
+        if clicked && let Some(pos) = click_pos {
+            let in_parent = parent_rect.is_some_and(|rect| rect.contains(pos));
+            let in_picker = picker_rect.is_some_and(|rect| rect.contains(pos));
+            if in_picker {
+                if let Some(id) = parent_id {
+                    egui::Popup::open_id(&ctx, id);
+                }
+            } else if !in_parent {
+                open = false;
+                if let Some(id) = parent_id {
+                    egui::Popup::close_id(&ctx, id);
+                }
+            }
+        }
+        app.ui.uv_workbench.wireframe_picker_open = open;
+        if changed {
+            app.ui.uv_workbench.wireframe_color = color.to_srgba_unmultiplied();
+        }
+    }
 }
 pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut Ui) -> bool {
     if app.ui.workspace != "3D" {
@@ -366,7 +469,9 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut Ui) -> bool {
     }
     if app.ui.uv_workbench.select_shells {
         if app.uv_cache.shell_tool_owner.is_some_and(|tool| tool != app.ui.tool) {
-            app.ui.uv_workbench.select_shells = false;
+            if crate::uv_ui::commit_current_polygon_selection(app) {
+                app.ui.uv_workbench.select_shells = false;
+            }
         } else {
             app.uv_cache.shell_tool_owner = Some(app.ui.tool);
         }

@@ -84,6 +84,9 @@ pub const RESIDENT_BUDGET: u64 = 4 << 30;
 pub const PATTERN_BUDGET: u64 = 256 << 20;
 /// A pattern texture no frame has painted with for this many frames is dropped.
 pub const PATTERN_IDLE_FRAMES: u64 = 240;
+/// A single editable Fill source is bounded independently of the cache's LRU budget.
+/// Larger sources use the CPU fallback instead of allocating a giant dedicated texture.
+const MASK_FILL_SOURCE_BYTES: u64 = 256 << 20;
 /// Uploads (bytes) [`Compositor::render`] stages before submitting the work recorded so far, so
 /// a refresh of a huge document never holds all its uploads in staging memory at once.
 const FLUSH_BYTES: u64 = 512 << 20;
@@ -120,6 +123,10 @@ pub struct Stats {
     pub slots: u32,
     pub tiles_uploaded: usize,
     pub bytes_uploaded: usize,
+    /// Editable mask Fill source textures uploaded this frame (zero for transform-only edits).
+    pub mask_fill_uploads: usize,
+    /// Bytes uploaded for editable mask Fill source textures this frame.
+    pub mask_fill_bytes_uploaded: u64,
     /// Tiles a new layer texture took from another layer's texture by a GPU copy (a duplicate
     /// shares its source's tiles) instead of uploading them.
     pub tiles_shared: usize,
@@ -213,6 +220,22 @@ struct CachedPattern {
     last_used: u64,
     /// GPU bytes of the texture (RGBA32F).
     bytes: u64,
+}
+
+struct CachedMaskFill {
+    fingerprint: u64,
+    /// Keep allocation identities alive and force COW when a source tile is edited in place.
+    _pin: Vec<std::sync::Weak<Tile>>,
+    format: PixelFormat,
+    default_bits: Vec<u32>,
+    texture: Tex,
+    last_used: u64,
+    bytes: u64,
+}
+
+enum CachedSourceKey {
+    Pattern(String),
+    MaskFill((DocId, LayerId, u16)),
 }
 
 struct Resident {
@@ -450,6 +473,7 @@ pub struct Compositor {
     /// Effect temporaries (R32F, region sized) and the frame they were last used.
     temps: Vec<(Tex, u64)>,
     patterns: HashMap<String, CachedPattern>,
+    mask_fills: HashMap<(DocId, LayerId, u16), CachedMaskFill>,
     /// The colour mode of the document being encoded: patterns paint in it
     /// (`photocraft_compose::pattern::pattern_rgba`).
     pattern_mode: photocraft_color::ColorMode,
@@ -555,6 +579,7 @@ struct FrameRes {
     areas: Vec<(Rect, Rect)>,
     luts: Vec<Option<(wgpu::Texture, wgpu::TextureView)>>,
     patterns: Vec<Option<wgpu::TextureView>>,
+    mask_fills: Vec<Option<wgpu::TextureView>>,
 }
 
 /// Document pixels of page cell `c`.
@@ -580,6 +605,18 @@ fn grid_rects(r: Rect, step: u32) -> Vec<Rect> {
 }
 
 /// Number of rectangles `grid_rects` would produce, without allocating them during preflight.
+fn mask_fill_source_bytes([width, height]: [u32; 2], max_side: u32) -> Result<u64, Unsupported> {
+    let row_width = width.div_ceil(64).checked_mul(64).ok_or_else(|| Unsupported("mask Fill image width overflows".into()))?;
+    if width == 0 || height == 0 || row_width > max_side || height > max_side {
+        return Err(Unsupported("mask Fill image is empty or larger than the GPU texture limit".into()));
+    }
+    let bytes = u64::from(row_width).checked_mul(u64::from(height)).and_then(|count| count.checked_mul(4));
+    match bytes {
+        Some(bytes) if bytes <= MASK_FILL_SOURCE_BYTES => Ok(bytes),
+        _ => Err(Unsupported("mask Fill image exceeds the dedicated GPU source memory limit".into())),
+    }
+}
+
 fn grid_rect_count(r: Rect, step: u32) -> Result<usize, Unsupported> {
     if r.is_empty() {
         return Ok(0);
@@ -798,6 +835,7 @@ impl Compositor {
             prefix: prefix::Prefix::default(),
             temps: Vec::new(),
             patterns: HashMap::new(),
+            mask_fills: HashMap::new(),
             pattern_mode: photocraft_color::ColorMode::Rgb,
             pattern_doc: DocId(0),
             pattern_budget: PATTERN_BUDGET,
@@ -1052,6 +1090,9 @@ impl Compositor {
             {
                 return Err(Unsupported(format!("pattern `{}` larger than the GPU texture limit", pat.name)));
             }
+            if let Some(fill) = &pass.mask_fill {
+                mask_fill_source_bytes(fill.size, self.device_max)?;
+            }
         }
         Ok(())
     }
@@ -1059,6 +1100,7 @@ impl Compositor {
     /// Drop GPU textures of a closed document.
     pub fn forget_doc(&mut self, doc: DocId) {
         self.residents.retain(|_, r| r.doc != doc);
+        self.mask_fills.retain(|(id, _, _), _| *id != doc);
         self.fx.retain(|_, e| e.doc != doc);
         self.patterns.retain(|_, p| p.doc != doc);
         self.prefix.forget(doc);
@@ -1073,6 +1115,7 @@ impl Compositor {
             .map(|r| r.doc)
             .chain(self.fx.values().map(|e| e.doc))
             .chain(self.patterns.values().map(|p| p.doc))
+            .chain(self.mask_fills.keys().map(|(doc, _, _)| *doc))
             .chain(self.prefix.doc())
             .filter(|d| !keep(*d))
             .collect();
@@ -1092,6 +1135,7 @@ impl Compositor {
             .map(|r| r.doc)
             .chain(self.fx.values().map(|e| e.doc))
             .chain(self.patterns.values().map(|p| p.doc))
+            .chain(self.mask_fills.keys().map(|(doc, _, _)| *doc))
             .chain(self.prefix.doc())
             .collect();
         docs.sort_by_key(|d| d.0);
@@ -1327,7 +1371,7 @@ impl Compositor {
                 self.sync_fx(device, queue, encoder, doc, f, (f.layer.id, None), f.region, &mut stats)?;
             }
         }
-        let fr = self.frame_res(device, queue, canvas, &plan);
+        let fr = self.frame_res(device, queue, canvas, &plan, &mut stats);
 
         // Page cells; every other frame in reverse, so a repeated full refresh of a document
         // larger than the budget starts with the pages still resident.
@@ -1437,19 +1481,37 @@ impl Compositor {
     fn evict_patterns(&mut self) {
         let frame = self.frame;
         self.patterns.retain(|_, p| frame.saturating_sub(p.last_used) < PATTERN_IDLE_FRAMES);
-        let mut total = self.pattern_cache_bytes();
+        self.mask_fills.retain(|_, p| frame.saturating_sub(p.last_used) < PATTERN_IDLE_FRAMES);
+        let mut total = self.pattern_cache_bytes().saturating_add(self.mask_fill_cache_bytes());
         if total > self.pattern_budget {
-            let mut lru: Vec<(u64, String, u64)> =
-                self.patterns.iter().filter(|(_, p)| p.last_used != frame).map(|(k, p)| (p.last_used, k.clone(), p.bytes)).collect();
-            lru.sort_unstable();
-            for (_, key, bytes) in lru {
+            let mut lru: Vec<_> = self
+                .patterns
+                .iter()
+                .filter(|(_, p)| p.last_used != frame)
+                .map(|(k, p)| (p.last_used, CachedSourceKey::Pattern(k.clone()), p.bytes))
+                .chain(self.mask_fills.iter().filter(|(_, p)| p.last_used != frame).map(|(k, p)| (p.last_used, CachedSourceKey::MaskFill(*k), p.bytes)))
+                .collect();
+            lru.sort_unstable_by_key(|item| item.0);
+            for (_, source, bytes) in lru {
                 if total <= self.pattern_budget {
                     break;
                 }
-                self.patterns.remove(&key);
+                match source {
+                    CachedSourceKey::Pattern(key) => {
+                        self.patterns.remove(&key);
+                    }
+                    CachedSourceKey::MaskFill(key) => {
+                        self.mask_fills.remove(&key);
+                    }
+                }
                 total = total.saturating_sub(bytes);
             }
         }
+    }
+
+    /// Bytes held by independently cached mask Fill source textures.
+    pub fn mask_fill_cache_bytes(&self) -> u64 {
+        self.mask_fills.values().map(|fill| fill.bytes).sum()
     }
 
     /// Keep resident pages within the resident budget and the effect cache within
@@ -1545,7 +1607,7 @@ impl Compositor {
     }
 
     /// Per-frame resources of `plan`: the tile area of each pass's surfaces, its LUT and pattern.
-    fn frame_res(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, canvas: Rect, plan: &Plan<'_>) -> FrameRes {
+    fn frame_res(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, canvas: Rect, plan: &Plan<'_>, stats: &mut Stats) -> FrameRes {
         let grid = tile_grid(canvas);
         let area = |s: &Surface| s.tile_bounds().intersect(&grid);
         let areas = plan
@@ -1565,7 +1627,69 @@ impl Compositor {
             .collect();
         let luts = plan.passes.iter().map(|p| p.lut.as_ref().map(|rows| lut_texture(device, queue, rows))).collect();
         let patterns = plan.passes.iter().map(|p| p.pattern.map(|pat| self.pattern_view(device, queue, pat))).collect();
-        FrameRes { areas, luts, patterns }
+        let mask_fills = plan.passes.iter().map(|p| p.mask_fill.as_ref().map(|fill| self.mask_fill_view(device, queue, fill, stats))).collect();
+        FrameRes { areas, luts, patterns, mask_fills }
+    }
+
+    fn mask_fill_view(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, fill: &plan::MaskFillUse<'_>, stats: &mut Stats) -> wgpu::TextureView {
+        let surface = fill.surface;
+        let fingerprint = surface.tiles().fold((u64::from(fill.size[0]) << 32) | u64::from(fill.size[1]), |acc, (coord, tile)| {
+            acc.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ (Arc::as_ptr(tile) as usize as u64) ^ ((coord.tx as u64) << 20) ^ coord.ty as u64
+        });
+        let default_bits: Vec<u32> = surface.default_pixel().iter().map(|v| v.to_bits()).collect();
+        let key = (self.pattern_doc, fill.layer, fill.index);
+        let frame = self.frame;
+        if let Some(cached) = self.mask_fills.get_mut(&key)
+            && cached.fingerprint == fingerprint
+            && cached.format == surface.format()
+            && cached.default_bits == default_bits
+        {
+            cached.last_used = frame;
+            return cached.texture.view.clone();
+        }
+
+        let width = fill.size[0].max(1);
+        let height = fill.size[1].max(1);
+        let row_width = width.div_ceil(64).saturating_mul(64);
+        let texture = Tex::new(
+            device,
+            "pc_mask_fill_source",
+            row_width,
+            height,
+            wgpu::TextureFormat::R32Float,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        );
+        // Bound temporary decoded pixels and upload staging to a short strip. A 4K/8K map
+        // must not coexist as full-size source, Vec<f32>, Vec<u8>, and GPU upload copies.
+        let channels = surface.channels().max(1);
+        for y in (0..height).step_by(64) {
+            let rows = (height - y).min(64);
+            let pixels = surface.read_region(Rect::new(0, y as i32, width as i32, (y + rows) as i32));
+            let mut data = vec![0_u8; row_width as usize * rows as usize * 4];
+            for (source, destination) in pixels.chunks_exact(width as usize * channels).zip(data.chunks_exact_mut(row_width as usize * 4)) {
+                for (pixel, bytes) in source.chunks_exact(channels).zip(destination.as_chunks_mut::<4>().0) {
+                    *bytes = pixel.first().copied().unwrap_or(0.0).to_le_bytes();
+                }
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_width * 4), rows_per_image: Some(rows) },
+                wgpu::Extent3d { width: row_width, height: rows, depth_or_array_layers: 1 },
+            );
+        }
+        let bytes = u64::from(row_width) * u64::from(height) * 4;
+        stats.mask_fill_uploads = stats.mask_fill_uploads.saturating_add(1);
+        stats.mask_fill_bytes_uploaded = stats.mask_fill_bytes_uploaded.saturating_add(bytes);
+        let view = texture.view.clone();
+        let pin = surface.tiles().map(|(_, tile)| Arc::downgrade(tile)).collect();
+        self.mask_fills.insert(key, CachedMaskFill { fingerprint, _pin: pin, format: surface.format(), default_bits, texture, last_used: frame, bytes });
+        view
     }
 
     /// Bring the pages of `cell` that `plan` samples up to date and resolve its effect maps.
@@ -1729,7 +1853,7 @@ impl Compositor {
             });
             let lv = fr.luts.get(i).and_then(Option::as_ref).map_or(dummy, |(_, v)| v);
             let map = bound.maps[i].as_ref().map_or(dummy, |(v, _)| v);
-            let pat = fr.patterns.get(i).and_then(Option::as_ref).unwrap_or(dummy);
+            let pat = fr.mask_fills.get(i).and_then(Option::as_ref).or_else(|| fr.patterns.get(i).and_then(Option::as_ref)).unwrap_or(dummy);
             let run = runs.get(i).copied().unwrap_or(1);
             if run > 1 {
                 // The extra layers' pixels in tex_b, tex_c and map_tex (`batch_layer`).
@@ -3394,5 +3518,14 @@ mod tests {
     #[test]
     fn grid_rounds_out() {
         assert_eq!(tile_grid(Rect::new(0, 0, 300, 256)), Rect::new(0, 0, 512, 256));
+    }
+
+    #[test]
+    fn mask_fill_source_memory_is_bounded_before_upload() {
+        assert_eq!(mask_fill_source_bytes([4096, 4096], 16384).unwrap(), 64 << 20);
+        assert_eq!(mask_fill_source_bytes([8192, 8192], 16384).unwrap(), 256 << 20);
+        for size in [[0, 4], [64, 0], [16384, 16384], [u32::MAX, 1], [4097, 4]] {
+            assert!(mask_fill_source_bytes(size, 4096).is_err(), "{size:?}");
+        }
     }
 }

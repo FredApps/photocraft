@@ -183,6 +183,8 @@ struct Mesh {
     geometry: Arc<Geometry>,
     vertices: wgpu::Buffer,
     batches: Vec<Batch>,
+    wire_vertices: wgpu::Buffer,
+    wire_batches: Vec<Batch>,
     selection: wgpu::Buffer,
     group: wgpu::BindGroup,
     selected: BTreeSet<usize>,
@@ -209,6 +211,7 @@ pub(crate) struct Renderer {
     environment: GpuEnvironment,
     surfaces: Vec<GpuSurface>,
     background_pipelines: Vec<wgpu::RenderPipeline>,
+    wireframe_pipelines: Vec<wgpu::RenderPipeline>,
     camera_layout: wgpu::BindGroupLayout,
     material_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -225,7 +228,10 @@ pub(crate) struct Renderer {
     target: Option<Target>,
     spare_target: Option<Target>,
     texture_id: Option<egui::TextureId>,
-    last: Option<(u64, Camera, [u32; 2], bool, u64)>,
+    last: Option<(u64, Camera, [u32; 2], bool, u64, bool, [u8; 4], u32)>,
+    wireframe_enabled: bool,
+    wireframe_color: [u8; 4],
+    wireframe_opacity: f32,
     map_generation: u64,
     last_pbr_active: bool,
     regions: std::collections::BTreeMap<(usize, bool), crate::uv_lighting::RegionHint>,
@@ -393,6 +399,12 @@ impl Renderer {
     pub fn frame_info(&self) -> Option<([u32; 2], u32)> {
         self.target.as_ref().map(|t| (t.size, t.samples))
     }
+    pub fn set_wireframe(&mut self, enabled: bool, color: [u8; 4], opacity: f32) {
+        let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 0.75 };
+        self.wireframe_enabled = enabled;
+        self.wireframe_color = color;
+        self.wireframe_opacity = opacity;
+    }
     pub fn diagnostics(&self, channel: photocraft_uv::preview::Channel) -> serde_json::Value {
         let frame = self.frame_info();
         let maps: Vec<_> = self
@@ -431,7 +443,7 @@ impl Renderer {
             "renderTargetSize": frame.map(|(size, _)| size),
             "samples": frame.map(|(_, samples)| samples),
             "pbrEnabled": self.lighting.pbr,
-            "pbrActive": self.last_pbr_active && self.last.as_ref().is_some_and(|(_, camera, _, _, _)| camera.channel == channel),
+            "pbrActive": self.last_pbr_active && self.last.as_ref().is_some_and(|(_, camera, _, _, _, _, _, _)| camera.channel == channel),
             "channel": channel.label(),
             "mapCompositorActive": self.compositor.is_some() && self.health.is_ok(),
             "mapCompositorError": self.compositor_error,
@@ -654,6 +666,46 @@ impl Renderer {
                 })
             })
             .collect();
+        let wireframe_pipelines = [1, aa_samples]
+            .into_iter()
+            .map(|count| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("uv depth-tested wireframe"),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_wireframe"),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: 24,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3],
+                        })],
+                        compilation_options: Default::default(),
+                    },
+                    primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::LineList, ..Default::default() },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: DEPTH,
+                        depth_write_enabled: Some(false),
+                        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: wgpu::MultisampleState { count, ..Default::default() },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_wireframe"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: FORMAT,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            })
+            .collect();
         let mut pipelines = Vec::new();
         for samples in [1, aa_samples] {
             for cull in [None, Some(wgpu::Face::Back), Some(wgpu::Face::Front)] {
@@ -755,6 +807,7 @@ impl Renderer {
             environment,
             surfaces: Vec::new(),
             background_pipelines,
+            wireframe_pipelines,
             camera_layout,
             material_layout,
             sampler,
@@ -772,6 +825,9 @@ impl Renderer {
             spare_target: None,
             texture_id: None,
             last: None,
+            wireframe_enabled: false,
+            wireframe_color: [240, 240, 240, 255],
+            wireframe_opacity: 0.75,
             map_generation: 0,
             last_pbr_active: false,
             regions: Default::default(),
@@ -785,15 +841,21 @@ impl Renderer {
         }
         let count = geometry.triangles.len().checked_mul(3).ok_or("GPU mesh too large")?;
         let len = count.checked_mul(STRIDE as usize).ok_or("GPU mesh too large")?;
-        if len as u64 > self.rs.device.limits().max_buffer_size {
+        let wire_count = geometry.triangles.len().checked_mul(6).ok_or("GPU wireframe too large")?;
+        let wire_len = wire_count.checked_mul(24).ok_or("GPU wireframe too large")?;
+        if len as u64 > self.rs.device.limits().max_buffer_size || wire_len as u64 > self.rs.device.limits().max_buffer_size {
             return Err("Model exceeds the GPU vertex buffer limit".into());
         }
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(len).map_err(|_| "Not enough memory to upload model")?;
+        let mut wire_bytes = Vec::new();
+        wire_bytes.try_reserve_exact(wire_len).map_err(|_| "Not enough memory to upload wireframe")?;
         let mut order: Vec<_> = (0..geometry.triangles.len()).collect();
         order.sort_unstable_by_key(|id| geometry.triangles.get(*id).map_or(usize::MAX, |t| t.material));
         let mut batches: Vec<Batch> = Vec::new();
+        let mut wire_batches: Vec<Batch> = Vec::new();
         let mut at = 0u32;
+        let mut wire_at = 0u32;
         for id in order {
             let Some(t) = geometry.triangles.get(id) else { continue };
             if let Some(batch) = batches.last_mut().filter(|b| b.material == t.material) {
@@ -801,12 +863,32 @@ impl Renderer {
             } else {
                 batches.push(Batch { material: t.material, vertices: at..at + 3 });
             }
+            if let Some(batch) = wire_batches.last_mut().filter(|b| b.material == t.material) {
+                batch.vertices.end += 6;
+            } else {
+                wire_batches.push(Batch { material: t.material, vertices: wire_at..wire_at + 6 });
+            }
             at += 3;
+            wire_at += 6;
             for corner in 0..3 {
                 for value in t.positions[corner].into_iter().chain(t.normals[corner]).chain(t.face).chain(t.tangent).chain(t.bitangent).chain(t.uv[corner]) {
                     bytes.extend_from_slice(&value.to_le_bytes());
                 }
-                bytes.extend_from_slice(&t.shell.to_le_bytes());
+                // The selection buffer is indexed by face. The CPU expands selected UV
+                // shells into their constituent triangles before each draw, so individual
+                // polygon selection can use this same depth-tested shader path.
+                let triangle = u32::try_from(id).map_err(|_| "UV face count exceeds GPU selection range")?;
+                bytes.extend_from_slice(&triangle.to_le_bytes());
+            }
+            for [a, b] in [[0, 1], [1, 2], [2, 0]] {
+                for vertex in [t.positions[a], t.positions[b]] {
+                    for value in vertex {
+                        wire_bytes.extend_from_slice(&value.to_le_bytes());
+                    }
+                    for value in t.face {
+                        wire_bytes.extend_from_slice(&value.to_le_bytes());
+                    }
+                }
             }
         }
         let device = &self.rs.device;
@@ -815,13 +897,18 @@ impl Renderer {
             contents: &bytes,
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let shells = geometry.triangles.iter().map(|t| u64::from(t.shell) + 1).max().unwrap_or(1);
-        if shells * 4 > device.limits().max_storage_buffer_binding_size {
+        let wire_vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("uv wireframe line vertices"),
+            contents: &wire_bytes,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let faces = u64::try_from(geometry.triangles.len()).map_err(|_| "UV face count exceeds GPU selection range")?.max(1);
+        if faces * 4 > device.limits().max_storage_buffer_binding_size {
             return Err("UV selection exceeds GPU storage limit".into());
         }
         let selection = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("uv shell selection"),
-            size: shells * 4,
+            label: Some("uv face selection"),
+            size: faces * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -833,7 +920,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 1, resource: selection.as_entire_binding() },
             ],
         });
-        self.mesh = Some(Mesh { geometry, vertices, batches, selection, group, selected: BTreeSet::new() });
+        self.mesh = Some(Mesh { geometry, vertices, batches, wire_vertices, wire_batches, selection, group, selected: BTreeSet::new() });
         self.materials.clear();
         self.last = None;
         Ok(true)
@@ -1204,7 +1291,16 @@ impl Renderer {
             && draw.camera.channel == photocraft_uv::preview::Channel::Material
             && draw.scene.materials.iter().enumerate().any(|(id, _)| !draw.masked.contains(&id));
         let samples = if draw.antialias { self.aa_samples } else { 1 };
-        let key = (draw.generation, draw.camera, draw.size, draw.antialias, self.map_generation);
+        let key = (
+            draw.generation,
+            draw.camera,
+            draw.size,
+            draw.antialias,
+            self.map_generation,
+            self.wireframe_enabled,
+            self.wireframe_color,
+            self.wireframe_opacity.to_bits(),
+        );
         if self.last == Some(key) && self.mesh.as_ref().is_some_and(|mesh| &mesh.selected == draw.selected) {
             self.last_pbr_active = pbr_active;
             return self.texture_id.ok_or_else(|| "GPU viewport texture unavailable".into());
@@ -1270,8 +1366,12 @@ impl Renderer {
         if &mesh.selected != draw.selected {
             let count = (mesh.selection.size() / 4) as usize;
             let mut data = vec![0u8; count * 4];
-            for shell in draw.selected {
-                if let Some(bytes) = data.get_mut(shell.saturating_mul(4)..shell.saturating_mul(4).saturating_add(4)) {
+            for (face_id, face) in mesh.geometry.triangles.iter().enumerate() {
+                let selected_shell = draw.selected.contains(&(face.shell as usize));
+                let selected_face = draw.selected.contains(&selected_face_key(face_id));
+                if (selected_shell || selected_face)
+                    && let Some(bytes) = data.get_mut(face_id.saturating_mul(4)..face_id.saturating_mul(4).saturating_add(4))
+                {
                     bytes.copy_from_slice(&1u32.to_le_bytes());
                 }
             }
@@ -1290,7 +1390,9 @@ impl Renderer {
             s.emissive,
             s.background_brightness,
         ]);
-        values.extend_from_slice(&[0.0; 8]);
+        let [r, g, b, a] = self.wireframe_color;
+        values.extend_from_slice(&[f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, (f32::from(a) / 255.0) * self.wireframe_opacity]);
+        values.extend_from_slice(&[f32::from(u8::from(draw.camera.cull_backfaces)), 0.0, 0.0, 0.0]);
         self.rs.queue.write_buffer(&self.camera, 0, &floats(&values));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("uv model") });
         #[cfg(test)]
@@ -1348,6 +1450,17 @@ impl Renderer {
                     pass.draw(batch.vertices.clone(), 0..1);
                 }
             }
+            if self.wireframe_enabled
+                && let Some(pipeline) = self.wireframe_pipelines.get(usize::from(samples > 1))
+            {
+                pass.set_pipeline(pipeline);
+                pass.set_vertex_buffer(0, mesh.wire_vertices.slice(..));
+                for batch in &mesh.wire_batches {
+                    if !draw.hidden.contains(&batch.material) {
+                        pass.draw(batch.vertices.clone(), 0..1);
+                    }
+                }
+            }
         }
         #[cfg(test)]
         if let Some(timer) = &mut self.timer {
@@ -1362,6 +1475,12 @@ impl Renderer {
         self.last_pbr_active = pbr_active;
         self.texture_id.ok_or_else(|| "Missing GPU texture id".into())
     }
+}
+
+/// Encodes a selected face in the existing selection set without colliding with
+/// normal UV shell IDs (which are bounded by the imported mesh size).
+pub(crate) fn selected_face_key(face_id: usize) -> usize {
+    usize::MAX - face_id
 }
 /// Smallest texel-aligned rectangle containing changed half-RGBA texels.
 fn changed_region(old: &[u8], new: &[u8], size: [u32; 2], stride: usize) -> Option<[u32; 4]> {

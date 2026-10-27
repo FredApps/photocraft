@@ -197,6 +197,9 @@ pub struct Pass<'a> {
     pub fill: f32,
     /// Layer pixels (raster / text / shape / smart cache / fill cache).
     pub tex: Option<TexUse<'a>>,
+    /// Full source texture for an editable mask Fill. It is cached independently of canvas pages
+    /// because transformed UVs can sample any source texel from every destination chunk.
+    pub mask_fill: Option<MaskFillUse<'a>>,
     /// Colour outside `tex` (the surface's default pixel), the solid fill colour, or the effect
     /// colour.
     pub color: [f32; 4],
@@ -245,6 +248,14 @@ pub struct MaskUse<'a> {
     pub default: f32,
 }
 
+#[derive(Clone, Debug)]
+pub struct MaskFillUse<'a> {
+    pub layer: LayerId,
+    pub index: u16,
+    pub surface: &'a Surface,
+    pub size: [u32; 2],
+}
+
 /// The coverage sampled by a layer-compositing pass.
 #[derive(Clone, Debug)]
 pub enum MaskSource<'a> {
@@ -265,6 +276,7 @@ impl<'a> Pass<'a> {
             opacity: 1.0,
             fill: 1.0,
             tex: None,
+            mask_fill: None,
             color: [0.0; 4],
             mask: None,
             adjust_kind: 0,
@@ -435,6 +447,13 @@ pub const F_TEXT_GAMMA: u32 = 8192;
 pub const F_LAYER_SHAPE: u32 = 1_048_576;
 /// A layer mask samples a planner slot containing the flattened editable Paint stack.
 pub const F_MASK_SLOT: u32 = 2_097_152;
+/// Editable mask Fill with a spatial image source and transform in the pass parameters.
+pub const F_MASK_FILL: u32 = 4_194_304;
+pub const F_MASK_FILL_REPEAT_U: u32 = 8_388_608;
+pub const F_MASK_FILL_REPEAT_V: u32 = 16_777_216;
+pub const F_MASK_FILL_MIRROR_U: u32 = 33_554_432;
+pub const F_MASK_FILL_MIRROR_V: u32 = 67_108_864;
+pub const F_MASK_FILL_LEGACY: u32 = 134_217_728;
 
 /// A layer's Blend If ranges for `F_BLEND_IF`: Gray, then the colour channels, each as
 /// [this layer, underlying layer]; every range as two floats, `black low × 256 + black high` and
@@ -570,23 +589,6 @@ impl<'a> Planner<'a> {
             if layer.vector_mask.is_some() || m.feather > 0.0 {
                 return Err(Unsupported("Paint-layer mask combined with vector or feathered mask (composited on the CPU)".into()));
             }
-            // Fill images, selection fills, and bounded fills are already flattened in the mask
-            // surface by the CPU oracle. Sample that cached result so the GPU path honours the
-            // source image, repeat/mirror modes, and rectangle bounds exactly.
-            let has_spatial_fill = stack.layers.iter().any(|paint| {
-                matches!(
-                    &paint.kind,
-                    photocraft_doc::mask_paint::EffectKind::Fill { .. }
-                        if paint.fill_map.is_some()
-                            || paint.fill_bounds.is_some_and(|[x0, y0, x1, y1]| {
-                                x0 != self.cx.canvas.x0 || y0 != self.cx.canvas.y0 || x1 != self.cx.canvas.x1 || y1 != self.cx.canvas.y1
-                            })
-                )
-            });
-            if has_spatial_fill {
-                let default = m.surface.default_pixel().first().copied().unwrap_or(1.0);
-                return Ok(Some(MaskUse { layer: layer.id, source: MaskSource::Surface(SurfaceRef::Doc(&m.surface)), density: m.density, default }));
-            }
             let mut base = Pass::new(Kernel::MaskStack, 0);
             base.adjust_kind = 0;
             base.tex = Some(TexUse { layer: layer.id, role: Role::Mask, surface: SurfaceRef::Doc(&stack.base) });
@@ -617,11 +619,45 @@ impl<'a> Planner<'a> {
                         let alpha = source.get(3).copied().unwrap_or(0.0) * paint.opacity;
                         default = source.first().copied().unwrap_or(0.0) * alpha + default * (1.0 - alpha);
                     }
-                    photocraft_doc::mask_paint::EffectKind::Fill { value, .. } => {
+                    photocraft_doc::mask_paint::EffectKind::Fill { value, rotation, repeat_u, repeat_v, mirror_u, mirror_v } => {
                         if !value.is_finite() || !(0.0..=1.0).contains(value) {
                             return Err(Unsupported("Mask Fill contains an invalid value".into()));
                         }
-                        p.adjust_kind = 3;
+                        if !rotation.is_finite() {
+                            return Err(Unsupported("Mask Fill contains an invalid rotation".into()));
+                        }
+                        let bounds = paint.fill_bounds.unwrap_or([self.cx.canvas.x0, self.cx.canvas.y0, self.cx.canvas.x1, self.cx.canvas.y1]);
+                        if bounds[2] <= bounds[0] || bounds[3] <= bounds[1] {
+                            return Err(Unsupported("Mask Fill has empty bounds".into()));
+                        }
+                        p.adjust_kind = 5;
+                        p.flags |= F_MASK_FILL;
+                        if paint.fill_bounds.is_none() {
+                            p.flags |= F_MASK_FILL_LEGACY;
+                        }
+                        if let Some(map) = paint.fill_map.as_ref() {
+                            if *repeat_u {
+                                p.flags |= F_MASK_FILL_REPEAT_U;
+                            }
+                            if *repeat_v {
+                                p.flags |= F_MASK_FILL_REPEAT_V;
+                            }
+                            if *mirror_u {
+                                p.flags |= F_MASK_FILL_MIRROR_U;
+                            }
+                            if *mirror_v {
+                                p.flags |= F_MASK_FILL_MIRROR_V;
+                            }
+                            p.params[2] = [paint.fill_map_size[0] as f32, paint.fill_map_size[1] as f32, 0.0, 0.0];
+                            if paint.fill_map_size[0] == 0 || paint.fill_map_size[1] == 0 {
+                                return Err(Unsupported("Mask Fill image has an empty size".into()));
+                            }
+                            p.mask_fill = Some(MaskFillUse { layer: layer.id, index, surface: map, size: paint.fill_map_size });
+                        }
+                        let angle = rotation.rem_euclid(360.0).to_radians();
+                        let (sin, cos) = angle.sin_cos();
+                        p.params[0] = [bounds[0] as f32, bounds[1] as f32, bounds[2] as f32, bounds[3] as f32];
+                        p.params[1] = [sin, cos, 0.0, 0.0];
                         p.color[0] = *value;
                         default = *value * paint.opacity + default * (1.0 - paint.opacity);
                     }
@@ -2032,6 +2068,49 @@ mod tests {
     fn stops_closer_than_one_lut_step_stay_on_the_cpu() {
         assert!(check_gradient_stops(&[(0.4999_f32, ()), (0.5, ())]).is_err());
         assert!(check_gradient_stops(&[(0.0_f32, ()), (1.0, ())]).is_ok());
+    }
+
+    #[test]
+    fn image_mask_fill_is_planned_as_a_transformed_gpu_pass() {
+        use photocraft_doc::{
+            LayerMask,
+            mask_paint::{EffectKind, Paint, Stack},
+        };
+        use photocraft_raster::Surface;
+
+        let mut doc = Document::new("mask fill", Size::new(8, 8), ColorMode::Rgb, SampleType::U8);
+        let mut layer = Layer::new("masked", LayerContent::Fill(Fill::Solid(Color::WHITE)));
+        let map = Surface::with_default(photocraft_color::PixelFormat::GRAY8, &[0.0]);
+        let mut mask = LayerMask::hide_all();
+        mask.paint = Some(Stack {
+            base: mask.surface.clone(),
+            layers: vec![Paint {
+                name: "Fill".into(),
+                visible: true,
+                opacity: 0.75,
+                surface: Surface::new(photocraft_color::PixelFormat::RGBA8),
+                fill_map: Some(map),
+                fill_map_size: [2, 3],
+                fill_bounds: Some([1, 2, 7, 8]),
+                kind: EffectKind::Fill { value: 0.4, rotation: 37.0, repeat_u: true, repeat_v: false, mirror_u: true, mirror_v: false },
+            }],
+            active: 0,
+        });
+        layer.mask = Some(mask);
+        doc.layers.push(layer);
+
+        let plan = plan(&doc).expect("transformed mask image Fill is GPU-supported");
+        let pass = plan.passes.iter().find(|p| p.kernel == Kernel::MaskStack && p.adjust_kind == 5).unwrap_or_else(|| {
+            panic!("spatial Fill pass missing: {:?}", plan.passes.iter().map(|p| (p.kernel, p.adjust_kind, p.mask.is_some())).collect::<Vec<_>>())
+        });
+        assert_eq!(pass.flags & F_MASK_FILL, F_MASK_FILL);
+        assert_eq!(pass.flags & F_MASK_FILL_REPEAT_U, F_MASK_FILL_REPEAT_U);
+        assert_eq!(pass.flags & F_MASK_FILL_REPEAT_V, 0);
+        assert_eq!(pass.flags & F_MASK_FILL_MIRROR_U, F_MASK_FILL_MIRROR_U);
+        assert_eq!(pass.flags & F_MASK_FILL_MIRROR_V, 0);
+        assert_eq!(pass.params[0], [1.0, 2.0, 7.0, 8.0]);
+        assert_eq!(pass.params[2], [2.0, 3.0, 0.0, 0.0]);
+        assert!(pass.mask_fill.as_ref().is_some_and(|fill| fill.index == 0 && fill.size == [2, 3]));
     }
 
     #[test]
