@@ -715,6 +715,10 @@ pub(crate) fn after_open(
         notices::import_warnings(app, &opened, &crate::camera_raw_ui::without_develop_note(warnings));
     } else {
         notices::import_warnings(app, &opened, warnings);
+        // A raw that opened without the dialog is developed by its sidecar / Camera Raw Defaults.
+        if let Some(index) = app.session.active_index() {
+            crate::camera_raw_ui::opened_without_dialog(app, index, name, path, warnings);
+        }
     }
     // Script events bound to "Open Document".
     photocraft_engine::automate_cmds::document_opened(&mut app.session);
@@ -984,5 +988,4 @@ pub fn bytes(b: &[u8]) -> OpenSource {
 }
 
 #[cfg(test)]
-#[path = "jobs_ui_tests.rs"]
 mod tests;
