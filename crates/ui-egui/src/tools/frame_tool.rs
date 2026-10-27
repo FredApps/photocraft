@@ -182,9 +182,9 @@ fn control_hit(f: &Frame, p: [f64; 2], zoom: f64) -> Option<EditMode> {
 fn on_border(f: &Frame, p: [f64; 2], zoom: f64) -> bool {
     let path = f.outline();
     photocraft_vector::flatten::flatten_path(&path, 0.5 / zoom.max(0.01)).iter().any(|line| {
-        line.pts.windows(2).any(|s| {
-            let Some(&(ax, ay)) = s.first() else { return false };
-            let Some(&(bx, by)) = s.get(1) else { return false };
+        let segments = line.pts.windows(2).filter_map(|s| Some((*s.first()?, *s.get(1)?)));
+        let closing = line.closed.then(|| Some((*line.pts.last()?, *line.pts.first()?))).flatten();
+        segments.chain(closing).any(|((ax, ay), (bx, by))| {
             let (dx, dy) = (bx - ax, by - ay);
             let n = dx * dx + dy * dy;
             let t = if n > 0.0 { ((p[0] - ax) * dx + (p[1] - ay) * dy) / n } else { 0.0 }.clamp(0.0, 1.0);
@@ -374,7 +374,22 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
             let active = selected(app).map(|l| (l.id, l.frame.clone(), target(app, l)));
             let selected_control =
                 active.as_ref().and_then(|(id, f, t)| (*t == Target::Frame).then(|| Some((*id, control_hit(f.as_ref()?, p, zoom)?))).flatten());
-            let id = selected_control.map(|(id, _)| id).or_else(|| frame_at(app, p));
+            let content_control = active.as_ref().is_some_and(|(id, _, t)| {
+                if *t != Target::Content {
+                    return false;
+                }
+                let Some(st) = app.session.active() else { return false };
+                let Some(child) = st.doc.layer(*id).and_then(|l| l.children()).and_then(|c| c.first()) else { return false };
+                let b = photocraft_engine::transform_cmds::transform_frame(&st.doc, child);
+                let (x0, y0, x1, y1) = (f64::from(b.x0), f64::from(b.y0), f64::from(b.x1), f64::from(b.y1));
+                [(x0, y0), ((x0 + x1) / 2., y0), (x1, y0), (x1, (y0 + y1) / 2.), (x1, y1), ((x0 + x1) / 2., y1), (x0, y1), (x0, (y0 + y1) / 2.)]
+                    .iter()
+                    .any(|(x, y)| (x - p[0]).hypot(y - p[1]) * zoom <= HANDLE_PX)
+            });
+            let id = selected_control
+                .map(|(id, _)| id)
+                .or_else(|| content_control.then(|| active.as_ref().map(|(id, _, _)| *id)).flatten())
+                .or_else(|| frame_at(app, p));
             if let Some(id) = id {
                 let Some(st) = app.session.active() else { return true };
                 let Some(l) = st.doc.layer(id) else { return true };
@@ -385,7 +400,9 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
                     app.ui.status_error = true;
                     return true;
                 }
-                let t = if selected_control.is_some() || on_border(&f, p, zoom) || l.children().is_none_or(|c| c.is_empty()) {
+                let t = if content_control {
+                    Target::Content
+                } else if selected_control.is_some() || on_border(&f, p, zoom) || l.children().is_none_or(|c| c.is_empty()) {
                     Target::Frame
                 } else if active.as_ref().is_some_and(|(prev, _, t)| *prev == id && *t == Target::Content) {
                     Target::Content

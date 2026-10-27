@@ -514,3 +514,58 @@ fn double_clicking_frame_content_opens_only_smart_objects() {
     double_click_content(&mut h, smart);
     assert_eq!(h.state().session.documents().len(), 2, "the Smart Object's contents open");
 }
+
+#[test]
+fn filled_frame_closing_border_selects_frame() {
+    let mut app = app();
+    app.session
+        .edit("Photo", |doc, active| {
+            let mut l = Layer::raster("Photo", doc.pixel_format());
+            l.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 200, 200), &[1., 0., 0., 1.]);
+            let id = l.id;
+            doc.layers.push(l);
+            *active = Some(id);
+            Ok(id)
+        })
+        .unwrap();
+    drag(&mut app, [20., 30.], [120., 110.]);
+    double_click(&mut app, [65., 65.]);
+    pointer(&mut app, ToolEvent::Down { x: 20., y: 50., pressure: 1. }, egui::Modifiers::NONE);
+    assert_eq!(app.ui.frame_tool.target, Target::Frame);
+    assert!(matches!(app.ui.frame_tool.drag, Some(FrameDrag::Edit { .. })));
+}
+
+#[test]
+fn overhanging_content_handles_start_transform_and_cancel() {
+    let mut app = app();
+    app.session
+        .edit("Photo", |doc, active| {
+            let mut l = Layer::raster("Photo", doc.pixel_format());
+            l.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 200, 200), &[1., 0., 0., 1.]);
+            let id = l.id;
+            doc.layers.push(l);
+            *active = Some(id);
+            Ok(id)
+        })
+        .unwrap();
+    drag(&mut app, [20., 30.], [120., 110.]);
+    double_click(&mut app, [65., 65.]);
+    let ctx = egui::Context::default();
+    crate::PhotocraftApp::setup_context(&ctx, Default::default());
+    ctx.begin_pass(Default::default());
+    app.frame_tool_ctx = Some(ctx.clone());
+    let st = app.session.active().unwrap();
+    let frame = selected(&app).unwrap();
+    let child = frame.children().unwrap().first().unwrap();
+    let b = photocraft_engine::transform_cmds::transform_frame(&st.doc, child);
+    let entries = st.history.entries();
+    for (x, y) in [(f64::from(b.x0), f64::from(b.y0)), (f64::from(b.x0), f64::from(b.y0 + b.y1) / 2.)] {
+        tool_event(&mut app, ToolEvent::Down { x, y, pressure: 1. }, egui::Modifiers::NONE);
+        assert!(app.ui.transform.is_some());
+        assert!(app.ui.frame_tool.auto_transform);
+        crate::transform_tool::cancel(&mut app);
+        assert!(app.ui.transform.is_none());
+    }
+    assert_eq!(app.session.active().unwrap().history.entries(), entries);
+    ctx.end_pass().textures_delta.clear();
+}
