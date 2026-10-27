@@ -28,6 +28,7 @@ The review is available at [PR #8805](https://github.com/storytold/photocraft/pu
 | 16 | Several UV workspace labels were hard-coded and missing Russian localization. | Route the labels through translation keys and add Russian catalog entries. |
 | 17 | Transform rejection included unlinked descendant masks that a group pixel transform leaves fixed. | Reject editable mask-stack transforms only when the chosen target actually moves those masks; cover unlinked group success and linked group atomic rejection. |
 | 18 | A synchronous CPU fallback materialized every editable mask stack even for a small damage rect. | Materialize only damage plus each pixel mask's feather support for rect rendering; retain complete snapshots for full and deferred redraws. |
+| 19 | Transforming a linked group mask also transforms its linked descendant masks, but the mask-target preflight checked only the group's own Paint stack. | Before starting the warp, reject when the selected group mask is linked and any linked descendant mask has an editable Paint stack; keep unlinked group-mask transforms allowed. |
 
 ## Focused validation
 
@@ -49,6 +50,14 @@ The focused checks passed:
 These focused checks do not replace the broader validation documented in
 [`uv-workbench-validation.md`](uv-workbench-validation.md). The six previously
 recorded pixel assertions remain deferred.
+
+The #19 linked group-mask regression passed:
+
+- `cargo test -p photocraft-engine --features uv-workbench --lib targeted_group_mask_rejects_linked_descendant_paint_masks_before_transform` — 1 passed; covers a linked group mask with linked descendant Paint (specific early Free Transform error and atomic document), an unlinked group mask with linked descendant Paint (allowed), and a linked group mask with an unlinked descendant Paint (allowed).
+- `cargo clippy -p photocraft-engine --all-targets --features photocraft-engine/uv-workbench -- -D warnings` — passed.
+- `cargo test -p photocraft-engine --test panic_hunt -- --ignored` — adversarial command panic hunt passed (1 test, 14.78 s).
+- `cargo xtask layers` — passed, 32 crates with no layering violations.
+- `cargo xtask wasm` — passed for 25 crates and `photocraft-codecs --features heif`.
 
 ## 2026-10-27 latest review follow-up
 

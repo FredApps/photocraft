@@ -449,6 +449,42 @@ fn group_transform_allows_unlinked_descendant_paint_masks_and_rejects_linked_one
     }
 }
 
+#[test]
+fn targeted_group_mask_rejects_linked_descendant_paint_masks_before_transform() {
+    for (group_linked, child_linked) in [(true, true), (false, true), (true, false)] {
+        let mut s = masked(&[Rect::new(10, 10, 15, 15)], child_linked);
+        let child = s.active().unwrap().active_layer.unwrap();
+        s.execute("layer.groupLayers", json!({})).unwrap();
+        let group = s.active().unwrap().active_layer.unwrap();
+        s.execute("layer.layerMask.revealAll", json!({})).unwrap();
+        s.edit("Set group mask link and add editable descendant mask stack", |doc, _| {
+            doc.layer_mut(group).unwrap().mask.as_mut().unwrap().linked = group_linked;
+            let mask = doc.layer_mut(child).unwrap().mask.as_mut().unwrap();
+            mask.paint = Some(photocraft_doc::mask_paint::Stack { base: mask.surface.clone(), layers: Vec::new(), active: 0 });
+            Ok(())
+        })
+        .unwrap();
+
+        let before = s.active().unwrap().doc.clone();
+        let result = s.execute("edit.transform", json!({"layer":group.0,"target":"mask","dx":4,"dy":0}));
+        if group_linked && child_linked {
+            let err = result.expect_err("linked group mask transform also moves linked descendant masks");
+            assert!(
+                err.to_string().contains("Free Transform cannot move the flattened cache of an editable mask Paint stack"),
+                "must reject with the specific Free Transform error: {err}"
+            );
+            assert_eq!(s.active().unwrap().doc, before, "linked-stack rejection is atomic");
+        } else {
+            assert!(result.is_ok(), "a group mask transform leaves a fixed unlinked child mask alone: {result:?}");
+            assert_eq!(
+                s.active().unwrap().doc.layer(child).unwrap().mask,
+                before.layer(child).unwrap().mask,
+                "the descendant mask remains unchanged when the group's transform leaves it fixed"
+            );
+        }
+    }
+}
+
 fn mask_at(s: &Session, x: i32, y: i32) -> f32 {
     let st = s.active().unwrap();
     st.doc.layer(st.active_layer.unwrap()).unwrap().mask.as_ref().unwrap().surface.sample_channel(x, y, 0)
