@@ -190,7 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     };
     assert_transient_invariants(&h)?;
-    let output = std::env::args().nth(1).unwrap_or_else(|| "D:/PhotoCraft-UV-build/Screenshots/fill-resize-live.png".into());
+    let output = std::env::args().nth(1).unwrap_or_else(|| "fill-resize-live.png".into());
     let output_path = std::path::PathBuf::from(&output);
     let raw_path = output_path.with_file_name(format!("{}-raw.png", output_path.file_stem().and_then(|name| name.to_str()).unwrap_or("fill-resize-live")));
     h.render()?.save(&raw_path)?;

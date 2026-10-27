@@ -228,7 +228,7 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
             ui.spacing_mut().item_spacing.x = 3.0;
             icon_menu(ui, "panels-top-left", tl!("3D / 2D views"), |ui| {
                 for (label, mode) in
-                    [("3D / 2D                       F1", 0), (tl!("3D only                      F2"), 1), (tl!("2D only                      F3"), 2)]
+                    [(tl!("3D / 2D                       F1"), 0), (tl!("3D only                      F2"), 1), (tl!("2D only                      F3"), 2)]
                 {
                     let s = &app.ui.uv_workbench;
                     if ui.selectable_label(if mode == 0 { s.split_view } else { !s.split_view && s.view_3d == (mode == 1) }, label).clicked() {
@@ -293,9 +293,9 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
                     ));
                     ui.checkbox(&mut s.cull_backfaces, tl!("Cull backfaces"));
                     ui.checkbox(&mut s.flip_faces, tl!("Flip faces"));
-                    ui.checkbox(&mut s.lighting.pbr, "PBR · Roughness / Metallic");
+                    ui.checkbox(&mut s.lighting.pbr, tl!("PBR · Roughness / Metallic"));
                     ui.add(egui::Slider::new(&mut s.normal_strength, 0.0..=4.0).text(tl!("Normal strength")));
-                    ui.checkbox(&mut s.flip_normal_y, "Normal: DirectX Y−");
+                    ui.checkbox(&mut s.flip_normal_y, tl!("Normal: DirectX Y−"));
                     if let Some(gpu) = &app.uv_cache.gpu
                         && let Some((size, samples)) = gpu.frame_info()
                     {
@@ -351,7 +351,7 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
                 .width(170.0)
                 .selected_text(s.channel.label())
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut s.channel, Channel::Material, "Material");
+                    ui.selectable_value(&mut s.channel, Channel::Material, tl!("Material"));
                     for kind in available.iter().copied() {
                         ui.selectable_value(&mut s.channel, kind, kind.label());
                     }
@@ -617,10 +617,9 @@ pub(crate) fn sync_workspace(app: &mut PhotocraftApp) -> Result<(), String> {
     // Commit a valid transient edit before changing banks. app.run handles stale revisions
     // without dropping the preview, and recognizes this exact command to avoid a second commit.
     if let Some(commit) = crate::uv_mask_paint_preview::pending(app) {
-        app.run("uv.maskPaint.modify", commit.params()).map_err(|error| {
+        app.run("uv.maskPaint.modify", commit.params()).inspect_err(|error| {
             app.ui.status = error.clone();
             app.ui.status_error = true;
-            error
         })?;
     }
     uv_ui::finish_paint(app);
@@ -638,10 +637,9 @@ pub(crate) fn sync_workspace(app: &mut PhotocraftApp) -> Result<(), String> {
     for (st, view) in app.session.documents().iter().zip(&app.ui.views) {
         app.uv_cache.workspace_views.insert(st.doc.id, view.clone());
     }
-    app.run("uv.workspace.activate", serde_json::json!({"active":active})).map_err(|error| {
+    app.run("uv.workspace.activate", serde_json::json!({"active":active})).inspect_err(|error| {
         app.ui.status = error.clone();
         app.ui.status_error = true;
-        error
     })?;
     app.sync_views();
     for (st, view) in app.session.documents().iter().zip(&mut app.ui.views) {

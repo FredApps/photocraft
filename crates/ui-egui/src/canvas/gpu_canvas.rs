@@ -746,17 +746,18 @@ impl GpuCanvas {
             }
             Err(e) => out.fallback = Some(e.0),
         }
-        // Paint-mask previews are GPU-first and intentionally leave `mask.surface` untouched.
-        // If a feature in the document makes the GPU plan unsupported, materialize the mask
-        // stacks for this CPU fallback without changing the live document or preview snapshot.
-        let cpu_doc = out.fallback.as_ref().map(|_| materialize_paint_masks(doc));
-        let doc = cpu_doc.as_ref().unwrap_or(doc);
         let px = region.width() as u64 * region.height() as u64;
         if defer && px >= DEFER_PX && self.prepare_texture(key, doc).is_some() {
             out.kind = REFRESH_DEFERRED;
             out.px = px;
             return out;
         }
+        // Paint-mask previews are GPU-first and intentionally leave `mask.surface` untouched.
+        // Materialize only for a synchronous CPU draw. Deferred jobs take one durable flattened
+        // snapshot in `textures::ensure_gpu` after this method returns.
+        let has_paint_masks = doc.walk().iter().any(|(_, _, layer)| layer.mask.as_ref().is_some_and(|mask| mask.paint.is_some()));
+        let cpu_doc = out.fallback.as_ref().filter(|_| has_paint_masks).map(|_| materialize_paint_masks(doc));
+        let doc = cpu_doc.as_ref().unwrap_or(doc);
         if let Some(r) = damage {
             if r.is_empty() {
                 out.kind = "rect";
@@ -969,13 +970,14 @@ impl GpuCanvas {
 /// The live/display document remains GPU-first and its canonical surface is not mutated.
 pub(crate) fn materialize_paint_masks(doc: &photocraft_doc::Document) -> photocraft_doc::Document {
     let mut materialized = doc.clone();
+    let canvas = materialized.bounds();
     let mask_ids: Vec<_> =
         materialized.walk().iter().filter_map(|(_, _, layer)| layer.mask.as_ref().filter(|mask| mask.paint.is_some()).map(|_| layer.id)).collect();
     for id in mask_ids {
         if let Some(mask) = materialized.layer_mut(id).and_then(|layer| layer.mask.as_mut())
             && mask.paint.is_some()
         {
-            photocraft_compose::mask_paint::refresh(mask, None);
+            photocraft_compose::mask_paint::refresh_in_canvas(mask, canvas);
         }
     }
     materialized

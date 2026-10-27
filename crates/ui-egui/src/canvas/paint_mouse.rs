@@ -122,7 +122,7 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
     let resizing = app.brush_resize.is_some_and(|r| r.secondary);
     let right_stopped = response.drag_stopped_by(PointerButton::Secondary) || (resizing && response.drag_stopped());
 
-    if physical_right && crate::brush_resize::is_right_gesture(crate::workspace_ui::sticky_mods(app, mods)) {
+    if physical_right && crate::brush_resize::is_right_gesture_in_space(app, crate::workspace_ui::sticky_mods(app, mods)) {
         app.alt_sampling = false;
     }
 
@@ -131,7 +131,7 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
     crate::brush_resize::release_stale(app, right_down || response.drag_stopped_by(PointerButton::Secondary) || response.drag_stopped());
     let resize_start = crate::brush_resize::applies(tool)
         && app.drag.is_none()
-        && crate::brush_resize::is_right_gesture(crate::workspace_ui::sticky_mods(app, mods))
+        && crate::brush_resize::is_right_gesture_in_space(app, crate::workspace_ui::sticky_mods(app, mods))
         && (right_started || (physical_right && response.dragged() && app.brush_resize.is_none()));
     let resizing = app.brush_resize.is_some_and(|r| r.secondary);
     app.brush_resize_armed = resize_start || (physical_right && resizing);
@@ -144,7 +144,7 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
     if right_click
         && !erase
         && !layer_menu
-        && !crate::brush_resize::is_right_gesture(mods)
+        && !crate::brush_resize::is_right_gesture_in_space(app, crate::workspace_ui::sticky_mods(app, mods))
         && right_click_picker(tool)
         && let Some(p) = response.interact_pointer_pos()
     {
@@ -167,7 +167,7 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
 /// the Brush Preset picker at screen point `at`, and nothing paints.
 pub fn pointer_secondary(app: &mut PhotocraftApp, ctx: &egui::Context, down: bool, mods: egui::Modifiers, at: [f32; 2]) -> bool {
     let tool = app.ui.tool;
-    if crate::brush_resize::applies(tool) && (crate::brush_resize::is_right_gesture(mods) || app.brush_resize.is_some_and(|r| r.secondary)) {
+    if crate::brush_resize::applies(tool) && (crate::brush_resize::is_right_gesture_in_space(app, mods) || app.brush_resize.is_some_and(|r| r.secondary)) {
         app.brush_resize_armed = down && app.drag.is_none();
         return true;
     }

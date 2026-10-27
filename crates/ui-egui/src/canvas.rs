@@ -729,7 +729,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     let resizing = crate::brush_resize::applies(app.ui.tool)
         && (app.brush_resize.is_some_and(|r| r.secondary)
             || ui.input(|i| {
-                crate::brush_resize::is_right_gesture(crate::workspace_ui::sticky_mods(app, i.modifiers))
+                crate::brush_resize::is_right_gesture_in_space(app, crate::workspace_ui::sticky_mods(app, i.modifiers))
                     && (i.pointer.secondary_down() || i.pointer.secondary_released())
             }));
     let temporary = temporary.filter(|t| !resizing || *t != crate::hold_keys::Temporary::Move);

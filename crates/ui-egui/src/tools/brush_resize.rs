@@ -53,9 +53,13 @@ pub fn is_gesture(mods: egui::Modifiers) -> bool {
 /// Alt (Option) with the right button: Photoshop's Windows gesture (#297). The left button with
 /// Alt alone stays the painting tools' eyedropper.
 pub fn is_right_gesture(mods: egui::Modifiers) -> bool {
-    // A native macOS Control-click is normalized to a right-click with ctrl but no command.
-    // Preserve its context menu; Windows/Linux Ctrl also sets egui's command modifier.
-    mods.alt || (cfg!(feature = "uv-workbench") && mods.ctrl && mods.command && !mods.mac_cmd)
+    mods.alt
+}
+
+/// The UV viewport normalizes a native macOS Control-click to a right-click. Keep that gesture
+/// inside the UV workspace so it cannot change ordinary 2D canvas input.
+pub fn is_right_gesture_in_space(app: &PhotocraftApp, mods: egui::Modifiers) -> bool {
+    is_right_gesture(mods) || (cfg!(feature = "uv-workbench") && app.ui.workspace == "3D" && mods.ctrl && mods.command && !mods.mac_cmd)
 }
 
 /// The diameter and hardness a drag from `start` by (`dx`, `dy`) document pixels gives at `zoom`.

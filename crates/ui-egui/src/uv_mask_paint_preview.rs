@@ -603,7 +603,7 @@ pub(crate) fn cpu_document(app: &mut PhotocraftApp, doc: Arc<Document>, key: u64
         && p.rotation.is_none()
         && let Some(mask) = cpu.layer_mut(p.layer).and_then(|layer| layer.mask.as_mut())
     {
-        photocraft_compose::mask_paint::refresh(mask, None);
+        photocraft_compose::mask_paint::refresh_in_canvas(mask, doc.bounds());
     }
     let cpu = Arc::new(cpu);
     p.materialized = Some((key, cpu.clone()));

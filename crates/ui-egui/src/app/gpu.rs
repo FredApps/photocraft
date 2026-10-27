@@ -49,7 +49,7 @@ impl PhotocraftApp {
     /// Attach only the optional 3D renderer (also useful for isolated, windowless validation).
     #[cfg(feature = "uv-workbench")]
     pub fn set_uv_wgpu(&mut self, rs: eframe::egui_wgpu::RenderState) -> Result<(), String> {
-        let health = self.gpu_health().unwrap_or_default();
+        let health = self.gpu_health().unwrap_or_else(|| photocraft_gpu::DeviceHealth::watch(&rs.device));
         self.uv_cache.gpu = Some(uv_gpu::Renderer::new(rs, health)?);
         Ok(())
     }

@@ -47,7 +47,7 @@ checks are listed below.
 
 ## 2026-10-27 current-main merge validation
 
-Source is the in-progress merge of upstream main at `7ac7b8b106acccf6826d45ed5c9e481dfe341035` into PR #8805. This evidence is separate from the historical v0.16.0 table above.
+Source is the finalized PR #8805 merge commit `2d7b67ed2f13b78de2b340b8289abd3ee55198b6`, which includes upstream main at `7ac7b8b106acccf6826d45ed5c9e481dfe341035`. This evidence is separate from the historical v0.16.0 table above.
 
 Completed on the merged source:
 
@@ -74,4 +74,4 @@ The failing integration test files and `canvas/pixel_grid.rs` are identical to t
 
 With the UV feature enabled, the crop-ratio integration test overflowed its Windows test-thread stack at the standard 2 MiB Rust test-thread size. It passed at 16 MiB; the same default-feature exact passed at the standard size. This indicates higher stack use in that feature-enabled test path, but does not establish a production startup problem; a native `--help` smoke was deferred.
 
-Gate logs: `D:/PhotoCraft-UV-build/Logs/pr8805-final-gates-summary.txt` and per-gate `pr8805-gate-*.log` files. Default UI check, native application check, panic hunt, layer check and default wasm check passed. Initial strict Clippy and core test attempts found a missing `PixelFormat` test import and `type_complexity` in the touched GPU cache path; narrow fixes are present, but strict Clippy and core tests were not rerun. Corpus assets were fetched and verified, but the release corpus test build was stopped before tests ran. UV-feature wasm, exact default-feature reproductions, perf, and native `--help` checks were deferred at the user's direction to publish the resolved merge without extending validation further.
+Detailed gate logs were kept outside the repository checkout and are not part of the PR. Default UI check, native application check, panic hunt, layer check and default wasm check passed. Initial strict Clippy and core test attempts found a missing `PixelFormat` test import and `type_complexity` in the touched GPU cache path; narrow fixes are present, but strict Clippy and core tests were not rerun. Corpus assets were fetched and verified, but the release corpus test build was stopped before tests ran. UV-feature wasm, exact default-feature reproductions, perf, and native `--help` checks were deferred at the user's direction to publish the resolved merge without extending validation further.

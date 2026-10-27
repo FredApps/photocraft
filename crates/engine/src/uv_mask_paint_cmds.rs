@@ -366,7 +366,13 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
         validate_effect(&paint.kind)?;
         if remove {
             stack.layers.remove(index);
-            stack.active = stack.active.min(stack.layers.len().saturating_sub(1));
+            stack.active = if stack.layers.is_empty() {
+                0
+            } else if index < stack.active {
+                stack.active - 1
+            } else {
+                stack.active.min(stack.layers.len() - 1)
+            };
         } else if let Some(to) = destination {
             let selected = stack.active;
             let paint = stack.layers.remove(index);
@@ -404,18 +410,26 @@ fn fill_source(s: &mut Session, p: &Value) -> Result<Value> {
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 64_000_000 {
         return Err(bad("Fill images must contain at most 64 million pixels"));
     }
-    let rendered = photocraft_compose::render_reduced(&asset.document, width, height);
     let format = photocraft_color::PixelFormat::RGBA8;
     let mut map = Surface::with_default(format, &[0.0, 0.0, 0.0, 1.0]);
-    let rgba = rendered
-        .px
-        .iter()
-        .flat_map(|pixel| {
-            let gray = (pixel[0] * 0.2126 + pixel[1] * 0.7152 + pixel[2] * 0.0722).clamp(0.0, 1.0);
-            [gray, gray, gray, 1.0]
-        })
-        .collect::<Vec<_>>();
-    map.write_region(photocraft_geom::Rect::new(0, 0, width as i32, height as i32), &rgba);
+    let canvas = asset.document.bounds();
+    let mut x = canvas.x0;
+    while x < canvas.x1 {
+        let slab = photocraft_geom::Rect::new(x, canvas.y0, x.saturating_add(4096).min(canvas.x1), canvas.y1);
+        photocraft_compose::render_bands(&asset.document, slab, 256, |band| -> Result<()> {
+            let rgba = band
+                .px
+                .iter()
+                .flat_map(|pixel| {
+                    let gray = (pixel[0] * 0.2126 + pixel[1] * 0.7152 + pixel[2] * 0.0722).clamp(0.0, 1.0);
+                    [gray, gray, gray, 1.0]
+                })
+                .collect::<Vec<_>>();
+            map.try_write_region(band.rect, &rgba).map_err(EngineError::from)?;
+            Ok(())
+        })?;
+        x = slab.x1;
+    }
     s.edit("Set Fill image", |doc, _| {
         let canvas = doc.bounds();
         let mask = doc.layer_mut(id).and_then(|l| l.mask.as_mut()).ok_or_else(|| bad("Layer has no mask"))?;

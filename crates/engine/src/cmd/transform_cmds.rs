@@ -21,6 +21,19 @@ fn bad(msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: "edit.transform".into(), msg: msg.into() }
 }
 
+fn has_mask_paint_stack(layer: &Layer) -> bool {
+    let mut pending = vec![layer];
+    while let Some(layer) = pending.pop() {
+        if layer.mask.as_ref().is_some_and(|mask| mask.paint.is_some()) {
+            return true;
+        }
+        if let LayerContent::Group(group) = &layer.content {
+            pending.extend(group.children.iter());
+        }
+    }
+    false
+}
+
 /// Layers a transform moves as a whole, even with a selection: groups, and the kinds that keep the
 /// transform instead of pixels (type, shapes, smart objects). Only pixel layers move just the
 /// selected pixels.
@@ -745,6 +758,18 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     let p = &with_panel_target(s, p);
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let id = crate::commands::explicit_layer(s, p)?.or(st.active_layer);
+    if let Some(layer) = id.and_then(|id| st.doc.layer(id)) {
+        let target = crate::channel_cmds::target_of(p);
+        let unsupported = match target {
+            crate::channel_cmds::Target::Mask => has_mask_paint_stack(layer),
+            crate::channel_cmds::Target::Pixels if layer.is_group() => has_mask_paint_stack(layer),
+            crate::channel_cmds::Target::Pixels => layer.mask.as_ref().is_some_and(|mask| mask.linked && mask.paint.is_some()),
+            _ => false,
+        };
+        if unsupported {
+            return Err(EngineError::Other("Free Transform cannot move the flattened cache of an editable mask Paint stack".into()));
+        }
+    }
     let lone = lone_target(&st.doc, id, p)?;
     let id = match (id, lone.is_some() && crate::channel_cmds::is_channel_target(p)) {
         (_, true) => None,

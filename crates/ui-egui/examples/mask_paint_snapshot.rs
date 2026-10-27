@@ -2,6 +2,8 @@
 fn main() {}
 #[cfg(feature = "uv-workbench")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let output_dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "mask-paint-snapshots".into()));
+    std::fs::create_dir_all(&output_dir)?;
     use egui_kittest::kittest::Queryable;
     use photocraft_engine::Session;
     use photocraft_ui_egui::{PhotocraftApp, Services};
@@ -39,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if h.query_by_label("Paint 1").is_none() {
         return Err("Mask Paint layer list did not expand".into());
     }
-    h.render()?.save("D:/PhotoCraft-UV-build/Screenshots/mask-paint-expanded.png")?;
+    h.render()?.save(output_dir.join("mask-paint-expanded.png"))?;
     fn click(h: &mut egui_kittest::Harness<'_, PhotocraftApp>, p: egui::Pos2) {
         h.hover_at(p);
         h.step();
@@ -71,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if h.query_by_label("Paint 1").is_some() {
         return Err("Mask Paint layer list did not collapse".into());
     }
-    h.render()?.save("D:/PhotoCraft-UV-build/Screenshots/mask-paint-collapsed.png")?;
+    h.render()?.save(output_dir.join("mask-paint-collapsed.png"))?;
     println!("Mask Paint snapshots saved.");
     Ok(())
 }

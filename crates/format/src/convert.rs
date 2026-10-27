@@ -96,6 +96,16 @@ pub(crate) fn tile_len(format: &PixelFormat) -> usize {
     (TILE_SIZE * TILE_SIZE) as usize * format.bytes_per_pixel()
 }
 
+fn validate_mask_paint_bounds(kind: &photocraft_doc::mask_paint::EffectKind, bounds: Option<[i32; 4]>) -> Result<()> {
+    match (kind, bounds) {
+        (photocraft_doc::mask_paint::EffectKind::Fill { .. }, Some([x0, y0, x1, y1])) if x1 > x0 && y1 > y0 => Ok(()),
+        (photocraft_doc::mask_paint::EffectKind::Fill { .. }, None) => Ok(()),
+        (photocraft_doc::mask_paint::EffectKind::Fill { .. }, Some(_)) => Err(FormatError::corrupt("invalid mask Paint Fill bounds")),
+        (_, None) => Ok(()),
+        (_, Some(_)) => Err(FormatError::corrupt("Fill bounds are only valid on Fill effects")),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Save
 // ---------------------------------------------------------------------------
@@ -423,6 +433,7 @@ impl Loader<'_> {
                 }
                 _ => return Err(FormatError::corrupt("invalid mask paint effect")),
             };
+            validate_mask_paint_bounds(&kind, p.fill_bounds)?;
             let fill_map = self.opt_surface(&p.fill_map)?;
             layers.push(photocraft_doc::mask_paint::Paint {
                 name: p.name.clone(),
@@ -748,6 +759,26 @@ impl Loader<'_> {
 
     fn channel(&mut self, c: &ChannelM) -> Result<AlphaChannel> {
         Ok(AlphaChannel { name: c.name.clone(), surface: self.surface(&c.surface)?, spot: c.spot, color: c.color, opacity: c.opacity, indicates: c.indicates })
+    }
+}
+
+#[cfg(test)]
+mod mask_paint_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn loader_rejects_inverted_fill_and_bounds_on_non_fill_layers() {
+        let fill = photocraft_doc::mask_paint::EffectKind::Fill {
+            value: 0.5,
+            rotation: 0.0,
+            repeat_u: false,
+            repeat_v: false,
+            mirror_u: false,
+            mirror_v: false,
+        };
+        assert!(validate_mask_paint_bounds(&fill, Some([0, 0, 0, 2])).is_err());
+        assert!(validate_mask_paint_bounds(&photocraft_doc::mask_paint::EffectKind::Paint, Some([0, 0, 1, 1])).is_err());
+        assert!(validate_mask_paint_bounds(&fill, Some([i32::MIN, i32::MIN, i32::MAX, i32::MAX])).is_ok());
     }
 }
 

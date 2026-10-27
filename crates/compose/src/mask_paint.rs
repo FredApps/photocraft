@@ -5,6 +5,11 @@ use photocraft_doc::{
 };
 use photocraft_geom::Rect;
 
+/// `refresh(None)` has no canvas rectangle to clip a persisted Fill to. Keep its fallback work
+/// bounded and let document callers use `refresh_in_canvas` for larger valid canvases.
+const MAX_UNBOUNDED_FILL_PIXELS: u64 = 16 * 1024 * 1024;
+const MAX_UNBOUNDED_FILL_TILES: u64 = 256;
+
 /// Refresh changed tiles after an edit; property/order changes rebuild the stack.
 pub fn refresh_changes(mask: &mut LayerMask, old: Option<&Stack>) {
     refresh_changes_bounded(mask, old, None);
@@ -93,16 +98,23 @@ pub fn refresh(mask: &mut LayerMask, region: Option<Rect>) {
             if matches!(&paint.kind, EffectKind::Paint) {
                 tiles.extend(paint.surface.tiles().map(|(c, _)| *c));
             }
-            if let Some([x0, y0, x1, y1]) = paint.fill_bounds
+            if matches!(&paint.kind, EffectKind::Fill { .. })
+                && let Some([x0, y0, x1, y1]) = paint.fill_bounds
                 && x1 > x0
                 && y1 > y0
             {
+                let area = u64::try_from(i64::from(x1) - i64::from(x0))
+                    .ok()
+                    .and_then(|w| u64::try_from(i64::from(y1) - i64::from(y0)).ok().and_then(|h| w.checked_mul(h)));
+                if area.is_none_or(|area| area > MAX_UNBOUNDED_FILL_PIXELS) {
+                    continue;
+                }
                 let bounds = match &paint.kind {
                     EffectKind::Fill { rotation, .. } if rotation.is_finite() && rotation.rem_euclid(360.0) != 0.0 => {
                         let angle = f64::from(rotation.rem_euclid(360.0)).to_radians();
                         let (sin, cos) = angle.sin_cos();
-                        let width = f64::from(x1 - x0);
-                        let height = f64::from(y1 - y0);
+                        let width = f64::from(x1) - f64::from(x0);
+                        let height = f64::from(y1) - f64::from(y0);
                         let center_x = (f64::from(x0) + f64::from(x1)) * 0.5;
                         let center_y = (f64::from(y0) + f64::from(y1)) * 0.5;
                         let half_width = (cos.abs() * width + sin.abs() * height) * 0.5;
@@ -116,6 +128,14 @@ pub fn refresh(mask: &mut LayerMask, region: Option<Rect>) {
                     }
                     _ => Rect::new(x0, y0, x1, y1),
                 };
+                let width = (i64::from(bounds.x1) - i64::from(bounds.x0)).max(0) as u64;
+                let height = (i64::from(bounds.y1) - i64::from(bounds.y0)).max(0) as u64;
+                let tile_count = width.div_ceil(256).checked_mul(height.div_ceil(256));
+                if u64::from(bounds.width()) * u64::from(bounds.height()) > MAX_UNBOUNDED_FILL_PIXELS
+                    || tile_count.is_none_or(|tiles| tiles > MAX_UNBOUNDED_FILL_TILES)
+                {
+                    continue;
+                }
                 tiles.extend(bounds.tiles());
             }
         }
@@ -162,6 +182,13 @@ pub fn refresh(mask: &mut LayerMask, region: Option<Rect>) {
         mask.surface.write_region(band, &pixels);
         y = end;
     }
+}
+
+/// Rebuild a transient mask cache while clipping procedural Fill work to its document canvas.
+/// Fill bounds are persisted input and can extend far beyond the canvas; iterating every tile in
+/// those bounds is unnecessary because only canvas pixels are consumed by document rendering.
+pub fn refresh_in_canvas(mask: &mut LayerMask, canvas: Rect) {
+    refresh(mask, Some(canvas));
 }
 
 /// Evaluate one output pixel of a Paint mask stack without allocating or materializing its
@@ -388,8 +415,8 @@ fn fill_sample(layer: &photocraft_doc::mask_paint::Paint, value: f32, x: i32, y:
     if x1 <= x0 || y1 <= y0 {
         return None;
     }
-    let span_x = (x1 - x0) as f32;
-    let span_y = (y1 - y0) as f32;
+    let span_x = (i64::from(x1) - i64::from(x0)) as f32;
+    let span_y = (i64::from(y1) - i64::from(y0)) as f32;
     let (doc_x, doc_y) = if rotation.is_finite() && rotation.rem_euclid(360.0) != 0.0 {
         let angle = rotation.rem_euclid(360.0).to_radians();
         let (sin, cos) = angle.sin_cos();
@@ -491,6 +518,19 @@ mod tests {
         refresh_changes_in_canvas(&mut mask, Some(&old), canvas);
         assert!(mask.surface.sample_channel(16, 16, 0) < 0.01, "moving Fill away clears old coverage");
         assert!(mask.surface.tiles().count() <= 1);
+    }
+
+    #[test]
+    fn unbounded_refresh_skips_pathological_persisted_fill_bounds() {
+        let mut mask = LayerMask::hide_all();
+        let mut fill = layer(EffectKind::Fill { value: 1.0, rotation: 45.0, repeat_u: false, repeat_v: false, mirror_u: false, mirror_v: false }, 1.0);
+        fill.fill_bounds = Some([i32::MIN, i32::MIN, i32::MAX, i32::MAX]);
+        mask.paint = Some(Stack { base: Surface::with_default(PixelFormat::GRAY8, &[0.0]), layers: vec![fill], active: 0 });
+        refresh(&mut mask, None);
+        assert!(mask.surface.tiles().next().is_none(), "global fallback must not enumerate an unbounded Fill rectangle");
+
+        refresh_in_canvas(&mut mask, Rect::new(0, 0, 2, 2));
+        assert!(mask.surface.tiles().count() <= 1, "canvas refresh stays clipped even for hostile bounds");
     }
 
     #[test]

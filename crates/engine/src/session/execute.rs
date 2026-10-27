@@ -179,6 +179,17 @@ impl Session {
         let mut doc = (*before).clone();
         let mut active = st.active_layer;
         let r = f(&mut doc, &mut active)?;
+        // `mask.surface` is a render/export cache while a non-destructive Paint stack exists.
+        // Commands that still edit that legacy surface (Fade, linked transforms, and similar
+        // paths) must not silently lose their result when the cache is rebuilt below. Until
+        // those commands can edit the stack itself, reject the cloned edit atomically.
+        for (_, _, before_layer) in before.walk() {
+            let Some(before_mask) = before_layer.mask.as_ref().filter(|mask| mask.paint.is_some()) else { continue };
+            let Some(after_mask) = doc.layer(before_layer.id).and_then(|layer| layer.mask.as_ref()) else { continue };
+            if after_mask.paint.as_ref() == before_mask.paint.as_ref() && after_mask.surface != before_mask.surface {
+                return Err(EngineError::Other("This operation cannot edit the flattened cache of an editable mask Paint stack".into()));
+            }
+        }
         // The regular mask surface is the render/export cache for non-destructive mask Paint stacks.
         let mask_canvas = doc.bounds();
         let mask_ids: Vec<_> = doc.walk().iter().filter_map(|(_, _, layer)| layer.mask.as_ref().filter(|mask| mask.paint.is_some()).map(|_| layer.id)).collect();

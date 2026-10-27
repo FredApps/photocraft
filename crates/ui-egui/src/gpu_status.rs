@@ -116,23 +116,32 @@ fn recovery_documents(app: &PhotocraftApp) -> Vec<&photocraft_engine::DocState> 
 /// preference, and wait until the writes finished (see `Services::flush_autosaves`). `Ok` only when
 /// each of them is known to be on disk.
 fn save_for_recovery(app: &mut PhotocraftApp) -> Result<(), String> {
+    // Keep the preview untouched when it is stale or unavailable, but still attempt recovery
+    // writes for every canonical dirty document. The caller will keep the window open if the
+    // preview could not be committed, so it can be resolved after a later retry.
+    let mut failed: Vec<(u64, String)> = Vec::new();
     #[cfg(feature = "uv-workbench")]
     if let Some(commit) = crate::uv_mask_paint_preview::pending(app) {
-        let Some(state) = app.session.documents().iter().find(|state| state.doc.id == commit.doc) else {
-            return Err("couldn't save for recovery: the mask Paint opacity preview document is unavailable".into());
-        };
-        if state.revision != commit.revision {
-            return Err("couldn't save for recovery: the mask Paint opacity preview is stale".into());
+        match app.session.documents().iter().find(|state| state.doc.id == commit.doc) {
+            None => failed.push((commit.doc.0, "mask Paint opacity preview document is unavailable".into())),
+            Some(state) if state.revision != commit.revision => failed.push((commit.doc.0, "mask Paint opacity preview is stale".into())),
+            Some(_) => {
+                if let Err(error) = app.run("uv.maskPaint.modify", commit.params()) {
+                    failed.push((commit.doc.0, format!("mask Paint opacity preview: {error}")));
+                }
+            }
         }
-        app.run("uv.maskPaint.modify", commit.params()).map_err(|error| format!("couldn't save mask Paint opacity preview for recovery: {error}"))?;
     }
 
     let jobs: Vec<_> = recovery_documents(app).into_iter().filter(|d| d.is_dirty()).map(|d| (d.doc.clone(), d.revision, d.path.clone())).collect();
     if jobs.is_empty() {
-        return Ok(());
+        return if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("couldn't save for recovery: {}", failed.into_iter().map(|(_, why)| why).collect::<Vec<_>>().join("; ")))
+        };
     }
     // (document id, why) for each document not known to be saved.
-    let mut failed: Vec<(u64, String)> = Vec::new();
     let Some(save) = app.services.autosave.as_mut() else { return Err("no crash-recovery autosave".into()) };
     for (doc, revision, path) in &jobs {
         if let Err(e) = save(doc, *revision, path.as_deref()) {
@@ -419,7 +428,7 @@ mod tests {
 
         assert!(error.contains("stale"), "{error}");
         assert_eq!(crate::uv_mask_paint_preview::pending(&app).unwrap().opacity, 0.5, "failed recovery must keep the pending value in memory");
-        assert_eq!(*save_count.borrow(), 0, "do not write a snapshot that omits the pending opacity");
+        assert_eq!(*save_count.borrow(), 1, "a stale preview must not block the canonical dirty document's recovery write");
     }
 
     #[cfg(feature = "uv-workbench")]

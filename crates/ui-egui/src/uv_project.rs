@@ -119,7 +119,27 @@ pub(crate) fn dirty(app: &PhotocraftApp) -> bool {
     crate::uv_lighting::pending(&app.uv_cache.lighting)
         || crate::uv_mask_paint_preview::pending(app).is_some()
         || app.session.uv.has_unsaved_project(docs)
-        || (!saved.is_null() && view.as_ref().is_some_and(|v| v != saved))
+        || (!saved.is_null() && view.as_ref().is_some_and(|v| saved_view_changed(v, saved)))
+}
+
+/// View fit/fill are one-frame requests that should be saved and restored, but they do not make
+/// an otherwise unchanged 3D project dirty while egui is waiting for a canvas layout.
+fn saved_view_changed(view: &Value, saved: &Value) -> bool {
+    fn without_pending_fit(value: &Value) -> Value {
+        let mut value = value.clone();
+        if let Some(views) = value.get_mut("views").and_then(Value::as_array_mut) {
+            for entry in views {
+                if let Some(view) = entry.get_mut("view")
+                    && let Some(object) = view.as_object_mut()
+                {
+                    object.insert("fit_pending".into(), Value::Bool(false));
+                    object.insert("fill_pending".into(), Value::Bool(false));
+                }
+            }
+        }
+        value
+    }
+    without_pending_fit(view) != without_pending_fit(saved)
 }
 pub(crate) fn close(app: &mut PhotocraftApp) {
     let in_3d = app.ui.workspace == "3D";
@@ -372,6 +392,11 @@ mod container_tests {
         let path = std::env::temp_dir().join(format!("uv-container-ui-{}.pcuv", std::process::id()));
         save_to(&mut app, path.to_string_lossy().into_owned()).unwrap();
         assert!(!dirty(&app));
+        app.ui.views[i].fit_pending = true;
+        app.ui.views[i].fill_pending = true;
+        assert!(!dirty(&app), "one-frame fit/fill requests do not create a project change");
+        app.ui.views[i].fit_pending = false;
+        app.ui.views[i].fill_pending = false;
         crate::menus::invoke(&mut app, &ctx, "window.workspace.photography", json!({})).unwrap();
         assert_eq!(app.session.active().unwrap().doc.id, normal);
         assert!(app.session.documents().iter().all(|st| st.doc.id != uv));

@@ -93,6 +93,40 @@ fn invalid_stack_edits_preserve_document() {
 }
 
 #[test]
+fn removing_an_effect_below_the_active_effect_keeps_the_same_effect_selected() {
+    let mut s = fixture(8);
+    for name in ["First", "Second", "Third"] {
+        s.execute("uv.maskPaint.add", json!({"name":name})).unwrap();
+    }
+    s.execute("uv.maskPaint.modify", json!({"index":2})).unwrap();
+    s.execute("uv.maskPaint.modify", json!({"index":0,"remove":true})).unwrap();
+    let stack = s.active().unwrap().doc.layer(s.active().unwrap().active_layer.unwrap()).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap();
+    assert_eq!(stack.active, 1);
+    assert_eq!(stack.layers[stack.active].name, "Third");
+}
+
+#[test]
+fn transform_of_mask_cache_is_rejected_without_partially_mutating_the_document() {
+    let mut s = fixture(8);
+    s.execute("uv.maskPaint.add", json!({"name":"Paint"})).unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let result = s.execute("edit.transform", json!({"dx":4,"dy":2,"target":"mask"}));
+    assert!(result.is_err(), "legacy mask transforms must not be silently lost behind the editable stack");
+    assert_eq!(s.active().unwrap().doc, before, "rejection leaves document and history untouched");
+
+    let layer = s.active().unwrap().active_layer.unwrap();
+    s.edit("Link test mask", |doc, _| {
+        doc.layer_mut(layer).unwrap().mask.as_mut().unwrap().linked = true;
+        Ok(serde_json::Value::Null)
+    })
+    .unwrap();
+    let before_linked_transform = s.active().unwrap().doc.clone();
+    let result = s.execute("edit.transform", json!({"dx":4,"dy":2}));
+    assert!(result.is_err(), "linked layer transforms must not detach the editable stack from its cache");
+    assert_eq!(s.active().unwrap().doc, before_linked_transform, "linked transform rejection is atomic too");
+}
+
+#[test]
 fn fill_and_levels_layers_compose_modify_undo_and_round_trip() {
     let mut s = fixture(16);
     s.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.25})).unwrap();

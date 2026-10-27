@@ -295,9 +295,12 @@ pub(super) fn layer_row(
         actions.push(("select.loadSelection".into(), p));
     } else if let Some(cmd) = mask_toggle {
         #[cfg(feature = "uv-workbench")]
+        let gray_view_for_this_mask = app.session.active().and_then(|st| st.channel_view.layer_mask).is_some_and(|view| gray_view_matches_layer(view, l.id));
+        #[cfg(feature = "uv-workbench")]
         if app.ui.workspace == "3D"
             && ui.input(|i| i.modifiers.alt)
             && resp.interact_pointer_pos().and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Pixel)
+            && !gray_view_for_this_mask
         {
             crate::uv_mask_paint::clear_effect_selection(ctx, doc.id.0, l.id.0);
             crate::uv_mask_paint::expand_effects(ctx, doc.id.0, l.id.0);
@@ -307,6 +310,7 @@ pub(super) fn layer_row(
         if app.ui.workspace == "3D"
             && ui.input(|i| i.modifiers.alt)
             && resp.interact_pointer_pos().and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Pixel)
+            && !gray_view_for_this_mask
         {
             actions.push(("ui.maskTarget".into(), json!({"enabled":true,"show":true})));
         }
@@ -493,4 +497,24 @@ fn draw_layer_thumb(app: &mut PhotocraftApp, ctx: &egui::Context, ui: &egui::Ui,
     };
     p.rect_stroke(rect, CornerRadius::same(if t.pro { 0 } else { 5 }), stroke, StrokeKind::Outside);
     crate::smart_ui::thumb_badge(ui, l, rect);
+}
+
+#[cfg(feature = "uv-workbench")]
+fn gray_view_matches_layer(view: photocraft_engine::mask_view_cmds::LayerMaskView, layer: photocraft_doc::LayerId) -> bool {
+    view.layer == layer && !view.filter && view.mode == photocraft_engine::mask_view_cmds::MaskViewMode::Gray
+}
+
+#[cfg(all(test, feature = "uv-workbench"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alt_mask_view_toggle_only_suppresses_reenable_for_the_same_gray_layer_mask() {
+        let layer = photocraft_doc::LayerId(7);
+        let view = |layer, filter, mode| photocraft_engine::mask_view_cmds::LayerMaskView { layer, filter, mode };
+        assert!(gray_view_matches_layer(view(layer, false, photocraft_engine::mask_view_cmds::MaskViewMode::Gray), layer));
+        assert!(!gray_view_matches_layer(view(photocraft_doc::LayerId(8), false, photocraft_engine::mask_view_cmds::MaskViewMode::Gray), layer));
+        assert!(!gray_view_matches_layer(view(layer, false, photocraft_engine::mask_view_cmds::MaskViewMode::Overlay), layer));
+        assert!(!gray_view_matches_layer(view(layer, true, photocraft_engine::mask_view_cmds::MaskViewMode::Gray), layer));
+    }
 }

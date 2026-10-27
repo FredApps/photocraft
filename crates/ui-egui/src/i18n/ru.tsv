@@ -4757,6 +4757,9 @@ shape	Appearance	Оформление
 	Paint UV	Рисование UV
 	Paint Wrap	Рисование с обёртыванием
 	PBR · Roughness / Metallic	PBR · Шероховатость / Металличность
+	Material	Материал
+	Normal: DirectX Y−	Нормали: DirectX Y−
+	3D / 2D                       F1	3D / 2D                       F1
 	HDR / EXR…	HDR / EXR…
 	Reimport	Повторный импорт
 	Add Fill layer	Добавить слой-заливку

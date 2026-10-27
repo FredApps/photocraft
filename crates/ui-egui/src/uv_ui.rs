@@ -1432,7 +1432,6 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             Ok(g) => cache.geometry = Some((scene.clone(), std::sync::Arc::new(g))),
             Err(e) => {
                 state.status = e.to_string();
-                cache.gpu = None;
             }
         }
     }
@@ -3105,7 +3104,7 @@ mod tests {
                 }],
                 active: 0,
             });
-            photocraft_compose::mask_paint::refresh(&mut mask, None);
+            photocraft_compose::mask_paint::refresh_in_canvas(&mut mask, state.doc.bounds());
             let doc = std::sync::Arc::make_mut(&mut state.doc);
             doc.layer_mut(layer).unwrap().mask = Some(mask);
             state.channel_view.target = photocraft_engine::channel_cmds::ChannelTarget::LayerMask;
