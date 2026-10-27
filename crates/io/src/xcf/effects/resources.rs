@@ -753,6 +753,7 @@ mod tests {
                 lut: Some(std::sync::Arc::new(table.data)),
                 tetrahedral: true,
                 dither: false,
+                source: None,
             };
             let mut buffer = photocraft_compose::Buffer { rect: bounds, px: vec![[1., 1., 1., 0.375]] };
             photocraft_compose::adjust::apply(&adjustment, &mut buffer);
@@ -985,6 +986,7 @@ mod tests {
                 size: u32::try_from(lut.size).unwrap(),
                 tetrahedral: true,
                 dither: false,
+                source: None,
             },
             &mut buffer,
         );

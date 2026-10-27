@@ -338,15 +338,39 @@ fn independent_of_document(id: &str) -> bool {
     PREFIXES.iter().any(|p| id.starts_with(p)) || IDS.contains(&id)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn read_path(path: &str) -> Result<Vec<u8>> {
-    // Bounded reads, and a clear error for a file larger than memory (#375).
-    photocraft_format::read_file(std::path::Path::new(path)).map_err(|e| EngineError::Other(format!("{path}: {e}")))
+/// An open source either keeps encoded bytes for a possible XCF decision or streams PSD channels.
+enum AcquiredOpenSource {
+    Bytes(Arc<Vec<u8>>),
+    #[cfg(any(unix, windows))]
+    Psd(photocraft_psd::Source),
 }
 
-#[cfg(target_arch = "wasm32")]
-fn read_path(path: &str) -> Result<Vec<u8>> {
-    Err(EngineError::Other(format!("cannot open paths on the web: {path}")))
+/// Sniff exactly the upstream PSD signature without retaining the entire PSD file. Other formats
+/// keep one bounded byte snapshot, which a historical XCF decision can reuse without reopening.
+#[cfg(any(unix, windows))]
+fn acquire_open_path(name: &str, path: &str, ctl: &Interrupt) -> std::result::Result<AcquiredOpenSource, photocraft_io::IoError> {
+    let read_failed = |error: std::io::Error| photocraft_io::IoError::Read(format!("{path}: {error}"));
+    ctl.check().map_err(|_| photocraft_io::IoError::Cancelled)?;
+    let source = photocraft_psd::FileSource::open(std::path::Path::new(path)).map_err(read_failed)?;
+    let native = name
+        .rsplit(['/', '\\'])
+        .next()
+        .and_then(|name| name.rsplit_once('.'))
+        .is_some_and(|(base, ext)| !base.is_empty() && ext.eq_ignore_ascii_case(photocraft_format::EXTENSION));
+    let mut magic = [0u8; 4];
+    if !native && photocraft_psd::ReadAt::read_at(&source, 0, &mut magic).is_ok() && photocraft_io::is_psd(&magic) {
+        return Ok(AcquiredOpenSource::Psd(photocraft_psd::Source::new(source)));
+    }
+    drop(source);
+    let bytes = photocraft_format::read_file(std::path::Path::new(path)).map_err(read_failed)?;
+    ctl.check().map_err(|_| photocraft_io::IoError::Cancelled)?;
+    Ok(AcquiredOpenSource::Bytes(Arc::new(bytes)))
+}
+
+/// Filesystem paths are unavailable in browser builds; callers must supply encoded bytes.
+#[cfg(not(any(unix, windows)))]
+fn acquire_open_path(_: &str, path: &str, _: &Interrupt) -> std::result::Result<AcquiredOpenSource, photocraft_io::IoError> {
+    Err(photocraft_io::IoError::Read(format!("cannot open paths on this platform: {path}")))
 }
 
 /// Run a job-capable command's heavy part. `work` runs on a worker thread when the command was

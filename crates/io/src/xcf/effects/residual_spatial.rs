@@ -1225,7 +1225,7 @@ fn maze(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     background.vector_mask = Some(VectorMask::new(Path::new(vec![rect(f64::from(b.x0), f64::from(b.y0), f64::from(b.width()), f64::from(b.height()))])));
     let layer = Layer::new(
         "Imported editable maze",
-        LayerContent::Group(Group { children: vec![background, shape("Maze walls", paths, fg)], expanded: true, artboard: None }),
+        LayerContent::Group(Group { children: vec![background, shape("Maze walls", paths, fg)], expanded: true, artboard: None, frame_stroke: None }),
     );
     Ok(replace(
         layer,
@@ -1318,7 +1318,7 @@ fn sinusoid(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         children.push(layer);
     }
     let mut mapping = replace(
-        Layer::new("Imported sinusoid gradients", LayerContent::Group(Group { children, expanded: true, artboard: None })),
+        Layer::new("Imported sinusoid gradients", LayerContent::Group(Group { children, expanded: true, artboard: None, frame_stroke: None })),
         format!(
             "Independent stock observations establish period/phase in pixels and amplitude gain2^a. Two editable native linear gradients approximate the axes with32 linear stops per period and native additive composition; source angle/rotation/offset position are explicit. Native endpoint snapping, ICC interpolation, inter-axis clipping and antialiasing replace source supersampling{aa}; no bitmap is baked"
         ),
@@ -1828,6 +1828,7 @@ mod tests {
                     size: 17,
                     tetrahedral: true,
                     dither: false,
+                    source: None,
                 },
                 &mut buffer,
             );
@@ -1896,6 +1897,7 @@ mod tests {
                 size: 17,
                 tetrahedral: true,
                 dither: false,
+                source: None,
             };
             let mut buffer = photocraft_compose::Buffer { rect: photocraft_geom::Rect::new(0, 0, 2, 1), px: vec![[1., 0.5, 1., 0.25], [0.5, 0.5, 1., 0.75]] };
             photocraft_compose::adjust::apply(&adj, &mut buffer);
@@ -2187,8 +2189,14 @@ mod tests {
         use photocraft_raster::{Interrupt, Surface};
         let mapped = result("gegl:image-gradient", vec![enm("output-mode", 1)]);
         let cube = photocraft_cms::lutfile::parse("gradient.cube", mapped.filters[0].params["data"].as_str().unwrap().as_bytes()).unwrap();
-        let adjustment =
-            Adjustment::ColorLookup { name: "Native direction".into(), lut: Some(std::sync::Arc::new(cube.data)), size: 17, tetrahedral: true, dither: false };
+        let adjustment = Adjustment::ColorLookup {
+            name: "Native direction".into(),
+            lut: Some(std::sync::Arc::new(cube.data)),
+            size: 17,
+            tetrahedral: true,
+            dither: false,
+            source: None,
+        };
         let mut interpolated = photocraft_compose::Buffer { rect: Rect::new(0, 0, 1, 1), px: vec![[0.73, 0.61, 0., 0.375]] };
         photocraft_compose::adjust::apply(&adjustment, &mut interpolated);
         let angle = interpolated.px[0][0] * std::f32::consts::TAU - std::f32::consts::PI;
@@ -2358,6 +2366,7 @@ mod tests {
                         lut: Some(std::sync::Arc::new(table.data)),
                         tetrahedral: true,
                         dither: false,
+                        source: None,
                     }
                 } else if filter.command == "image.adjustments.curves" {
                     crate::xcf::coverage::adjustment(&filter.command, &filter.params).unwrap()

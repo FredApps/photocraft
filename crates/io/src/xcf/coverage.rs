@@ -81,7 +81,15 @@ pub(super) fn adjustment(command: &str, p: &Value) -> std::result::Result<Adjust
                 Some(v) => v.as_bool().ok_or("Native Color Lookup dither is not boolean")?,
                 None => false,
             };
-            Adjustment::ColorLookup { name: lookup.title, size: lookup.size as u32, lut: Some(std::sync::Arc::new(lookup.data)), tetrahedral, dither }
+            // These embedded tables are generated native conversion data, not an original LUT file to re-export.
+            Adjustment::ColorLookup {
+                name: lookup.title,
+                size: lookup.size as u32,
+                lut: Some(std::sync::Arc::new(lookup.data)),
+                tetrahedral,
+                dither,
+                source: None,
+            }
         }
         "image.adjustments.posterize" => Adjustment::Posterize { levels: number(p, "levels", 4., 2., 255.)?.round() as u32 },
         "image.adjustments.threshold" => Adjustment::Threshold { level: number(p, "level", 128., 1., 255.)?.round() / 255. },
@@ -3579,7 +3587,12 @@ mod tests {
         };
         let layer = Layer::new(
             "Direct native group",
-            LayerContent::Group(Group { children: vec![Layer::new("Native outline", LayerContent::Shape(shape.clone()))], expanded: true, artboard: None }),
+            LayerContent::Group(Group {
+                children: vec![Layer::new("Native outline", LayerContent::Shape(shape.clone()))],
+                expanded: true,
+                artboard: None,
+                frame_stroke: None,
+            }),
         );
         let mut document = Document::new("Native group coverage", Size::new(5, 2), ColorMode::Grayscale, SampleType::F32);
         let input = Surface::new(PixelFormat::new(ColorMode::Grayscale, SampleType::F32, false));

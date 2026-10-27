@@ -238,21 +238,32 @@ fn run(s: &mut Session, request: Request, background: bool) -> Result<Started> {
     let policy = WorkerPolicy::capture(s);
     let work = move |ctx: &JobCtx| {
         ctx.progress(0., "Reading");
-        let bytes = match source {
-            OpenSource::Bytes(bytes) => bytes,
-            OpenSource::Path(path) => Arc::new(super::read_path(&path)?),
+        let acquired = match source {
+            OpenSource::Bytes(bytes) => super::AcquiredOpenSource::Bytes(bytes),
+            OpenSource::Path(path) => ctx.stage(0.0, 0.02, "Reading", |ctl| super::acquire_open_path(&name_w, &path, ctl)).map_err(|error| match error {
+                photocraft_io::IoError::Cancelled => EngineError::Cancelled,
+                error => EngineError::Other(error.to_string()),
+            })?,
         };
         ctx.check()?;
         ctx.progress(0.02, "Decoding");
-        let imported = match ctx.stage(0.02, 0.95, "Decoding", |ctl| photocraft_io::import_for_open_with(&name_w, &bytes, &options, ctl)) {
-            Ok(result) => result,
-            Err(photocraft_io::IoError::HistoricalXcfSampleOrderRequired(question)) if interactive => {
-                ctx.check()?;
-                return Ok(Read::Choice(bytes, question, ctx.clone()));
+        let imported = match acquired {
+            super::AcquiredOpenSource::Bytes(bytes) => {
+                match ctx.stage(0.02, 0.95, "Decoding", |ctl| photocraft_io::import_for_open_with(&name_w, &bytes, &options, ctl)) {
+                    Err(photocraft_io::IoError::HistoricalXcfSampleOrderRequired(question)) if interactive => {
+                        ctx.check()?;
+                        return Ok(Read::Choice(bytes, question, ctx.clone()));
+                    }
+                    result => result,
+                }
             }
-            Err(photocraft_io::IoError::Cancelled) => return Err(EngineError::Cancelled),
-            Err(error) => return Err(EngineError::Other(error.to_string())),
-        };
+            #[cfg(any(unix, windows))]
+            super::AcquiredOpenSource::Psd(source) => ctx.stage(0.02, 0.95, "Decoding", |ctl| photocraft_io::import_source_for_open_with(&name_w, source, ctl)),
+        }
+        .map_err(|error| match error {
+            photocraft_io::IoError::Cancelled => EngineError::Cancelled,
+            error => EngineError::Other(error.to_string()),
+        })?;
         policy.prepare(&name_w, imported.0, imported.1, interactive, ctx)
     };
     let apply = move |s: &mut Session, result: Read| {
@@ -582,6 +593,62 @@ mod tests {
         };
         assert_eq!(value["historicalXcfSampleOrderRequired"]["bitsPerSample"], 16);
         value["heldHistoricalXcfOpen"].as_u64().unwrap()
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    /// Keep PSD channels file-backed despite a misleading suffix, while native names retain upstream dispatch priority.
+    fn path_acquisition_streams_psd_magic_and_preserves_native_name_priority() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source.bin");
+        let mut seed = Session::new();
+        seed.execute("file.new", json!({"width":2,"height":3})).unwrap();
+        let bytes = photocraft_io::export(&seed.active().unwrap().doc, "source.psd", &Default::default()).unwrap().bytes;
+        std::fs::write(&path, &bytes).unwrap();
+        let path = path.to_str().unwrap();
+        let super::super::AcquiredOpenSource::Psd(source) = super::super::acquire_open_path("source.bin", path, &photocraft_raster::Interrupt::NONE).unwrap()
+        else {
+            panic!("PSD magic must select file-backed parsing")
+        };
+        assert_eq!(source.read_vec(0, 4).unwrap(), b"8BPS");
+        for name in ["folder/source.PcRaFt", "folder\\source.pcraft"] {
+            let super::super::AcquiredOpenSource::Bytes(retained) = super::super::acquire_open_path(name, path, &photocraft_raster::Interrupt::NONE).unwrap()
+            else {
+                panic!("native extension must retain native decoder priority")
+            };
+            assert_eq!(retained.as_slice(), bytes.as_slice());
+        }
+        let mut opened = Session::new();
+        opened.color.settings.ask_on_missing = false;
+        opened.execute("file.open", json!({"path":path})).unwrap();
+        assert_eq!(opened.active().unwrap().doc.size, seed.active().unwrap().doc.size);
+        assert!(opened.jobs.historical_xcf.is_empty());
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    /// A held XCF decision uses the original acquired bytes even if the named file changes before resuming.
+    fn historical_path_choice_reuses_original_bytes_after_file_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("original.bin");
+        let original = source();
+        std::fs::write(&path, original.as_slice()).unwrap();
+        let path = path.to_str().unwrap();
+        let mut session = Session::new();
+        session.color.settings.ask_on_missing = false;
+        let Started::Done(value) = interactive(&mut session, path, OpenSource::Path(path.into()), Some(path.into()), false).unwrap() else {
+            panic!("inline interactive open started a job")
+        };
+        let id = value["heldHistoricalXcfOpen"].as_u64().unwrap();
+        assert!(session.documents().is_empty());
+        assert_eq!(session.jobs.historical_xcf[0].bytes.as_slice(), original.as_slice());
+        std::fs::write(path, b"replacement is not an image").unwrap();
+        session.execute("file.open", json!({"heldHistoricalXcfOpen":id,"historicalXcfSampleOrder":"big-endian"})).unwrap();
+        assert!(session.jobs.historical_xcf.is_empty());
+        let state = session.active().unwrap();
+        assert_eq!(state.doc.size, photocraft_geom::Size::new(1, 1));
+        assert!(state.source_read_only);
+        assert_eq!(state.protected_import_source.as_deref(), Some(path));
     }
 
     #[test]

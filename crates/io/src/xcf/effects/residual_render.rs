@@ -702,7 +702,7 @@ fn nova(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         children.push(layer);
     }
     Ok(replace(
-        Layer::new("Imported native starburst", LayerContent::Group(Group { children, expanded: true, artboard: None })),
+        Layer::new("Imported native starburst", LayerContent::Group(Group { children, expanded: true, artboard: None, frame_stroke: None })),
         format!(
             "Source center/radius/spoke count/seed/color become finite editable native gradient-filled ray shapes. Native seeded angular/length variation and RGB-axis color rotation approximate random-hue {hue}; native finite ray extent, Screen overlap, gradient framing and attenuation differ from source light scattering. No imaginary source brightness field or baked starburst"
         ),
@@ -729,8 +729,10 @@ fn spiral(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
         let background = Layer::new("Uniform spiral color1", LayerContent::Fill(Fill::Solid(a)));
         let mut foreground = Layer::new("Uniform spiral color2", LayerContent::Fill(Fill::Solid(z)));
         foreground.opacity = ((1. - balance) / 2.) as f32;
-        let mut layer =
-            Layer::new("Imported native uniform spiral", LayerContent::Group(Group { children: vec![background, foreground], expanded: true, artboard: None }));
+        let mut layer = Layer::new(
+            "Imported native uniform spiral",
+            LayerContent::Group(Group { children: vec![background, foreground], expanded: true, artboard: None, frame_stroke: None }),
+        );
         layer.vector_mask =
             Some(VectorMask::new(Path::new(vec![rect(0., 0., f64::from((width as u32).min(b.width())), f64::from((height as u32).min(b.height())))])));
         return Ok(replace(
@@ -771,7 +773,10 @@ fn spiral(e: &StoredEffect<'_>, c: &MappingContext) -> Result<NativeMapping> {
     }
     let background = Layer::new("Spiral background", LayerContent::Fill(Fill::Solid(a)));
     let band = shape("Spiral band", vec![Subpath::polygon(&points)], z);
-    let mut layer = Layer::new("Imported native spiral", LayerContent::Group(Group { children: vec![background, band], expanded: true, artboard: None }));
+    let mut layer = Layer::new(
+        "Imported native spiral",
+        LayerContent::Group(Group { children: vec![background, band], expanded: true, artboard: None, frame_stroke: None }),
+    );
     layer.vector_mask = Some(VectorMask::new(Path::new(vec![rect(0., 0., f64::from(width.min(b.width() as i32)), f64::from(height.min(b.height() as i32)))])));
     Ok(replace(
         layer,

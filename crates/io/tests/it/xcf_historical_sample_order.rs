@@ -154,6 +154,10 @@ impl Sample {
 }
 /// Build an independent historical wire image with an offset layer, mask, alpha channel and selection, all sharing declared sample framing.
 fn image(version: u32, sample: Sample, order: Order, gray: bool, compression: u8) -> Vec<u8> {
+    image_with_initial_view(version, sample, order, gray, compression, false)
+}
+/// Optionally mark the native editable layer active while retaining independently framed historical samples.
+fn image_with_initial_view(version: u32, sample: Sample, order: Order, gray: bool, compression: u8, active: bool) -> Vec<u8> {
     let mut w = Wire { bytes: format!("gimp xcf v{version:03}\0").into_bytes(), wide: version >= 11 };
     for value in [65, 2, u32::from(gray), sample.precision()] {
         w.word(value);
@@ -170,6 +174,9 @@ fn image(version: u32, sample: Sample, order: Order, gray: bool, compression: u8
         w.word(value);
     }
     w.string("Original historical samples");
+    if active {
+        w.property(2, &[]);
+    }
     w.property(8, &1u32.to_be_bytes());
     w.property(11, &1u32.to_be_bytes());
     w.property(15, &[(-2i32).to_be_bytes(), 1i32.to_be_bytes()].concat());
@@ -251,6 +258,50 @@ fn explicit_sample_order_covers_all_native_widths_roles_compressions_and_tile_ed
             }
         }
     }
+}
+
+/// The streamed-PSD file entry point must leave historical XCF choices, native view hints and source protection intact.
+#[cfg(any(unix, windows))]
+#[test]
+fn file_open_keeps_historical_xcf_options_view_report_and_magic_priority() {
+    use photocraft_doc::import_conversion::ImportConversion;
+    use std::io::Write;
+    let path = std::env::temp_dir().join(format!("photocraft-historical-xcf-file-open-{}.data", std::process::id()));
+    for order in [Order::LittleEndian, Order::BigEndian] {
+        let source = image_with_initial_view(9, Sample::Float, order, false, 0, true);
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(&source).unwrap();
+        for bytes in [&source, &gzip.finish().unwrap()] {
+            std::fs::write(&path, bytes).unwrap();
+            for name in ["renamed.psd", "renamed.pcraft", "source.xcf"] {
+                let missing = photocraft_io::import_file_for_open_with(name, &path, &ImportOptions::default(), &Interrupt::NONE);
+                assert!(
+                    matches!(missing, Err(photocraft_io::IoError::HistoricalXcfSampleOrderRequired(request)) if request.version == 9 && request.bits_per_sample == 32)
+                );
+                let (imported, damaged) = photocraft_io::import_file_for_open_with(name, &path, &opts(order), &Interrupt::NONE).unwrap();
+                assert!(!damaged && imported.source_read_only && !imported.preview_only);
+                assert_pixels(&imported.document, Sample::Float, false);
+                let view = imported.initial_view.as_ref().expect("active source layer remains an explicit initial native view");
+                view.validate(&imported.document).unwrap();
+                assert_eq!(view.active_layer, Some(imported.document.layers[0].id));
+                let Some(ImportConversion::Report(report)) = imported.document.metadata.import_conversion.as_deref() else {
+                    panic!("native conversion report")
+                };
+                assert!(
+                    report
+                        .entries
+                        .iter()
+                        .any(|entry| entry.feature_code == "xcf.historical_sample_order" && entry.native_description.contains(&order.to_string()))
+                );
+                let cancelled = || true;
+                assert!(matches!(
+                    photocraft_io::import_file_for_open_with(name, &path, &opts(order), &Interrupt::cancel_only(&cancelled)),
+                    Err(photocraft_io::IoError::Cancelled)
+                ));
+            }
+        }
+    }
+    std::fs::remove_file(path).unwrap();
 }
 
 // One uncompressed LZMA2 block, CRC32 check and index/footer, independently
