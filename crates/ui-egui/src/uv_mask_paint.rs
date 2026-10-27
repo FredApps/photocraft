@@ -348,11 +348,11 @@ pub(crate) fn levels_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> b
             app.ui.status_error = true;
         }
     }
-    if let Some(point) = arm_picker {
-        if !app.ui.uv_workbench.select_shells || crate::uv_ui::commit_current_polygon_selection(app) {
-            app.ui.uv_workbench.select_shells = false;
-            ui.ctx().data_mut(|data| data.insert_temp(levels_picker_id(), LevelsPicker { doc: doc_id, layer: layer_id.0, index, point, tool: app.ui.tool }));
-        }
+    if let Some(point) = arm_picker
+        && (!app.ui.uv_workbench.select_shells || crate::uv_ui::commit_current_polygon_selection(app))
+    {
+        app.ui.uv_workbench.select_shells = false;
+        ui.ctx().data_mut(|data| data.insert_temp(levels_picker_id(), LevelsPicker { doc: doc_id, layer: layer_id.0, index, point, tool: app.ui.tool }));
     }
     true
 }

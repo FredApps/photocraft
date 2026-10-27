@@ -441,7 +441,7 @@ fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &m
                         .map(|pixel| {
                             let x = pixel % side;
                             let y = pixel / side;
-                            let gray = if (x / 8 + y / 8) % 2 == 0 { 0.72 } else { 0.84 };
+                            let gray = if (x / 8 + y / 8).is_multiple_of(2) { 0.72 } else { 0.84 };
                             [gray, gray, gray, 1.0]
                         })
                         .collect();
@@ -1599,7 +1599,7 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     }
                     let Some(points) = projected_face(g, tri.positions, camera, [w as u32, h as u32], rect) else { continue };
                     let touches = if state.shell_enclosed { points.iter().all(|p| area.contains(*p)) } else { triangle_touches_rect(area, points) };
-                    if touches && face_is_visible(g, &scene, &maps, camera, [w as u32, h as u32], rect, id, points, area) {
+                    if touches && face_is_visible(g, &scene, &maps, (camera, [w as u32, h as u32], rect), id, points, area) {
                         selected.push(id);
                     }
                 }
@@ -1632,11 +1632,11 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if state.selection_target == SelectionTarget::Polygons {
                 let modifiers = ui.input(|i| i.modifiers);
                 let active_materials = app.session.active_index().map(|index| canvas_materials(app, index)).unwrap_or_default();
-                if scene.triangles.get(triangle).is_some_and(|tri| active_materials.contains(&tri.material)) {
-                    if let Some(owner) = app.session.active().map(|st| st.doc.id) {
-                        update_polygon_selection(&mut state, &[triangle], modifiers, owner);
-                        cache.rendered = None;
-                    }
+                if scene.triangles.get(triangle).is_some_and(|tri| active_materials.contains(&tri.material))
+                    && let Some(owner) = app.session.active().map(|st| st.doc.id)
+                {
+                    update_polygon_selection(&mut state, &[triangle], modifiers, owner);
+                    cache.rendered = None;
                 }
             } else if let Some(&shell) = topology.triangle_shell.get(triangle)
                 && let Some(sh) = topology.shells.get(shell)
@@ -2130,13 +2130,12 @@ fn face_is_visible(
     geometry: &photocraft_uv::prepared::Geometry,
     scene: &photocraft_uv::Scene,
     maps: &preview::Materials<'_>,
-    camera: Camera,
-    size: [u32; 2],
-    viewport: Rect,
+    frame: (Camera, [u32; 2], Rect),
     face_id: usize,
     triangle: [Pos2; 3],
     area: Rect,
 ) -> bool {
+    let (camera, size, viewport) = frame;
     let clipped = clip_triangle_to_rect(area, triangle);
     if clipped.is_empty() {
         return false;
@@ -2191,12 +2190,12 @@ pub(crate) fn commit_polygon_selection(app: &mut PhotocraftApp, state: &mut Stat
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    if !polygons.is_empty() {
-        if let Err(error) = app.run("select.uvPolygons", json!({"document":owner.map(|id|id.0),"polygons":polygons})) {
-            app.ui.status = error;
-            app.ui.status_error = true;
-            return false;
-        }
+    if !polygons.is_empty()
+        && let Err(error) = app.run("select.uvPolygons", json!({"document":owner.map(|id|id.0),"polygons":polygons}))
+    {
+        app.ui.status = error;
+        app.ui.status_error = true;
+        return false;
     }
     state.selected_polygons.clear();
     state.polygon_document = None;

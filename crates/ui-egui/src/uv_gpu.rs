@@ -202,6 +202,8 @@ struct Target {
     samples: u32,
 }
 
+type FrameKey = (u64, Camera, [u32; 2], bool, u64, bool, [u8; 4], u32);
+
 pub(crate) struct Renderer {
     rs: RenderState,
     health: photocraft_gpu::DeviceHealth,
@@ -228,7 +230,7 @@ pub(crate) struct Renderer {
     target: Option<Target>,
     spare_target: Option<Target>,
     texture_id: Option<egui::TextureId>,
-    last: Option<(u64, Camera, [u32; 2], bool, u64, bool, [u8; 4], u32)>,
+    last: Option<FrameKey>,
     wireframe_enabled: bool,
     wireframe_color: [u8; 4],
     wireframe_opacity: f32,
