@@ -1,5 +1,10 @@
 # Optional integrated 3D / UV workspace
 
+See the [illustrated presentation](uv-workbench-presentation.md) for the current
+workspace overview, editable mask sublayers, polygon wireframe and model selection.
+The [update validation](uv-workbench-validation.md) records the 0.16.0 checks and
+the remaining integration work against current upstream.
+
 Build the native application with `cargo build -p photocraft --features uv-workbench`.
 Window > 3D / UV Workbench reveals a tab in the right Properties dock, including without
 an open document. The 3D title-bar preset opens that tab by default. File > 3D Import
@@ -91,9 +96,12 @@ Scope: one imported UV set, tile 1001, Color/Normal/ID/AO/CV/Opacity/Metallic/Ro
 No ASCII FBX, glTF/GLB, UDIM, skinning/animation evaluation, procedural material shaders,
 height/displacement, clearcoat or transmission. Nondefault FBX inheritance is approximated. Stacked UVs share pixels.
 Limits: 1M triangles, 3M positions, 16M mask pixels, 256 MiB model input / 2 GiB project files, 128 MiB
-manifest. FBX allocates its parse tree before post-parse mesh limits. Large scenes may
-stall; import workers, cancellation and stricter decoded-allocation budgets remain
-future work. Normal maps require RGB documents. A missing file stays unbound for relink.
+manifest. Binary FBX is structurally checked before constructing its parser tree: at most
+256 nesting levels, 1M nodes, 2M attributes, 128 MiB per decoded array and a 384 MiB
+budget for declared decoded data plus estimated tree metadata. These are admission budgets,
+not a hard process-memory or execution-time limit; parser overhead and geometry copies add
+memory. Import remains synchronous, without cancellation or process isolation. Normal maps
+require RGB documents. A missing file stays unbound for relink.
 
 Architecture: standalone `crates/uv`, optional `engine/src/uv_cmds.rs`, thin shell
 `ui-egui/src/uv_ui.rs`, small canvas/dock/menu hooks. Upstream's WASM plug-in ABI v1 only
@@ -252,3 +260,43 @@ The native Channels/layer-mask display is projected onto affected 3D materials, 
 Model-provided texture and MTL references resolve only to regular files inside the model directory (including its subdirectories). Absolute exporter paths can relink to a matching local filename; paths and symlinks escaping the directory are not opened automatically. Missing maps can still be assigned explicitly through the texture picker.
 
 A loaded container preserves external texture paths and all embedded edits, but Export Textures refuses writeback outside the container directory until that document is explicitly rebound using the material controls. This trust is not inherited from container metadata. Explicitly opened textures remain supported.
+
+### Editable mask effects and local preview
+
+Mask Paint, image/constant Fill and Levels effects are preserved in native `.pcraft`
+documents embedded in `.pcuv`, including order, opacity, source pixels, Fill bounds,
+rotation and Repeat/Mirror settings. PSD stores the resulting raster mask, not this editable
+effect stack; use `.pcuv`/`.pcraft` to retain editable mask effects. Texture export writes
+the rendered result. Saving a project also includes unbound 3D documents when the 3D
+workspace is parked; an absent bound document causes a save error before file replacement.
+
+An environment is restored from the embedded resource only. Legacy projects with an external
+environment path but no embedded map use studio lighting and request explicit reselection;
+opening or resaving such a project does not automatically follow that stored path.
+
+Fill moves with the left mouse button inside its transformed rectangle; handles resize or
+rotate it. Repeat and Mirror use the transformed rectangle as one tile, including after
+rotation and at negative UV coordinates. Changing those flags does not move the base tile.
+GPU Fill sources are cached across transforms and uploaded in bounded strips. A source that
+exceeds the GPU dimension or dedicated 256 MiB source limit uses the CPU fallback.
+While moving, resizing or rotating a Fill, mask previews are sampled in the background at
+up to 20 updates per second into a shared temporary image capped at 256 pixels on its longest
+side. The manipulator reads the latest pointer transform every UI frame independently of
+the image's sampling rate. The opaque mask preview skips the full image composite it covers;
+other material views retain their previous image until the gesture ends. This changes display
+quality only; the gesture commits the original-resolution mask and source image without
+downsampling them. Rotated resize keeps the opposite handle anchored and the gesture can
+finish outside the canvas or after a missing pointer-release event.
+
+### Wireframe, polygon selection and mask Levels
+
+The viewport can overlay the imported polygon wireframe with adjustable color and
+opacity. The shell tool can target UV shells or individual polygons. Polygon
+highlights belong to the selected texture document; switching tools converts the
+highlight into an undoable native UV-space selection. An outside-only selection
+stays empty rather than allowing edits over the whole texture.
+
+Mask Levels effects expose their histogram, input/output controls, reset, visibility
+and 2D/3D pipettes in Properties. Selecting an effect sets its edit target without
+forcing a grayscale display; Alt-clicking the parent mask opens the mask view and
+expands its editable stack. Other materials use a checker display in this mask view.
