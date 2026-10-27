@@ -372,6 +372,99 @@ fn batch_xcf_native_defaults_reject_colliding_output_stems() {
 }
 
 #[test]
+/// Reject every cross-input target before saving, for implicit XCF output and explicit native output, including aliases outside the input folder.
+fn batch_preflight_preserves_other_selected_inputs() {
+    for xcf in [true, false] {
+        for hard_link in [false, true] {
+            let files = RouteFiles::new();
+            let input = files.0.join("input");
+            std::fs::create_dir(&input).unwrap();
+            let original_xcf = layered_xcf();
+            let source_name = if xcf { "same.XCF" } else { "same.PNG" };
+            let source = input.join(source_name);
+            if xcf {
+                std::fs::write(&source, &original_xcf).unwrap();
+            } else {
+                let wire = files.path("original.xcf");
+                std::fs::write(&wire, &original_xcf).unwrap();
+                let (code, _, error) = call(vec!["convert".into(), wire, source.to_string_lossy().into_owned()]);
+                assert_eq!(code, 0, "{error}");
+            }
+            let mut native = Session::new();
+            native.execute("file.new", json!({"width":8,"height":6,"background":"white"})).unwrap();
+            let native_bytes = photocraft_format::save_to_bytes(&native.active().unwrap().doc, &Default::default()).unwrap();
+            let other = input.join(if hard_link { "unread.pcraft" } else { "same.pcraft" });
+            std::fs::write(&other, &native_bytes).unwrap();
+            let output = if hard_link { files.0.join("output") } else { input.clone() };
+            if hard_link {
+                std::fs::create_dir(&output).unwrap();
+                std::fs::hard_link(&other, output.join("same.pcraft")).unwrap();
+            }
+            // A valid output sorts before the colliding one: the entire plan must be checked
+            // before even that unrelated result is written.
+            std::fs::write(input.join("a-safe.XCF"), &original_xcf).unwrap();
+            let source_bytes = std::fs::read(&source).unwrap();
+            let actions = files.path("actions.json");
+            std::fs::write(&actions, br#"[["image.imageRotation.90cw",{}]]"#).unwrap();
+            let mut args = vec![
+                "batch".into(),
+                "--actions".into(),
+                actions,
+                "--in".into(),
+                input.to_string_lossy().into_owned(),
+                "--out".into(),
+                output.to_string_lossy().into_owned(),
+            ];
+            if !hard_link {
+                args.push("--in-place".into());
+            }
+            if !xcf {
+                args.extend(["--format".into(), "pcraft".into()]);
+            }
+            let (code, stdout, error) = call(args);
+            assert!(std::fs::read(&other).unwrap() == native_bytes, "unread native input was overwritten: xcf={xcf}, alias={hard_link}");
+            assert_eq!(code, 1, "xcf={xcf}, alias={hard_link}: {stdout}{error}");
+            assert!(error.contains("another selected input"), "{error}");
+            assert!(!stdout.contains("ok    "), "preflight must precede every save: {stdout}");
+            assert!(!output.join("a-safe.pcraft").exists());
+            assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
+            assert_eq!(std::fs::read(input.join("a-safe.XCF")).unwrap(), original_xcf);
+            if hard_link {
+                assert_eq!(std::fs::read(output.join("same.pcraft")).unwrap(), native_bytes);
+            }
+        }
+    }
+}
+
+#[test]
+/// A native file may still be its own explicit in-place target when it cannot overwrite another selected input.
+fn batch_preflight_allows_native_in_place_editing() {
+    let files = RouteFiles::new();
+    let input = files.0.join("input");
+    std::fs::create_dir(&input).unwrap();
+    let mut session = Session::new();
+    session.execute("file.new", json!({"width":8,"height":6,"background":"white"})).unwrap();
+    let path = input.join("native.pcraft");
+    std::fs::write(&path, photocraft_format::save_to_bytes(&session.active().unwrap().doc, &Default::default()).unwrap()).unwrap();
+    let actions = files.path("actions.json");
+    std::fs::write(&actions, br#"[["image.imageRotation.90cw",{}]]"#).unwrap();
+    let (code, stdout, error) = call(vec![
+        "batch".into(),
+        "--actions".into(),
+        actions,
+        "--in".into(),
+        input.to_string_lossy().into_owned(),
+        "--out".into(),
+        input.to_string_lossy().into_owned(),
+        "--in-place".into(),
+    ]);
+    assert_eq!(code, 0, "{stdout}{error}");
+    assert!(stdout.contains("1 succeeded, 0 failed"));
+    let edited = photocraft_format::load_path(&path).unwrap();
+    assert_eq!((edited.size.width, edited.size.height), (6, 8));
+}
+
+#[test]
 /// Exercise every transport through inspection, conversion, native editing and reopen after source removal.
 fn all_xcf_transports_support_info_convert_native_edit_and_source_independent_reopen() {
     let mut expected_summary = None;

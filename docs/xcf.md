@@ -83,6 +83,9 @@ CLI `batch` defaults XCF inputs to editable `.pcraft` output when `--format` is 
 It removes the complete XCF transport suffix: `portrait.XCF.GZ` becomes `portrait.pcraft`,
 or `portrait.png` with `--format png`. This also covers `.xcfgz`, `.xcfbz2` and `.xcfxz`
 aliases. Inputs that map to the same output name are reported instead of overwriting one another.
+Before saving results, batch validates every destination against all selected inputs, including
+filesystem aliases. A destination that would replace another selected input aborts the batch
+before any results are saved. `--in-place` still permits a native file to be its own destination.
 
 Place Embedded prepares imported content before creating pixels or a Smart Object preview.
 For ambiguous historical files with an explicit byte-order choice, embedded Smart contents

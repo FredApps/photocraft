@@ -1,3 +1,5 @@
+use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -56,6 +58,69 @@ fn strip_shell_steps(action: &mut Action) {
     (action.steps, action.disabled, action.dialogs) = (steps, disabled, dialogs);
 }
 
+/// Plan the writable output name without opening or modifying any document.
+fn batch_target(input: &Path, out_dir: &Path, format: Option<&str>) -> (PathBuf, String) {
+    let name = input.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
+    let lower = name.to_ascii_lowercase();
+    let xcf_stem = [".xcf.gz", ".xcf.bz2", ".xcf.xz", ".xcf", ".xcfgz", ".xcfbz2", ".xcfxz"].into_iter().find_map(|suffix| {
+        if !lower.ends_with(suffix) {
+            return None;
+        }
+        name.len().checked_sub(suffix.len()).and_then(|end| name.get(..end))
+    });
+    // XCF is import-only. Default to editable native data and remove the whole transport
+    // suffix without changing the case or Unicode spelling of the document's name.
+    let ext = format
+        .map(str::to_owned)
+        .or_else(|| xcf_stem.map(|_| photocraft_format::EXTENSION.to_owned()))
+        .or_else(|| input.extension().map(|e| e.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "png".into());
+    let stem = xcf_stem.map(str::to_owned).or_else(|| input.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_default();
+    (out_dir.join(format!("{stem}.{ext}")), ext)
+}
+
+/// Index identities without retaining one open operating-system handle per selected file.
+/// Hash matches are only candidates: equality is always confirmed before refusing a write.
+fn file_key(handle: &same_file::Handle) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    handle.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Validate the entire output plan before any save, preserving other selected inputs and
+/// allowing the current input only with explicit in-place consent. Comparisons happen now;
+/// this does not make later writes atomic against an external process swapping filesystem links.
+fn preflight_outputs(inputs: &[PathBuf], outputs: &[(PathBuf, String)], in_place: bool) -> Result {
+    let mut sources: HashMap<u64, Vec<(usize, &Path)>> = HashMap::new();
+    for (index, input) in inputs.iter().enumerate() {
+        let handle = same_file::Handle::from_path(input).map_err(|source| CliError::InspectBatchFile { path: input.clone(), source })?;
+        sources.entry(file_key(&handle)).or_default().push((index, input));
+    }
+    for (index, (output, _)) in outputs.iter().enumerate() {
+        let handle = match same_file::Handle::from_path(output) {
+            Ok(handle) => handle,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => return Err(CliError::InspectBatchFile { path: output.clone(), source }),
+        };
+        if let Some(candidates) = sources.get(&file_key(&handle)) {
+            for &(other_index, input) in candidates {
+                if other_index == index && in_place {
+                    continue;
+                }
+                let other = same_file::Handle::from_path(input).map_err(|source| CliError::InspectBatchFile { path: input.to_path_buf(), source })?;
+                if handle == other {
+                    return Err(if other_index == index {
+                        CliError::OutIsInput(output.clone())
+                    } else {
+                        CliError::OutIsSelectedInput { output: output.clone(), input: input.to_path_buf() }
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Run actions in scratch sessions with safe separate destinations, reporting per-file failures without saving a failed
 /// nested action result.
 pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result {
@@ -81,24 +146,9 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
     let mut written = photocraft_engine::file_cmds::OutputClaims::default();
     // `--format .jpg` names outputs `<stem>.jpg`, as `--format jpg` does (#490).
     let format = a.export.format.as_deref().map(|f| f.strip_prefix('.').unwrap_or(f));
-    for input in &inputs {
-        let name = input.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
-        let lower = name.to_ascii_lowercase();
-        let xcf_stem = [".xcf.gz", ".xcf.bz2", ".xcf.xz", ".xcf", ".xcfgz", ".xcfbz2", ".xcfxz"].into_iter().find_map(|suffix| {
-            if !lower.ends_with(suffix) {
-                return None;
-            }
-            name.len().checked_sub(suffix.len()).and_then(|end| name.get(..end))
-        });
-        // XCF is import-only. Default to editable native data and remove the whole transport
-        // suffix without changing the case or Unicode spelling of the document's name.
-        let ext = format
-            .map(str::to_owned)
-            .or_else(|| xcf_stem.map(|_| photocraft_format::EXTENSION.to_owned()))
-            .or_else(|| input.extension().map(|e| e.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "png".into());
-        let stem = xcf_stem.map(str::to_owned).or_else(|| input.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_default();
-        let target = out_dir.join(format!("{stem}.{ext}"));
+    let outputs: Vec<_> = inputs.iter().map(|input| batch_target(input, out_dir, format)).collect();
+    preflight_outputs(&inputs, &outputs, a.in_place)?;
+    for (input, (target, ext)) in inputs.iter().zip(&outputs) {
         let target_text = target.to_string_lossy();
         let r = (|| -> Result<Vec<String>> {
             written.check(&target_text).map_err(CliError::OutputClaimed)?;
@@ -117,7 +167,7 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
                     return Err(CliError::NestedFailure { id: id.clone(), message });
                 }
             }
-            let r = h.save(None, Some(&target), Some(&ext), &opts)?;
+            let r = h.save(None, Some(target), Some(ext), &opts)?;
             Ok(serde_json::from_value(r["warnings"].clone()).unwrap_or_default())
         })();
         match r {
