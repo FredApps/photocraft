@@ -203,6 +203,9 @@ pub fn answer(app: &mut PhotocraftApp, action: Option<&str>) -> Result<Value, St
                 Pending::Historical(held) | Pending::Resuming { held, .. } => Some(held.id),
                 _ => None,
             })
+            // Another accepted caller may have already opened or cancelled a queued source.
+            // Reconcile without mutating the queue, so a live capability's denial stays retryable.
+            .filter(|id| app.session.holds_historical_xcf_open(*id))
             .collect();
         for id in &historical {
             authorize_historical(app, &json!({"heldHistoricalXcfOpen":id,"cancel":true}))?;
