@@ -272,6 +272,8 @@ mod tests {
         h.state_mut().run("layer.layerMask.revealAll", json!({})).unwrap();
         h.state_mut().run("uv.maskPaint.add", json!({"kind":"fill"})).unwrap();
         h.state_mut().ui.mask_target = true;
+        let state = h.state().session.active().unwrap();
+        crate::uv_mask_paint::expand_effects(&h.ctx, state.doc.id.0, state.active_layer.unwrap().0);
         h.run_steps(4);
         let fill_row = h.state().uv_cache.library.fill_targets.first().map(|(rect, _, _, _)| *rect).unwrap();
         let layers_bounds = h.state().uv_cache.library.layers_target.unwrap();

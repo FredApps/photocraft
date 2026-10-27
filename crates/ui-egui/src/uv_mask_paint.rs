@@ -599,7 +599,7 @@ mod tests {
     use photocraft_raster::Surface;
 
     #[test]
-    fn mask_effect_rows_are_direct_and_mask_target_has_no_selected_child() {
+    fn mask_effect_rows_require_expansion_and_mask_target_has_no_selected_child() {
         let mut session = photocraft_engine::Session::new();
         session.execute("file.new", json!({"width":16,"height":16})).unwrap();
         let layer_id = session.active().unwrap().active_layer.unwrap();
@@ -631,9 +631,17 @@ mod tests {
         let mut actions = Vec::new();
         let mut output = ctx.run_ui(input, |ui| visible = rows(&mut app, ui, &layer, &mut actions));
         output.textures_delta.clear();
-        assert!(visible, "effect rows are shown directly without an expandable header");
+        assert!(!visible, "targeting the mask alone keeps its effect stack collapsed");
+        expand_effects(&ctx, doc_id(&app), layer.id.0);
+        let mut output = ctx.run_ui(Default::default(), |ui| visible = rows(&mut app, ui, &layer, &mut actions));
+        output.textures_delta.clear();
+        assert!(visible, "expanding the mask exposes its effect rows");
         assert!(actions.is_empty(), "targeting a mask does not select a child effect");
         assert_eq!(selected_effect(&ctx, doc_id(&app), layer.id.0), None);
+        collapse_effects(&ctx);
+        let mut output = ctx.run_ui(Default::default(), |ui| visible = rows(&mut app, ui, &layer, &mut actions));
+        output.textures_delta.clear();
+        assert!(!visible, "returning to layer pixels collapses its effect rows");
     }
 
     #[test]
