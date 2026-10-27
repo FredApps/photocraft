@@ -103,6 +103,15 @@ pub fn check_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
 /// Seconds between attempts to save unsaved work for recovery after the window's device was lost.
 pub const RECOVERY_RETRY_SECS: f64 = 2.0;
 
+fn recovery_documents(app: &PhotocraftApp) -> Vec<&photocraft_engine::DocState> {
+    let mut documents: Vec<_> = app.session.documents().iter().collect();
+    #[cfg(feature = "uv-workbench")]
+    documents.extend(app.session.uv_workspace.parked());
+    let mut seen = std::collections::HashSet::new();
+    documents.retain(|state| seen.insert(state.doc.id));
+    documents
+}
+
 /// Write every document with unsaved changes to crash recovery, whatever the autosave timer and
 /// preference, and wait until the writes finished (see `Services::flush_autosaves`). `Ok` only when
 /// each of them is known to be on disk.
@@ -118,7 +127,7 @@ fn save_for_recovery(app: &mut PhotocraftApp) -> Result<(), String> {
         app.run("uv.maskPaint.modify", commit.params()).map_err(|error| format!("couldn't save mask Paint opacity preview for recovery: {error}"))?;
     }
 
-    let jobs: Vec<_> = app.session.documents().iter().filter(|d| d.is_dirty()).map(|d| (d.doc.clone(), d.revision, d.path.clone())).collect();
+    let jobs: Vec<_> = recovery_documents(app).into_iter().filter(|d| d.is_dirty()).map(|d| (d.doc.clone(), d.revision, d.path.clone())).collect();
     if jobs.is_empty() {
         return Ok(());
     }
@@ -274,7 +283,7 @@ pub fn show_fallback(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let t = crate::theme::Tokens::get(ctx);
     let mut choice = None;
     egui::Window::new(tl!("Switched to CPU rendering"))
-        .id(egui::Id::new("gpu-fallback-warning"))
+        .id(egui::Id::unique("gpu-fallback-warning"))
         .collapsible(false)
         .resizable(false)
         .default_width(440.0)
@@ -411,6 +420,46 @@ mod tests {
         assert!(error.contains("stale"), "{error}");
         assert_eq!(crate::uv_mask_paint_preview::pending(&app).unwrap().opacity, 0.5, "failed recovery must keep the pending value in memory");
         assert_eq!(*save_count.borrow(), 0, "do not write a snapshot that omits the pending opacity");
+    }
+
+    #[cfg(feature = "uv-workbench")]
+    #[test]
+    fn recovery_saves_dirty_documents_from_both_workspace_banks_once() {
+        use std::{cell::RefCell, rc::Rc};
+
+        let snapshots = Rc::new(RefCell::new(Vec::<(u64, u64)>::new()));
+        let autosaved = snapshots.clone();
+        let flushed = snapshots.clone();
+        let services = crate::Services {
+            autosave: Some(Box::new(move |doc, revision, _| {
+                autosaved.borrow_mut().push((doc.id.0, revision));
+                Ok(())
+            })),
+            flush_autosaves: Some(Box::new(move || flushed.borrow().iter().map(|(id, revision)| (*id, *revision, Ok(()))).collect())),
+            ..Default::default()
+        };
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", json!({"width":8,"height":8})).unwrap();
+        let parked_id = session.active().unwrap().doc.id.0;
+        session.active_mut().unwrap().revision += 1;
+        session.uv.scene = Some(std::sync::Arc::new(photocraft_uv::Scene::default()));
+        session.execute("uv.workspace.activate", json!({"active":true})).unwrap();
+        assert!(session.documents().is_empty());
+        assert_eq!(session.uv_workspace.parked().len(), 1);
+
+        session.execute("file.new", json!({"width":8,"height":8})).unwrap();
+        let active_id = session.active().unwrap().doc.id.0;
+        session.active_mut().unwrap().revision += 1;
+        let mut app = PhotocraftApp::new(session, services);
+        let revisions = recovery_documents(&app).into_iter().map(|state| (state.doc.id.0, state.revision, state.history.past_len())).collect::<Vec<_>>();
+
+        save_for_recovery(&mut app).unwrap();
+
+        let mut written = snapshots.borrow().iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        written.sort_unstable();
+        assert_eq!(written, vec![active_id, parked_id].into_iter().collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>());
+        let after = recovery_documents(&app).into_iter().map(|state| (state.doc.id.0, state.revision, state.history.past_len())).collect::<Vec<_>>();
+        assert_eq!(after, revisions, "recovery autosave must not alter documents or history");
     }
 
     #[test]

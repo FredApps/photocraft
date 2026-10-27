@@ -184,6 +184,7 @@ pub(crate) struct Cache {
     pub(crate) library: crate::uv_library::Cache,
     pub(crate) project: crate::uv_project::Ui,
     pub(crate) workspace_views: std::collections::HashMap<photocraft_doc::DocId, crate::state::View>,
+    pub(crate) parked_dock: Option<ParkedDock>,
     masked: std::collections::BTreeSet<usize>,
     pub(crate) lighting: crate::uv_lighting::Cache,
     geometry: Option<(std::sync::Arc<photocraft_uv::Scene>, std::sync::Arc<photocraft_uv::prepared::Geometry>)>,
@@ -221,6 +222,21 @@ pub(crate) struct Cache {
     thumbnails: std::collections::BTreeMap<(u64, bool), TextureHandle>,
     texture_targets: Vec<(Rect, usize, Channel)>,
     texture_target_frame: u64,
+}
+
+/// UV workspace dock state parked while a built-in non-UV preset is active.
+/// The regular preset transition still resets its own layout; this snapshot is used only when
+/// returning to 3D, whose native UV panel layout belongs to the isolated UV workspace.
+#[derive(Clone)]
+pub(crate) struct ParkedDock {
+    pub(crate) dock: crate::dock::DockLayout,
+    pub(crate) docking: Option<craft_ui::docking::Workspace<String>>,
+    pub(crate) returns: std::collections::BTreeMap<String, craft_ui::docking::Location<String>>,
+    pub(crate) kept: Option<serde_json::Map<String, serde_json::Value>>,
+    pub(crate) collapsed: Vec<String>,
+    pub(crate) tabs: crate::state::DockTabs,
+    pub(crate) dock_visible: bool,
+    pub(crate) uv_open: bool,
 }
 
 #[cfg(test)]
@@ -503,6 +519,7 @@ fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &m
                 if view.target == photocraft_engine::channel_cmds::ChannelTarget::LayerMask {
                     view.layer_mask = Some(photocraft_engine::mask_view_cmds::LayerMaskView {
                         layer: proxy.layer,
+                        filter: false,
                         mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray,
                     });
                 }
@@ -736,10 +753,14 @@ fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &m
 
 pub(crate) fn reveal(app: &mut PhotocraftApp) -> Result<(), String> {
     if app.ui.workspace != "3D" {
+        let previous = app.ui.clone();
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(app);
+        if let Err(error) = crate::menus::apply_workspace(app) {
+            app.ui = previous;
+            return Err(error);
+        }
     }
-    crate::uv_workspace::sync_workspace(app);
+    crate::uv_workspace::sync_workspace(app)?;
     app.ui.uv_workbench.open = true;
     app.ui.panels.dock = true;
     if app.ui.docking.is_some() {
@@ -1072,7 +1093,7 @@ fn material_cards(app: &mut PhotocraftApp, state: &mut State, ui: &mut egui::Ui,
                         let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
                         ui.painter().galley(rect.min + vec2(if info.is_some() { 34.0 } else { 4.0 }, y), galley, color);
                     }
-                    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{label}: {name}")));
+                    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{label}: {name}")));
                     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(info.as_ref().map_or(
                         tl!("Choose a file or drop an image here").into(),
                         |(_, _, path, size)| {
@@ -1083,7 +1104,7 @@ fn material_cards(app: &mut PhotocraftApp, state: &mut State, ui: &mut egui::Ui,
                         pick = Some(("texture", material, kind));
                     }
                     let button = egui::Button::image(crate::icons::image("ellipsis", 16.0, t.icon)).min_size(vec2(26.0, 24.0));
-                    egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                    let (menu_response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
                         if ui.add_enabled(info.is_some(), egui::Button::new(tl!("Edit in 2D"))).clicked() {
                             command(app, state, "uv.material.select", json!({"material":material,"channel":channel}));
                             state.view_3d = false;
@@ -1114,6 +1135,8 @@ fn material_cards(app: &mut PhotocraftApp, state: &mut State, ui: &mut egui::Ui,
                             ui.close();
                         }
                     });
+                    menu_response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{} options", label)));
+                    menu_response.on_hover_text(format!("{} options", label));
                 });
             });
             app.uv_cache.texture_targets.push((row.response.rect, material, kind));
@@ -1184,7 +1207,12 @@ pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 }
 /// Draw the mode switch before the no-document screen, so an untextured mesh is usable.
 pub(crate) fn workspace(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
-    crate::uv_workspace::sync_workspace(app);
+    if let Err(error) = crate::uv_workspace::sync_workspace(app) {
+        app.ui.status = error.clone();
+        app.ui.status_error = true;
+        ui.colored_label(Tokens::get(ui.ctx()).danger, error);
+        return true;
+    }
     if app.ui.workspace != "3D" {
         return false;
     }
@@ -1752,7 +1780,7 @@ pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &cr
     }) {
         let (shown_bounds, shown_rotation) =
             crate::uv_mask_paint_preview::fill_transform(app, photocraft_doc::LayerId(layer_id), effect_index, bounds, rotation);
-        let id = ui.id().with(("fill-mask-manipulator", document.doc.id.0, layer_id, effect_index));
+        let id = ui.scope_id().with(("fill-mask-manipulator", document.doc.id.0, layer_id, effect_index));
         let screen = |x: f32, y: f32| xf.to_screen(x, y);
         let corners = fill_corners(shown_bounds, shown_rotation).map(|[x, y]| screen(x, y));
         let box_rect = corners.iter().copied().fold(Rect::NOTHING, |rect, point| rect.union(Rect::from_min_max(point, point)));
@@ -2524,7 +2552,7 @@ mod tests {
         assert!(crate::icons::exists("uv-perspective") && crate::icons::exists("uv-orthographic"));
         let mut app = fixture_app();
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app);
+        crate::menus::apply_workspace(&mut app).unwrap();
         app.run("uv.texture.create", json!({"channel":"normal","width":32,"height":32})).unwrap();
         app.run("uv.material.select", json!({"channel":"baseColor"})).unwrap();
         app.ui.tool = crate::state::Tool::Brush;
@@ -2544,6 +2572,7 @@ mod tests {
             unit: egui::MouseWheelUnit::Point,
             delta: vec2(0.0, 60.0),
             phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
             modifiers: egui::Modifiers::NONE,
         });
         h.step();
@@ -2619,7 +2648,7 @@ mod tests {
         let _gpu = photocraft_testkit::gpu_lock();
         let mut app = fixture_app();
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app);
+        crate::menus::apply_workspace(&mut app).unwrap();
         app.ui.uv_workbench.split_view = true;
         app.ui.tool = crate::state::Tool::Brush;
         app.run("tools.setBrush", json!({"brush":{"size":20,"hardness":0.333,"opacity":0.617}})).unwrap();
@@ -2694,7 +2723,7 @@ mod tests {
         app.session.uv.normal_bindings.fill(None); // Explicitly exercise the absent-channel state despite sibling auto-discovery.
         app.services.file_dialog = Some(dialog);
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app);
+        crate::menus::apply_workspace(&mut app).unwrap();
         let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).wgpu_setup(crate::gpu_canvas::wgpu_setup()).build_eframe(move |cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
             app.set_uv_wgpu(cc.wgpu_render_state.clone().unwrap()).unwrap();
@@ -2706,7 +2735,7 @@ mod tests {
         assert!(h.query_by_label("3D view / normals").is_none());
         assert!(h.query_by_label("Import information").is_none());
         h.get_by_label("Display channel").click();
-        h.step();
+        h.run_steps(2);
         assert!(h.query_by_label("Normal").is_none());
         h.get_by_label("Color").click();
         h.step();
@@ -2742,13 +2771,13 @@ mod tests {
         h.step();
         assert_eq!(thumb, h.state().uv_cache.thumbnails[&(id.0, true)].id(), "painting must not regenerate source thumbnails");
         h.get_by_label("Display channel").click();
-        h.step();
+        h.run_steps(2);
         h.get_by_label("Normal").click();
         h.step();
         assert_eq!(h.state().ui.uv_workbench.channel, Channel::Normal);
         assert_eq!(h.state().session.active().unwrap().doc.id, id, "2D must follow the selected map");
         h.get_by_label("UV shell selection").click();
-        h.step();
+        h.run_steps(2);
         assert!(h.query_by_label("General margin, px").is_some());
         assert!(h.query_by_label("U margin, px").is_some());
         assert!(h.query_by_label("V margin, px").is_some());
@@ -3081,7 +3110,7 @@ mod tests {
             doc.layer_mut(layer).unwrap().mask = Some(mask);
             state.channel_view.target = photocraft_engine::channel_cmds::ChannelTarget::LayerMask;
             state.channel_view.layer_mask =
-                Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
+                Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, filter: false, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
         }
         let ctx = egui::Context::default();
         let material = app.session.uv.material;
@@ -3340,7 +3369,7 @@ mod tests {
         harness.step();
         harness.get_by_label("File").click();
         harness.step();
-        harness.get_by_label("3D Import ⏵").click();
+        harness.get_by_label("3D Import").click();
         harness.step();
         harness.get_by_label("Reimport").click();
         harness.step();

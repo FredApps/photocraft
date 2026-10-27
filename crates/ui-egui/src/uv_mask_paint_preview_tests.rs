@@ -334,7 +334,7 @@ fn gray_fill_preview_skips_full_cpu_worker_for_both_mask_target_forms() {
     assert_eq!(cache.preview_key, proxy.key, "the texture key matches the sampled transform");
     let mut view = app.session.active().unwrap().channel_view.clone();
     // `ensure` normalizes target-only mask selection to this explicit display descriptor.
-    view.layer_mask = Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
+    view.layer_mask = Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, filter: false, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
     let pixels = crate::channel_view::render_fill_mask_proxy(
         &doc,
         &view,
@@ -350,7 +350,7 @@ fn gray_fill_preview_skips_full_cpu_worker_for_both_mask_target_forms() {
     let state = app.session.active_mut().unwrap();
     state.channel_view.target = photocraft_engine::channel_cmds::ChannelTarget::Composite;
     state.channel_view.layer_mask =
-        Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
+        Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, filter: false, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
     assert!(super::current_fill_gray_mask(&app, 0), "the explicit mask-view selection is also opaque Gray");
     assert!(super::display_doc(&mut app, 0).is_some());
     assert!(crate::channel_view::ensure(&mut app, &ui_ctx, 0).is_some());

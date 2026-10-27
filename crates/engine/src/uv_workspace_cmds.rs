@@ -50,6 +50,7 @@ fn switch(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.uv_workspace.active = active;
     s.uv_workspace.initialized = true;
+    s.note_active_change();
     s.sync_tools_mask_target();
     Ok(json!({"active":active,"documents":s.docs.len()}))
 }

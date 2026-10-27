@@ -13,7 +13,7 @@ struct LevelsPicker {
 }
 
 fn levels_picker_id() -> egui::Id {
-    egui::Id::new("uv-mask-levels-picker")
+    egui::Id::unique("uv-mask-levels-picker")
 }
 
 pub(crate) fn levels_picker_active(app: &PhotocraftApp, ctx: &egui::Context) -> bool {
@@ -106,11 +106,11 @@ pub(crate) fn prune_levels_picker(app: &PhotocraftApp, ctx: &egui::Context) {
 }
 
 fn effect_selection_id(doc: u64, layer: u64) -> egui::Id {
-    egui::Id::new(("uv-mask-effect-selection", doc, layer))
+    egui::Id::unique(("uv-mask-effect-selection", doc, layer))
 }
 
 fn expanded_effects_id() -> egui::Id {
-    egui::Id::new("uv-mask-paint-expanded-layer")
+    egui::Id::unique("uv-mask-paint-expanded-layer")
 }
 
 /// Open the selected layer's mask stack without switching the canvas to mask display.
@@ -256,7 +256,7 @@ pub(crate) fn levels_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> b
         "outBlack": (output_black * 255.0).round(),
         "outWhite": (output_white * 255.0).round(),
     });
-    let values_id = egui::Id::new(("mask-levels-values", doc_id, layer_id.0, index));
+    let values_id = egui::Id::unique(("mask-levels-values", doc_id, layer_id.0, index));
     let mut values = ui
         .ctx()
         .data(|data| data.get_temp::<(u64, Value)>(values_id))
@@ -264,7 +264,7 @@ pub(crate) fn levels_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> b
         .map_or(canonical, |(_, values)| values);
     let hist = mask_levels_histogram(ui.ctx(), doc_id, revision, layer_id.0, index, stack, size);
     let cx = crate::adjust_editors::EditorCx {
-        mem: egui::Id::new(("mask-levels", doc_id, layer_id.0, index)),
+        mem: egui::Id::unique(("mask-levels", doc_id, layer_id.0, index)),
         hist: Some(hist),
         gray: true,
         swatches: [[0.0; 3]; 2],
@@ -369,7 +369,7 @@ fn mask_levels_histogram(
     stack: &photocraft_doc::mask_paint::Stack,
     size: photocraft_doc::Size,
 ) -> std::sync::Arc<crate::tone::Histograms> {
-    let id = egui::Id::new(("mask-levels-histogram", doc, layer, index));
+    let id = egui::Id::unique(("mask-levels-histogram", doc, layer, index));
     if let Some((cached_revision, cached)) = ctx.data(|data| data.get_temp::<(u64, std::sync::Arc<crate::tone::Histograms>)>(id))
         && cached_revision == revision
     {
@@ -390,7 +390,7 @@ fn mask_levels_histogram(
             }
         }
     }
-    let cached = std::sync::Arc::new(crate::tone::Histograms { tag: doc ^ revision ^ layer ^ index as u64, ch: vec![bins], level: 0 });
+    let cached = std::sync::Arc::new(crate::tone::Histograms { tag: doc ^ revision ^ layer ^ index as u64, ch: vec![bins], ..Default::default() });
     ctx.data_mut(|data| data.insert_temp(id, (revision, cached.clone())));
     cached
 }
@@ -450,7 +450,7 @@ pub(crate) fn fill_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> boo
             let (rect, _) = ui.allocate_exact_size(egui::vec2(preview_w, preview_h), egui::Sense::hover());
             let tex_w = 120usize;
             let tex_h = ((source_h as f64 / source_w as f64 * tex_w as f64).round() as usize).clamp(1, 72);
-            let texture_id = egui::Id::new(("uv-fill-map-preview", st.doc.id.0, layer_id, index));
+            let texture_id = egui::Id::unique(("uv-fill-map-preview", st.doc.id.0, layer_id, index));
             let cached = ui.ctx().data_mut(|data| data.get_temp::<(u64, egui::TextureHandle)>(texture_id));
             let handle = if let Some((_, handle)) = cached.filter(|(revision, _)| *revision == st.revision) {
                 handle
@@ -488,7 +488,7 @@ pub(crate) fn fill_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> boo
 /// Black-to-white source-value control. It stages pointer movement in UI memory and commits one
 /// mask recomposition after release, just like the numeric controls above.
 fn gradient_parameter(ui: &mut egui::Ui, doc: u64, revision: u64, layer: u64, index: usize, canonical: f32, actions: &mut Vec<(String, Value)>) {
-    let id = egui::Id::new(("mask-effect-param", doc, revision, layer, index, "value"));
+    let id = egui::Id::unique(("mask-effect-param", doc, revision, layer, index, "value"));
     let mut value = ui.ctx().data_mut(|data| data.get_temp::<f32>(id).unwrap_or(canonical));
     ui.horizontal(|ui| {
         ui.label(tl!("Gray value"));
@@ -520,7 +520,7 @@ fn gradient_parameter(ui: &mut egui::Ui, doc: u64, revision: u64, layer: u64, in
         [egui::pos2(thumb_x, track.top() - 2.0), egui::pos2(thumb_x, track.bottom() + 2.0)],
         egui::Stroke::new(2.0, Tokens::get(ui.ctx()).accent),
     );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Slider, true, tl!("Gray value")));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, tl!("Gray value")));
     if response.drag_stopped_by(egui::PointerButton::Primary) || response.clicked_by(egui::PointerButton::Primary) {
         let staged = ui.ctx().data_mut(|data| {
             let staged = data.get_temp::<f32>(id).unwrap_or(value);
@@ -547,7 +547,7 @@ fn edit_parameter_speed(
     speed: f64,
     actions: &mut Vec<(String, Value)>,
 ) {
-    let id = egui::Id::new(("mask-effect-param", doc, revision, layer, index, key));
+    let id = egui::Id::unique(("mask-effect-param", doc, revision, layer, index, key));
     let mut value = ui.ctx().data_mut(|data| data.get_temp::<f32>(id).unwrap_or(canonical));
     let response = ui
         .add(egui::DragValue::new(&mut value).range(range).speed(speed).suffix(if key == "rotation" { "°" } else { "" }).prefix(format!("{label}: ")))

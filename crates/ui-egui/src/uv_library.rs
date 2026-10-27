@@ -131,7 +131,7 @@ pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             ui.painter().image(image.id(), area, Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
         }
         response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, crate::i18n::fmt(tl!("Image: {name}"), &[("name", &asset.source.name)])));
+            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::i18n::fmt(tl!("Image: {name}"), &[("name", &asset.source.name)])));
         response.dnd_set_drag_payload(Drag { id: asset.id });
         if response.double_clicked() && app.session.active().is_some() {
             place(app, asset.id);
@@ -232,7 +232,7 @@ mod tests {
         session.execute("uv.model.import", json!({"path":fixture})).unwrap();
         let mut app = PhotocraftApp::new(session, Default::default());
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app);
+        crate::menus::apply_workspace(&mut app).unwrap();
         app.ui.dock_tabs.properties = 3;
         let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).wgpu_setup(crate::gpu_canvas::wgpu_setup()).build_eframe(move |cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());

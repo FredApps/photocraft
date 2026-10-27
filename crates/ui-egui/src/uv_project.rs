@@ -117,6 +117,7 @@ pub(crate) fn dirty(app: &PhotocraftApp) -> bool {
     let saved = &app.session.uv.project_view;
     let view = if app.session.uv_workspace.active { Some(snapshot(app)) } else { app.uv_cache.project.parked_view.clone() };
     crate::uv_lighting::pending(&app.uv_cache.lighting)
+        || crate::uv_mask_paint_preview::pending(app).is_some()
         || app.session.uv.has_unsaved_project(docs)
         || (!saved.is_null() && view.as_ref().is_some_and(|v| v != saved))
 }
@@ -132,9 +133,19 @@ pub(crate) fn close(app: &mut PhotocraftApp) {
     app.uv_cache.library = Default::default();
     if in_3d {
         app.ui.workspace = "Essentials".into();
-        crate::menus::apply_workspace(app);
-    } else {
-        crate::uv_workspace::sync_workspace(app);
+        if let Err(error) = crate::menus::apply_workspace(app) {
+            // The engine close has already removed the UV documents. Keep the UI aligned with
+            // the still-active, now empty UV bank if switching back was refused.
+            app.ui.workspace = "3D".into();
+            app.ui.status = error;
+            app.ui.status_error = true;
+        }
+    } else if let Err(error) = crate::uv_workspace::sync_workspace(app) {
+        // The engine close activates and clears the UV bank before this UI transition.
+        // If ordinary-bank activation fails, keep the workspace label aligned with the bank.
+        app.ui.workspace = "3D".into();
+        app.ui.status = error;
+        app.ui.status_error = true;
     }
     app.uv_cache.project = Default::default();
 }
@@ -162,8 +173,15 @@ pub(crate) fn intercept(app: &mut PhotocraftApp, id: &str, params: &Value) -> bo
     }
     if id == "file.exit" && app.session.uv_workspace.active {
         // The project has already been answered; native prompts now cover only ordinary docs.
+        let previous_ui = app.ui.clone();
         app.ui.workspace = "Essentials".into();
-        crate::menus::apply_workspace(app);
+        if let Err(error) = crate::menus::apply_workspace(app) {
+            app.ui = previous_ui;
+            app.ui.status = error;
+            app.ui.status_error = true;
+            app.uv_cache.project.exit_approved = false;
+            return true;
+        }
     }
     false
 }
@@ -179,7 +197,7 @@ pub(crate) fn prompt(app: &mut PhotocraftApp, ctx: &egui::Context) {
         return;
     }
     let mut answer = 0;
-    egui::Modal::new(egui::Id::new("uv-container-discard")).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("uv-container-discard")).show(ctx, |ui| {
         ui.set_max_width(430.0);
         ui.heading(tl!("Save changes to the 3D project?"));
         ui.label(tl!("The .pcuv container saves layered textures, library images, the model and scene settings. Export Textures is not required."));
@@ -214,24 +232,40 @@ pub(crate) fn prompt(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 match save_to(app, path) {
                     Ok(_) => resume(app, ctx, action),
                     Err(e) => {
+                        app.uv_cache.project.prompt = Some(action);
                         app.ui.status = e;
                         app.ui.status_error = true;
                     }
                 }
             } else {
                 let ctx = ctx.clone();
+                let retry_action = action.clone();
+                let open_error_action = action.clone();
                 if let Err(e) = app.pick_save("model.pcuv", move |app, path| {
                     let path = if path.to_ascii_lowercase().ends_with(".pcuv") { path } else { format!("{path}.pcuv") };
-                    save_to(app, path)?;
-                    resume(app, &ctx, action);
-                    Ok(Value::Null)
+                    match save_to(app, path) {
+                        Ok(_) => {
+                            resume(app, &ctx, action);
+                            Ok(Value::Null)
+                        }
+                        Err(error) => {
+                            app.uv_cache.project.prompt = Some(retry_action);
+                            Err(error)
+                        }
+                    }
                 }) {
+                    app.uv_cache.project.prompt = Some(open_error_action);
                     app.ui.status = e;
                     app.ui.status_error = true;
                 }
             }
         }
-        2 => resume(app, ctx, action),
+        2 => {
+            // "Don't save" discards transient Paint/Fill previews with the project itself.
+            // Save errors leave the preview intact so the user can retry or explicitly discard.
+            crate::uv_mask_paint_preview::cancel(app);
+            resume(app, ctx, action);
+        }
         _ => {}
     }
 }
@@ -318,7 +352,7 @@ mod container_tests {
         let mut app = PhotocraftApp::new(s, Default::default());
         app.sync_views();
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app);
+        crate::menus::apply_workspace(&mut app).unwrap();
         let mesh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
         app.run("uv.model.import", json!({"path":mesh})).unwrap();
         app.run("uv.texture.create", json!({"width":32,"height":32})).unwrap();
@@ -362,10 +396,38 @@ mod container_tests {
         let _gpu = photocraft_testkit::gpu_lock();
         let mut app = app();
         app.ui.workspace = "Painting".into();
-        crate::menus::apply_workspace(&mut app);
+        crate::menus::apply_workspace(&mut app).unwrap();
         assert!(dirty(&app));
         assert!(intercept(&mut app, "file.exit", &json!({})));
         assert!(app.discard.is_none());
         assert_eq!(app.uv_cache.project.prompt.as_ref().unwrap().0, "file.exit");
+    }
+
+    #[test]
+    fn pending_fill_preview_prompts_before_close_and_stale_save_keeps_preview() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut app = app();
+        app.run("layer.layerMask.hideAll", json!({})).unwrap();
+        app.run("uv.maskPaint.add", json!({"kind":"fill","value":1.0})).unwrap();
+        let layer = app.session.active().unwrap().active_layer.unwrap();
+        let path = std::env::temp_dir().join(format!("uv-preview-close-{}.pcuv", std::process::id()));
+        save_to(&mut app, path.to_string_lossy().into_owned()).unwrap();
+        assert!(!dirty(&app));
+
+        crate::uv_mask_paint_preview::set_fill(&mut app, layer, 0, [4, 4, 24, 24], 12.0);
+        let preview = crate::uv_mask_paint_preview::pending(&app).expect("the Fill edit is transient");
+        assert!(dirty(&app), "a pending Fill edit is part of the unsaved project");
+        assert!(intercept(&mut app, "file.close", &json!({})), "native close must ask before dropping the project");
+        assert_eq!(app.uv_cache.project.prompt.as_ref().unwrap().0, "file.uv.closeProject");
+        assert_eq!(crate::uv_mask_paint_preview::pending(&app).unwrap().params(), preview.params());
+
+        // Bypass PhotocraftApp::run to model a revision change from a concurrent document edit.
+        app.session.execute("edit.fill", json!({"color":"#ff0000"})).unwrap();
+        let changed_revision = app.session.active().unwrap().revision;
+        assert!(save_to(&mut app, path.to_string_lossy().into_owned()).is_err(), "a stale preview cannot be saved");
+        assert_eq!(app.session.active().unwrap().revision, changed_revision);
+        assert_eq!(crate::uv_mask_paint_preview::pending(&app).unwrap().params(), preview.params());
+        assert!(dirty(&app), "the failed save keeps the project dirty and retryable");
+        std::fs::remove_file(path).unwrap();
     }
 }

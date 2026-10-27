@@ -206,16 +206,16 @@ fn icon_menu_with_close_behavior<R>(ui: &mut Ui, icon: &str, tip: &str, close_be
     let image = icons::image(icon, 17.0, Tokens::get(ui.ctx()).icon);
     let config = egui::containers::menu::MenuConfig::new().close_behavior(close_behavior);
     let (response, _) = egui::containers::menu::MenuButton::from_button(egui::Button::image(image).min_size(vec2(32.0, 26.0))).config(config).ui(ui, body);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
     response.on_hover_text(tip);
 }
 
 fn wireframe_menu_rect_id() -> egui::Id {
-    egui::Id::new("uv-wireframe-parent-menu-rect")
+    egui::Id::unique("uv-wireframe-parent-menu-rect")
 }
 
 fn wireframe_picker_rect_id() -> egui::Id {
-    egui::Id::new("uv-wireframe-picker-rect")
+    egui::Id::unique("uv-wireframe-picker-rect")
 }
 
 fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
@@ -305,7 +305,7 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
                     display_menu_rect = Some(ui.min_rect().expand(4.0));
                 });
             let response = response.on_hover_text(tl!("3D display"));
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("3D display")));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("3D display")));
             display_menu_button = Some(response);
             icon_menu(ui, "sliders-horizontal", tl!("Camera navigation"), |ui| {
                 ui.label(tl!("Orbit pivot"));
@@ -357,7 +357,7 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
                     }
                 })
                 .response;
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, tl!("Display channel")));
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, tl!("Display channel")));
             response.on_hover_text(tl!("Material shows the shaded material. Map channels show unlit texture colors."));
             let channel = app.ui.uv_workbench.channel;
             if channel != previous {
@@ -376,7 +376,7 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
                             }
                         })
                         .response;
-                    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, tl!("2D map")));
+                    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, tl!("2D map")));
                     response.on_hover_text(tl!("The 2D map can be selected independently of the 3D display"));
                     ui.weak("2D");
                     if selected != before {
@@ -411,7 +411,7 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
         let mut changed = false;
         let position = parent_rect.map_or_else(|| ui.next_widget_position(), |r| egui::pos2(r.right() + 5.0, r.top()));
         let shown = egui::Window::new(tl!("Wireframe color"))
-            .id(egui::Id::new("uv-wireframe-color-picker"))
+            .id(egui::Id::unique("uv-wireframe-color-picker"))
             .open(&mut open)
             .fixed_pos(position)
             .default_width(350.0)
@@ -496,7 +496,7 @@ pub(crate) fn show(app: &mut PhotocraftApp, ui: &mut Ui) -> bool {
     let ratio = app.ui.uv_workbench.split_ratio.clamp(0.2, 0.8);
     let x = rect.left() + rect.width() * ratio;
     let divider = Rect::from_min_max(egui::pos2(x - 3.0, rect.top()), egui::pos2(x + 3.0, rect.bottom()));
-    let response = ui.interact(divider, ui.id().with("uv-divider"), Sense::drag());
+    let response = ui.interact(divider, ui.scope_id().with("uv-divider"), Sense::drag());
     if response.dragged()
         && let Some(p) = response.interact_pointer_pos()
     {
@@ -595,10 +595,33 @@ pub(crate) fn floating(app: &mut PhotocraftApp, ctx: &egui::Context) {
 }
 
 /// Switch document banks after ending native gestures, preserving each canvas transform.
-pub(crate) fn sync_workspace(app: &mut PhotocraftApp) {
+pub(crate) fn sync_workspace(app: &mut PhotocraftApp) -> Result<(), String> {
     let active = app.ui.workspace == "3D";
     if app.session.uv_workspace.active == active {
-        return;
+        return Ok(());
+    }
+    if !active {
+        // A built-in preset is free to replace its own panels and dock. Remember the UV panel's
+        // native layout first so returning to 3D restores its tabs, floating returns and visibility.
+        app.uv_cache.parked_dock = Some(crate::uv_ui::ParkedDock {
+            dock: app.ui.dock.clone(),
+            docking: app.ui.docking.clone(),
+            returns: app.ui.docking_returns.clone(),
+            kept: app.ui.docking_kept.clone(),
+            collapsed: app.ui.docking_collapsed.clone(),
+            tabs: app.ui.dock_tabs,
+            dock_visible: app.ui.panels.dock,
+            uv_open: app.ui.uv_workbench.open,
+        });
+    }
+    // Commit a valid transient edit before changing banks. app.run handles stale revisions
+    // without dropping the preview, and recognizes this exact command to avoid a second commit.
+    if let Some(commit) = crate::uv_mask_paint_preview::pending(app) {
+        app.run("uv.maskPaint.modify", commit.params()).map_err(|error| {
+            app.ui.status = error.clone();
+            app.ui.status_error = true;
+            error
+        })?;
     }
     uv_ui::finish_paint(app);
     app.ui.brush_picker = None;
@@ -615,10 +638,11 @@ pub(crate) fn sync_workspace(app: &mut PhotocraftApp) {
     for (st, view) in app.session.documents().iter().zip(&app.ui.views) {
         app.uv_cache.workspace_views.insert(st.doc.id, view.clone());
     }
-    if let Err(e) = app.run("uv.workspace.activate", serde_json::json!({"active":active})) {
-        app.ui.status = e;
-        return;
-    }
+    app.run("uv.workspace.activate", serde_json::json!({"active":active})).map_err(|error| {
+        app.ui.status = error.clone();
+        app.ui.status_error = true;
+        error
+    })?;
     app.sync_views();
     for (st, view) in app.session.documents().iter().zip(&mut app.ui.views) {
         if let Some(saved) = app.uv_cache.workspace_views.get(&st.doc.id) {
@@ -629,12 +653,19 @@ pub(crate) fn sync_workspace(app: &mut PhotocraftApp) {
     app.uv_cache.viewport = None;
     app.uv_cache.viewport_id = None;
     app.uv_cache.workspace_views.retain(|id, _| app.session.documents().iter().chain(app.session.uv_workspace.parked()).any(|st| st.doc.id == *id));
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use egui_kittest::kittest::Queryable as _;
+    use photocraft_color::PixelFormat;
+    use photocraft_doc::{
+        LayerMask,
+        mask_paint::{EffectKind, Paint, Stack},
+    };
+    use photocraft_raster::Surface;
     use serde_json::json;
     #[test]
     fn uv_tabs_are_scoped_to_the_3d_workspace() {
@@ -687,7 +718,7 @@ mod tests {
                 PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
                 let mut app = PhotocraftApp::new(session, Default::default());
                 app.ui.workspace = "3D".into();
-                crate::menus::apply_workspace(&mut app);
+                crate::menus::apply_workspace(&mut app).unwrap();
                 app
             });
             h.step();
@@ -746,13 +777,13 @@ mod tests {
             let mut app = PhotocraftApp::new(session, Default::default());
             app.set_uv_wgpu(cc.wgpu_render_state.clone().unwrap()).unwrap();
             app.ui.workspace = "3D".into();
-            crate::menus::apply_workspace(&mut app);
+            crate::menus::apply_workspace(&mut app).unwrap();
             app
         });
         h.step();
         assert!(h.state().uv_gpu_active());
         h.get_by_label("3D / 2D views").click();
-        h.step();
+        h.run_steps(2);
         h.get_by_label("Show UV shells").click();
         h.step();
         assert!(!h.state().ui.uv_workbench.show_overlay);
@@ -798,5 +829,101 @@ mod tests {
         if let Ok(path) = std::env::var("PHOTOCRAFT_UV_WORKSPACE_SCREENSHOT") {
             h.render().unwrap().save(path).unwrap();
         }
+    }
+
+    #[test]
+    fn stale_mask_paint_preview_rejects_workspace_switch_and_restores_ui() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.fbx");
+        app.run("uv.model.import", json!({"path":model.to_string_lossy()})).unwrap();
+        app.run("file.new", json!({"width":32,"height":24})).unwrap();
+        let layer = app.session.active().unwrap().active_layer.unwrap();
+        let state = app.session.active_mut().unwrap();
+        let mut mask = LayerMask::hide_all();
+        mask.paint = Some(Stack {
+            base: Surface::with_default(PixelFormat::GRAY8, &[0.2]),
+            layers: vec![Paint {
+                name: "Opacity".into(),
+                visible: true,
+                opacity: 1.0,
+                surface: Surface::with_default(PixelFormat::RGBA8, &[1.0, 0.0, 0.0, 0.5]),
+                fill_map: None,
+                fill_map_size: [0, 0],
+                fill_bounds: None,
+                kind: EffectKind::Paint,
+            }],
+            active: 0,
+        });
+        std::sync::Arc::make_mut(&mut state.doc).layer_mut(layer).unwrap().mask = Some(mask);
+
+        crate::uv_mask_paint_preview::set(&mut app, layer, 0, 0.5);
+        assert!(app.uv_mask_paint_preview.is_some());
+        let document = app.session.active().unwrap().doc.id;
+        let history = app.session.active().unwrap().history.past_len();
+        crate::menus::invoke(&mut app, &egui::Context::default(), "window.workspace.threeD", Value::Null).unwrap();
+        assert!(app.session.uv_workspace.active);
+        assert!(app.uv_mask_paint_preview.is_none());
+        let committed_history =
+            app.session.documents().iter().chain(app.session.uv_workspace.parked()).find(|state| state.doc.id == document).unwrap().history.past_len();
+        assert_eq!(committed_history, history + 1, "valid preview commits once before switching");
+        crate::menus::invoke(&mut app, &egui::Context::default(), "window.workspace.essentials", Value::Null).unwrap();
+        assert!(!app.session.uv_workspace.active);
+
+        crate::uv_mask_paint_preview::set(&mut app, layer, 0, 0.25);
+        assert!(app.uv_mask_paint_preview.is_some());
+        app.session.active_mut().unwrap().revision += 1;
+
+        let result = crate::menus::invoke(&mut app, &egui::Context::default(), "window.workspace.threeD", Value::Null);
+        assert!(result.is_err());
+        assert_eq!(app.ui.workspace, "Essentials");
+        assert!(!app.session.uv_workspace.active);
+        assert!(app.uv_mask_paint_preview.is_some(), "stale preview stays available for explicit cancellation");
+        assert!(app.ui.status_error);
+    }
+
+    #[test]
+    fn builtin_workspace_round_trip_preserves_uv_dock_but_reset_still_resets_it() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        let ctx = egui::Context::default();
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.threeD", Value::Null).unwrap();
+        crate::menus::invoke(&mut app, &ctx, "window.panel.float", json!({"panel":"uvWorkbench","x":80,"y":90,"width":520,"height":360})).unwrap();
+        assert!(app.ui.uv_workbench.open);
+        let dock = app.ui.dock.clone();
+        let docking = app.ui.docking.clone();
+        let returns = app.ui.docking_returns.clone();
+        let kept = app.ui.docking_kept.clone();
+        let collapsed = app.ui.docking_collapsed.clone();
+        let tabs = app.ui.dock_tabs;
+        let dock_visible = app.ui.panels.dock;
+
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.painting", Value::Null).unwrap();
+        assert!(!app.session.uv_workspace.active);
+        assert_ne!(app.ui.docking, docking, "the Painting preset keeps its normal layout policy");
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.threeD", Value::Null).unwrap();
+
+        assert!(app.session.uv_workspace.active);
+        assert_eq!(app.ui.dock, dock);
+        assert_eq!(app.ui.docking, docking);
+        assert_eq!(app.ui.docking_returns, returns);
+        assert_eq!(app.ui.docking_kept, kept);
+        assert_eq!(app.ui.docking_collapsed, collapsed);
+        assert_eq!(app.ui.dock_tabs, tabs);
+        assert_eq!(app.ui.panels.dock, dock_visible);
+        assert!(app.ui.uv_workbench.open);
+
+        crate::menus::invoke(&mut app, &ctx, "window.uvWorkbench", Value::Null).unwrap();
+        assert!(!app.ui.uv_workbench.open);
+        let closed_dock = app.ui.docking.clone();
+        let closed_returns = app.ui.docking_returns.clone();
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.painting", Value::Null).unwrap();
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.threeD", Value::Null).unwrap();
+        assert_eq!(app.ui.docking, closed_dock);
+        assert_eq!(app.ui.docking_returns, closed_returns);
+        assert!(!app.ui.uv_workbench.open, "a closed UV panel stays closed when returning to 3D");
+
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.resetWorkspace", Value::Null).unwrap();
+        assert!(app.ui.docking.is_none(), "resetting the active 3D workspace still applies the built-in default");
+        assert!(app.ui.uv_workbench.open, "resetting 3D restores its default UV panel visibility");
     }
 }

@@ -1,6 +1,6 @@
-# 3D / UV update validation - 2026-10-27
+# Historical 3D / UV validation — v0.16.0 source, 2026-10-27
 
-Source baseline: official PhotoCraft v0.16.0,
+Historical source baseline: official PhotoCraft v0.16.0,
 `b1794c6e0608ccfc887213dcf58398977c5cb75e`, plus the local 3D/UV changes.
 Checks ran on the Windows source checkout used for the working 0.16.0 build.
 The publication checkout was compared with it; source differences are rustfmt and
@@ -38,10 +38,40 @@ The full workspace/corpus sweep and performance benchmarks were not rerun for
 this upload. These results do not claim that every workspace or integration test
 is green.
 
-## Upstream integration
+## Merge status
 
-A merge preview against upstream `main` at
-`55b8df82fc74f01bfa24cef45599c603e6121dd0` reports conflicts, including moved or
-removed UI modules. The update preserves the existing PR history and targets its
-same branch; it still needs integration with current main before merge.
-The checks above validate the 0.16.0 source, not an unresolved merge result.
+The source tree now includes upstream `main` at
+`7ac7b8b106acccf6826d45ed5c9e481dfe341035`; no unresolved merge entries remain.
+The table above is historical v0.16.0 evidence. Current-main results and deferred
+checks are listed below.
+
+## 2026-10-27 current-main merge validation
+
+Source is the in-progress merge of upstream main at `7ac7b8b106acccf6826d45ed5c9e481dfe341035` into PR #8805. This evidence is separate from the historical v0.16.0 table above.
+
+Completed on the merged source:
+
+| Check | Result |
+|---|---|
+| UV library suite, `cargo test -p photocraft-ui-egui --features uv-workbench -- --test-threads=4` with `CRAFT_FONTS_DIR` and `RUST_MIN_STACK=16777216` | 4,188 passed, 0 failed, 24 ignored (195.42 s) |
+| UV UI integration suite, same command | 127 passed, 6 failed, 1 ignored (667.85 s); see failure details below |
+| Default UI all-target check | Passed |
+| Native application check, `cargo check -p photocraft --features uv-workbench` | Passed |
+| Engine panic hunt, `cargo test -p photocraft-engine --test panic_hunt -- --ignored` | Passed, 1 test |
+| `cargo xtask layers` | Passed, 32 crates |
+| `cargo xtask wasm` | Passed, 25 crates plus `photocraft-codecs --features heif` |
+
+Integration failures on the current merge are recorded without changing their assertions:
+
+- `checker_canvas::cpu_pixel_grid_is_not_drawn_over_empty_checker`: empty checker pixel differed at zoom 8 (`[204,204,204,255]` vs `[255,255,255,255]`).
+- `full_res_preview::adjustment_dialog_zoomed_out_skips_the_reduced_copy_when_low_res_is_off`: reports zoomed-out on reduced copy.
+- `full_res_preview::filter_dialog_previews_at_full_resolution_when_low_res_is_off`: measured preview 128 vs 229.84.
+- `full_res_preview::adjustment_layer_drag_previews_at_full_resolution_when_low_res_is_off`: expected 1 px columns at 100% not present.
+- `live_stroke_canvas::the_canvas_shows_the_committed_stroke_while_it_is_drawn`: 81/255 canvas change at release in 4x flipped case.
+- `pattern_preview_canvas::pattern_preview_repeats_the_document_on_gpu_and_cpu_canvases`: right-copy GPU sample was `[40,40,40]`.
+
+The failing integration test files and `canvas/pixel_grid.rs` are identical to the upstream merge parent. UV overlay paths require workspace 3D and active Fill state; these tests do not set those conditions. This does not establish that the failures are pre-existing; default-feature exact reproductions are deferred.
+
+With the UV feature enabled, the crop-ratio integration test overflowed its Windows test-thread stack at the standard 2 MiB Rust test-thread size. It passed at 16 MiB; the same default-feature exact passed at the standard size. This indicates higher stack use in that feature-enabled test path, but does not establish a production startup problem; a native `--help` smoke was deferred.
+
+Gate logs: `D:/PhotoCraft-UV-build/Logs/pr8805-final-gates-summary.txt` and per-gate `pr8805-gate-*.log` files. Default UI check, native application check, panic hunt, layer check and default wasm check passed. Initial strict Clippy and core test attempts found a missing `PixelFormat` test import and `type_complexity` in the touched GPU cache path; narrow fixes are present, but strict Clippy and core tests were not rerun. Corpus assets were fetched and verified, but the release corpus test build was stopped before tests ran. UV-feature wasm, exact default-feature reproductions, perf, and native `--help` checks were deferred at the user's direction to publish the resolved merge without extending validation further.
