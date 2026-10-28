@@ -793,29 +793,44 @@ fn pending_dropped_place_waits_for_publication_and_preserves_cancel_failure_and_
         } else {
             assert!(app.ui.transform.is_none());
             if let Some(other) = other {
-                assert!(Arc::ptr_eq(&other, &app.session.active().unwrap().doc), "completion cannot steal another tab");
-                if outcome == 1 {
-                    assert!(app.ui.status.contains("target document is no longer active"));
-                } else {
-                    assert!(app.ui.status_error, "a switched target must not hide the worker failure");
-                    assert!(app.ui.status.contains("deliberately refused Place work"));
-                }
-                app.place_next_dropped(&ctx);
-                assert!(Arc::ptr_eq(&other, &app.session.active().unwrap().doc), "remaining drop files cannot migrate to another tab");
-                let placed = app.session.documents().iter().find(|state| state.doc.id == original.id).unwrap();
-                if outcome == 1 {
-                    assert_eq!(placed.doc.layers.len(), original.layers.len() + 1, "the successful placement and its history remain intact");
-                    assert_eq!(placed.history.past_len(), history + 1);
-                } else {
-                    assert!(Arc::ptr_eq(&placed.doc, &original), "failed work leaves its original target intact too");
-                    assert_eq!(placed.history.past_len(), history);
-                }
+                assert_dropped_place_after_tab_switch(&mut app, &ctx, &original, &other, history, outcome == 1);
             } else {
                 assert!(Arc::ptr_eq(&original, &app.session.active().unwrap().doc));
                 assert_eq!(app.session.active().unwrap().history.past_len(), history);
             }
         }
         app.session.join_cancelled_jobs();
+    }
+}
+
+/// A completion may retain its own successful edit, but cannot focus or place queued files into
+/// another tab; a refused worker must retain both documents and expose its primary error.
+#[cfg(not(target_arch = "wasm32"))]
+fn assert_dropped_place_after_tab_switch(
+    app: &mut PhotocraftApp,
+    ctx: &egui::Context,
+    original: &std::sync::Arc<photocraft_doc::Document>,
+    other: &std::sync::Arc<photocraft_doc::Document>,
+    history: usize,
+    succeeded: bool,
+) {
+    use std::sync::Arc;
+    assert!(Arc::ptr_eq(other, &app.session.active().unwrap().doc), "completion cannot steal another tab");
+    if succeeded {
+        assert!(app.ui.status.contains("target document is no longer active"));
+    } else {
+        assert!(app.ui.status_error, "a switched target must not hide the worker failure");
+        assert!(app.ui.status.contains("deliberately refused Place work"));
+    }
+    app.place_next_dropped(ctx);
+    assert!(Arc::ptr_eq(other, &app.session.active().unwrap().doc), "remaining drop files cannot migrate to another tab");
+    let placed = app.session.documents().iter().find(|state| state.doc.id == original.id).unwrap();
+    if succeeded {
+        assert_eq!(placed.doc.layers.len(), original.layers.len() + 1, "the successful placement and its history remain intact");
+        assert_eq!(placed.history.past_len(), history + 1);
+    } else {
+        assert!(Arc::ptr_eq(&placed.doc, original), "failed work leaves its original target intact too");
+        assert_eq!(placed.history.past_len(), history);
     }
 }
 

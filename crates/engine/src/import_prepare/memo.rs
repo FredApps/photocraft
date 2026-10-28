@@ -1,5 +1,5 @@
 //! Per-preparation reuse of successful native raster-source work, never a source evaluator.
-use super::*;
+use super::{Arc, Document, JobCtx, Result, SmartSource, limit};
 use photocraft_color::PixelFormat;
 use photocraft_doc::SmartObject;
 use photocraft_raster::Surface;
@@ -143,6 +143,7 @@ pub(super) fn clone_bytes(surface: &Surface) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{EngineError, smart_cmds};
     use photocraft_color::{Color, ColorMode, SampleType};
     use photocraft_doc::{LayerMask, SmartFilter};
     use photocraft_geom::{Affine, Size};

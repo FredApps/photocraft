@@ -1,8 +1,10 @@
 use super::open::{import_result, raw_resolution};
-use super::paths::{compound_xcf_name, extension, file_name, join, list_images, read_file, stem};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+use super::paths::openable_name;
+use super::paths::{check_import_destination, compound_xcf_name, extension, file_name, join, list_images, read_file, stem};
 use super::processing::parse_steps;
 use super::save::{SaveOpts, save_doc};
-use super::*;
+use super::{Arc, Document, EngineError, Result, Session, Value, batch_naming, json, str_param};
 
 /// Inputs of a batch command: `"input"` is a folder or an array of files.
 pub(crate) fn batch_inputs(p: &Value, cmd: &str) -> Result<Vec<String>> {

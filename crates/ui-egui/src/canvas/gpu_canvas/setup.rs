@@ -1,5 +1,6 @@
 use super::texels::texels;
-use super::*;
+use super::{egui_wgpu, wgpu};
+use crate::render_path::CpuReason;
 
 /// A CPU composite as the canvas texture stores it (`display`'s encoding; as is without one).
 pub(super) fn texture_buffer<'a>(
@@ -46,7 +47,7 @@ pub struct Refresh {
     /// The contained GPU timestamp, like `gpu`, may describe an earlier submission.
     pub gpu_stats: Option<photocraft_gpu::Stats>,
     /// Why the wgpu compositor wasn't used.
-    pub fallback: Option<String>,
+    pub fallback: Option<CpuReason>,
 }
 
 /// How the app creates its wgpu device: egui's defaults clamped to the adapter's supported limits,

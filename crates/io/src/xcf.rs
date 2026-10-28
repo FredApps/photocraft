@@ -1192,6 +1192,54 @@ pub(crate) fn import(name: &str, bytes: &[u8], ctl: &Interrupt<'_>) -> Result<Im
     import_with_sample_order(name, bytes, None, ctl)
 }
 
+/// Validated decoding facts plus the original version-aware properties retained by native metadata conversion.
+struct ImageMetadata<'a> {
+    properties: Vec<Prop<'a>>,
+    compression: Compression,
+    colormap: Vec<[u8; 3]>,
+    icc: Option<Vec<u8>>,
+}
+
+/// Decode only drawable prerequisites here; native metadata conversion consumes the retained properties later.
+fn read_image_metadata<'a>(c: &mut Cursor<'a>, version: u32) -> Result<ImageMetadata<'a>> {
+    // Image properties.
+    let image_props = props_version(c, Some(version))?;
+    let mut compression = Compression::None;
+    let mut colormap = Vec::new();
+    let mut icc = None;
+    for p in &image_props {
+        match p.kind {
+            1 => {
+                let n = be_u32(p.data).ok_or_else(|| invalid("the palette is missing its color count"))? as usize;
+                let size = n.checked_mul(3).and_then(|bytes| bytes.checked_add(4)).ok_or_else(|| invalid("palette size overflow"))?;
+                if n > 256 || p.data.len() != size {
+                    return Err(invalid("the palette must contain its declared count of at most 256 RGB colors"));
+                }
+                colormap = p.data.get(4..).unwrap_or(&[]).as_chunks::<3>().0.to_vec();
+            }
+            17 => {
+                compression = match p.data.first() {
+                    Some(0) => Compression::None,
+                    Some(1) => Compression::Rle,
+                    Some(2) => Compression::Zlib,
+                    Some(k) => return Err(invalid(format!("unknown compression {k}"))),
+                    None => return Err(invalid("empty compression property")),
+                }
+            }
+            21 => {
+                for (name, data) in parasites(p.data) {
+                    match name.as_str() {
+                        "icc-profile" if !data.is_empty() => icc = Some(data),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(ImageMetadata { properties: image_props, compression, colormap, icc })
+}
+
 /// Imports XCF with an explicit historical sample-order decision, preserving native data and durable
 /// conversion outcomes.
 pub(crate) fn import_with_sample_order(
@@ -1249,41 +1297,7 @@ pub(crate) fn import_with_sample_order(
         warnings.note("64-bit floating-point samples open as native F32 with reduced precision");
     }
 
-    // Image properties.
-    let image_props = props_version(&mut c, Some(version))?;
-    let mut compression = Compression::None;
-    let mut colormap = Vec::new();
-    let mut icc = None;
-    for p in &image_props {
-        match p.kind {
-            1 => {
-                let n = be_u32(p.data).ok_or_else(|| invalid("the palette is missing its color count"))? as usize;
-                let size = n.checked_mul(3).and_then(|bytes| bytes.checked_add(4)).ok_or_else(|| invalid("palette size overflow"))?;
-                if n > 256 || p.data.len() != size {
-                    return Err(invalid("the palette must contain its declared count of at most 256 RGB colors"));
-                }
-                colormap = p.data.get(4..).unwrap_or(&[]).as_chunks::<3>().0.to_vec();
-            }
-            17 => {
-                compression = match p.data.first() {
-                    Some(0) => Compression::None,
-                    Some(1) => Compression::Rle,
-                    Some(2) => Compression::Zlib,
-                    Some(k) => return Err(invalid(format!("unknown compression {k}"))),
-                    None => return Err(invalid("empty compression property")),
-                }
-            }
-            21 => {
-                for (name, data) in parasites(p.data) {
-                    match name.as_str() {
-                        "icc-profile" if !data.is_empty() => icc = Some(data),
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
+    let ImageMetadata { properties: image_props, compression, colormap, icc } = read_image_metadata(&mut c, version)?;
 
     let mut layer_ptrs = Vec::new();
     loop {
@@ -1392,118 +1406,8 @@ pub(crate) fn import_with_sample_order(
             image.outcomes.property_with_reason(image_outcome, property.kind, property.offset, property.data, reason)?;
         }
     }
-    let total = layer_ptrs.len().max(1) as f32;
-
-    // Layers, topmost first in the file.
-    let mut nodes: Vec<Node> = Vec::new();
-    let mut linear_compositing = false;
-    for (i, &ptr) in layer_ptrs.iter().enumerate() {
-        ctl.check().map_err(|_| IoError::Cancelled)?;
-        ctl.progress(0.05 + 0.85 * i as f32 / total);
-        if let Some((node, linear)) = image.layer(i, ptr, fmt, mask_fmt, ctl)? {
-            linear_compositing |= linear;
-            nodes.push(node);
-        }
-    }
-    let mut roots: Vec<Node> = Vec::new();
-    for (i, mut node) in nodes.into_iter().enumerate() {
-        // Default path: the item's position at the top level, as a file without groups has it.
-        if node.path.is_empty() {
-            node.path = vec![i as u32];
-        }
-        if node.path.len() > MAX_DEPTH {
-            image.warnings.layer(&node.layer.name, "is nested deeper than the reader allows and was moved to the top level");
-            image.outcomes.detail(
-                node.outcome,
-                "xcf.item_path",
-                ConversionReason::NativeLimitation,
-                "Source hierarchy exceeds 64 components".into(),
-                "Layer moved to the native top level; source identity retains the ordinal and bounded path prefix".into(),
-            )?;
-            node.path.truncate(1);
-        }
-        place(&mut roots, node, &mut image.warnings, &mut image.outcomes)?;
-    }
-    let layers = finish(roots);
-
-    // Channels: the selection and the extras.
-    let mut channels = Vec::new();
-    let mut selection = None;
-    for (ordinal, &ptr) in channel_ptrs.iter().enumerate() {
-        ctl.check().map_err(|_| IoError::Cancelled)?;
-        let (name, cprops, px, coverage_effects) = image.channel(ptr, ctl)?;
-        let mut surface = Surface::new(mask_fmt);
-        write_pixels(&mut surface, &px, 0, 0)?;
-        let is_selection = cprops.iter().any(|p| p.kind == 4);
-        let native_selection = is_selection && selection.is_none();
-        let channel_outcome = image.outcomes.push(ConversionEntry {
-            feature_code: if is_selection { "xcf.selection" } else { "xcf.channel" }.into(),
-            source: conversion::source(
-                if is_selection { "selection" } else { "channel" },
-                ordinal,
-                ptr,
-                &name,
-                &[],
-                cprops.iter().find(|p| p.kind == 20).and_then(|p| be_u32(p.data)),
-            ),
-            targets: vec![NativeTargetRef {
-                channel_index: if native_selection { None } else { Some(channels.len() as u32) },
-                label: if native_selection { "Document selection" } else { "Alpha channel" }.into(),
-                ..Default::default()
-            }],
-            disposition: if precision.reduces_precision() { ConversionDisposition::NativeApproximation } else { ConversionDisposition::NativeEquivalent },
-            reason: ConversionReason::NativePolicy,
-            source_description: "Stored channel coverage samples".into(),
-            native_description: "Native coverage surface".into(),
-            attachments: Vec::new(),
-        })?;
-        image.precision_underflow(channel_outcome, &px)?;
-        image.translate_coverage_effects(channel_outcome, &coverage_effects, &mut surface, Rect::new(0, 0, px.width as i32, px.height as i32), ctl)?;
-        let mut channel = AlphaChannel::new(name, surface);
-        let handled = metadata::channel_overlay(&mut channel, &cprops);
-        for property in &cprops {
-            if !matches!(property.kind, 4 | 20) && !handled.contains(&property.kind) {
-                let reason = match property.kind {
-                    3 | 8 => ConversionReason::NativePolicy,
-                    6 | 14 | 16 | 33 | 38 => ConversionReason::InvalidOptionalData,
-                    9 | 28 | 32 | 34 | 42 => ConversionReason::NativeLimitation,
-                    _ => ConversionReason::MissingMapping,
-                };
-                image.outcomes.property_with_reason(channel_outcome, property.kind, property.offset, property.data, reason)?;
-            }
-        }
-        if native_selection {
-            selection = Some(channel.surface);
-        } else {
-            // Preserve ambiguous additional selection records as ordinary saved alpha channels.
-            if is_selection {
-                image.outcomes.detail(
-                    channel_outcome,
-                    "xcf.duplicate_selection",
-                    ConversionReason::InvalidOptionalData,
-                    "More than one source channel is marked as the active selection".into(),
-                    "First selection kept; additional coverage retained as an ordinary alpha channel".into(),
-                )?;
-            }
-            if metadata::flag(&cprops, 8) {
-                image.initial_view.visible_alpha_channels.push(channels.len());
-            }
-            if metadata::active(&cprops, 3) {
-                if matches!(image.initial_view.target, crate::initial_view::NativeImportTarget::AlphaChannel(_)) {
-                    image.outcomes.detail(
-                        channel_outcome,
-                        "xcf.active_channels",
-                        ConversionReason::NativeLimitation,
-                        "Multiple source channels selected".into(),
-                        "Native initial view targets one alpha channel; original markers remain inert".into(),
-                    )?;
-                } else {
-                    image.initial_view.target = crate::initial_view::NativeImportTarget::AlphaChannel(channels.len());
-                }
-            }
-            channels.push(channel);
-        }
-    }
+    let (layers, linear_compositing) = image.import_layers(&layer_ptrs, fmt, mask_fmt, ctl)?;
+    let (channels, selection) = image.import_channels(&channel_ptrs, mask_fmt, ctl)?;
 
     let mut document = Document::new(name, Size::new(w, h), mode, depth);
     document.layers = layers;
@@ -1536,6 +1440,16 @@ pub(crate) fn import_with_sample_order(
     import_vectors(&mut document, &mut image, ctl)?;
     text::convert_colors(&mut document)?;
     import_native_effects(&mut document, &mut image, ctl)?;
+    add_document_warnings(&mut image, &document, precision, linear_compositing);
+    image.initial_view.validate(&document)?;
+    let initial_view = (image.initial_view != Default::default()).then_some(image.initial_view);
+    document.metadata.import_conversion = Some(Arc::new(image.outcomes.finish()?));
+    ctl.progress(1.0);
+    Ok(ImportResult { initial_view, document, warnings: image.warnings.finish(), source_read_only: true, preview_only: false })
+}
+
+/// Report native compositing differences without changing imported content or its durable conversion report.
+fn add_document_warnings(image: &mut Image<'_>, document: &Document, precision: Precision, linear_compositing: bool) {
     // GIMP clips a layer in any mode but Normal to the layers beneath it, so it shows nothing where
     // they are transparent; PhotoCraft (like Photoshop) shows it there. Only tell when there is
     // transparency to show through: a bottom layer that is not opaque.
@@ -1554,11 +1468,6 @@ pub(crate) fn import_with_sample_order(
     if document.layers.is_empty() {
         image.warnings.note("the XCF file has no layers");
     }
-    image.initial_view.validate(&document)?;
-    let initial_view = (image.initial_view != Default::default()).then_some(image.initial_view);
-    document.metadata.import_conversion = Some(Arc::new(image.outcomes.finish()?));
-    ctl.progress(1.0);
-    Ok(ImportResult { initial_view, document, warnings: image.warnings.finish(), source_read_only: true, preview_only: false })
 }
 
 /// Install owner-local native data, preserving each source operation as a historical event.
@@ -2055,6 +1964,454 @@ fn finish(nodes: Vec<Node>) -> Vec<Layer> {
 }
 
 impl<'a> Image<'a> {
+    /// Decode layers in source order, then build the native hierarchy with the existing bounded-path policy.
+    fn import_layers(&mut self, pointers: &[usize], fmt: PixelFormat, mask_fmt: PixelFormat, ctl: &Interrupt<'_>) -> Result<(Vec<Layer>, bool)> {
+        let total = pointers.len().max(1) as f32;
+
+        // Layers, topmost first in the file.
+        let mut nodes: Vec<Node> = Vec::new();
+        let mut linear_compositing = false;
+        for (i, &ptr) in pointers.iter().enumerate() {
+            ctl.check().map_err(|_| IoError::Cancelled)?;
+            ctl.progress(0.05 + 0.85 * i as f32 / total);
+            if let Some((node, linear)) = self.layer(i, ptr, fmt, mask_fmt, ctl)? {
+                linear_compositing |= linear;
+                nodes.push(node);
+            }
+        }
+        let mut roots: Vec<Node> = Vec::new();
+        for (i, mut node) in nodes.into_iter().enumerate() {
+            // Default path: the item's position at the top level, as a file without groups has it.
+            if node.path.is_empty() {
+                node.path = vec![i as u32];
+            }
+            if node.path.len() > MAX_DEPTH {
+                self.warnings.layer(&node.layer.name, "is nested deeper than the reader allows and was moved to the top level");
+                self.outcomes.detail(
+                    node.outcome,
+                    "xcf.item_path",
+                    ConversionReason::NativeLimitation,
+                    "Source hierarchy exceeds 64 components".into(),
+                    "Layer moved to the native top level; source identity retains the ordinal and bounded path prefix".into(),
+                )?;
+                node.path.truncate(1);
+            }
+            place(&mut roots, node, &mut self.warnings, &mut self.outcomes)?;
+        }
+        Ok((finish(roots), linear_compositing))
+    }
+
+    /// Decode saved selection and alpha coverage, retaining duplicate markers and applying native view hints once.
+    fn import_channels(&mut self, pointers: &[usize], mask_fmt: PixelFormat, ctl: &Interrupt<'_>) -> Result<(Vec<AlphaChannel>, Option<Surface>)> {
+        let precision = self.precision;
+        // Channels: the selection and the extras.
+        let mut channels = Vec::new();
+        let mut selection = None;
+        for (ordinal, &ptr) in pointers.iter().enumerate() {
+            ctl.check().map_err(|_| IoError::Cancelled)?;
+            let (name, cprops, px, coverage_effects) = self.channel(ptr, ctl)?;
+            let mut surface = Surface::new(mask_fmt);
+            write_pixels(&mut surface, &px, 0, 0)?;
+            let is_selection = cprops.iter().any(|p| p.kind == 4);
+            let native_selection = is_selection && selection.is_none();
+            let channel_outcome = self.outcomes.push(ConversionEntry {
+                feature_code: if is_selection { "xcf.selection" } else { "xcf.channel" }.into(),
+                source: conversion::source(
+                    if is_selection { "selection" } else { "channel" },
+                    ordinal,
+                    ptr,
+                    &name,
+                    &[],
+                    cprops.iter().find(|p| p.kind == 20).and_then(|p| be_u32(p.data)),
+                ),
+                targets: vec![NativeTargetRef {
+                    channel_index: if native_selection { None } else { Some(channels.len() as u32) },
+                    label: if native_selection { "Document selection" } else { "Alpha channel" }.into(),
+                    ..Default::default()
+                }],
+                disposition: if precision.reduces_precision() { ConversionDisposition::NativeApproximation } else { ConversionDisposition::NativeEquivalent },
+                reason: ConversionReason::NativePolicy,
+                source_description: "Stored channel coverage samples".into(),
+                native_description: "Native coverage surface".into(),
+                attachments: Vec::new(),
+            })?;
+            self.precision_underflow(channel_outcome, &px)?;
+            self.translate_coverage_effects(channel_outcome, &coverage_effects, &mut surface, Rect::new(0, 0, px.width as i32, px.height as i32), ctl)?;
+            let mut channel = AlphaChannel::new(name, surface);
+            let handled = metadata::channel_overlay(&mut channel, &cprops);
+            for property in &cprops {
+                if !matches!(property.kind, 4 | 20) && !handled.contains(&property.kind) {
+                    let reason = match property.kind {
+                        3 | 8 => ConversionReason::NativePolicy,
+                        6 | 14 | 16 | 33 | 38 => ConversionReason::InvalidOptionalData,
+                        9 | 28 | 32 | 34 | 42 => ConversionReason::NativeLimitation,
+                        _ => ConversionReason::MissingMapping,
+                    };
+                    self.outcomes.property_with_reason(channel_outcome, property.kind, property.offset, property.data, reason)?;
+                }
+            }
+            if native_selection {
+                selection = Some(channel.surface);
+            } else {
+                // Preserve ambiguous additional selection records as ordinary saved alpha channels.
+                if is_selection {
+                    self.outcomes.detail(
+                        channel_outcome,
+                        "xcf.duplicate_selection",
+                        ConversionReason::InvalidOptionalData,
+                        "More than one source channel is marked as the active selection".into(),
+                        "First selection kept; additional coverage retained as an ordinary alpha channel".into(),
+                    )?;
+                }
+                if metadata::flag(&cprops, 8) {
+                    self.initial_view.visible_alpha_channels.push(channels.len());
+                }
+                if metadata::active(&cprops, 3) {
+                    if matches!(self.initial_view.target, crate::initial_view::NativeImportTarget::AlphaChannel(_)) {
+                        self.outcomes.detail(
+                            channel_outcome,
+                            "xcf.active_channels",
+                            ConversionReason::NativeLimitation,
+                            "Multiple source channels selected".into(),
+                            "Native initial view targets one alpha channel; original markers remain inert".into(),
+                        )?;
+                    } else {
+                        self.initial_view.target = crate::initial_view::NativeImportTarget::AlphaChannel(channels.len());
+                    }
+                }
+                channels.push(channel);
+            }
+        }
+        Ok((channels, selection))
+    }
+
+    /// Describe floating attachments and the single historical movement set without changing their native layer semantics.
+    fn layer_identity_notices(&mut self, outcome: usize, properties: &[Prop<'a>], floating: bool, gray_floating: bool, legacy_linked: bool) -> Result<()> {
+        if floating {
+            let attachment = properties.iter().rev().find(|p| p.kind == 5).map(|p| resources::attachment(p.data, self.c.wide));
+            let (reason, source) = match attachment {
+                Some(Ok(pointer)) => (ConversionReason::NativePolicy, format!("Floating pixels; source attachment record {pointer}")),
+                _ => (ConversionReason::InvalidOptionalData, "Floating pixels with an invalid optional attachment record".into()),
+            };
+            self.outcomes.notice(
+                outcome,
+                "xcf.floating_selection",
+                reason,
+                (
+                    source,
+                    if gray_floating {
+                        "Separate positioned native raster layer; gray coverage repeated into RGB, attachment retained inert; original channel/mask unchanged"
+                    } else {
+                        "Separate positioned native raster layer; attachment retained inert, without merging or anchoring"
+                    }
+                    .into(),
+                ),
+                Some("is a floating selection and opens as a separate editable layer"),
+                &mut self.warnings,
+            )?;
+        }
+        if legacy_linked {
+            self.outcomes.detail(
+                outcome,
+                "xcf.legacy_linked_movement",
+                ConversionReason::NativePolicy,
+                "Member of the source's single legacy linked movement set".into(),
+                "Native link_group 1; ordinary PhotoCraft movement, linking and unlinking apply".into(),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Report inert linked-resource and placement records without resolving a locator or applying placement twice.
+    fn layer_link(&mut self, outcome: usize, properties: &[Prop<'a>], hptr: usize) -> Result<()> {
+        let metadata = properties.iter().rev().find(|p| p.kind == 48).map(|p| resources::link(p.data));
+        let (reason, source) = match metadata {
+            Some(Ok(metadata)) => (
+                if hptr == 0 { ConversionReason::ResourceUnavailable } else { ConversionReason::NativePolicy },
+                format!(
+                    "Link resource {}x{}, flags {}, nonempty locator {} bytes retained inert; {}",
+                    metadata.width,
+                    metadata.height,
+                    metadata.flags,
+                    metadata.locator.len(),
+                    if hptr == 0 { "no stored pixel hierarchy" } else { "stored pixel hierarchy available" },
+                ),
+            ),
+            _ => (ConversionReason::InvalidOptionalData, "Invalid optional link-resource configuration retained inert".into()),
+        };
+        self.outcomes.notice(
+            outcome,
+            "xcf.link_layer",
+            reason,
+            (
+                source,
+                if hptr == 0 {
+                    "Native raster layer has no stored pixels; source resource is unavailable until explicitly supplied by the user"
+                } else {
+                    "Stored pixels preserved as an editable native raster; no locator resolution, automatic refresh or filesystem watch"
+                }
+                .into(),
+            ),
+            Some(if hptr == 0 {
+                "is a link layer without stored pixels; its source must be supplied explicitly"
+            } else {
+                "is a link layer and opens as stored editable pixels"
+            }),
+            &mut self.warnings,
+        )?;
+        if let Some(property) = properties.iter().rev().find(|p| p.kind == 49) {
+            let (reason, source) = match resources::transform(property.data) {
+                Ok(transform) => (
+                    ConversionReason::NativePolicy,
+                    format!(
+                        "Source placement offset {:?}, interpolation {}, projective matrix {:?}",
+                        transform.offset, transform.interpolation, transform.matrix
+                    ),
+                ),
+                Err(_) => (ConversionReason::InvalidOptionalData, "Invalid optional link placement retained inert".into()),
+            };
+            self.outcomes.detail(outcome, "xcf.link_transform", reason, source,
+                "Stored drawable pixels already contain the source placement; native layer offsets are preserved and the source transform is not applied a second time".into())?;
+        }
+        Ok(())
+    }
+
+    /// Record source blend and coverage policies while leaving the already constructed native layer unchanged.
+    fn layer_compositing(&mut self, layer: &Layer, outcome: usize, layer_mode: u32, group: bool, composite_mode: i32) -> Result<()> {
+        let (blend, note) = blend_mode(layer_mode);
+        // These describe the native translation, not a promise of GIMP formula equivalence.
+        if layer_mode != 0 && layer_mode != 28 && !(group && layer_mode == 61) {
+            let human = note.map(|note| {
+                format!(
+                    "uses GIMP's {note} mode, which opens as {}",
+                    if blend == BlendMode::Normal { "Normal".into() } else { format!("Photoshop's {blend:?}") }
+                )
+            });
+            self.outcomes.notice(
+                outcome,
+                "xcf.blend_mode",
+                if blend == BlendMode::Normal { ConversionReason::MissingMapping } else { ConversionReason::NativePolicy },
+                (
+                    format!("GIMP mode {layer_mode}{}", note.map(|s| format!(" ({s})")).unwrap_or_default()),
+                    format!("Native {:?}; PhotoCraft blend formulas and clamping apply", layer.blend),
+                ),
+                human.as_deref(),
+                &mut self.warnings,
+            )?;
+        }
+        if composite_mode.unsigned_abs() > 1 {
+            let human = match composite_mode.unsigned_abs() {
+                3 => Some("composites with Clip to layer, which is not reproduced"),
+                4 => Some("composites with Intersection, which is not reproduced"),
+                _ => None,
+            };
+            self.outcomes.notice(
+                outcome,
+                "xcf.composite_mode",
+                ConversionReason::NativePolicy,
+                (
+                    format!(
+                        "GIMP coverage mode {composite_mode} ({})",
+                        match composite_mode.unsigned_abs() {
+                            2 => "Clip to backdrop",
+                            3 => "Clip to layer",
+                            4 => "Intersection",
+                            _ => "unknown",
+                        }
+                    ),
+                    "Native source-over coverage; source coverage does not enable a native clipping mask".into(),
+                ),
+                human,
+                &mut self.warnings,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Translate unmodified stored text into editable native text, retaining saved pixels on optional-data failures.
+    fn layer_text(&mut self, layer: &mut Layer, properties: &[Prop<'a>], position: (i32, i32), outcome: usize) -> Result<()> {
+        let (x, y) = position;
+        let modified = properties.iter().find(|p| p.kind == 26).and_then(|p| be_u32(p.data)).is_some_and(|flags| flags & 2 != 0);
+        let config = properties
+            .iter()
+            .filter(|p| p.kind == 21)
+            .flat_map(|p| parasites(p.data))
+            .filter(|(name, _)| matches!(name.as_str(), "gimp-text-layer" | "plug_in_gdyntext/data"))
+            .min_by_key(|(name, _)| name != "gimp-text-layer");
+        if modified {
+            self.outcomes.notice(
+                outcome,
+                "xcf.text",
+                ConversionReason::NativePolicy,
+                (
+                    "Source text pixels were modified independently of the saved text configuration".into(),
+                    "Native raster preserves modified pixels; original text configuration remains inert".into(),
+                ),
+                Some("has modified text pixels and opens as a native raster layer"),
+                &mut self.warnings,
+            )?;
+        } else if let Some((config_name, config)) = config {
+            let decoded = if config_name == "plug_in_gdyntext/data" {
+                text::decode_gdyntext(&config, self.resolution_dpi, (x, y))
+            } else {
+                text::decode(&config, self.resolution_dpi, (x, y))
+            };
+            match decoded {
+                Ok(decoded) => {
+                    layer.content = LayerContent::Text(decoded.layer);
+                    self.outcomes.notice(
+                        outcome,
+                        "xcf.text",
+                        ConversionReason::NativePolicy,
+                        (
+                            "Editable source text, typography and placement".into(),
+                            "Native editable text; PhotoCraft font matching, shaping and rasterization apply".into(),
+                        ),
+                        Some("opens as editable native text with PhotoCraft typography"),
+                        &mut self.warnings,
+                    )?;
+                    for note in decoded.native_policy {
+                        self.outcomes.detail(
+                            outcome,
+                            "xcf.text.formatting",
+                            ConversionReason::NativePolicy,
+                            note,
+                            "Native text placement and editable affine data apply".into(),
+                        )?;
+                    }
+                    for note in decoded.source_only {
+                        self.outcomes.detail(
+                            outcome,
+                            "xcf.text.formatting",
+                            ConversionReason::MissingMapping,
+                            note,
+                            "Supported native typography is editable; additional source formatting remains inert".into(),
+                        )?;
+                    }
+                }
+                Err(error) => self.outcomes.notice(
+                    outcome,
+                    "xcf.text",
+                    if matches!(error, IoError::Unsupported(_)) { ConversionReason::MissingMapping } else { ConversionReason::InvalidOptionalData },
+                    (
+                        format!("Source text configuration could not be translated: {error}"),
+                        "Stored pixels preserved as a native raster; source configuration remains inert".into(),
+                    ),
+                    Some("has unsupported or invalid text configuration and opens as pixels"),
+                    &mut self.warnings,
+                )?,
+            }
+        } else {
+            self.outcomes.notice(
+                outcome,
+                "xcf.text",
+                ConversionReason::InvalidOptionalData,
+                ("Source text marker has no saved text configuration".into(), "Stored pixels preserved as a native raster".into()),
+                Some("has no saved text configuration and opens as pixels"),
+                &mut self.warnings,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Retain only unmapped layer records with their original policy/error classifications and shared retention budget.
+    fn retain_layer_properties(&mut self, outcome: usize, properties: &[Prop<'a>]) -> Result<()> {
+        for property in properties {
+            if property.kind == 21 {
+                self.outcomes.parasites(outcome, property.offset, property.data, &["gimphoto-clipped"])?;
+            } else if !matches!(property.kind, 6 | 7 | 8 | 9 | 10 | 11 | 15 | 20 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37) {
+                let reason = match property.kind {
+                    5 => {
+                        if resources::attachment(property.data, self.c.wide).is_ok() {
+                            ConversionReason::NativePolicy
+                        } else {
+                            ConversionReason::InvalidOptionalData
+                        }
+                    }
+                    48 => {
+                        if resources::link(property.data).is_ok() {
+                            ConversionReason::NativePolicy
+                        } else {
+                            ConversionReason::InvalidOptionalData
+                        }
+                    }
+                    49 => {
+                        if resources::transform(property.data).is_ok() {
+                            ConversionReason::NativePolicy
+                        } else {
+                            ConversionReason::InvalidOptionalData
+                        }
+                    }
+                    2 | 12 | 13 => ConversionReason::NativePolicy,
+                    42 => ConversionReason::NativeLimitation,
+                    _ => ConversionReason::MissingMapping,
+                };
+                self.outcomes.property_with_reason(outcome, property.kind, property.offset, property.data, reason)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Capture one native layer/mask editing target after its content is available, without persisting view rules.
+    fn layer_initial_view(&mut self, layer: &Layer, properties: &[Prop<'a>]) {
+        if metadata::active(properties, 2) {
+            self.initial_view.selected_layers.push(layer.id);
+            if self.initial_view.active_layer.is_none() {
+                self.initial_view.active_layer = Some(layer.id);
+                self.initial_view.show_layer_mask = layer.mask.is_some() && metadata::flag(properties, 13);
+                if layer.mask.is_some() && metadata::flag(properties, 12) {
+                    self.initial_view.target = crate::initial_view::NativeImportTarget::LayerMask;
+                }
+            }
+        }
+    }
+
+    /// Decode a layer's declared sample layout and restore the image model even when decoding fails or is cancelled.
+    fn layer_hierarchy(&mut self, hptr: usize, kind: u32, alpha: bool, floating: bool, name: &str, ctl: &Interrupt<'_>) -> Result<Pixels> {
+        let gray_floating = floating && matches!(kind, 2 | 3) && self.base_type != 1;
+        let source_base_type = if floating {
+            match kind {
+                0 | 1 => 0,
+                2 | 3 => 1,
+                _ => 2,
+            }
+        } else {
+            self.base_type
+        };
+        let source_channels = match (source_base_type, alpha) {
+            (2, false) => 1,
+            (2, true) => 2,
+            (1, false) => 1,
+            (1, true) => 2,
+            (_, false) => 3,
+            (_, true) => 4,
+        };
+        let saved_base_type = self.base_type;
+        self.base_type = source_base_type;
+        let decoded = self.hierarchy(hptr, source_channels, gray_floating, ctl);
+        self.base_type = saved_base_type;
+        decoded.map_err(|error| match error {
+            IoError::Cancelled => IoError::Cancelled,
+            error => invalid(format!("layer '{name}': {error}")),
+        })
+    }
+
+    /// Construct a native group or raster with source expansion state and the existing non-group pass-through fallback.
+    fn native_layer(name: String, fmt: PixelFormat, group: bool, expanded: bool, blend: BlendMode) -> Layer {
+        if group {
+            let mut g = Layer::group(name, Vec::new());
+            if let LayerContent::Group(gr) = &mut g.content {
+                gr.expanded = expanded;
+            }
+            g.blend = if blend == BlendMode::PassThrough { BlendMode::PassThrough } else { blend };
+            g
+        } else {
+            let mut l = Layer::raster(name, fmt);
+            l.blend = if blend == BlendMode::PassThrough { BlendMode::Normal } else { blend };
+            l
+        }
+    }
+
     /// Reads a layer structure, and whether GIMP composites it in linear light.
     fn layer(&mut self, ordinal: usize, ptr: usize, fmt: PixelFormat, mask_fmt: PixelFormat, ctl: &Interrupt<'_>) -> Result<Option<(Node, bool)>> {
         let mut c = self.c.at(ptr);
@@ -2146,23 +2503,12 @@ impl<'a> Image<'a> {
             return Err(invalid(format!("layer '{name}' does not match the image's colour model")));
         }
 
-        let (blend, note) = blend_mode(layer_mode);
+        let (blend, _) = blend_mode(layer_mode);
         if composite_mode.unsigned_abs() == 2 {
             self.clipped_to_backdrop += 1;
         }
 
-        let mut layer = if group {
-            let mut g = Layer::group(name.clone(), Vec::new());
-            if let LayerContent::Group(gr) = &mut g.content {
-                gr.expanded = expanded;
-            }
-            g.blend = if blend == BlendMode::PassThrough { BlendMode::PassThrough } else { blend };
-            g
-        } else {
-            let mut l = Layer::raster(name.clone(), fmt);
-            l.blend = if blend == BlendMode::PassThrough { BlendMode::Normal } else { blend };
-            l
-        };
+        let mut layer = Self::native_layer(name.clone(), fmt, group, expanded, blend);
         layer.opacity = float_opacity.unwrap_or(opacity);
         layer.visible = visible;
         layer.locks = locks;
@@ -2185,135 +2531,11 @@ impl<'a> Image<'a> {
             native_description: if group { "Native group and its properties" } else { "Native raster layer and its properties" }.into(),
             attachments: Vec::new(),
         })?;
-        if floating {
-            let attachment = lprops.iter().rev().find(|p| p.kind == 5).map(|p| resources::attachment(p.data, self.c.wide));
-            let (reason, source) = match attachment {
-                Some(Ok(pointer)) => (ConversionReason::NativePolicy, format!("Floating pixels; source attachment record {pointer}")),
-                _ => (ConversionReason::InvalidOptionalData, "Floating pixels with an invalid optional attachment record".into()),
-            };
-            self.outcomes.notice(
-                outcome,
-                "xcf.floating_selection",
-                reason,
-                (
-                    source,
-                    if gray_floating {
-                        "Separate positioned native raster layer; gray coverage repeated into RGB, attachment retained inert; original channel/mask unchanged"
-                    } else {
-                        "Separate positioned native raster layer; attachment retained inert, without merging or anchoring"
-                    }
-                    .into(),
-                ),
-                Some("is a floating selection and opens as a separate editable layer"),
-                &mut self.warnings,
-            )?;
-        }
-        if legacy_linked {
-            self.outcomes.detail(
-                outcome,
-                "xcf.legacy_linked_movement",
-                ConversionReason::NativePolicy,
-                "Member of the source's single legacy linked movement set".into(),
-                "Native link_group 1; ordinary PhotoCraft movement, linking and unlinking apply".into(),
-            )?;
-        }
+        self.layer_identity_notices(outcome, &lprops, floating, gray_floating, legacy_linked)?;
         if link {
-            let metadata = lprops.iter().rev().find(|p| p.kind == 48).map(|p| resources::link(p.data));
-            let (reason, source) = match metadata {
-                Some(Ok(metadata)) => (
-                    if hptr == 0 { ConversionReason::ResourceUnavailable } else { ConversionReason::NativePolicy },
-                    format!(
-                        "Link resource {}x{}, flags {}, nonempty locator {} bytes retained inert; {}",
-                        metadata.width,
-                        metadata.height,
-                        metadata.flags,
-                        metadata.locator.len(),
-                        if hptr == 0 { "no stored pixel hierarchy" } else { "stored pixel hierarchy available" },
-                    ),
-                ),
-                _ => (ConversionReason::InvalidOptionalData, "Invalid optional link-resource configuration retained inert".into()),
-            };
-            self.outcomes.notice(
-                outcome,
-                "xcf.link_layer",
-                reason,
-                (
-                    source,
-                    if hptr == 0 {
-                        "Native raster layer has no stored pixels; source resource is unavailable until explicitly supplied by the user"
-                    } else {
-                        "Stored pixels preserved as an editable native raster; no locator resolution, automatic refresh or filesystem watch"
-                    }
-                    .into(),
-                ),
-                Some(if hptr == 0 {
-                    "is a link layer without stored pixels; its source must be supplied explicitly"
-                } else {
-                    "is a link layer and opens as stored editable pixels"
-                }),
-                &mut self.warnings,
-            )?;
-            if let Some(property) = lprops.iter().rev().find(|p| p.kind == 49) {
-                let (reason, source) = match resources::transform(property.data) {
-                    Ok(transform) => (
-                        ConversionReason::NativePolicy,
-                        format!(
-                            "Source placement offset {:?}, interpolation {}, projective matrix {:?}",
-                            transform.offset, transform.interpolation, transform.matrix
-                        ),
-                    ),
-                    Err(_) => (ConversionReason::InvalidOptionalData, "Invalid optional link placement retained inert".into()),
-                };
-                self.outcomes.detail(outcome, "xcf.link_transform", reason, source,
-                    "Stored drawable pixels already contain the source placement; native layer offsets are preserved and the source transform is not applied a second time".into())?;
-            }
+            self.layer_link(outcome, &lprops, hptr)?;
         }
-        // These describe the native translation, not a promise of GIMP formula equivalence.
-        if layer_mode != 0 && layer_mode != 28 && !(group && layer_mode == 61) {
-            let human = note.map(|note| {
-                format!(
-                    "uses GIMP's {note} mode, which opens as {}",
-                    if blend == BlendMode::Normal { "Normal".into() } else { format!("Photoshop's {blend:?}") }
-                )
-            });
-            self.outcomes.notice(
-                outcome,
-                "xcf.blend_mode",
-                if blend == BlendMode::Normal { ConversionReason::MissingMapping } else { ConversionReason::NativePolicy },
-                (
-                    format!("GIMP mode {layer_mode}{}", note.map(|s| format!(" ({s})")).unwrap_or_default()),
-                    format!("Native {:?}; PhotoCraft blend formulas and clamping apply", layer.blend),
-                ),
-                human.as_deref(),
-                &mut self.warnings,
-            )?;
-        }
-        if composite_mode.unsigned_abs() > 1 {
-            let human = match composite_mode.unsigned_abs() {
-                3 => Some("composites with Clip to layer, which is not reproduced"),
-                4 => Some("composites with Intersection, which is not reproduced"),
-                _ => None,
-            };
-            self.outcomes.notice(
-                outcome,
-                "xcf.composite_mode",
-                ConversionReason::NativePolicy,
-                (
-                    format!(
-                        "GIMP coverage mode {composite_mode} ({})",
-                        match composite_mode.unsigned_abs() {
-                            2 => "Clip to backdrop",
-                            3 => "Clip to layer",
-                            4 => "Intersection",
-                            _ => "unknown",
-                        }
-                    ),
-                    "Native source-over coverage; source coverage does not enable a native clipping mask".into(),
-                ),
-                human,
-                &mut self.warnings,
-            )?;
-        }
+        self.layer_compositing(&layer, outcome, layer_mode, group, composite_mode)?;
         let linear = composite_space.unsigned_abs() == 1 || blend_space.unsigned_abs() == 1;
         if linear || composite_space.unsigned_abs() > 2 || blend_space.unsigned_abs() > 2 {
             self.outcomes.detail(
@@ -2326,31 +2548,7 @@ impl<'a> Image<'a> {
         }
 
         if !group && hptr != 0 {
-            let source_base_type = if floating {
-                match kind {
-                    0 | 1 => 0,
-                    2 | 3 => 1,
-                    _ => 2,
-                }
-            } else {
-                self.base_type
-            };
-            let source_channels = match (source_base_type, alpha) {
-                (2, false) => 1,
-                (2, true) => 2,
-                (1, false) => 1,
-                (1, true) => 2,
-                (_, false) => 3,
-                (_, true) => 4,
-            };
-            let saved_base_type = self.base_type;
-            self.base_type = source_base_type;
-            let decoded = self.hierarchy(hptr, source_channels, gray_floating, ctl);
-            self.base_type = saved_base_type;
-            let mut px = decoded.map_err(|error| match error {
-                IoError::Cancelled => IoError::Cancelled,
-                error => invalid(format!("layer '{name}': {error}")),
-            })?;
+            let mut px = self.layer_hierarchy(hptr, kind, alpha, floating, &name, ctl)?;
             if (px.width, px.height) != (lw, lh) {
                 return Err(invalid(format!("layer '{name}' pixels are {}x{} where {lw}x{lh} were declared", px.width, px.height)));
             }
@@ -2395,120 +2593,9 @@ impl<'a> Image<'a> {
             }
         }
         if text && !group {
-            let modified = lprops.iter().find(|p| p.kind == 26).and_then(|p| be_u32(p.data)).is_some_and(|flags| flags & 2 != 0);
-            let config = lprops
-                .iter()
-                .filter(|p| p.kind == 21)
-                .flat_map(|p| parasites(p.data))
-                .filter(|(name, _)| matches!(name.as_str(), "gimp-text-layer" | "plug_in_gdyntext/data"))
-                .min_by_key(|(name, _)| name != "gimp-text-layer");
-            if modified {
-                self.outcomes.notice(
-                    outcome,
-                    "xcf.text",
-                    ConversionReason::NativePolicy,
-                    (
-                        "Source text pixels were modified independently of the saved text configuration".into(),
-                        "Native raster preserves modified pixels; original text configuration remains inert".into(),
-                    ),
-                    Some("has modified text pixels and opens as a native raster layer"),
-                    &mut self.warnings,
-                )?;
-            } else if let Some((config_name, config)) = config {
-                let decoded = if config_name == "plug_in_gdyntext/data" {
-                    text::decode_gdyntext(&config, self.resolution_dpi, (x, y))
-                } else {
-                    text::decode(&config, self.resolution_dpi, (x, y))
-                };
-                match decoded {
-                    Ok(decoded) => {
-                        layer.content = LayerContent::Text(decoded.layer);
-                        self.outcomes.notice(
-                            outcome,
-                            "xcf.text",
-                            ConversionReason::NativePolicy,
-                            (
-                                "Editable source text, typography and placement".into(),
-                                "Native editable text; PhotoCraft font matching, shaping and rasterization apply".into(),
-                            ),
-                            Some("opens as editable native text with PhotoCraft typography"),
-                            &mut self.warnings,
-                        )?;
-                        for note in decoded.native_policy {
-                            self.outcomes.detail(
-                                outcome,
-                                "xcf.text.formatting",
-                                ConversionReason::NativePolicy,
-                                note,
-                                "Native text placement and editable affine data apply".into(),
-                            )?;
-                        }
-                        for note in decoded.source_only {
-                            self.outcomes.detail(
-                                outcome,
-                                "xcf.text.formatting",
-                                ConversionReason::MissingMapping,
-                                note,
-                                "Supported native typography is editable; additional source formatting remains inert".into(),
-                            )?;
-                        }
-                    }
-                    Err(error) => self.outcomes.notice(
-                        outcome,
-                        "xcf.text",
-                        if matches!(error, IoError::Unsupported(_)) { ConversionReason::MissingMapping } else { ConversionReason::InvalidOptionalData },
-                        (
-                            format!("Source text configuration could not be translated: {error}"),
-                            "Stored pixels preserved as a native raster; source configuration remains inert".into(),
-                        ),
-                        Some("has unsupported or invalid text configuration and opens as pixels"),
-                        &mut self.warnings,
-                    )?,
-                }
-            } else {
-                self.outcomes.notice(
-                    outcome,
-                    "xcf.text",
-                    ConversionReason::InvalidOptionalData,
-                    ("Source text marker has no saved text configuration".into(), "Stored pixels preserved as a native raster".into()),
-                    Some("has no saved text configuration and opens as pixels"),
-                    &mut self.warnings,
-                )?;
-            }
+            self.layer_text(&mut layer, &lprops, (x, y), outcome)?;
         }
-        for property in &lprops {
-            if property.kind == 21 {
-                self.outcomes.parasites(outcome, property.offset, property.data, &["gimphoto-clipped"])?;
-            } else if !matches!(property.kind, 6 | 7 | 8 | 9 | 10 | 11 | 15 | 20 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 37) {
-                let reason = match property.kind {
-                    5 => {
-                        if resources::attachment(property.data, self.c.wide).is_ok() {
-                            ConversionReason::NativePolicy
-                        } else {
-                            ConversionReason::InvalidOptionalData
-                        }
-                    }
-                    48 => {
-                        if resources::link(property.data).is_ok() {
-                            ConversionReason::NativePolicy
-                        } else {
-                            ConversionReason::InvalidOptionalData
-                        }
-                    }
-                    49 => {
-                        if resources::transform(property.data).is_ok() {
-                            ConversionReason::NativePolicy
-                        } else {
-                            ConversionReason::InvalidOptionalData
-                        }
-                    }
-                    2 | 12 | 13 => ConversionReason::NativePolicy,
-                    42 => ConversionReason::NativeLimitation,
-                    _ => ConversionReason::MissingMapping,
-                };
-                self.outcomes.property_with_reason(outcome, property.kind, property.offset, property.data, reason)?;
-            }
-        }
+        self.retain_layer_properties(outcome, &lprops)?;
         if mptr != 0 {
             let (mname, mprops, px, coverage_effects) = self.channel(mptr, ctl)?;
             let mut surface = Surface::new(mask_fmt);
@@ -2544,16 +2631,7 @@ impl<'a> Image<'a> {
                 self.outcomes.property_with_reason(mask_outcome, property.kind, property.offset, property.data, reason)?;
             }
         }
-        if metadata::active(&lprops, 2) {
-            self.initial_view.selected_layers.push(layer.id);
-            if self.initial_view.active_layer.is_none() {
-                self.initial_view.active_layer = Some(layer.id);
-                self.initial_view.show_layer_mask = layer.mask.is_some() && metadata::flag(&lprops, 13);
-                if layer.mask.is_some() && metadata::flag(&lprops, 12) {
-                    self.initial_view.target = crate::initial_view::NativeImportTarget::LayerMask;
-                }
-            }
-        }
+        self.layer_initial_view(&layer, &lprops);
         if !effect_pointers.is_empty() {
             let bounds = x.checked_add(lw as i32).zip(y.checked_add(lh as i32)).map_or(Rect::EMPTY, |(right, bottom)| Rect::new(x, y, right, bottom));
             self.pending_effects.push(PendingLayerEffects { layer: layer.id, owner: outcome, bounds, pointers: effect_pointers });

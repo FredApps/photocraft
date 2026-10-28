@@ -1,5 +1,6 @@
 use super::history::fix_selection;
-use super::*;
+use super::{DocState, Document, Session, channel_cmds, smart_cmds};
+use crate::{HeldImportedDocument, color_cmds};
 
 /// Move item `i` of `v` to position `to`, clamped to the end. Returns where it went; `None` when
 /// `i` is out of range.

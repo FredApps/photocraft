@@ -417,6 +417,105 @@ fn read_only_conversion_reports_default_to_native_while_existing_format_choices_
     }
 }
 
+/// Model the browser download picker: record each request and accept its suggested name without format confirmation.
+fn browser_download_dialog(requests: Rc<RefCell<Vec<crate::file_dialog::FileDialogRequest>>>) -> crate::file_dialog::FileDialogFn {
+    Box::new(move |request, _, reply| {
+        let crate::file_dialog::FileDialogRequest::Save { suggested } = &request else { panic!("expected Save request") };
+        let suggested = suggested.clone();
+        requests.borrow_mut().push(request);
+        reply.send(Some(crate::file_dialog::FileDialogAnswer::SaveTo(suggested)));
+    })
+}
+
+/// Reopen a confirmed native download without a writable path and verify its next unconfirmed report-preserving download.
+fn assert_native_browser_redownload(
+    app: &mut PhotocraftApp,
+    bytes: &[u8],
+    report: Option<std::sync::Arc<photocraft_doc::import_conversion::ImportConversion>>,
+    writes: &RefCell<Vec<(String, Vec<u8>)>>,
+    requests: &RefCell<Vec<crate::file_dialog::FileDialogRequest>>,
+) {
+    // Native bytes opened through the browser have no writable path, even when their
+    // misleading filename looks like PSD. A second download must preserve the report.
+    let first_native_bytes = bytes.to_vec();
+    app.open_bytes("native-reopen-misnamed.psd", &first_native_bytes).unwrap();
+    let st = app.session.active().unwrap();
+    assert!(!st.source_read_only);
+    assert!(st.path.is_none());
+    assert_eq!(st.doc.metadata.import_conversion, report);
+    let second_expected = std::path::Path::new(&st.doc.name).with_extension(photocraft_format::EXTENSION).to_string_lossy().into_owned();
+    app.run("layer.new.layer", json!({})).unwrap();
+    let second_saved = app.session.active().unwrap().saved_revision;
+    app.services.write_unconfirmed = true;
+    app.save_as(None).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert_eq!(requests.borrow().last(), Some(&crate::file_dialog::FileDialogRequest::Save { suggested: second_expected.clone() }));
+    let (second_name, second_bytes) = writes.borrow().last().unwrap().clone();
+    assert_eq!(second_name, second_expected);
+    assert!(photocraft_format::is_pcraft(&second_bytes));
+    let second_reopened = photocraft_io::import("second-generation-misnamed.psd", &second_bytes).unwrap();
+    assert!(!second_reopened.source_read_only);
+    assert_eq!(second_reopened.document.metadata.import_conversion, report);
+    assert_eq!(app.session.active().unwrap().saved_revision, second_saved);
+    assert!(app.session.active().unwrap().is_dirty());
+    assert!(app.has_unsaved_work());
+    assert_eq!(first_native_bytes, bytes);
+}
+
+/// Exercise one decoded transport through unconfirmed native downloads, confirmed Save As, and source-free browser reopen.
+fn assert_xcf_browser_download_route(name: &str, input: Vec<u8>) {
+    let original = input.clone();
+    let writes = Rc::new(RefCell::new(Vec::<(String, Vec<u8>)>::new()));
+    let captured = writes.clone();
+    let mut app = PhotocraftApp::new(
+        Session::new(),
+        Services {
+            import: Some(Box::new(|name, bytes, opts| photocraft_io::import_with_options(name, bytes, opts).map_err(|e| e.to_string()))),
+            export: Some(Box::new(|doc, path, _| {
+                photocraft_io::export(doc, path, &Default::default()).map(|r| (r.bytes, r.warnings)).map_err(|e| e.to_string())
+            })),
+            write: Some(Box::new(move |path, bytes| {
+                captured.borrow_mut().push((path.to_owned(), bytes.to_vec()));
+                Ok(())
+            })),
+            write_unconfirmed: true,
+            ..Default::default()
+        },
+    );
+    app.session.color.settings.ask_on_missing = false;
+    app.open_bytes(name, &input).unwrap();
+    assert!(app.session.active().unwrap().source_read_only);
+    let report = app.session.active().unwrap().doc.metadata.import_conversion.clone();
+    assert!(report.is_some());
+    app.run("layer.new.layer", json!({})).unwrap();
+    assert!(app.session.active().unwrap().is_dirty());
+    let before_saved = app.session.active().unwrap().saved_revision;
+    let expected = std::path::Path::new(name).with_extension(photocraft_format::EXTENSION).to_string_lossy().into_owned();
+    // Browser behavior: no format picker; return exactly the suggested download name.
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    app.services.file_dialog = Some(browser_download_dialog(requests.clone()));
+    app.save_as(None).unwrap();
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert_eq!(*requests.borrow(), [crate::file_dialog::FileDialogRequest::Save { suggested: expected.clone() }]);
+    let (download_name, bytes) = writes.borrow()[0].clone();
+    assert_eq!(download_name, expected);
+    assert!(photocraft_format::is_pcraft(&bytes));
+    let reopened = photocraft_io::import(&download_name, &bytes).unwrap();
+    assert_eq!(reopened.document.metadata.import_conversion, report);
+    assert!(!reopened.source_read_only);
+    assert_eq!(app.session.active().unwrap().path.as_deref(), Some(expected.as_str()));
+    assert_eq!(app.session.active().unwrap().saved_revision, before_saved);
+    assert!(app.session.active().unwrap().is_dirty());
+    assert!(app.has_unsaved_work());
+    assert_eq!(input, original);
+    app.services.write_unconfirmed = false;
+    app.save_as(Some(expected)).unwrap();
+    assert!(!app.session.active().unwrap().is_dirty());
+    assert!(!app.has_unsaved_work());
+    assert_eq!(app.session.active().unwrap().doc.metadata.import_conversion, report);
+    assert_native_browser_redownload(&mut app, &bytes, report, &writes, &requests);
+}
+
 #[test]
 /// Open original and wrapped XCF bytes, then require native report persistence over browser downloads without falsely
 /// marking unconfirmed saves clean.
@@ -431,85 +530,6 @@ fn actual_xcf_bytes_and_wrappers_download_native_reports_without_confirming_a_br
     gzip.write_all(&plain).unwrap();
     let wrapped = gzip.finish().unwrap();
     for (name, input) in [("plain.xcf", plain.clone()), ("misnamed.psd", plain), ("wrapped.xcf.gz", wrapped.clone()), ("wrapped-as-native.pcraft", wrapped)] {
-        let original = input.clone();
-        let writes = Rc::new(RefCell::new(Vec::<(String, Vec<u8>)>::new()));
-        let captured = writes.clone();
-        let mut app = PhotocraftApp::new(
-            Session::new(),
-            Services {
-                import: Some(Box::new(|name, bytes, opts| photocraft_io::import_with_options(name, bytes, opts).map_err(|e| e.to_string()))),
-                export: Some(Box::new(|doc, path, _| {
-                    photocraft_io::export(doc, path, &Default::default()).map(|r| (r.bytes, r.warnings)).map_err(|e| e.to_string())
-                })),
-                write: Some(Box::new(move |path, bytes| {
-                    captured.borrow_mut().push((path.to_owned(), bytes.to_vec()));
-                    Ok(())
-                })),
-                write_unconfirmed: true,
-                ..Default::default()
-            },
-        );
-        app.session.color.settings.ask_on_missing = false;
-        app.open_bytes(name, &input).unwrap();
-        assert!(app.session.active().unwrap().source_read_only);
-        let report = app.session.active().unwrap().doc.metadata.import_conversion.clone();
-        assert!(report.is_some());
-        app.run("layer.new.layer", json!({})).unwrap();
-        assert!(app.session.active().unwrap().is_dirty());
-        let before_saved = app.session.active().unwrap().saved_revision;
-        let expected = std::path::Path::new(name).with_extension(photocraft_format::EXTENSION).to_string_lossy().into_owned();
-        // Browser behavior: no format picker; return exactly the suggested download name.
-        let requests = Rc::new(RefCell::new(Vec::new()));
-        let request_log = requests.clone();
-        app.services.file_dialog = Some(Box::new(move |request, _, reply| {
-            let crate::file_dialog::FileDialogRequest::Save { suggested } = &request else { panic!("expected Save request") };
-            let suggested = suggested.clone();
-            request_log.borrow_mut().push(request);
-            reply.send(Some(crate::file_dialog::FileDialogAnswer::SaveTo(suggested)));
-        }));
-        app.save_as(None).unwrap();
-        app.poll_file_dialog(&egui::Context::default(), None);
-        assert_eq!(*requests.borrow(), [crate::file_dialog::FileDialogRequest::Save { suggested: expected.clone() }]);
-        let (download_name, bytes) = writes.borrow()[0].clone();
-        assert_eq!(download_name, expected);
-        assert!(photocraft_format::is_pcraft(&bytes));
-        let reopened = photocraft_io::import(&download_name, &bytes).unwrap();
-        assert_eq!(reopened.document.metadata.import_conversion, report);
-        assert!(!reopened.source_read_only);
-        assert_eq!(app.session.active().unwrap().path.as_deref(), Some(expected.as_str()));
-        assert_eq!(app.session.active().unwrap().saved_revision, before_saved);
-        assert!(app.session.active().unwrap().is_dirty());
-        assert!(app.has_unsaved_work());
-        assert_eq!(input, original);
-        app.services.write_unconfirmed = false;
-        app.save_as(Some(expected)).unwrap();
-        assert!(!app.session.active().unwrap().is_dirty());
-        assert!(!app.has_unsaved_work());
-        assert_eq!(app.session.active().unwrap().doc.metadata.import_conversion, report);
-        // Native bytes opened through the browser have no writable path, even when their
-        // misleading filename looks like PSD. A second download must preserve the report.
-        let first_native_bytes = bytes.clone();
-        app.open_bytes("native-reopen-misnamed.psd", &first_native_bytes).unwrap();
-        let st = app.session.active().unwrap();
-        assert!(!st.source_read_only);
-        assert!(st.path.is_none());
-        assert_eq!(st.doc.metadata.import_conversion, report);
-        let second_expected = std::path::Path::new(&st.doc.name).with_extension(photocraft_format::EXTENSION).to_string_lossy().into_owned();
-        app.run("layer.new.layer", json!({})).unwrap();
-        let second_saved = app.session.active().unwrap().saved_revision;
-        app.services.write_unconfirmed = true;
-        app.save_as(None).unwrap();
-        app.poll_file_dialog(&egui::Context::default(), None);
-        assert_eq!(requests.borrow().last(), Some(&crate::file_dialog::FileDialogRequest::Save { suggested: second_expected.clone() }));
-        let (second_name, second_bytes) = writes.borrow().last().unwrap().clone();
-        assert_eq!(second_name, second_expected);
-        assert!(photocraft_format::is_pcraft(&second_bytes));
-        let second_reopened = photocraft_io::import("second-generation-misnamed.psd", &second_bytes).unwrap();
-        assert!(!second_reopened.source_read_only);
-        assert_eq!(second_reopened.document.metadata.import_conversion, report);
-        assert_eq!(app.session.active().unwrap().saved_revision, second_saved);
-        assert!(app.session.active().unwrap().is_dirty());
-        assert!(app.has_unsaved_work());
-        assert_eq!(first_native_bytes, bytes);
+        assert_xcf_browser_download_route(name, input);
     }
 }

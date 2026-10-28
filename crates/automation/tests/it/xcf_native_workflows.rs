@@ -800,6 +800,27 @@ fn actual_stored_xcf_adjustments_trusted_and_scoped_headless_match_native_comman
     }
 }
 
+/// Follow ordinary Edit Contents through bounded native wrappers and verify the persisted Invert's sole filter owner.
+fn persisted_invert_contents(session: &mut photocraft_engine::Session) -> photocraft_doc::LayerId {
+    let mut filter_layer = None;
+    for _ in 0..64 {
+        let state = session.active().unwrap();
+        if let Some(layer) = state.doc.layers.iter().find(|layer| {
+            matches!(&layer.content, LayerContent::Smart(smart)
+                if smart.smart_filters.iter().any(|filter| filter.command == "image.adjustments.invert"))
+        }) {
+            let LayerContent::Smart(smart) = &layer.content else { panic!("native filter owner") };
+            assert_eq!(smart.smart_filters.len(), 1);
+            assert_eq!(smart.smart_filters[0].command, "image.adjustments.invert");
+            filter_layer = Some(layer.id);
+            break;
+        }
+        let wrapper = state.doc.layers.iter().find(|layer| matches!(layer.content, LayerContent::Smart(_))).expect("native envelope contents").id;
+        session.execute("layer.smartObjects.editContents", json!({"layer":wrapper.0})).unwrap();
+    }
+    filter_layer.expect("persisted imported Invert within bounded native contents")
+}
+
 #[test]
 /// Persist a real stored XCF adjustment with command-shaped inert bytes, then require scoped
 /// native reopen and warmed-cache refresh to retain ordinary stored-command authorization.
@@ -853,23 +874,7 @@ fn source_free_native_reopen_keeps_xcf_filter_authorization_and_unknown_commands
     let parent_revision = state.revision;
     // The source envelope and its editable adjustment are separate ordinary native Smart
     // documents. Follow the public Edit Contents route rather than inventing a top-level filter.
-    let mut filter_layer = None;
-    for _ in 0..64 {
-        let state = h.session.active().unwrap();
-        if let Some(layer) = state.doc.layers.iter().find(|layer| {
-            matches!(&layer.content, LayerContent::Smart(smart)
-                if smart.smart_filters.iter().any(|filter| filter.command == "image.adjustments.invert"))
-        }) {
-            let LayerContent::Smart(smart) = &layer.content else { panic!("native filter owner") };
-            assert_eq!(smart.smart_filters.len(), 1);
-            assert_eq!(smart.smart_filters[0].command, "image.adjustments.invert");
-            filter_layer = Some(layer.id);
-            break;
-        }
-        let wrapper = state.doc.layers.iter().find(|layer| matches!(layer.content, LayerContent::Smart(_))).expect("native envelope contents").id;
-        h.session.execute("layer.smartObjects.editContents", json!({"layer":wrapper.0})).unwrap();
-    }
-    let layer_id = filter_layer.expect("persisted imported Invert within bounded native contents");
+    let layer_id = persisted_invert_contents(&mut h.session);
     let state = h.session.active().unwrap();
     let child_pixels = state.doc.layer(layer_id).unwrap().surface().unwrap().read_region(state.doc.bounds());
     let mut trusted = (*state.doc).clone();

@@ -3,7 +3,10 @@ use super::source::{
     SourceImage, cache_get_counted, cache_get_without_preparation, cache_key, cache_put, decode_source_admitted_in, source_bytes, source_image,
     source_image_in, source_surface, svg_source_image, vector_scale,
 };
-use super::*;
+use super::{
+    Affine, Arc, BlendMode, Document, EngineError, Homography, JobCtx, Layer, LayerContent, LayerId, PixelFormat, Rect, Result, SmartFilter, SmartObject,
+    SmartSource, Stage, StageKey, Surface, Value, other, stack_cache,
+};
 
 /// Layer › Smart Objects › Stack Mode: the source's layers (or, when it holds a single group, the
 /// group's layers) combined per pixel with `mode`. Cached like [`source_image`], keyed by mode.

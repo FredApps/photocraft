@@ -88,6 +88,17 @@ fn language(value: &str) -> Option<(&str, &str)> {
     }
 }
 
+/// Validate an RDF language alternative as a whole, rejecting duplicate languages and placing `x-default` first.
+fn language_alternatives<'a>(values: &[&'a str]) -> Option<Vec<(&'a str, &'a str)>> {
+    let mut parsed = values.iter().map(|value| language(value)).collect::<Option<Vec<_>>>()?;
+    let unique: std::collections::BTreeSet<_> = parsed.iter().map(|(lang, _)| *lang).collect();
+    if unique.len() != parsed.len() {
+        return None;
+    }
+    parsed.sort_by_key(|(lang, _)| *lang != "x-default");
+    Some(parsed)
+}
+
 /// Plain source text is already retained separately. Unknown types, structures,
 /// invalid language alternatives and source binary values do not become RDF.
 fn xmp(tree: &roxmltree::Document<'_>) -> Option<String> {
@@ -119,14 +130,9 @@ fn xmp(tree: &roxmltree::Document<'_>) -> Option<String> {
             continue;
         }
         let alternatives = if matches!(shape, Shape::Alt) {
-            let Some(mut parsed) = values.iter().map(|value| language(value)).collect::<Option<Vec<_>>>() else {
+            let Some(parsed) = language_alternatives(&values) else {
                 continue;
             };
-            let unique: std::collections::BTreeSet<_> = parsed.iter().map(|(lang, _)| *lang).collect();
-            if unique.len() != parsed.len() {
-                continue;
-            }
-            parsed.sort_by_key(|(lang, _)| *lang != "x-default");
             parsed
         } else {
             Vec::new()

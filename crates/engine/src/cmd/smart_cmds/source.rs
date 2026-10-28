@@ -1,4 +1,8 @@
-use super::*;
+use super::rendering::prepared_source_image;
+use super::{
+    Arc, ColorMode, Document, EngineError, JobCtx, Layer, LayerContent, LayerId, Metadata, Mutex, PixelFormat, Rect, Result, SampleType, Session, SmartObject,
+    SmartSource, Surface, base_name, json, other,
+};
 
 /// A linked file's bytes; `None` when it is missing or its path is not followed
 /// ([`crate::doc_path::resolve`]).

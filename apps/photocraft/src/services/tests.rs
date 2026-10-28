@@ -905,6 +905,29 @@ fn historical_decisions_through_real_desktop_control_preserve_authority_and_retr
         }
     }
 
+    /// A held source cannot authorize an ambient working-profile read; its denied continuation
+    /// must preserve the exact dialog, active document and retryable encoded source.
+    fn assert_historical_profile_denial(
+        app: &mut PhotocraftApp,
+        ctx: &egui::Context,
+        dialog: u64,
+        fields: &serde_json::Map<String, Value>,
+        original: &Arc<photocraft_doc::Document>,
+        dir: &std::path::Path,
+    ) {
+        // The held-byte exception cannot grant a newly configured ambient ICC path.
+        // Refusal occurs inside continuation preparation, after the queue reserved its position.
+        let working = app.session.color.settings.working_rgb.clone();
+        app.session.color.settings.working_rgb = dir.join("not-authorized.icc").to_str().unwrap().into();
+        let refused_profile = call(app, ctx, "ui.dialog.confirm", json!({"dialog": dialog}));
+        assert_eq!(refused_profile["ok"], false, "{refused_profile}");
+        assert!(refused_profile["error"].as_str().unwrap().contains("edit.profileInfo"), "{refused_profile}");
+        assert_eq!(app.ui.dialogs.iter().find(|current| current.id == dialog).unwrap().fields, *fields);
+        assert_eq!(app.session.documents().len(), 1);
+        assert!(Arc::ptr_eq(&app.session.active().unwrap().doc, original));
+        app.session.color.settings.working_rgb = working;
+    }
+
     for cancel in [false, true] {
         let dir = temp("historical-control");
         let workspace = photocraft_automation::AuthorizedWorkspace::new(Some(&dir), Some(&dir)).unwrap();
@@ -945,17 +968,7 @@ fn historical_decisions_through_real_desktop_control_preserve_authority_and_retr
         assert!(app.session.authorize.is_none(), "the control handler restores the session hook after refusal");
         app.services.automation_authorize = gate;
         if !cancel {
-            // The held-byte exception cannot grant a newly configured ambient ICC path.
-            // Refusal occurs inside continuation preparation, after the queue reserved its position.
-            let working = app.session.color.settings.working_rgb.clone();
-            app.session.color.settings.working_rgb = dir.join("not-authorized.icc").to_str().unwrap().into();
-            let refused_profile = call(&mut app, &ctx, method, json!({"dialog": dialog.id}));
-            assert_eq!(refused_profile["ok"], false, "{refused_profile}");
-            assert!(refused_profile["error"].as_str().unwrap().contains("edit.profileInfo"), "{refused_profile}");
-            assert_eq!(app.ui.dialogs.iter().find(|current| current.id == dialog.id).unwrap().fields, fields);
-            assert_eq!(app.session.documents().len(), 1);
-            assert!(Arc::ptr_eq(&app.session.active().unwrap().doc, &original));
-            app.session.color.settings.working_rgb = working;
+            assert_historical_profile_denial(&mut app, &ctx, dialog.id, &fields, &original, &dir);
         }
         let answered = call(&mut app, &ctx, method, json!({"dialog": dialog.id}));
         assert_eq!(answered["ok"], true, "the actual desktop gate permits this held-only decision: {answered}");
