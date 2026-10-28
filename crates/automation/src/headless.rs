@@ -315,16 +315,7 @@ impl Headless {
             }
         };
         let target_text = target.to_str().ok_or_else(|| AutomationError::BadRequest("automation paths must be valid UTF-8".into()))?;
-        if let Some(source) = self.session.documents().get(i).and_then(|st| st.protected_import_source.as_deref()) {
-            let protected = match &self.filesystem {
-                Filesystem::TrustedLocal => file_cmds::same_file(source, target_text),
-                Filesystem::Workspace(workspace) => workspace.is_import_source(source, target_text)?,
-                Filesystem::Denied => return Err(AutomationError::BadRequest("automation filesystem access is not granted: write authority is absent".into())),
-            };
-            if protected {
-                return Err(AutomationError::BadRequest("the destination is the import-only source; choose a different native or export path".into()));
-            }
-        }
+        self.check_import_destination(i, target_text)?;
         let mut warnings = match &self.filesystem {
             Filesystem::Denied => return Err(AutomationError::BadRequest("automation filesystem access is not granted: write authority is absent".into())),
             Filesystem::TrustedLocal => {
@@ -360,9 +351,31 @@ impl Headless {
         Ok(json!({ "path": target.to_string_lossy(), "warnings": warnings }))
     }
 
-    /// Write rendered bytes through the configured write authority.
+    /// Reject replacing this document's import-only source or its filesystem aliases before any output is created.
+    fn check_import_destination(&self, index: usize, target: &str) -> Result<(), AutomationError> {
+        if let Some(source) = self.session.documents().get(index).and_then(|st| st.protected_import_source.as_deref()) {
+            let protected = match &self.filesystem {
+                Filesystem::TrustedLocal => file_cmds::same_file(source, target),
+                Filesystem::Workspace(workspace) => workspace.is_import_source(source, target)?,
+                Filesystem::Denied => return Err(AutomationError::BadRequest("automation filesystem access is not granted: write authority is absent".into())),
+            };
+            if protected {
+                return Err(AutomationError::BadRequest("the destination is the import-only source; choose a different native or export path".into()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Write rendered bytes for the active document through the configured write authority.
     pub fn write_render(&self, path: &Path, bytes: &[u8]) -> Result<(), AutomationError> {
+        self.write_render_for(None, path, bytes)
+    }
+
+    /// Write rendered bytes for the requested document, preserving its imported source even when another tab is active.
+    pub fn write_render_for(&self, index: Option<usize>, path: &Path, bytes: &[u8]) -> Result<(), AutomationError> {
+        let i = self.doc_index(index)?;
         let requested = path.to_str().ok_or_else(|| AutomationError::BadRequest("automation paths must be valid UTF-8".into()))?;
+        self.check_import_destination(i, requested)?;
         match &self.filesystem {
             Filesystem::Denied => Err(AutomationError::BadRequest("automation filesystem access is not granted: write authority is absent".into())),
             Filesystem::TrustedLocal => photocraft_format::atomic_write(path, bytes).map_err(|error| AutomationError::Io(error.to_string())),

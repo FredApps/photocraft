@@ -173,10 +173,11 @@ impl Headless {
                         value.as_u64().and_then(|value| u32::try_from(value).ok()).ok_or_else(|| bad("maxSide must be an unsigned 32-bit integer"))?
                     }
                 };
-                let png = self.render_png(index_of(&p)?, max)?;
+                let index = index_of(&p)?;
+                let png = self.render_png(index, max)?;
                 match str_of(&p, "path") {
                     Some(path) => {
-                        self.write_render(&PathBuf::from(path), &png)?;
+                        self.write_render_for(index, &PathBuf::from(path), &png)?;
                         Ok(json!({"path": path, "bytes": png.len()}))
                     }
                     None => Ok(json!({

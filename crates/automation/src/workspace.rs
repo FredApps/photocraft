@@ -51,11 +51,21 @@ impl AuthorizedWorkspace {
                 return Ok(true);
             }
         }
+        // Check both candidates before opening either: FIFOs/devices must not block identity
+        // inspection. A new destination still requires source read access, so a missing output
+        // cannot bypass a refusal to inspect the protected source through its capability.
+        if !import_identity_regular_file(&read.dir, &source, "source")? {
+            return Ok(false);
+        }
+        let destination_exists = import_identity_regular_file(&write.dir, &destination, "destination")?;
         let a = match read.dir.open(&source) {
             Ok(file) => file.into_std(),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(file_error("inspect source", &source.to_string_lossy(), error)),
         };
+        if !destination_exists {
+            return Ok(false);
+        }
         let b = match write.dir.open(&destination) {
             Ok(file) => file.into_std(),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -165,6 +175,16 @@ impl AuthorizedWorkspace {
             }
         }
         Ok(())
+    }
+}
+
+/// Refuse nonregular identity candidates before opening them; a missing file has no current alias.
+fn import_identity_regular_file(dir: &Dir, relative: &Path, role: &str) -> Result<bool, AutomationError> {
+    match dir.metadata(relative) {
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(AutomationError::BadRequest(format!("automation inspect {role} path is not a regular file: `{}`", relative.display()))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(file_error(&format!("inspect {role}"), &relative.to_string_lossy(), error)),
     }
 }
 
