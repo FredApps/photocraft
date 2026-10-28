@@ -86,7 +86,7 @@ pub(super) fn mapping(surface: &Surface, bounds: Rect, controls: Controls, budge
     ctl.check().map_err(|_| IoError::Cancelled)?;
     let result = NativeMapping {
         filters: vec![native_filter("filter.distort.displace", params)],
-        notes: vec!["Actual current native auxiliary pixels were captured once into an ordinary embedded native Displace map. Absolute XY values use native pixel-center coordinates; relative values become native pixel offsets. Native two-plane U8 map quantization, integer scale controls, native bilinear sampling and native edge policy apply. XY resources become static editable native Smart Filter parameters; source graph bindings and source sampler/abyss behavior are not retained. Zero-displacement axes use native scale0 exactly.".into()],
+        notes: vec!["Actual current native auxiliary pixels were captured once into an ordinary embedded native Displace map. Absolute XY values use native pixel-center coordinates; relative values become native pixel offsets. Native two-plane U8 map quantization, integer scale controls, native bilinear sampling and native edge policy apply. XY resources become static editable native Smart Filter parameters; source graph bindings and source sampler/abyss behavior are not retained. Zero-displacement axes use native scale 0 exactly.".into()],
         ..Default::default()
     };
     *budget = remaining;
@@ -138,6 +138,7 @@ mod tests {
             assert_eq!(zero.filters[0].params["horizontal"], 0.);
             assert_eq!(zero.filters[0].params["vertical"], 0.);
             assert_eq!(zero.filters[0].params["undefinedAreas"], "wrap");
+            assert!(zero.notes.iter().any(|note| note.ends_with("Zero-displacement axes use native scale 0 exactly.")));
         }
     }
     #[test]
