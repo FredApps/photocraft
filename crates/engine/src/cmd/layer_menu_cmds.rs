@@ -942,6 +942,7 @@ fn export_layer(s: &mut Session, p: &Value, cmd: &str, png_only: bool) -> Result
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let mut ldoc = layer_document(&d.doc, id)?;
     let path = p.get("path").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or_else(|| bad(cmd, "missing `path` (UIs ask for one)"))?;
+    crate::file_cmds::check_import_destination(d, path)?;
     let lower = path.to_ascii_lowercase();
     if png_only && !lower.ends_with(".png") {
         return Err(bad(cmd, "Quick Export as PNG writes .png files"));
