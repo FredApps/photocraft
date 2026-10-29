@@ -2,7 +2,7 @@
 
 The optional `uv-workbench` feature combines a native 3D model viewport with
 PhotoCraft's layered texture editor. This presentation shows the updated
-PhotoCraft 0.16.0 build using screenshots supplied by the contributor.
+PhotoCraft build using screenshots supplied by the contributor.
 
 ## 1. Overview
 
@@ -13,13 +13,12 @@ panel exposes texture bindings while the ordinary Layers panel remains available
 
 ## 2. Mask sublayers
 
-An editable mask stack contains Paint, Fill and Levels effects. The screenshot
-shows the expanded stack, Levels controls and the grayscale mask on both the
-model and the 2D texture. The red annotations belong to the supplied screenshot.
-Use `.pcuv` or `.pcraft` to retain the editable stack; flat texture export stores
-the rendered result.
+An editable mask stack contains Paint, Fill, Levels and Blur effects. The
+screenshot shows the grayscale mask on the model and UV map, with Levels, Fill
+and Blur controls displayed side by side. Use `.pcuv` or `.pcraft` to retain the
+editable stack; flat texture export stores the rendered result.
 
-![Mask sublayers: Paint, Fill and Levels with a shared 2D/3D mask preview](images/uv-showcase/mask-sublayers.png)
+![Mask sublayers: Paint, Fill, Levels and Blur with a shared 2D/3D mask preview](images/uv-showcase/mask-sublayers.png)
 
 ## 3. Polygon wireframe
 
