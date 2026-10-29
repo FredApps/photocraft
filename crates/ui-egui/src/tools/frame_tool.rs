@@ -430,7 +430,7 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
                     layer: id,
                     doc: st.doc.id,
                     revision: st.revision,
-                    original: Box::new(f.clone()),
+                    original: f.clone(),
                     proposed: f.transform,
                     start: p,
                     mode: selected_control.map_or(EditMode::Move, |(_, m)| m),

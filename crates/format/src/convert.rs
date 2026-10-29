@@ -201,7 +201,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             feather: m.feather,
         }),
         vector_mask: l.vector_mask.clone(),
-        frame: l.frame.clone(),
+        frame: l.frame.as_deref().cloned(),
         effects: EffectsM {
             enabled: l.effects.enabled,
             items: l.effects.items.clone(),
@@ -544,7 +544,7 @@ impl Loader<'_> {
             clipped: m.clipped,
             mask,
             vector_mask: m.vector_mask.clone(),
-            frame,
+            frame: frame.map(Box::new),
             effects: Effects {
                 enabled: m.effects.enabled,
                 items: m.effects.items.clone(),

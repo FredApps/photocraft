@@ -379,7 +379,12 @@ impl Ctx<'_> {
             && let Some(data) = rec.block(b"pcFr").filter(|b| b.data.len() <= 8 << 20)
         {
             let end = data.data.iter().rposition(|b| *b != 0).map_or(0, |n| n.saturating_add(1));
-            l.frame = data.data.get(..end).and_then(|bytes| serde_json::from_slice::<photocraft_doc::Frame>(bytes).ok()).filter(photocraft_doc::Frame::valid);
+            l.frame = data
+                .data
+                .get(..end)
+                .and_then(|bytes| serde_json::from_slice::<photocraft_doc::Frame>(bytes).ok())
+                .filter(photocraft_doc::Frame::valid)
+                .map(Box::new);
         }
         l.visible = rec.is_visible();
         l.opacity = f32::from(rec.opacity) / 255.0;

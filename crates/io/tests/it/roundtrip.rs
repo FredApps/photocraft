@@ -610,11 +610,11 @@ fn psd_16bit_layers_with_compatibility_section_open_visible() {
 
 fn framed(children: Vec<photocraft_doc::Layer>, stroke: Option<photocraft_doc::ShapeStroke>) -> photocraft_doc::Layer {
     let mut g = photocraft_doc::Layer::group("frame", children);
-    g.frame = Some(photocraft_doc::Frame {
+    g.frame = Some(Box::new(photocraft_doc::Frame {
         path: photocraft_vector::shapes::rect(0.0, 0.0, 1.0, 1.0),
         transform: photocraft_geom::Affine { m: [6.0, 0.0, 0.0, 6.0, 1.0, 1.0] },
         stroke,
-    });
+    }));
     g
 }
 

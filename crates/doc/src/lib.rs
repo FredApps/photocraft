@@ -637,8 +637,9 @@ pub struct Layer {
     pub effects: Effects,
     pub label: LabelColor,
     pub content: LayerContent,
-    /// Frame Tool container; its clipping outline and image have independent placements.
-    pub frame: Option<Frame>,
+    /// Frame Tool container; its clipping outline and image have independent placements. Boxed:
+    /// inline it grows every layer by 224 bytes, and deep documents recurse on small stacks.
+    pub frame: Option<Box<Frame>>,
     /// Preserved PSD additional-layer-info blocks (key, data) for lossless
     /// round-trip of anything not modelled above: vector masks, blending
     /// options, layer version, and the original adjustment/fill blocks (the

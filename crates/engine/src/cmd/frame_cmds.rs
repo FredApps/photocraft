@@ -111,7 +111,7 @@ fn new_frame(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let mut g = Layer::group(name.unwrap_or_else(|| doc.next_layer_name("Frame")), vec![]);
         g.blend = BlendMode::Normal;
-        g.frame = Some(f);
+        g.frame = Some(Box::new(f));
         refresh(&mut g);
         // A frame is one row, as in Photoshop: closed, so the next new layer goes above it rather
         // than into it.
@@ -156,7 +156,7 @@ fn frame_from_layers(s: &mut Session, p: &Value) -> Result<Value> {
         if let Some(children) = l.children_mut() {
             *children = vec![image];
         }
-        l.frame = Some(f);
+        l.frame = Some(Box::new(f));
         l.blend = BlendMode::Normal;
         refresh(l);
         Ok(())
@@ -233,7 +233,7 @@ fn convert(s: &mut Session, p: &Value) -> Result<Value> {
         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
         l.content = LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None, frame_stroke: None });
         l.name = name;
-        l.frame = Some(f);
+        l.frame = Some(Box::new(f));
         l.mask = None;
         l.effects = Default::default();
         // The group would otherwise still carry the type or shape layer's PSD content blocks.

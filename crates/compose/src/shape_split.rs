@@ -104,7 +104,7 @@ pub fn split(sh: &ShapeLayer, canvas: Rect, depth: SampleType) -> Option<(Surfac
 /// Photoshop Frame, a vector mask).
 pub fn frame_shape(layer: &Layer) -> Option<ShapeLayer> {
     let LayerContent::Group(g) = &layer.content else { return None };
-    if let Some(shape) = layer.frame.as_ref().and_then(photocraft_doc::Frame::stroke_shape) {
+    if let Some(shape) = layer.frame.as_ref().and_then(|f| f.stroke_shape()) {
         return Some(shape);
     }
     let stroke = g.frame_stroke.as_ref().filter(|s| s.width.is_finite() && s.width > 0.0 && s.opacity > 0.0)?;
