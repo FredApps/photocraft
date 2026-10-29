@@ -1188,7 +1188,7 @@ impl Document {
 
     /// Frames expose their image as an editable target, rather than as a layer-stack container.
     /// New layers beside that image belong beside the frame, keeping the image slot intact.
-    fn insertion_path(&self, relative: LayerId) -> Option<LayerPath> {
+    pub fn insertion_path(&self, relative: LayerId) -> Option<LayerPath> {
         let mut path = self.path_of(relative)?;
         let end = (1..path.len()).find(|n| path.get(..*n).and_then(|p| self.layer_at(p)).is_some_and(|l| l.frame.is_some())).unwrap_or(path.len());
         path.truncate(end);
