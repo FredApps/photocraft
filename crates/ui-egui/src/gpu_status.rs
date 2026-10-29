@@ -351,6 +351,7 @@ mod tests {
                 name: "Recovery opacity".into(),
                 visible: true,
                 opacity: 1.0,
+                blend: photocraft_color::BlendMode::Normal,
                 surface: Surface::with_default(PixelFormat::RGBA8, &[1.0, 0.0, 0.0, 0.5]),
                 fill_map: None,
                 fill_map_size: [0, 0],

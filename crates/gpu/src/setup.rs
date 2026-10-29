@@ -506,3 +506,4 @@ impl Compositor {
         self.timer.as_mut().and_then(timing::GpuTimer::take)
     }
 }
+use super::consts;

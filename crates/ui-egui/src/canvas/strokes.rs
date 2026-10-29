@@ -322,10 +322,20 @@ pub(crate) fn stroke_command(app: &PhotocraftApp, tool: Tool) -> &'static str {
     if tool == Tool::Pencil || crate::eraser_ui::pencil_mode(app, tool) || crate::eraser_ui::block_mode(app, tool) { "paint.pencil" } else { "paint.stroke" }
 }
 
+#[cfg(feature = "uv-workbench")]
+fn use_native_uv_mask_preview_worker(native_surface_input: bool, workspace_3d: bool, brush_tool: bool, mask_target: bool) -> bool {
+    native_surface_input && workspace_3d && brush_tool && mask_target
+}
+
 pub(super) fn begin_live_stroke(app: &PhotocraftApp) -> Option<LiveStroke> {
     static STROKES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let st = app.session.active()?;
     let d = app.drag.as_ref()?;
+    #[cfg(feature = "uv-workbench")]
+    let native_mask_preview_worker =
+        use_native_uv_mask_preview_worker(app.native_uv_surface_input, app.ui.workspace == "3D", d.tool == Tool::Brush, paint_target(app) == json!("mask"));
+    #[cfg(not(feature = "uv-workbench"))]
+    let native_mask_preview_worker = false;
     let stroke = if d.tool == Tool::MixerBrush {
         let points = app.stylus.stroke_points(&d.points);
         let p = stroke_params(app, d, points.get(..1)?);
@@ -362,7 +372,13 @@ pub(super) fn begin_live_stroke(app: &PhotocraftApp) -> Option<LiveStroke> {
         EngineStroke::Retouch(photocraft_engine::retouch_cmds::LiveRetouch::begin(&app.session, cmd, &p).ok()?)
     } else {
         let p = stroke_params(app, d, &app.stylus.stroke_points(&d.points));
-        EngineStroke::Brush(Box::new(photocraft_engine::brush_cmds::LiveStroke::begin_with(&app.session, stroke_command(app, d.tool), &p).ok()?))
+        let cmd = stroke_command(app, d.tool);
+        let live = if native_mask_preview_worker {
+            photocraft_engine::brush_cmds::LiveStroke::begin_with_mask_preview_worker(&app.session, cmd, &p, std::time::Duration::from_millis(33)).ok()?
+        } else {
+            photocraft_engine::brush_cmds::LiveStroke::begin_with(&app.session, cmd, &p).ok()?
+        };
+        EngineStroke::Brush(Box::new(live))
     };
     let n = STROKES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0xff_ffff;
     let damage = vec![stroke.bounds()];
@@ -394,49 +410,78 @@ pub(crate) fn cancel_mixer_on_context_change(app: &mut PhotocraftApp, ctx: &egui
 
 /// Render the drag points the live stroke hasn't seen yet, with the pen pressure, tilt and
 /// rotation the commit's `paint.stroke` gets for them.
-pub(crate) fn feed_live_stroke(app: &mut PhotocraftApp) {
+pub(crate) fn feed_live_stroke(app: &mut PhotocraftApp) -> bool {
     // A batched move replays several samples in one frame and calls this once at the end, so the
     // per-sample calls from `tool_event` are skipped (see `canvas_view`).
     if app.defer_live_stroke {
-        return;
+        return false;
     }
-    let (Some(l), Some(d)) = (app.live_stroke.as_mut(), app.drag.as_ref()) else { return };
-    if l.preview_failed {
-        return;
-    }
-    let pose = &app.stylus.stroke;
-    // The same times `stroke_points` gives the commit (from the drag's first point).
-    let t0 = app.stylus.point_ms(0);
-    let pts: Vec<_> = (l.fed..d.points.len())
-        .filter_map(|i| {
-            let p = d.points.get(i)?;
-            let t = pose.get(i).or(pose.last()).copied().unwrap_or_default();
-            let mut sp = photocraft_engine::paint::StrokePoint::new(p[0], p[1], p[2] as f32);
-            (sp.tilt_x, sp.tilt_y, sp.rotation) = (t[0], t[1], t[2]);
-            sp.time = app.stylus.point_ms(i) - t0;
-            Some(sp)
-        })
-        .collect();
-    if pts.is_empty() {
-        return;
-    }
-    l.fed = d.points.len();
     let started = crate::gpu_canvas::now_ms();
-    match l.stroke.push(&pts) {
-        Ok(r) => l.damage.push(r),
-        Err(e) => {
-            if d.tool == Tool::MixerBrush {
-                // Keep the last valid preview and its document/revision guard. All input
-                // stays in the drag; release replays it without the preview tile budget.
-                l.preview_failed = true;
-                app.ui.status = e.to_string();
-                app.ui.status_error = true;
-            } else {
-                app.live_stroke = None;
+    {
+        let (Some(l), Some(d)) = (app.live_stroke.as_mut(), app.drag.as_ref()) else { return false };
+        if !l.preview_failed {
+            let pose = &app.stylus.stroke;
+            // The same times `stroke_points` gives the commit (from the drag's first point).
+            let t0 = app.stylus.point_ms(0);
+            let pts: Vec<_> = (l.fed..d.points.len())
+                .filter_map(|i| {
+                    let p = d.points.get(i)?;
+                    let t = pose.get(i).or(pose.last()).copied().unwrap_or_default();
+                    let mut sp = photocraft_engine::paint::StrokePoint::new(p[0], p[1], p[2] as f32);
+                    (sp.tilt_x, sp.tilt_y, sp.rotation) = (t[0], t[1], t[2]);
+                    sp.time = app.stylus.point_ms(i) - t0;
+                    Some(sp)
+                })
+                .collect();
+            if !pts.is_empty() {
+                l.fed = d.points.len();
+                match l.stroke.push(&pts) {
+                    Ok(r) => l.damage.push(r),
+                    Err(e) => {
+                        if d.tool == Tool::MixerBrush {
+                            // Keep the last valid preview and its document/revision guard. All input
+                            // stays in the drag; release replays it without the preview tile budget.
+                            l.preview_failed = true;
+                            app.ui.status = e.to_string();
+                            app.ui.status_error = true;
+                        } else {
+                            app.live_stroke = None;
+                        }
+                    }
+                }
             }
         }
     }
     app.perf.stage.stroke_ms += crate::gpu_canvas::now_ms() - started;
+    poll_mask_preview_worker(app)
+}
+
+/// Finish the current renderer path at a UV island boundary while keeping the gesture, worker,
+/// and eventual history commit alive. This is only used by native 3D Brush mask strokes with a
+/// downstream Blur; other tools keep the normal Up/commit behavior.
+pub(crate) fn break_native_uv_mask_segment(app: &mut PhotocraftApp) -> bool {
+    let Some(live) = app.live_stroke.as_mut() else { return false };
+    let EngineStroke::Brush(stroke) = &mut live.stroke else { return false };
+    if !stroke.supports_mask_segments() {
+        return false;
+    }
+    let Ok(damage) = stroke.break_segment() else { return false };
+    live.damage.push(damage);
+    true
+}
+
+/// Apply one completed native mask-preview worker result and report whether the display needs
+/// another frame. The returned damage expands through downstream mask effects such as Blur.
+fn poll_mask_preview_worker(app: &mut PhotocraftApp) -> bool {
+    let Some(live) = app.live_stroke.as_mut() else { return false };
+    let EngineStroke::Brush(stroke) = &mut live.stroke else { return false };
+    let applied = if let Some(damage) = stroke.poll_mask_preview() {
+        live.damage.push(damage);
+        true
+    } else {
+        false
+    };
+    applied || stroke.mask_preview_pending()
 }
 
 /// The points the live retouching stroke has rendered.
@@ -595,6 +640,9 @@ pub(super) fn draw_smoothing_string(painter: &egui::Painter, xf: &ViewXform, (br
 pub(super) fn commit_brush_stroke(app: &mut PhotocraftApp, d: &Drag) {
     let live = app.live_stroke.take();
     let mut p = stroke_params(app, d, &app.stylus.stroke_points(&d.points));
+    if !d.breaks.is_empty() {
+        p["breaks"] = json!(d.breaks);
+    }
     if let Some(seed) = live.as_ref().and_then(|l| l.stroke.seed()) {
         p["seed"] = json!(seed);
     }
@@ -623,6 +671,11 @@ pub(super) fn commit_brush_stroke(app: &mut PhotocraftApp, d: &Drag) {
                 return;
             }
         }
+    }
+    if let EngineStroke::Brush(stroke) = &mut l.stroke
+        && let Some(damage) = stroke.flush_mask_preview()
+    {
+        l.damage.push(damage);
     }
     let LiveStroke { stroke, doc, key, damage, .. } = l;
     let before = app.session.documents().iter().find(|st| st.doc.id == doc).map(|st| st.doc.clone());
@@ -659,6 +712,20 @@ pub(super) fn snap_aliased_tip(app: &PhotocraftApp, tool: Tool, x: f64, y: f64) 
     }
     let (cx, cy) = photocraft_engine::paint::grid_center(x, y, app.session.tools.brush.size);
     (f64::from(cx), f64::from(cy))
+}
+
+#[cfg(all(test, feature = "uv-workbench"))]
+mod mask_preview_worker_tests {
+    use super::use_native_uv_mask_preview_worker;
+
+    #[test]
+    fn worker_is_opt_in_only_for_native_3d_mask_brushes() {
+        assert!(use_native_uv_mask_preview_worker(true, true, true, true), "native 3D mask Brush opts in");
+        assert!(!use_native_uv_mask_preview_worker(false, true, true, true), "split 2D UV canvas does not set the native-surface marker");
+        assert!(!use_native_uv_mask_preview_worker(true, true, true, false), "pixel strokes remain eager");
+        assert!(!use_native_uv_mask_preview_worker(true, false, true, true), "non-3D workspaces remain eager");
+        assert!(!use_native_uv_mask_preview_worker(true, true, false, true), "non-Brush tools remain eager");
+    }
 }
 
 /// "mask" when the Layers panel targets (or the canvas shows) the active layer's mask, or the layer

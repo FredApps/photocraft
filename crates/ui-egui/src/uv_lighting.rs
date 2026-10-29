@@ -14,6 +14,10 @@ pub(crate) struct GpuMapRequest {
     pub doc: Arc<photocraft_doc::Document>,
     pub key: Key,
     pub linear_srgb: bool,
+    /// A partial update is safe only when it was derived from this exact preceding map key.
+    pub previous_key: Option<Key>,
+    /// Pixels changed since `previous_key`; `None` requires a full recomposite.
+    pub damage: Option<photocraft_geom::Rect>,
 }
 #[derive(Default)]
 pub(crate) struct SurfaceMaps {
@@ -116,10 +120,16 @@ fn refresh_impl(app: &mut PhotocraftApp, maps: &mut SurfaceMaps, allow_gpu: bool
             // Profile assignment/conversion is a document revision. Avoid parsing an ICC
             // profile for every unchanged slot, including numeric maps, on every refresh.
             let key = (doc.id.0, revision, live, 0);
-            let gpu_request = gpu_encoding.map(|linear_srgb| GpuMapRequest {
-                doc: doc.clone(),
-                key: (doc.id.0, revision, live, photocraft_engine::color_cmds::composite_profile(&doc).content_hash()),
-                linear_srgb,
+            let gpu_request = gpu_encoding.map(|linear_srgb| {
+                let map_key = (doc.id.0, revision, live, photocraft_engine::color_cmds::composite_profile(&doc).content_hash());
+                let previous = maps.gpu[kind]
+                    .get(material)
+                    .and_then(Option::as_ref)
+                    .filter(|old| old.key.0 == map_key.0 && old.key.3 == map_key.3 && old.doc.size == doc.size);
+                let last_damage = app.session.documents().get(index).and_then(|st| st.last_damage);
+                let damage = previous.and_then(|old| crate::canvas::damage_since(app, index, (old.key.1, old.key.2), (revision, live), 0, last_damage));
+                let previous_key = damage.as_ref().and_then(|_| previous.map(|old| old.key));
+                GpuMapRequest { doc: doc.clone(), key: map_key, linear_srgb, previous_key, damage }
             });
             if let Some(slot) = maps.gpu[kind].get_mut(material) {
                 *slot = gpu_request.clone();

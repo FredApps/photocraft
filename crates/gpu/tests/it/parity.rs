@@ -251,6 +251,7 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
             name: "fill".into(),
             visible: true,
             opacity: 0.55,
+            blend: photocraft_color::BlendMode::Normal,
             surface: photocraft_raster::Surface::new(rgba),
             fill_map: Some(fill_map),
             fill_map_size: [2, 2],
@@ -264,6 +265,7 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
                     name: "low".into(),
                     visible: true,
                     opacity: 0.63,
+                    blend: photocraft_color::BlendMode::Normal,
                     surface: low,
                     fill_map: None,
                     fill_map_size: [0, 0],
@@ -274,6 +276,7 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
                     name: "hidden".into(),
                     visible: false,
                     opacity: 1.0,
+                    blend: photocraft_color::BlendMode::Normal,
                     surface: hidden,
                     fill_map: None,
                     fill_map_size: [0, 0],
@@ -284,6 +287,7 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
                     name: "top".into(),
                     visible: true,
                     opacity: 0.74,
+                    blend: photocraft_color::BlendMode::Normal,
                     surface: top,
                     fill_map: None,
                     fill_map_size: [0, 0],
@@ -295,6 +299,7 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
                     name: "levels".into(),
                     visible: true,
                     opacity: 0.67,
+                    blend: photocraft_color::BlendMode::Normal,
                     surface: photocraft_raster::Surface::new(rgba),
                     fill_map: None,
                     fill_map_size: [0, 0],
@@ -323,6 +328,7 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
                     let adjusted = *output_black + normalized.powf(1.0 / *gamma) * (*output_white - *output_black);
                     expected_default = adjusted * paint.opacity + expected_default * (1.0 - paint.opacity);
                 }
+                EffectKind::Blur { .. } => {}
             }
         }
         let expected = photocraft_raster::Surface::with_default(gray, &[expected_default]).default_pixel();
@@ -344,12 +350,139 @@ fn paint_mask_stack_matches_cpu_for_all_depths_defaults_and_cached_opacity() {
         }
         check(&mut g, &d, &format!("paint mask stack {sample:?}"));
 
-        let mask = d.layers[0].mask.as_mut().unwrap();
-        let old = mask.paint.clone().unwrap();
-        mask.paint.as_mut().unwrap().layers[2].opacity = 0.19;
-        photocraft_compose::mask_paint::refresh_changes(mask, Some(&old));
+        if sample == SampleType::U8 {
+            let modes = [
+                BlendMode::Normal,
+                BlendMode::Darken,
+                BlendMode::Multiply,
+                BlendMode::ColorBurn,
+                BlendMode::LinearBurn,
+                BlendMode::Lighten,
+                BlendMode::Screen,
+                BlendMode::ColorDodge,
+                BlendMode::LinearDodge,
+                BlendMode::Overlay,
+                BlendMode::SoftLight,
+                BlendMode::HardLight,
+                BlendMode::VividLight,
+                BlendMode::LinearLight,
+                BlendMode::PinLight,
+                BlendMode::HardMix,
+                BlendMode::Difference,
+                BlendMode::Exclusion,
+                BlendMode::Subtract,
+                BlendMode::Divide,
+            ];
+            for mode in modes {
+                for (index, label) in [(2, "Paint"), (3, "Fill")] {
+                    {
+                        let mask = d.layers[0].mask.as_mut().unwrap();
+                        let old = mask.paint.clone().unwrap();
+                        mask.paint.as_mut().unwrap().layers[index].blend = mode;
+                        photocraft_compose::mask_paint::refresh_changes(mask, Some(&old));
+                    }
+                    check(&mut g, &d, &format!("mask {label} grayscale blend {mode:?}"));
+                }
+            }
+        }
+
+        {
+            let mask = d.layers[0].mask.as_mut().unwrap();
+            let old = mask.paint.clone().unwrap();
+            mask.paint.as_mut().unwrap().layers[2].opacity = 0.19;
+            photocraft_compose::mask_paint::refresh_changes(mask, Some(&old));
+        }
         check(&mut g, &d, &format!("paint mask opacity rerender {sample:?}"));
     }
+}
+
+#[test]
+fn mask_blur_matches_cpu_across_page_edges_canvas_edges_and_stack_prefixes() {
+    let Some(mut g) = gpu() else { return };
+    // A 2048px texture limit plus the Blur source halo selects 1024px page cells, allowing this
+    // single render to exercise the padded source upload on both sides of an actual cell edge.
+    g.comp.set_texture_limit(2048);
+    let cell = 1024i32;
+    let width = (cell * 2 + 17) as u32;
+    let height = 24u32;
+    let gray = PixelFormat::GRAY8;
+    let rgba = PixelFormat::RGBA8;
+    let base = photocraft_raster::Surface::with_default(gray, &[0.2]);
+    // Two lower-prefix impulses: one at the canvas edge and one straddling the GPU page edge.
+    let mut paint = photocraft_raster::Surface::with_default(rgba, &[0.0; 4]);
+    paint.write_region(Rect::new(1, 8, 2, 9), &[1.0, 0.0, 0.0, 1.0]);
+    paint.write_region(Rect::new(cell - 1, 8, cell, 9), &[1.0, 0.0, 0.0, 1.0]);
+    let empty = || photocraft_raster::Surface::with_default(rgba, &[0.0; 4]);
+    let mut mask = LayerMask::hide_all();
+    mask.surface = photocraft_raster::Surface::with_default(gray, &[0.0]);
+    mask.paint = Some(Stack {
+        base,
+        layers: vec![
+            Paint {
+                name: "lower impulses".into(),
+                visible: true,
+                opacity: 1.0,
+                blend: BlendMode::Normal,
+                surface: paint,
+                fill_map: None,
+                fill_map_size: [0, 0],
+                fill_bounds: None,
+                kind: EffectKind::Paint,
+            },
+            Paint {
+                name: "first blur".into(),
+                visible: true,
+                opacity: 0.75,
+                blend: BlendMode::Normal,
+                surface: empty(),
+                fill_map: None,
+                fill_map_size: [0, 0],
+                fill_bounds: None,
+                kind: EffectKind::Blur { radius: 3 },
+            },
+            Paint {
+                name: "second blur".into(),
+                visible: true,
+                opacity: 1.0,
+                blend: BlendMode::Normal,
+                surface: empty(),
+                fill_map: None,
+                fill_map_size: [0, 0],
+                fill_bounds: None,
+                kind: EffectKind::Blur { radius: 2 },
+            },
+            Paint {
+                name: "upper fill".into(),
+                visible: true,
+                opacity: 1.0,
+                blend: BlendMode::Normal,
+                surface: empty(),
+                fill_map: None,
+                fill_map_size: [0, 0],
+                fill_bounds: Some([cell + 3, 8, cell + 4, 9]),
+                kind: EffectKind::Fill { value: 0.9, rotation: 0.0, repeat_u: false, repeat_v: false, mirror_u: false, mirror_v: false },
+            },
+        ],
+        active: 3,
+    });
+    photocraft_compose::mask_paint::refresh(&mut mask, Some(Rect::new(0, 0, width as i32, height as i32)));
+    let mut layer = Layer::raster("mask blur", rgba);
+    *layer.surface_mut().unwrap() = photocraft_raster::Surface::with_default(rgba, &[1.0; 4]);
+    layer.mask = Some(mask);
+    let mut doc = Document::new("mask blur page halo", Size::new(width, height), ColorMode::Rgb, SampleType::U8);
+    doc.layers.push(layer);
+
+    let cpu = photocraft_compose::render(&doc, doc.bounds());
+    let gpu_pixels = render_to_vec(&mut g.comp, &g.device, &g.queue, &doc, doc.bounds()).expect("GPU Blur render");
+    let diff = worst_diff(&cpu.px, &gpu_pixels);
+    assert!(diff.0 <= TOL, "mask Blur parity: {:.2}/255 at index {}", diff.0 * 255.0, diff.1);
+    assert_eq!(g.comp.page_size(), 1024, "padded source textures fit within the simulated device limit");
+
+    let at = |x: usize, y: usize| cpu.px[y * width as usize + x][3];
+    assert!(at(0, 8) < at(1, 8), "the canvas edge samples the mask source default, not a clamped impulse");
+    assert!(at(cell as usize + 1, 8) > 0.2, "Gaussian support crosses the page-cell edge");
+    assert!((at(cell as usize + 3, 8) - 0.9).abs() < 1.0 / 255.0, "an effect above Blur is applied after the lower prefix is blurred");
+    assert!(at(cell as usize + 2, 8) < 0.9, "the upper fill does not spread through the lower Blur");
 }
 
 #[test]
@@ -370,6 +503,7 @@ fn spatial_mask_fill_repeats_match_across_page_cells() {
             name: "Fill".into(),
             visible: true,
             opacity: 1.0,
+            blend: photocraft_color::BlendMode::Normal,
             surface: photocraft_raster::Surface::new(PixelFormat::RGBA8),
             fill_map: Some(map),
             fill_map_size: [2, 130],

@@ -203,6 +203,8 @@ pub(crate) struct Cache {
     frame_handle: Option<TextureHandle>,
     rendered: Option<(u64, Camera, usize, usize, bool)>,
     refreshed: Option<Instant>,
+    gpu_mask_preview_was_active: bool,
+    gpu_mask_preview_flush_pending: bool,
     texture_side: usize,
     navigation: Option<Navigation>,
     wheel_active: Option<Instant>,
@@ -338,6 +340,41 @@ pub(crate) fn patch_image(target: &mut Option<Image>, size: [u32; 2], rect: phot
 fn region(rect: photocraft_geom::Rect) -> [u32; 4] {
     if rect.is_empty() { [0; 4] } else { [rect.x0 as u32, rect.y0 as u32, rect.width(), rect.height()] }
 }
+fn preview_refresh_due(
+    moving: bool,
+    active_preview_gpu: bool,
+    mask_surface_preview_gpu: bool,
+    opacity_preview: bool,
+    settle: bool,
+    interval_elapsed: bool,
+    preview_ended: bool,
+) -> bool {
+    !moving && ((active_preview_gpu && !mask_surface_preview_gpu) || preview_ended || ((opacity_preview || active_preview_gpu || !settle) && interval_elapsed))
+}
+fn preview_interval_elapsed(refreshed: Option<Instant>, now: Instant) -> bool {
+    refreshed.is_none_or(|at| now.duration_since(at) >= Duration::from_millis(33))
+}
+fn should_throttle_mask_surface_preview(
+    active_preview_gpu: bool,
+    opacity_preview: bool,
+    native_surface_stroke: bool,
+    workspace_3d: bool,
+    mask_target: bool,
+) -> bool {
+    active_preview_gpu && !opacity_preview && native_surface_stroke && workspace_3d && mask_target
+}
+fn showing_gray_layer_mask(app: &PhotocraftApp) -> bool {
+    app.session
+        .active()
+        .is_some_and(|st| photocraft_engine::mask_view_cmds::current(st).is_some_and(|view| view.mode == photocraft_engine::mask_view_cmds::MaskViewMode::Gray))
+}
+fn gray_mask_hides_all_materials(app: &PhotocraftApp, cache: &Cache) -> bool {
+    showing_gray_layer_mask(app)
+        && app.session.uv.scene.as_ref().is_some_and(|scene| scene.materials.iter().enumerate().all(|(material, _)| cache.masked.contains(&material)))
+}
+fn should_refresh_surface_maps(app: &PhotocraftApp, cache: &Cache) -> bool {
+    !gray_mask_hides_all_materials(app, cache)
+}
 
 #[cfg(test)]
 fn refresh(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &mut Cache) -> Result<(), String> {
@@ -362,6 +399,7 @@ fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &m
     let mut bindings = app.session.uv.map_bindings(map_kind).to_vec();
     cache.masked.clear();
     let showing_layer_mask = app.session.active().is_some_and(|st| photocraft_engine::mask_view_cmds::current(st).is_some());
+    let showing_gray_mask = showing_gray_layer_mask(app);
     for (material, id) in bindings.iter_mut().enumerate() {
         if let Some(index) = crate::uv_mask::source(app, material) {
             *id = app.session.documents().get(index).map(|st| st.doc.id);
@@ -373,6 +411,7 @@ fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &m
             cache.masked.insert(material);
         }
     }
+    let gray_mask_hides_materials = gray_mask_hides_all_materials(app, cache);
     let slots = app.session.uv.all_bindings().filter(|id| id.is_some()).count().max(1);
     let gpu_limit = cache.gpu.as_ref().map(|g| g.max_texture_side());
     if let Some(limit) = gpu_limit {
@@ -405,7 +444,9 @@ fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &m
         cache.opacity = vec![None; bindings.len()];
         cache.opacity_keys = vec![(0, 0, 0); bindings.len()];
     }
-    for material in 0..bindings.len() {
+    // Every surface is marked as a mask in Gray view, whose shader returns the grayscale map
+    // directly; opacity does not participate in that preview.
+    for material in (0..bindings.len()).filter(|_| !gray_mask_hides_materials) {
         let index = opacity_bindings.get(material).copied().flatten().and_then(|id| app.session.documents().iter().position(|st| st.doc.id == id));
         let Some(index) = index else {
             if let Some(dst) = cache.opacity.get_mut(material) {
@@ -513,6 +554,13 @@ fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &m
         // A spatial Fill proxy is sampled off-thread at most 20 times per second. The same
         // accepted low-resolution result drives 2D and 3D; all other material maps stay at their
         // canonical image until the gesture commits.
+        if showing_gray_mask && cache.masked.contains(&material) {
+            // This cache is intentionally omitted in the opaque Gray view; a later Overlay
+            // fill preview will rebuild it through the color path if it needs the base.
+            if let Some(base) = cache.mask_base.get_mut(material) {
+                *base = None;
+            }
+        }
         let live_gray_mask = if cache.masked.contains(&material) {
             crate::uv_mask_paint_preview::sampled_fill_proxy(app, index).and_then(|proxy| {
                 let mut view = app.session.documents().get(index)?.channel_view.clone();
@@ -528,7 +576,11 @@ fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &m
         } else {
             None
         };
-        if let Some((proxy, view)) = live_gray_mask {
+        let overlay_fill_needs_color_base = live_gray_mask.as_ref().is_some_and(|(_, view)| {
+            view.shown_layer_mask(&doc).is_some_and(|(_, mode)| mode == photocraft_engine::mask_view_cmds::MaskViewMode::Overlay)
+                && cache.mask_base.get(material).and_then(Option::as_ref).is_none()
+        });
+        if !overlay_fill_needs_color_base && let Some((proxy, view)) = live_gray_mask {
             let mode = view.shown_layer_mask(&doc).map(|(_, mode)| mode);
             let (w, h) = (proxy.size[0], proxy.size[1]);
             let mask_key = crate::uv_mask::key(app, index);
@@ -575,7 +627,7 @@ fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &m
             textures_changed = true;
             continue;
         }
-        if crate::uv_mask_paint_preview::fill_manipulation_active(app, index) {
+        if crate::uv_mask_paint_preview::fill_manipulation_active(app, index) && !overlay_fill_needs_color_base {
             // Until a proxy exists (or when this is a non-mask material view), retain the last
             // UV image. Never fall through to a full-resolution document composite on pointer move.
             continue;
@@ -633,8 +685,25 @@ fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &m
             cache.snapshots[material] = None;
         }
         let regions = crate::uv_damage::regions(&mut cache.snapshots[material], &doc, damage);
+        // At native map resolution Gray mask view is already the final UV image. The regular
+        // path below composites and colour-converts the document only to replace every pixel
+        // with this opaque mask image in `uv_mask::overlay`.
+        let direct_gray_mask =
+            showing_gray_mask && masked && w == doc.size.width && h == doc.size.height && !crate::uv_mask_paint_preview::fill_manipulation_active(app, index);
         let mut hints = Vec::new();
         for rect in regions {
+            if direct_gray_mask {
+                if let Some((view, active_layer)) = app.session.documents().get(index).map(|st| (st.channel_view.clone(), st.active_layer))
+                    && let Some(pixels) = crate::channel_view::render(&doc, &view, rect, 1, crate::channel_view::Look::of(&app.session), active_layer)
+                {
+                    let rgba = pixels.into_iter().map(|p| p.to_array().map(|v| f32::from(v) / 255.0)).collect::<Vec<_>>();
+                    if let Some(texture) = cache.textures.get_mut(material) {
+                        patch_image(texture, [w, h], rect, rgba)?;
+                    }
+                    hints.push(region(rect));
+                    continue;
+                }
+            }
             let compose_started = crate::gpu_canvas::now_ms();
             let buffer = photocraft_compose::render_reduced_damage(&doc, w, h, rect);
             cpu_compose_ms += crate::gpu_canvas::now_ms() - compose_started;
@@ -683,7 +752,8 @@ fn refresh_with_lighting(app: &mut PhotocraftApp, ctx: &egui::Context, cache: &m
         cache.normal_snapshots = vec![None; normal_bindings.len()];
         textures_changed = true;
     }
-    for (material, id) in normal_bindings.iter().enumerate() {
+    // The same unlit mask branch never samples tangent-space normals.
+    for (material, id) in normal_bindings.iter().enumerate().filter(|_| !gray_mask_hides_materials) {
         let Some(index) = id.and_then(|id| app.session.documents().iter().position(|d| d.doc.id == id)) else {
             if let Some(img) = cache.normals.get_mut(material)
                 && img.take().is_some()
@@ -755,12 +825,14 @@ pub(crate) fn reveal(app: &mut PhotocraftApp) -> Result<(), String> {
     if app.ui.workspace != "3D" {
         let previous = app.ui.clone();
         app.ui.workspace = "3D".into();
-        if let Err(error) = crate::menus::apply_workspace(app) {
+        crate::menus::apply_workspace(app);
+        if let Err(error) = crate::uv_workspace::sync_workspace(app) {
             app.ui = previous;
             return Err(error);
         }
+    } else {
+        crate::uv_workspace::sync_workspace(app)?;
     }
-    crate::uv_workspace::sync_workspace(app)?;
     app.ui.uv_workbench.open = true;
     app.ui.panels.dock = true;
     if app.ui.docking.is_some() {
@@ -1481,21 +1553,47 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 .find(|st| st.doc.id == id)
                 .is_some_and(|st| crate::uv_lighting::gpu_color_encoding(&st.doc, Channel::Color).is_some())
     });
+    // Native 3D mask strokes can invalidate the full material preview on each
+    // pointer move. Keep their live refreshes at the normal cadence; pixel
+    // strokes and 2D previews retain the immediate GPU refresh path.
+    let mask_surface_preview_gpu = should_throttle_mask_surface_preview(
+        active_preview_gpu,
+        opacity_preview.is_some(),
+        crate::uv_paint::active_document(&cache.paint).is_some(),
+        app.ui.workspace == "3D",
+        app.ui.mask_target,
+    );
+    let preview_ended = cache.gpu_mask_preview_was_active && !mask_surface_preview_gpu;
+    cache.gpu_mask_preview_was_active = mask_surface_preview_gpu;
+    cache.gpu_mask_preview_flush_pending |= preview_ended;
     let settle = crate::adjust_preview::settling(app, 180.0);
-    let interval_elapsed = cache.refreshed.is_none_or(|at| at.elapsed() >= Duration::from_millis(33));
-    if !moving && (active_preview_gpu || ((opacity_preview.is_some() || !settle) && interval_elapsed)) {
+    let interval_elapsed = preview_interval_elapsed(cache.refreshed, Instant::now());
+    if preview_refresh_due(
+        moving,
+        active_preview_gpu,
+        mask_surface_preview_gpu,
+        opacity_preview.is_some(),
+        settle,
+        interval_elapsed,
+        cache.gpu_mask_preview_flush_pending,
+    ) {
         if let Err(e) = refresh_with_lighting(app, ui.ctx(), &mut cache, state.lighting) {
             state.status = e;
         }
-        let lighting_refresh = if cache.gpu.is_some() {
-            crate::uv_lighting::refresh_gpu(app, &mut cache.lighting.surface)
-        } else {
-            crate::uv_lighting::refresh(app, &mut cache.lighting.surface)
-        };
-        if let Err(e) = lighting_refresh {
-            state.status = e;
+        // Masked Gray materials bypass PBR in the UV shader, so these source maps cannot affect
+        // the frame. Their revision keys remain intact and refresh normally after leaving Gray.
+        if should_refresh_surface_maps(app, &cache) {
+            let lighting_refresh = if cache.gpu.is_some() {
+                crate::uv_lighting::refresh_gpu(app, &mut cache.lighting.surface)
+            } else {
+                crate::uv_lighting::refresh(app, &mut cache.lighting.surface)
+            };
+            if let Err(e) = lighting_refresh {
+                state.status = e;
+            }
         }
         cache.refreshed = Some(Instant::now());
+        cache.gpu_mask_preview_flush_pending = false;
     }
     let limit = navigation_limit(state.fast_navigation, moving, ui.input(|i| i.max_texture_side));
     let [w, h] = preview_size(size, ui.ctx().pixels_per_point(), cache.gpu.is_none() && state.antialias && !moving, limit);
@@ -1673,6 +1771,8 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         }
     }
     if let Some((_, geometry)) = &cache.geometry {
+        let uv_input_started = crate::gpu_canvas::now_ms();
+        let native_uv_surface_input = std::mem::replace(&mut app.native_uv_surface_input, true);
         crate::uv_paint::input(
             app,
             ui,
@@ -1686,6 +1786,8 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             !state.select_shells && !gesture && cache.navigation.is_none() && !ui.input(|i| i.modifiers.alt),
             state.paint_wrap,
         );
+        app.native_uv_surface_input = native_uv_surface_input;
+        app.perf.span("uv.input", crate::gpu_canvas::now_ms() - uv_input_started);
     }
     if !state.status.is_empty() {
         ui.painter().text(
@@ -2414,6 +2516,32 @@ fn choose(app: &mut PhotocraftApp, state: &mut State, ui: &egui::Ui, material: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mask_surface_preview_is_throttled_but_pixels_and_final_flush_are_not() {
+        let now = Instant::now();
+        assert!(!preview_interval_elapsed(Some(now.checked_sub(Duration::from_millis(32)).unwrap()), now), "mask live updates stay below 30 Hz");
+        assert!(preview_interval_elapsed(Some(now.checked_sub(Duration::from_millis(33)).unwrap()), now), "mask live updates resume at the 33 ms boundary");
+        assert!(!preview_refresh_due(false, true, true, false, false, false, false), "mask surface waits for the cadence interval");
+        assert!(preview_refresh_due(false, true, true, false, false, true, false), "mask surface refreshes when the interval expires");
+        assert!(preview_refresh_due(false, true, false, false, false, false, false), "pixel preview remains immediate");
+        assert!(preview_refresh_due(false, false, false, false, true, false, true), "ending a deferred preview forces its final refresh");
+    }
+
+    #[test]
+    fn mask_surface_preview_throttle_is_wired_only_to_native_3d_mask_strokes() {
+        let native_3d_mask_preview =
+            |native_stroke, workspace_3d, mask_target| should_throttle_mask_surface_preview(true, false, native_stroke, workspace_3d, mask_target);
+        let native_3d_mask = native_3d_mask_preview(true, true, true);
+        let two_d_mask = native_3d_mask_preview(false, true, true);
+        assert!(native_3d_mask, "native 3D mask preview is throttled");
+        assert!(!two_d_mask, "2D UV canvas mask preview stays immediate");
+        assert!(!native_3d_mask_preview(true, true, false), "native 3D pixel strokes stay immediate");
+        assert!(!native_3d_mask_preview(true, false, true), "non-3D preview paths stay immediate");
+        assert!(!should_throttle_mask_surface_preview(true, true, true, true, true), "opacity previews keep their existing cadence");
+        assert!(!preview_refresh_due(false, true, native_3d_mask, false, true, false, false), "native 3D mask waits for cadence");
+        assert!(preview_refresh_due(false, true, two_d_mask, false, true, false, false), "2D mask keeps immediate refresh");
+    }
+
     fn anchor_world(bounds: [i32; 4], rotation: f32, moving_handle: usize) -> [f64; 2] {
         let sign = FILL_HANDLE_SIGNS[(moving_handle + 4) % 8];
         let center = [(f64::from(bounds[0]) + f64::from(bounds[2])) * 0.5, (f64::from(bounds[1]) + f64::from(bounds[3])) * 0.5];
@@ -2551,7 +2679,7 @@ mod tests {
         assert!(crate::icons::exists("uv-perspective") && crate::icons::exists("uv-orthographic"));
         let mut app = fixture_app();
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app).unwrap();
+        crate::menus::apply_workspace(&mut app);
         app.run("uv.texture.create", json!({"channel":"normal","width":32,"height":32})).unwrap();
         app.run("uv.material.select", json!({"channel":"baseColor"})).unwrap();
         app.ui.tool = crate::state::Tool::Brush;
@@ -2647,7 +2775,7 @@ mod tests {
         let _gpu = photocraft_testkit::gpu_lock();
         let mut app = fixture_app();
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app).unwrap();
+        crate::menus::apply_workspace(&mut app);
         app.ui.uv_workbench.split_view = true;
         app.ui.tool = crate::state::Tool::Brush;
         app.run("tools.setBrush", json!({"brush":{"size":20,"hardness":0.333,"opacity":0.617}})).unwrap();
@@ -2722,7 +2850,7 @@ mod tests {
         app.session.uv.normal_bindings.fill(None); // Explicitly exercise the absent-channel state despite sibling auto-discovery.
         app.services.file_dialog = Some(dialog);
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app).unwrap();
+        crate::menus::apply_workspace(&mut app);
         let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).wgpu_setup(crate::gpu_canvas::wgpu_setup()).build_eframe(move |cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
             app.set_uv_wgpu(cc.wgpu_render_state.clone().unwrap()).unwrap();
@@ -2982,6 +3110,339 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "explicit 24 MP mask-stack input and GPU-wait benchmark; run in release"]
+    fn benchmark_native_mask_paint_stack_24mp_split_2d_and_3d() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let (width, height) = std::env::var("PHOTOCRAFT_MASK_BENCH_SIZE")
+            .ok()
+            .and_then(|size| {
+                let (w, h) = size.split_once('x')?;
+                Some((w.parse().ok()?, h.parse().ok()?))
+            })
+            .unwrap_or((6_000, 4_000));
+        const PAINT_LAYERS: usize = 8;
+        const WARMUP: usize = 2;
+        const RUNS: usize = 10;
+        const MOVES: usize = 24;
+        let percentile = |values: &[f64], p: f64| {
+            let mut sorted = values.to_vec();
+            sorted.sort_by(f64::total_cmp);
+            sorted.get(((sorted.len().saturating_sub(1) as f64 * p).round() as usize).min(sorted.len().saturating_sub(1))).copied().unwrap_or(0.0)
+        };
+
+        let mut app = fixture_app();
+        app.ui.workspace = "3D".into();
+        app.run("uv.texture.create", json!({"width":4096,"height":4096,"depth":16})).unwrap();
+        app.run("image.imageSize", json!({"width":width,"height":height,"resample":"bicubic"})).unwrap();
+        let mask_layer = app.session.active().unwrap().active_layer.unwrap();
+        app.run("edit.fill", json!({"contents":"color","color":"#9b6347"})).unwrap();
+        app.run("layer.layerMask.revealAll", json!({})).unwrap();
+        for index in 0..PAINT_LAYERS {
+            app.run("uv.maskPaint.add", json!({"layer":mask_layer.0,"kind":"paint","name":format!("Paint {index}")})).unwrap();
+        }
+        let pixel_layer = app.run("layer.new.layer", json!({"name":"Pixel target"})).unwrap().get("layer").and_then(serde_json::Value::as_u64).unwrap();
+        app.run("edit.fill", json!({"contents":"color","color":"#346c9a"})).unwrap();
+        app.run("tools.setColors", json!({"foreground":"#ff0000"})).unwrap();
+        app.run("tools.setBrush", json!({"brush":{"size":30.0,"hardness":0.8,"opacity":1.0,"flow":1.0}})).unwrap();
+        app.ui.tool = crate::state::Tool::Brush;
+        app.ui.uv_workbench.view_3d = true;
+        app.ui.uv_workbench.split_view = true;
+        app.ui.uv_workbench.select_shells = false;
+        app.ui.mask_target = true;
+
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let capture = shared.clone();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(1600.0, 1000.0))
+            .with_pixels_per_point(1.0)
+            .wgpu_setup(crate::gpu_canvas::wgpu_setup())
+            .build_eframe(move |cc| {
+                PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+                let rs = cc.wgpu_render_state.clone().unwrap();
+                *capture.lock().unwrap() = Some(rs.clone());
+                app.set_wgpu(rs);
+                app
+            });
+        let rs = shared.lock().unwrap().clone().unwrap();
+        assert_ne!(rs.adapter.get_info().device_type, eframe::wgpu::DeviceType::Cpu, "hardware GPU required");
+        h.input_mut().max_texture_side = Some(rs.device.limits().max_texture_dimension_2d as usize);
+        for _ in 0..8 {
+            h.step();
+        }
+        assert!(h.state().uv_gpu_active(), "UV renderer must remain on GPU: {}", h.state().ui.uv_workbench.status);
+        let (request, _) = crate::control::ControlRequest::new("ui.inspect", serde_json::Value::Null);
+        let ctx = h.ctx.clone();
+        let crate::control::Outcome::Done(inspect) = crate::control::handle(h.state_mut(), &ctx, &request) else {
+            panic!("ui.inspect must complete synchronously")
+        };
+        assert_eq!(inspect["ok"], true, "{inspect}");
+        assert_eq!(inspect["result"]["uvViewport"]["rendererActive"], true, "{inspect}");
+        assert_eq!(inspect["result"]["uvViewport"]["mapCompositorActive"], true, "{inspect}");
+        println!(
+            "adapter={:?} texture={width}x{height} mask_paint_layers={PAINT_LAYERS} moves_per_stroke={MOVES} runs={RUNS} warmup={WARMUP}",
+            rs.adapter.get_info()
+        );
+        let active_preview_gpu = |app: &PhotocraftApp| {
+            let active = crate::uv_mask_paint_preview::active_document(app).or_else(|| crate::uv_paint::active_document(&app.uv_cache.paint));
+            active.is_some_and(|id| {
+                app.ui.uv_workbench.lighting.pbr
+                    && app.ui.uv_workbench.channel == Channel::Material
+                    && app.uv_cache.gpu.is_some()
+                    && app.uv_cache.masked.is_empty()
+                    && app.session.uv.map_bindings(Channel::Color).contains(&Some(id))
+                    && app.session.uv.map_bindings(Channel::Opacity).iter().all(Option::is_none)
+                    && app
+                        .session
+                        .documents()
+                        .iter()
+                        .find(|st| st.doc.id == id)
+                        .is_some_and(|st| crate::uv_lighting::gpu_color_encoding(&st.doc, Channel::Color).is_some())
+            })
+        };
+        #[derive(Clone)]
+        struct BenchRow {
+            target: &'static str,
+            view: &'static str,
+            cadence: &'static str,
+            input_p50: f64,
+            input_p95: f64,
+            wait_p50: f64,
+            wait_p95: f64,
+            uv_input_p50: f64,
+            uv_input_p95: f64,
+            refreshed_moves: usize,
+            measured_moves: usize,
+        }
+        let mut paired_rows = Vec::<BenchRow>::new();
+
+        for view_3d in [false, true] {
+            let view_name = if view_3d { "3D" } else { "2D" };
+            for (target, layer, mask_target) in [("mask-stack", mask_layer.0, true), ("pixels", pixel_layer, false)] {
+                h.state_mut().run("layer.select", json!({"layer":layer,"mode":"replace"})).unwrap();
+                h.state_mut().ui.mask_target = mask_target;
+                h.state_mut().ui.tool = crate::state::Tool::Brush;
+                h.state_mut().ui.uv_workbench.view_3d = view_3d;
+                h.state_mut().ui.uv_workbench.split_view = true;
+                let expected_target = if mask_target { "mask" } else { "pixels" };
+                assert_eq!(crate::canvas::paint_target(h.state()), json!(expected_target), "{target}: native brush target");
+                if mask_target {
+                    let stack_layers = h
+                        .state()
+                        .session
+                        .active()
+                        .and_then(|st| st.active_layer.and_then(|id| st.doc.layer(id)))
+                        .and_then(|layer| layer.mask.as_ref())
+                        .and_then(|mask| mask.paint.as_ref())
+                        .map(|stack| stack.layers.len());
+                    assert_eq!(stack_layers, Some(PAINT_LAYERS), "mask benchmark must keep the requested Paint stack active");
+                }
+                for _ in 0..3 {
+                    h.step();
+                }
+                assert!(h.state().uv_gpu_active(), "{target} {view_name}: UV renderer must remain on GPU");
+                let (request, _) = crate::control::ControlRequest::new("ui.inspect", serde_json::Value::Null);
+                let ctx = h.ctx.clone();
+                let crate::control::Outcome::Done(inspect) = crate::control::handle(h.state_mut(), &ctx, &request) else {
+                    panic!("{target} {view_name}: ui.inspect must complete synchronously")
+                };
+                assert_eq!(inspect["result"]["uvViewport"]["rendererActive"], true, "{inspect}");
+                assert_eq!(inspect["result"]["uvViewport"]["mapCompositorActive"], true, "{inspect}");
+                println!("target={target} view={view_name} uv_maps={}", inspect["result"]["uvViewport"]["maps"]);
+                let point = if view_3d {
+                    let app = h.state();
+                    let (_, geometry) = app.uv_cache.geometry.as_ref().expect("prepared geometry");
+                    let camera = app.ui.uv_workbench.camera();
+                    let size = app.uv_cache.gpu.as_ref().and_then(|gpu| gpu.frame_info()).expect("GPU viewport frame").0;
+                    let rect = app.uv_cache.viewport.expect("3D viewport rectangle");
+                    let maps = preview::Materials { colors: &app.uv_cache.textures, normals: &app.uv_cache.normals, ..Default::default() };
+                    geometry
+                        .triangles
+                        .iter()
+                        .enumerate()
+                        .find_map(|(id, triangle)| {
+                            if triangle.material != app.session.uv.material {
+                                return None;
+                            }
+                            let position = std::array::from_fn(|axis| triangle.positions.iter().map(|p| f64::from(p[axis])).sum::<f64>() / 3.0);
+                            let normalized = geometry.project_normalized(camera, position, size)?;
+                            (geometry.pick(app.session.uv.scene.as_ref()?, camera, &maps, normalized, size) == Some(id))
+                                .then_some(rect.min + vec2(normalized[0] as f32 * rect.width(), normalized[1] as f32 * rect.height()))
+                        })
+                        .expect("visible picked face on the active material")
+                } else {
+                    h.state().last_canvas_rect.center()
+                };
+                assert_eq!(
+                    h.state().uv_cache.viewport.is_some_and(|viewport| viewport.contains(point)),
+                    view_3d,
+                    "{target} {view_name}: pointer must be inside only the requested UV surface region"
+                );
+                for force_refresh in [false, true] {
+                    let cadence = if force_refresh { "forced-each-move" } else { "default-scheduler" };
+                    let (mut input_step, mut gpu_wait) = (Vec::new(), Vec::new());
+                    let mut uv_input = Vec::new();
+                    let (mut active_preview_gpu_moves, mut refresh_intervals) = (0usize, Vec::new());
+                    let (mut uv_refresh, mut cpu_compose, mut prepare, mut draw_gpu) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                    let (mut map_updates, mut map_chunks, mut map_uploads, mut map_upload_bytes) = (0usize, 0usize, 0usize, 0usize);
+                    let (mut map_gpu_ms, mut map_gpu_px) = (Vec::new(), Vec::new());
+                    for stroke in 0..(WARMUP + RUNS) {
+                        let stroke_point = point + vec2((stroke % 4) as f32 * 0.3, (stroke % 3) as f32 * 0.2);
+                        let mut last_refresh_at = None;
+                        h.event(egui::Event::PointerMoved(stroke_point));
+                        h.event(egui::Event::PointerButton {
+                            pos: stroke_point,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                        h.step();
+                        assert!(h.state().live_stroke.is_some(), "{target} {view_name} press must begin a native brush stroke");
+                        if view_3d {
+                            assert!(pending_paint(h.state()), "{target}: native 3D hit-test must own the active surface stroke");
+                        } else {
+                            assert!(!pending_paint(h.state()), "{target}: split 2D canvas input must bypass UV surface hit-testing");
+                        }
+                        for step in 1..=MOVES {
+                            if force_refresh {
+                                h.state_mut().uv_cache.refreshed = None;
+                            }
+                            let refresh_before = h.state().uv_cache.refreshed;
+                            let offset =
+                                if view_3d { vec2((step % 7) as f32 * 0.4, (step % 5) as f32 * 0.3) } else { vec2(step as f32 * 1.5, (step % 3) as f32 * 0.5) };
+                            let start = Instant::now();
+                            h.event(egui::Event::PointerMoved(stroke_point + offset));
+                            h.step();
+                            let ui_elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                            let app = h.state();
+                            if stroke >= WARMUP && active_preview_gpu(app) {
+                                active_preview_gpu_moves += 1;
+                            }
+                            if stroke >= WARMUP
+                                && let Some(value) = app.perf.spans.get("uv.input")
+                            {
+                                uv_input.push(*value);
+                            }
+                            if stroke >= WARMUP && app.uv_cache.refreshed != refresh_before {
+                                let now = Instant::now();
+                                if stroke >= WARMUP
+                                    && let Some(previous) = last_refresh_at
+                                {
+                                    refresh_intervals.push(now.duration_since(previous).as_secs_f64() * 1000.0);
+                                }
+                                last_refresh_at = Some(now);
+                                for (name, values) in [
+                                    ("uv.refresh", &mut uv_refresh),
+                                    ("uv.compose.cpu", &mut cpu_compose),
+                                    ("uv.prepare", &mut prepare),
+                                    ("uv.draw.gpu", &mut draw_gpu),
+                                ] {
+                                    if let Some(value) = app.perf.spans.get(name) {
+                                        values.push(*value);
+                                    }
+                                }
+                            }
+                            if stroke >= WARMUP
+                                && let Some(stats) = app.uv_cache.gpu.as_ref().and_then(|gpu| gpu.last_map_counters)
+                            {
+                                map_updates += 1;
+                                map_chunks += stats.chunks;
+                                map_uploads += stats.tiles_uploaded;
+                                map_upload_bytes += stats.bytes_uploaded;
+                                if let Some(timing) = stats.gpu_time {
+                                    map_gpu_ms.push(timing.ms);
+                                    map_gpu_px.push(timing.px as f64);
+                                }
+                            }
+                            let wait_start = Instant::now();
+                            rs.device.poll(eframe::wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+                            let wait_elapsed = wait_start.elapsed().as_secs_f64() * 1000.0;
+                            if stroke >= WARMUP {
+                                input_step.push(ui_elapsed);
+                                gpu_wait.push(wait_elapsed);
+                            }
+                        }
+                        let refresh_marker = Instant::now();
+                        if view_3d && mask_target {
+                            h.state_mut().uv_cache.refreshed = Some(refresh_marker);
+                        }
+                        h.event(egui::Event::PointerButton {
+                            pos: stroke_point + vec2(MOVES as f32 * 0.5, 0.0),
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                        h.step();
+                        h.step();
+                        assert!(h.state().live_stroke.is_none(), "release leaves no live stroke active");
+                        if view_3d && mask_target {
+                            assert_ne!(h.state().uv_cache.refreshed, Some(refresh_marker), "ending the native mask stroke must flush the last map update");
+                        }
+                    }
+                    assert!(!input_step.is_empty() && !gpu_wait.is_empty(), "{target} {view_name} has no measured input/GPU samples");
+                    let measured_moves = input_step.len();
+                    let refreshed_moves = uv_refresh.len();
+                    println!(
+                        "target={target} view={view_name} cadence={cadence} input_plus_step_ms_p50/p95={:.3}/{:.3} uv_input_ms_p50/p95={:.3}/{:.3} gpu_wait_ms_p50/p95={:.3}/{:.3} active_preview_gpu_moves={active_preview_gpu_moves}/{measured_moves} refreshed_moves={refreshed_moves}/{measured_moves} refresh_interval_ms_p50/p95={:.3}/{:.3} uv_refresh_ms_p50/p95={:.3}/{:.3} cpu_compose_ms_p50/p95={:.3}/{:.3} prepare_ms_p50/p95={:.3}/{:.3} draw_gpu_ms_p50/p95={:.3}/{:.3} map_updates={map_updates} map_chunks={map_chunks} map_tile_uploads={map_uploads} map_tile_upload_bytes={map_upload_bytes} map_gpu_ms_p50/p95={:.3}/{:.3} map_gpu_px_p50/p95={:.0}/{:.0}",
+                        percentile(&input_step, 0.5),
+                        percentile(&input_step, 0.95),
+                        percentile(&uv_input, 0.5),
+                        percentile(&uv_input, 0.95),
+                        percentile(&gpu_wait, 0.5),
+                        percentile(&gpu_wait, 0.95),
+                        percentile(&refresh_intervals, 0.5),
+                        percentile(&refresh_intervals, 0.95),
+                        percentile(&uv_refresh, 0.5),
+                        percentile(&uv_refresh, 0.95),
+                        percentile(&cpu_compose, 0.5),
+                        percentile(&cpu_compose, 0.95),
+                        percentile(&prepare, 0.5),
+                        percentile(&prepare, 0.95),
+                        percentile(&draw_gpu, 0.5),
+                        percentile(&draw_gpu, 0.95),
+                        percentile(&map_gpu_ms, 0.5),
+                        percentile(&map_gpu_ms, 0.95),
+                        percentile(&map_gpu_px, 0.5),
+                        percentile(&map_gpu_px, 0.95),
+                    );
+                    paired_rows.push(BenchRow {
+                        target,
+                        view: view_name,
+                        cadence,
+                        input_p50: percentile(&input_step, 0.5),
+                        input_p95: percentile(&input_step, 0.95),
+                        wait_p50: percentile(&gpu_wait, 0.5),
+                        wait_p95: percentile(&gpu_wait, 0.95),
+                        uv_input_p50: percentile(&uv_input, 0.5),
+                        uv_input_p95: percentile(&uv_input, 0.95),
+                        refreshed_moves,
+                        measured_moves,
+                    });
+                }
+            }
+        }
+        for view in ["2D", "3D"] {
+            for cadence in ["default-scheduler", "forced-each-move"] {
+                let mask = paired_rows.iter().find(|row| row.target == "mask-stack" && row.view == view && row.cadence == cadence);
+                let pixels = paired_rows.iter().find(|row| row.target == "pixels" && row.view == view && row.cadence == cadence);
+                if let (Some(mask), Some(pixels)) = (mask, pixels) {
+                    let ratio = |a: f64, b: f64| if b > 0.0 { a / b } else { 0.0 };
+                    println!(
+                        "paired view={view} cadence={cadence} mask_over_pixels_input_p50/p95={:.3}/{:.3} uv_input_p50/p95={:.3}/{:.3} gpu_wait_p50/p95={:.3}/{:.3} refresh_fraction_mask/pixels={:.3}/{:.3}",
+                        ratio(mask.input_p50, pixels.input_p50),
+                        ratio(mask.input_p95, pixels.input_p95),
+                        ratio(mask.uv_input_p50, pixels.uv_input_p50),
+                        ratio(mask.uv_input_p95, pixels.uv_input_p95),
+                        ratio(mask.wait_p50, pixels.wait_p50),
+                        ratio(mask.wait_p95, pixels.wait_p95),
+                        ratio(mask.refreshed_moves as f64, mask.measured_moves as f64),
+                        ratio(pixels.refreshed_moves as f64, pixels.measured_moves as f64),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn independent_2d_channel_follows_global_changes_and_round_trips_preferences() {
         let _gpu = photocraft_testkit::gpu_lock();
         let mut app = fixture_app();
@@ -3062,6 +3523,10 @@ mod tests {
         let mut cache = Cache { display_channel: Channel::Material, ..Default::default() };
         refresh(&mut app, &ctx, &mut cache).unwrap();
 
+        assert!(showing_gray_layer_mask(&app));
+        assert!(gray_mask_hides_all_materials(&app, &cache), "all model materials show the mask in Gray view");
+        assert!(!should_refresh_surface_maps(&app, &cache), "masked Gray view does not consume material lighting maps");
+        assert_eq!(app.perf.spans.get("uv.compose.cpu"), Some(&0.0), "full-resolution Gray mask preview bypasses document color composition");
         assert!(cache.masked.contains(&material), "the targeted mask is used by the UV preview");
         let image = cache.textures[material].as_ref().unwrap();
         for (x, y) in [(30, 64), (52, 64)] {
@@ -3071,6 +3536,64 @@ mod tests {
                 (shown[0] - expected).abs() < 0.01 && shown[0] == shown[1] && shown[1] == shown[2] && shown[3] == 1.0,
                 "targeted mask is shown as grayscale at {x},{y}"
             );
+        }
+        cache.masked.remove(&material);
+        assert!(should_refresh_surface_maps(&app, &cache), "keep material maps current if any visible surface is not masked");
+        cache.masked.insert(material);
+        app.run("view.layerMask", json!({"mode":"off"})).unwrap();
+        assert!(!showing_gray_layer_mask(&app));
+        assert!(should_refresh_surface_maps(&app, &cache), "normal material refresh resumes when Gray mask view closes");
+    }
+
+    #[test]
+    fn gray_uv_preview_has_no_blur_seams_after_mask_effect_changes() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut app = fixture_app();
+        let ctx = egui::Context::default();
+        app.run("uv.shell.select", json!({"shells":[0]})).unwrap();
+        app.run("uv.texture.create", json!({"channel":"baseColor","width":512,"height":512,"depth":8})).unwrap();
+        app.run("uv.layer.create", json!({"guard":8})).unwrap();
+        app.run("channel.target.layerMask", json!({})).unwrap();
+        app.run("view.layerMask", json!({"mode":"gray"})).unwrap();
+        let layer = app.session.active().unwrap().active_layer.unwrap();
+        app.run("uv.maskPaint.add", json!({"layer":layer.0,"kind":"paint"})).unwrap();
+        app.session
+            .edit("seed mask blur seam test", |doc, _| {
+                let mask = doc.layer_mut(layer).ok_or(photocraft_engine::EngineError::NoLayer(layer))?.mask.as_mut().unwrap();
+                let stack = mask.paint.as_mut().unwrap();
+                stack.layers[0].surface.write_region(photocraft_geom::Rect::new(248, 248, 264, 264), &vec![1.0; 16 * 16 * 4]);
+                Ok(())
+            })
+            .unwrap();
+
+        let material = app.session.uv.material;
+        let mut cache = Cache { display_channel: Channel::Material, ..Default::default() };
+        let assert_preview_matches_mask = |app: &PhotocraftApp, cache: &Cache, stage: &str| {
+            let mask = app.session.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap();
+            let image = cache.textures[material].as_ref().unwrap();
+            assert_eq!([image.width, image.height], [512, 512], "{stage}: UV Gray cache size");
+            for y in 0..512 {
+                for x in 0..512 {
+                    let shown = image.rgba[y * 512 + x];
+                    let expected = mask.surface.sample_channel(x as i32, y as i32, 0);
+                    assert!(
+                        (shown[0] - expected).abs() < 0.01 && shown[0] == shown[1] && shown[1] == shown[2] && shown[3] == 1.0,
+                        "{stage}: gray mask/cache seam at ({x},{y}): shown={shown:?}, expected={expected}"
+                    );
+                }
+            }
+        };
+
+        refresh(&mut app, &ctx, &mut cache).unwrap();
+        app.run("uv.maskPaint.add", json!({"layer":layer.0,"kind":"blur","radius":8})).unwrap();
+        assert_eq!(app.session.active().unwrap().last_damage, Some(app.session.active().unwrap().doc.bounds()));
+        refresh(&mut app, &ctx, &mut cache).unwrap();
+        assert_preview_matches_mask(&app, &cache, "Blur added");
+
+        for (radius, opacity, visible) in [(13, 1.0, true), (13, 0.35, true), (13, 0.35, false), (5, 0.8, true)] {
+            app.run("uv.maskPaint.modify", json!({"layer":layer.0,"index":1,"radius":radius,"opacity":opacity,"visible":visible})).unwrap();
+            refresh(&mut app, &ctx, &mut cache).unwrap();
+            assert_preview_matches_mask(&app, &cache, &format!("Blur radius={radius}, opacity={opacity}, visible={visible}"));
         }
     }
 
@@ -3089,6 +3612,7 @@ mod tests {
                     name: "Fill preview".into(),
                     visible: true,
                     opacity: 1.0,
+                    blend: photocraft_color::BlendMode::Normal,
                     surface: photocraft_raster::Surface::with_default(photocraft_color::PixelFormat::RGBA8, &[0.0, 0.0, 0.0, 0.0]),
                     fill_map: None,
                     fill_map_size: [0, 0],

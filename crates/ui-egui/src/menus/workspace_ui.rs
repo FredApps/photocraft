@@ -270,14 +270,8 @@ fn delete_workspace(app: &mut PhotocraftApp, p: &Value) -> Result<Value, String>
 fn select_workspace(app: &mut PhotocraftApp, p: &Value) -> Result<Value, String> {
     let name = p.get("name").and_then(Value::as_str).ok_or("pass `name`")?.to_string();
     if PRESETS.contains(&name.as_str()) {
-        let previous_ui = app.ui.clone();
         app.ui.workspace = name.clone();
-        if let Err(error) = crate::menus::apply_workspace(app) {
-            app.ui = previous_ui;
-            app.ui.status = error.clone();
-            app.ui.status_error = true;
-            return Err(error);
-        }
+        crate::menus::apply_workspace(app);
         return Ok(json!({"workspace": name}));
     }
     if !app.session.prefs().workspaces.contains_key(&name) {
@@ -728,7 +722,7 @@ mod tests {
         app.run("file.new", json!({"width":32,"height":32})).unwrap();
         let normal = app.session.active().unwrap().doc.id;
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app).unwrap();
+        crate::menus::apply_workspace(&mut app);
         let mesh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
         app.run("uv.model.import", json!({"path":mesh})).unwrap();
         app.run("uv.texture.create", json!({"width":32,"height":32})).unwrap();

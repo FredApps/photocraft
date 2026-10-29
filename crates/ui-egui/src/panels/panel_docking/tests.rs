@@ -11,7 +11,7 @@ fn app() -> PhotocraftApp {
 fn uv_panels_are_parked_during_2d_edits_and_restored_for_3d() {
     let mut app = app();
     app.ui.workspace = "3D".into();
-    crate::menus::apply_workspace(&mut app).unwrap();
+    crate::menus::apply_workspace(&mut app);
     app.run("window.panel.activate", json!({"panel":"uvWorkbench"})).unwrap();
     let saved = lay(&app).clone();
     assert!(saved.contains(&"uvWorkbench".to_owned()));
@@ -38,7 +38,7 @@ fn uv_panels_are_parked_during_2d_edits_and_restored_for_3d() {
 fn uv_workbench_toggle_closes_only_its_custom_panel() {
     let mut app = app();
     app.ui.workspace = "3D".into();
-    crate::menus::apply_workspace(&mut app).unwrap();
+    crate::menus::apply_workspace(&mut app);
     app.run("window.panel.activate", json!({"panel":"uvWorkbench"})).unwrap();
     app.run("window.panel.activate", json!({"panel":"layers"})).unwrap();
     assert!(lay(&app).contains(&"uvWorkbench".to_owned()));
@@ -67,7 +67,7 @@ fn legacy_set_cannot_select_a_parked_uv_tab_while_showing_properties() {
 fn stale_uv_toggle_state_reopens_the_missing_custom_panel() {
     let mut app = app();
     app.ui.workspace = "3D".into();
-    crate::menus::apply_workspace(&mut app).unwrap();
+    crate::menus::apply_workspace(&mut app);
     app.run("window.panel.activate", json!({"panel":"uvWorkbench"})).unwrap();
     app.run("window.panel.close", json!({"panel":"uvWorkbench"})).unwrap();
     assert!(!lay(&app).contains(&"uvWorkbench".to_owned()));
@@ -85,7 +85,7 @@ fn stale_uv_toggle_state_reopens_the_missing_custom_panel() {
 fn close_others_in_2d_preserves_parked_uv_tabs() {
     let mut app = app();
     app.ui.workspace = "3D".into();
-    crate::menus::apply_workspace(&mut app).unwrap();
+    crate::menus::apply_workspace(&mut app);
     app.run("window.panel.activate", json!({"panel":"uvWorkbench"})).unwrap();
     app.run("window.panel.move", json!({"panel":"uvWorkbench","anchor":"properties","zone":"center"})).unwrap();
     app.ui.workspace = "Painting".into();
@@ -101,7 +101,7 @@ fn close_others_in_2d_preserves_parked_uv_tabs() {
 fn closing_the_ordinary_properties_group_keeps_parked_uv_panel_visibility() {
     let mut app = app();
     app.ui.workspace = "3D".into();
-    crate::menus::apply_workspace(&mut app).unwrap();
+    crate::menus::apply_workspace(&mut app);
     app.ui.docking = Some(Workspace::new(legacy(&app)));
     assert!(lay(&app).contains(&"uvWorkbench".to_owned()));
     assert!(lay(&app).contains(&"uvImages".to_owned()));
@@ -892,7 +892,7 @@ fn custom_workspace_saves_shared_layout_and_timeline_without_embedding_flags() {
     assert!(saved["panels"].get("rail").is_none() && saved["panels"].get("menu_bar").is_none());
     let layout = app.ui.docking.clone();
     app.ui.workspace = "Motion".into();
-    crate::menus::apply_workspace(&mut app).unwrap();
+    crate::menus::apply_workspace(&mut app);
     assert!(app.ui.docking.is_none() && app.ui.timeline.open);
     crate::dock::apply(&mut app, &saved);
     assert_eq!(app.ui.docking, layout);

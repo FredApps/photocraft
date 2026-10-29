@@ -574,7 +574,7 @@ fn handle_modal_canvas_keys(app: &mut PhotocraftApp, ctx: &egui::Context, focus:
     }
     #[cfg(feature = "uv-workbench")]
     if crate::uv_ui::keys(app, ctx) {
-        return;
+        return true;
     }
     // Liquify / Puppet Warp / Perspective Warp: ↩ commits, Esc cancels.
     if crate::distort_ui::keys(app, ctx) {

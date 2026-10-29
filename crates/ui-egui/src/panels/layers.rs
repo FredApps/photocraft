@@ -526,11 +526,14 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             let enabled = p.get("enabled").and_then(Value::as_bool).or_else(|| p.as_bool()).unwrap_or(false);
             #[cfg(feature = "uv-workbench")]
             let explicit_view = p.get("show").and_then(Value::as_bool);
+            #[cfg(feature = "uv-workbench")]
+            let select_active_effect = p.get("select_active_effect").and_then(Value::as_bool).unwrap_or(false);
             app.ui.mask_target = enabled;
             app.ui.vector_mask_target = false;
             app.ui.filter_mask_target = None;
             #[cfg(feature = "uv-workbench")]
             if app.ui.mask_target
+                && !select_active_effect
                 && let Some((doc, layer)) = app.session.active().and_then(|st| st.active_layer.map(|layer| (st.doc.id.0, layer.0)))
             {
                 crate::uv_mask_paint::clear_effect_selection(&ctx, doc, layer);
@@ -558,6 +561,9 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     }
                     app.ui.mask_target = true;
                     app.session.tools.target_mask(true);
+                }
+                if select_active_effect {
+                    crate::uv_mask_paint::show_active_effect_properties(app, &ctx);
                 }
             }
             continue;
@@ -592,25 +598,20 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
             continue;
         }
+        #[cfg(feature = "uv-workbench")]
+        let reordered_mask_effect = id == "uv.maskPaint.modify" && p.get("to").is_some();
         let _ = app.run(&id, p);
         #[cfg(feature = "uv-workbench")]
         if app.ui.workspace == "3D" {
             if id == "uv.maskPaint.select" {
-                if let Some((doc, layer, index)) = app.session.active().and_then(|st| {
-                    let layer_id = st.active_layer?;
-                    let index = st.doc.layer(layer_id)?.mask.as_ref()?.paint.as_ref()?.active;
-                    Some((st.doc.id.0, layer_id.0, index))
-                }) {
-                    crate::uv_mask_paint::select_effect(&ctx, doc, layer, index);
-                }
-                let levels = app.session.active().and_then(|st| st.active_layer.and_then(|id| st.doc.layer(id))).and_then(|layer| {
-                    let stack = layer.mask.as_ref()?.paint.as_ref()?;
-                    Some(matches!(
-                        &stack.layers.get(stack.active)?.kind,
-                        photocraft_doc::mask_paint::EffectKind::Levels { .. } | photocraft_doc::mask_paint::EffectKind::Fill { .. }
-                    ))
-                });
-                app.ui.dock_tabs.properties = if levels == Some(true) { 0 } else { 2 };
+                crate::uv_mask_paint::show_active_effect_properties(app, &ctx);
+            } else if id == "uv.maskPaint.add" {
+                // Creation changes the active effect in the engine. Mirror that identity in UI
+                // state so the Properties panel immediately follows the newly created effect.
+                crate::uv_mask_paint::show_active_effect_properties(app, &ctx);
+            } else if reordered_mask_effect {
+                // Reordering can change the active effect's index; follow its engine identity.
+                crate::uv_mask_paint::show_active_effect_properties(app, &ctx);
             } else if id == "layer.select" {
                 app.ui.dock_tabs.properties = 2;
             }

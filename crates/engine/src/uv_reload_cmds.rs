@@ -81,9 +81,11 @@ fn reload(s: &mut Session, p: &Value) -> Result<Value> {
         scene.warnings.push("UV/topology changed. Texture documents and existing masks were retained; review seam-protection masks.".into());
     }
     // Everything above is fallible. Publish the new geometry only after it has fully validated.
-    s.uv.wrap_mesh = None;
+    let scene = Arc::new(scene);
+    let wrap_mesh = photocraft_uv::wrap::Mesh::new(&scene).ok().map(Arc::new);
+    s.uv.wrap_mesh = wrap_mesh;
     s.uv.wrapped_stroke = None;
-    s.uv.scene = Some(Arc::new(scene));
+    s.uv.scene = Some(scene);
     s.uv.topology = Some(Arc::new(topology));
     s.uv.bindings = bindings;
     s.uv.normal_bindings = normal_bindings;

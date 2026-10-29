@@ -490,16 +490,17 @@ pub(crate) fn fill_mask_proxy(app: &mut PhotocraftApp, idx: usize, ctx: &egui::C
 }
 
 fn sample_fill_mask(job: FillMaskJob, cancel_epoch: &AtomicU64) -> Option<FillMaskProxy> {
-    let mut values = Vec::with_capacity((job.size[0] as usize).saturating_mul(job.size[1] as usize));
-    for y in 0..job.size[1] {
-        if cancel_epoch.load(Ordering::Relaxed) != job.token {
-            return None;
-        }
-        let doc_y = job.canvas.y0 as i64 + ((i64::from(y) * i64::from(job.canvas.height()) + i64::from(job.size[1]) / 2) / i64::from(job.size[1]));
-        for x in 0..job.size[0] {
-            let doc_x = job.canvas.x0 as i64 + ((i64::from(x) * i64::from(job.canvas.width()) + i64::from(job.size[0]) / 2) / i64::from(job.size[0]));
-            values.push(photocraft_compose::mask_paint::sample_stack_pixel(&job.stack, doc_x as i32, doc_y as i32).clamp(0.0, 1.0));
-        }
+    if cancel_epoch.load(Ordering::Relaxed) != job.token {
+        return None;
+    }
+    // Compose once at the proxy's resolution. Calling sample_stack_pixel per proxy texel turns
+    // each Blur layer into a fresh source-resolution Gaussian neighborhood; at radius 64, even
+    // the bounded 256² proxy would repeat tens of millions of taps. The compose API scales the
+    // blur kernel to the proxy grid, which is sufficient for this deliberately low-resolution
+    // transient preview.
+    let values = photocraft_compose::mask_paint::sample_stack_resampled(&job.stack, job.canvas, job.size)?;
+    if cancel_epoch.load(Ordering::Relaxed) != job.token {
+        return None;
     }
     Some(FillMaskProxy {
         generation: job.generation,
@@ -509,7 +510,7 @@ fn sample_fill_mask(job: FillMaskJob, cancel_epoch: &AtomicU64) -> Option<FillMa
         index: job.index,
         key: job.key,
         size: job.size,
-        values: Arc::new(values),
+        values: Arc::new(values.into_iter().map(|value| value.clamp(0.0, 1.0)).collect()),
     })
 }
 

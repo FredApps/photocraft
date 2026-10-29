@@ -1,5 +1,6 @@
 //! Experimental, local-only editable mask brush stacks for the UV workspace.
 use crate::{EngineError, Result, Session, commands::CommandSpec};
+use photocraft_color::BlendMode;
 use photocraft_doc::{
     LayerId,
     mask_paint::{EffectKind, Paint, Stack},
@@ -9,6 +10,38 @@ use serde_json::{Value, json};
 
 fn bad(message: &str) -> EngineError {
     EngineError::Other(message.into())
+}
+fn mask_blend(value: &str) -> Option<BlendMode> {
+    let mode = match value {
+        "normal" => BlendMode::Normal,
+        "darken" => BlendMode::Darken,
+        "multiply" => BlendMode::Multiply,
+        "lighten" => BlendMode::Lighten,
+        "screen" => BlendMode::Screen,
+        "linear_dodge" => BlendMode::LinearDodge,
+        "subtract" => BlendMode::Subtract,
+        "difference" => BlendMode::Difference,
+        _ => return None,
+    };
+    photocraft_doc::mask_paint::is_mask_blend_mode(mode).then_some(mode)
+}
+fn blend_param(p: &Value) -> Result<BlendMode> {
+    p.get("blend")
+        .map(|value| value.as_str().and_then(mask_blend).ok_or_else(|| bad("Invalid grayscale mask blend mode")))
+        .transpose()
+        .map(|mode| mode.unwrap_or(BlendMode::Normal))
+}
+fn radius_param(p: &Value, default: u8) -> Result<u8> {
+    p.get("radius")
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|v| u8::try_from(v).ok())
+                .filter(|v| (1..=64).contains(v))
+                .ok_or_else(|| bad("Blur radius must be an integer from 1 to 64 pixels"))
+        })
+        .transpose()
+        .map(|radius| radius.unwrap_or(default))
 }
 fn target(s: &Session, p: &Value) -> Result<LayerId> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
@@ -76,23 +109,44 @@ fn validate_effect(effect: &EffectKind) -> Result<()> {
             Ok(())
         }
         EffectKind::Levels { .. } => Err(bad("Invalid Levels range")),
+        EffectKind::Blur { radius } if (1..=64).contains(radius) => Ok(()),
+        EffectKind::Blur { .. } => Err(bad("Blur radius must be between 1 and 64 pixels")),
     }
+}
+fn validate_blur_budget(layers: &[Paint]) -> Result<()> {
+    let total = layers
+        .iter()
+        .filter_map(|layer| match &layer.kind {
+            EffectKind::Blur { radius } => Some(u32::from(*radius)),
+            _ => None,
+        })
+        .fold(0u32, u32::saturating_add);
+    if total > u32::from(photocraft_doc::mask_paint::MAX_BLUR_RADIUS_SUM) {
+        return Err(bad("The combined Blur radius in a mask stack cannot exceed 512 pixels"));
+    }
+    Ok(())
 }
 fn has_any(p: &Value, keys: &[&str]) -> bool {
     keys.iter().any(|key| p.get(key).is_some())
 }
 fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let id = target(s, p)?;
+    let canvas = s.active().ok_or(EngineError::NoDocument)?.doc.bounds();
     let from_selection = p.get("from_selection").and_then(Value::as_bool).unwrap_or(false);
     let selection = if from_selection { Some(s.active().and_then(|st| st.doc.selection.clone()).ok_or_else(|| bad("Make a selection first"))?) } else { None };
     let kind = p.get("kind").and_then(Value::as_str).unwrap_or("paint").to_owned();
+    let blend_supplied = p.get("blend").is_some();
+    let radius_supplied = p.get("radius").is_some();
+    let blend = blend_param(p)?;
+    let radius = radius_param(p, 8)?;
     let default_name = match kind.as_str() {
         "fill" => "Fill",
         "levels" => "Levels",
+        "blur" => "Blur",
         _ => "Paint",
     };
     let name = p.get("name").and_then(Value::as_str).unwrap_or(default_name).chars().take(128).collect::<String>();
-    s.edit("Add mask Paint layer", |doc, active| {
+    let result = s.edit("Add mask Paint layer", |doc, active| {
         let canvas = doc.bounds();
         let mask = doc.layer_mut(id).and_then(|l| l.mask.as_mut()).ok_or_else(|| bad("Layer has no mask"))?;
         let format = photocraft_color::PixelFormat::RGBA8.with_sample(mask.surface.format().sample);
@@ -119,9 +173,16 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
                 output_black: unit_param(p, "output_black", 0.0)?,
                 output_white: unit_param(p, "output_white", 1.0)?,
             },
-            _ => return Err(bad("Kind must be paint, fill, or levels")),
+            "blur" => EffectKind::Blur { radius },
+            _ => return Err(bad("Kind must be paint, fill, levels, or blur")),
         };
         validate_effect(&effect)?;
+        if blend_supplied && !matches!(&effect, EffectKind::Paint | EffectKind::Fill { .. } | EffectKind::Blur { .. }) {
+            return Err(bad("Blend mode applies only to Paint, Fill, and Blur mask layers"));
+        }
+        if radius_supplied && !matches!(&effect, EffectKind::Blur { .. }) {
+            return Err(bad("Radius applies only to Blur mask layers"));
+        }
         match &effect {
             EffectKind::Paint
                 if has_any(
@@ -175,11 +236,20 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         } else {
             (None, [0, 0], None)
         };
-        stack.layers.push(Paint { name, visible: true, opacity: 1.0, surface, fill_map, fill_map_size, fill_bounds, kind: effect });
+        stack.layers.push(Paint { name, visible: true, opacity: 1.0, blend, surface, fill_map, fill_map_size, fill_bounds, kind: effect });
+        validate_blur_budget(&stack.layers)?;
         stack.active = stack.layers.len().saturating_sub(1);
         *active = Some(id);
         Ok(json!({"index":stack.active}))
-    })
+    })?;
+    // In Gray mask view, the displayed image is the evaluated mask stack itself.
+    // Adding an effect can therefore change pixels even when the ordinary layer
+    // compositor reports empty damage (for example, an empty layer with a Fill).
+    // Invalidate the whole canvas so the UV mask preview cannot retain stale pixels.
+    if let Some(state) = s.active_mut() {
+        state.last_damage = Some(canvas);
+    }
+    Ok(result)
 }
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
     let id = target(s, p)?;
@@ -216,6 +286,8 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
     let output_black = p.get("output_black").map(|_| unit_param(p, "output_black", 0.0)).transpose()?;
     let output_white = p.get("output_white").map(|_| unit_param(p, "output_white", 1.0)).transpose()?;
     let gamma = p.get("gamma").map(|_| gamma_param(p)).transpose()?;
+    let blend = p.get("blend").map(|_| blend_param(p)).transpose()?;
+    let radius = p.get("radius").map(|_| radius_param(p, 8)).transpose()?;
     let bounds = p
         .get("bounds")
         .and_then(Value::as_array)
@@ -246,6 +318,7 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
         || gamma.is_some()
         || bounds.is_some()
         || clear_fill_map;
+    let effect_changed = effect_changed || blend.is_some() || radius.is_some();
     let mut damage = photocraft_geom::Rect::EMPTY;
     let result = s.edit("Edit mask Paint layer", |doc, _| {
         let canvas = doc.bounds();
@@ -255,6 +328,14 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad("Destination is out of range"));
         }
         if opacity.is_some() || visible.is_some() || remove || destination.is_some() || effect_changed {
+            // A Paint edit can change pixels beyond its own surface bounds when Blur layers
+            // follow it. Use the old stack here so hiding/removing/moving the Paint reports the
+            // pixels its former downstream Blurs used to influence as well.
+            let blur_reach = if destination.is_none() && matches!(stack.layers.get(index).map(|paint| &paint.kind), Some(EffectKind::Paint)) {
+                photocraft_compose::mask_paint::downstream_blur_reach(stack, index)
+            } else {
+                0
+            };
             let affected = if destination.is_some() { stack.layers.iter().collect::<Vec<_>>() } else { stack.layers.get(index).into_iter().collect() };
             for paint in affected {
                 let bounds = if !matches!(&paint.kind, EffectKind::Paint) || paint.surface.default_pixel().get(3).is_some_and(|a| *a != 0.0) {
@@ -265,7 +346,8 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                 damage = damage.union(&bounds);
             }
             if !damage.is_empty() {
-                damage = damage.inflate((mask.feather.max(0.0) * 3.0).ceil().min(100_000.0) as i32).intersect(&canvas);
+                let feather = (mask.feather.max(0.0) * 3.0).ceil().min(100_000.0) as i32;
+                damage = damage.inflate(feather.saturating_add(blur_reach)).intersect(&canvas);
             }
         }
         let paint = stack.layers.get_mut(index).ok_or_else(|| bad("Paint layer is out of range"))?;
@@ -274,6 +356,9 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(value) = visible {
             paint.visible = value;
+        }
+        if let Some(value) = blend {
+            paint.blend = value;
         }
         if let Some(name) = p.get("name").and_then(Value::as_str) {
             paint.name = name.chars().take(128).collect();
@@ -287,8 +372,8 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                 mirror_u: fill_mirror_u,
                 mirror_v: fill_mirror_v,
             } => {
-                if input_black.is_some() || gamma.is_some() || input_white.is_some() || output_black.is_some() || output_white.is_some() {
-                    return Err(bad("Levels settings do not apply to Fill layers"));
+                if input_black.is_some() || gamma.is_some() || input_white.is_some() || output_black.is_some() || output_white.is_some() || radius.is_some() {
+                    return Err(bad("Levels and Blur settings do not apply to Fill layers"));
                 }
                 if let Some(next) = fill_value {
                     *value = next;
@@ -317,6 +402,9 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             EffectKind::Levels { input_black: ib, gamma: g, input_white: iw, output_black: ob, output_white: ow } => {
+                if blend.is_some() {
+                    return Err(bad("Blend mode does not apply to Levels mask layers"));
+                }
                 if fill_value.is_some()
                     || rotation.is_some()
                     || repeat_u.is_some()
@@ -325,8 +413,9 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                     || mirror_v.is_some()
                     || bounds.is_some()
                     || clear_fill_map
+                    || radius.is_some()
                 {
-                    return Err(bad("Fill value does not apply to Levels layers"));
+                    return Err(bad("Fill and Blur settings do not apply to Levels layers"));
                 }
                 if let Some(next) = input_black {
                     *ib = next;
@@ -358,8 +447,30 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                     || output_black.is_some()
                     || output_white.is_some()
                     || clear_fill_map
+                    || radius.is_some()
                 {
                     return Err(bad("Effect settings do not apply to Paint layers"));
+                }
+            }
+            EffectKind::Blur { radius: current } => {
+                if fill_value.is_some()
+                    || rotation.is_some()
+                    || repeat_u.is_some()
+                    || repeat_v.is_some()
+                    || mirror_u.is_some()
+                    || mirror_v.is_some()
+                    || bounds.is_some()
+                    || input_black.is_some()
+                    || gamma.is_some()
+                    || input_white.is_some()
+                    || output_black.is_some()
+                    || output_white.is_some()
+                    || clear_fill_map
+                {
+                    return Err(bad("Effect settings do not apply to Blur layers"));
+                }
+                if let Some(next) = radius {
+                    *current = next;
                 }
             }
         }
@@ -393,6 +504,9 @@ fn modify(s: &mut Session, p: &Value) -> Result<Value> {
                 mask.surface = stack.base.clone();
             }
             mask.paint = None;
+        }
+        if let Some(stack) = &mask.paint {
+            validate_blur_budget(&stack.layers)?;
         }
         Ok(Value::Null)
     })?;
@@ -448,13 +562,13 @@ fn fill_source(s: &mut Session, p: &Value) -> Result<Value> {
 }
 pub fn specs() -> Vec<CommandSpec> {
     [
-        ("uv.maskPaint.add", "Add mask stack layer", r#"{"layer":id?,"name":string?,"kind":"paint"|"fill"|"levels"?,"value":number?,"rotation":degrees?,"from_selection":bool?,"repeat_u":bool?,"repeat_v":bool?,"mirror_u":bool?,"mirror_v":bool?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#, add as fn(&mut Session, &Value) -> Result<Value>),
+        ("uv.maskPaint.add", "Add mask stack layer", r#"{"layer":id?,"name":string?,"kind":"paint"|"fill"|"levels"|"blur"?,"blend":"normal"|"darken"|"multiply"|"lighten"|"screen"|"linear_dodge"|"subtract"|"difference"?,"radius":1..64?,"value":number?,"rotation":degrees?,"from_selection":bool?,"repeat_u":bool?,"repeat_v":bool?,"mirror_u":bool?,"mirror_v":bool?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#, add as fn(&mut Session, &Value) -> Result<Value>),
         ("uv.maskPaint.select", "Select mask Paint layer", r#"{"layer":id?,"index":int}"#, select),
         ("uv.maskPaint.fillSource", "Set Fill image", r#"{"layer":id?,"index":int,"asset":int}"#, fill_source),
         (
             "uv.maskPaint.modify",
             "Edit mask Paint layer",
-            r#"{"layer":id?,"index":int,"visible":bool?,"opacity":number?,"name":string?,"to":int?,"remove":bool?,"value":number?,"rotation":degrees?,"bounds":[i32,i32,i32,i32]?,"repeat_u":bool?,"repeat_v":bool?,"mirror_u":bool?,"mirror_v":bool?,"clear_fill_map":bool?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#,
+            r#"{"layer":id?,"index":int,"visible":bool?,"opacity":number?,"name":string?,"to":int?,"remove":bool?,"blend":"normal"|"darken"|"multiply"|"lighten"|"screen"|"linear_dodge"|"subtract"|"difference"?,"radius":1..64?,"value":number?,"rotation":degrees?,"bounds":[i32,i32,i32,i32]?,"repeat_u":bool?,"repeat_v":bool?,"mirror_u":bool?,"mirror_v":bool?,"clear_fill_map":bool?,"input_black":number?,"gamma":number?,"input_white":number?,"output_black":number?,"output_white":number?}"#,
             modify,
         ),
     ]

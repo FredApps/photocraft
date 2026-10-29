@@ -130,13 +130,40 @@ fn fs_mask_stack(in: VOut) -> @location(0) vec4<f32> {
         return vec4(value, value, value, value);
     }
     let below = textureLoad(tex_a, p, 0).r;
+    if (op.kind == 6) {
+        let radius = i32(op.p0.y);
+        var step = vec2<i32>(1, 0);
+        if (op.p0.x > 0.5) { step = vec2<i32>(0, 1); }
+        var value = 0.0;
+        for (var k = 0; k <= 2 * radius; k++) {
+            let q = p + step * (k - radius);
+            if (inside(q, chunk.size)) {
+                value += textureLoad(tex_a, q, 0).r * textureLoad(lut_tex, vec2<i32>(k, 0), 0).r;
+            }
+        }
+        return vec4(value, value, value, value);
+    }
+    if (op.kind == 7) {
+        let blurred = below;
+        let original = textureLoad(tex_b, p, 0).r;
+        var value = blurred * op.opacity + original * (1.0 - op.opacity);
+        if (op.mode != M_NORMAL) {
+            let blended = blend_channel(op.mode, original, blurred);
+            value = original + (blended - original) * op.opacity;
+        }
+        return vec4(value, value, value, value);
+    }
     if (op.kind == 2) {
         var value = below;
         if (op.p0.x > 0.0) { value = floor(clamp(value, 0.0, 1.0) * op.p0.x + 0.5) / op.p0.x; }
         return vec4(value, value, value, value);
     }
     if (op.kind == 3) {
-        let value = op.color.r * op.opacity + below * (1.0 - op.opacity);
+        var value = op.color.r * op.opacity + below * (1.0 - op.opacity);
+        if (op.mode != M_NORMAL) {
+            let blended = blend_channel(op.mode, below, op.color.r);
+            value = below + (blended - below) * op.opacity;
+        }
         return vec4(value, value, value, value);
     }
     if (op.kind == 4) {
@@ -147,7 +174,11 @@ fn fs_mask_stack(in: VOut) -> @location(0) vec4<f32> {
         let output_white = op.p1.x;
         let normalized = clamp((below - input_black) / max(input_white - input_black, 0.0000001), 0.0, 1.0);
         let adjusted = output_black + pow(normalized, 1.0 / gamma) * (output_white - output_black);
-        let value = adjusted * op.opacity + below * (1.0 - op.opacity);
+        var value = adjusted * op.opacity + below * (1.0 - op.opacity);
+        if (op.mode != M_NORMAL) {
+            let blended = blend_channel(op.mode, below, adjusted);
+            value = below + (blended - below) * op.opacity;
+        }
         return vec4(value, value, value, value);
     }
     if (op.kind == 5 && (op.flags & F_MASK_FILL) != 0u) {
@@ -192,7 +223,11 @@ fn fs_mask_stack(in: VOut) -> @location(0) vec4<f32> {
             let source = clamp(vec2<i32>(floor(fraction * vec2<f32>(source_size))), vec2<i32>(0), source_size - vec2<i32>(1));
             sample_value = textureLoad(pat_tex, source, 0).r;
         }
-        let value = sample_value * op.opacity + below * (1.0 - op.opacity);
+        var value = sample_value * op.opacity + below * (1.0 - op.opacity);
+        if (op.mode != M_NORMAL) {
+            let blended = blend_channel(op.mode, below, sample_value);
+            value = below + (blended - below) * op.opacity;
+        }
         return vec4(value, value, value, value);
     }
     var source = op.color;
@@ -201,7 +236,11 @@ fn fs_mask_stack(in: VOut) -> @location(0) vec4<f32> {
         if (inside(q, op.tex_size)) { source = textureLoad(layer_tex, q, 0); }
     }
     let alpha = source.a * op.opacity;
-    let value = source.r * alpha + below * (1.0 - alpha);
+    var value = source.r * alpha + below * (1.0 - alpha);
+    if (op.mode != M_NORMAL) {
+        let blended = blend_channel(op.mode, below, source.r);
+        value = below + (blended - below) * alpha;
+    }
     return vec4(value, value, value, value);
 }
 

@@ -14,6 +14,8 @@ pub(super) struct Planner<'a> {
     /// Layers planned so far, counting a layer each time it is planned (a clipped pass-through
     /// group is planned twice).
     visits: usize,
+    /// Largest visible Blur support sum in any mask stack (the whole render needs this halo).
+    mask_halo: u32,
 }
 
 /// Most layer plannings one document may take: a pass-through group with clipped layers is
@@ -186,11 +188,11 @@ fn check_effect_gradients(items: &[&Effect]) -> Result<(), Unsupported> {
 
 impl<'a> Planner<'a> {
     pub(super) fn new(cx: DocCtx<'a>) -> Self {
-        Planner { passes: Vec::new(), free: Vec::new(), refs: Vec::new(), cx, fx: Vec::new(), checkpoints: Vec::new(), visits: 0 }
+        Planner { passes: Vec::new(), free: Vec::new(), refs: Vec::new(), cx, fx: Vec::new(), checkpoints: Vec::new(), visits: 0, mask_halo: 0 }
     }
 
     pub(super) fn finish(self, root: Slot) -> Plan<'a> {
-        Plan { passes: self.passes, slots: self.refs.len() as u32, root, fx: self.fx, checkpoints: self.checkpoints }
+        Plan { passes: self.passes, slots: self.refs.len() as u32, root, fx: self.fx, checkpoints: self.checkpoints, mask_halo: self.mask_halo }
     }
 
     fn alloc(&mut self) -> Slot {
@@ -279,6 +281,16 @@ impl<'a> Planner<'a> {
             if layer.vector_mask.is_some() || m.feather > 0.0 {
                 return Err(Unsupported("Paint-layer mask combined with vector or feathered mask (composited on the CPU)".into()));
             }
+            let mut stack_halo = 0u32;
+            for effect in stack.layers.iter().filter(|effect| effect.visible && effect.opacity > 0.0) {
+                if let photocraft_doc::mask_paint::EffectKind::Blur { radius } = &effect.kind {
+                    if *radius > 64 {
+                        return Err(Unsupported("Mask Blur radius exceeds the supported 64-pixel range".into()));
+                    }
+                    stack_halo = stack_halo.checked_add(u32::from(*radius)).ok_or_else(|| Unsupported("Mask Blur support is too large".into()))?;
+                }
+            }
+            self.mask_halo = self.mask_halo.max(stack_halo);
             let mut base = Pass::new(Kernel::MaskStack, 0);
             base.tex = Some(TexUse { layer: layer.id, role: Role::Mask, surface: SurfaceRef::Doc(&stack.base) });
             base.color[0] = stack.base.default_pixel().first().copied().unwrap_or(1.0);
@@ -288,17 +300,22 @@ impl<'a> Planner<'a> {
                 if !paint.opacity.is_finite() || !(0.0..=1.0).contains(&paint.opacity) {
                     return Err(Unsupported("Paint mask contains an invalid opacity".into()));
                 }
-                if !paint.visible || paint.opacity <= 0.0 { continue; }
+                if !paint.visible || paint.opacity <= 0.0 {
+                    continue;
+                }
                 let Ok(index) = u16::try_from(index) else {
                     return Err(Unsupported("Paint mask has too many layers for the GPU compositor".into()));
                 };
                 let mut p = Pass::new(Kernel::MaskStack, 0);
                 p.a = Some(coverage);
                 p.opacity = paint.opacity;
+                p.mode = paint.blend;
                 match &paint.kind {
                     photocraft_doc::mask_paint::EffectKind::Paint => {
                         p.adjust_kind = 1;
-                        for (dst, value) in p.color.iter_mut().zip(paint.surface.default_pixel().iter()) { *dst = *value; }
+                        for (dst, value) in p.color.iter_mut().zip(paint.surface.default_pixel().iter()) {
+                            *dst = *value;
+                        }
                         p.tex = Some(TexUse { layer: layer.id, role: Role::MaskPaint(index), surface: SurfaceRef::Doc(&paint.surface) });
                         let source = paint.surface.default_pixel();
                         let alpha = source.get(3).copied().unwrap_or(0.0) * paint.opacity;
@@ -309,16 +326,30 @@ impl<'a> Planner<'a> {
                             return Err(Unsupported("Mask Fill contains invalid settings".into()));
                         }
                         let bounds = paint.fill_bounds.unwrap_or([self.cx.canvas.x0, self.cx.canvas.y0, self.cx.canvas.x1, self.cx.canvas.y1]);
-                        if bounds[2] <= bounds[0] || bounds[3] <= bounds[1] { return Err(Unsupported("Mask Fill has empty bounds".into())); }
+                        if bounds[2] <= bounds[0] || bounds[3] <= bounds[1] {
+                            return Err(Unsupported("Mask Fill has empty bounds".into()));
+                        }
                         p.adjust_kind = 5;
                         p.flags |= F_MASK_FILL;
-                        if paint.fill_bounds.is_none() { p.flags |= F_MASK_FILL_LEGACY; }
+                        if paint.fill_bounds.is_none() {
+                            p.flags |= F_MASK_FILL_LEGACY;
+                        }
                         if let Some(map) = paint.fill_map.as_ref() {
-                            if *repeat_u { p.flags |= F_MASK_FILL_REPEAT_U; }
-                            if *repeat_v { p.flags |= F_MASK_FILL_REPEAT_V; }
-                            if *mirror_u { p.flags |= F_MASK_FILL_MIRROR_U; }
-                            if *mirror_v { p.flags |= F_MASK_FILL_MIRROR_V; }
-                            if paint.fill_map_size[0] == 0 || paint.fill_map_size[1] == 0 { return Err(Unsupported("Mask Fill image has an empty size".into())); }
+                            if *repeat_u {
+                                p.flags |= F_MASK_FILL_REPEAT_U;
+                            }
+                            if *repeat_v {
+                                p.flags |= F_MASK_FILL_REPEAT_V;
+                            }
+                            if *mirror_u {
+                                p.flags |= F_MASK_FILL_MIRROR_U;
+                            }
+                            if *mirror_v {
+                                p.flags |= F_MASK_FILL_MIRROR_V;
+                            }
+                            if paint.fill_map_size[0] == 0 || paint.fill_map_size[1] == 0 {
+                                return Err(Unsupported("Mask Fill image has an empty size".into()));
+                            }
                             p.params[2] = [paint.fill_map_size[0] as f32, paint.fill_map_size[1] as f32, 0.0, 0.0];
                             p.mask_fill = Some(MaskFillUse { layer: layer.id, index, surface: map, size: paint.fill_map_size });
                         }
@@ -329,9 +360,19 @@ impl<'a> Planner<'a> {
                         default = *value * paint.opacity + default * (1.0 - paint.opacity);
                     }
                     photocraft_doc::mask_paint::EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
-                        if !input_black.is_finite() || !gamma.is_finite() || !input_white.is_finite() || !output_black.is_finite() || !output_white.is_finite()
-                            || !(0.0..=1.0).contains(input_black) || !(0.01..=100.0).contains(gamma) || !(0.0..=1.0).contains(input_white)
-                            || !(0.0..=1.0).contains(output_black) || !(0.0..=1.0).contains(output_white) || input_black >= input_white || output_black > output_white {
+                        if !input_black.is_finite()
+                            || !gamma.is_finite()
+                            || !input_white.is_finite()
+                            || !output_black.is_finite()
+                            || !output_white.is_finite()
+                            || !(0.0..=1.0).contains(input_black)
+                            || !(0.01..=100.0).contains(gamma)
+                            || !(0.0..=1.0).contains(input_white)
+                            || !(0.0..=1.0).contains(output_black)
+                            || !(0.0..=1.0).contains(output_white)
+                            || input_black >= input_white
+                            || output_black > output_white
+                        {
                             return Err(Unsupported("Mask Levels contains invalid settings".into()));
                         }
                         p.adjust_kind = 4;
@@ -341,13 +382,41 @@ impl<'a> Planner<'a> {
                         let adjusted = output_black + normalized.powf(1.0 / gamma) * (output_white - output_black);
                         default = adjusted * paint.opacity + default * (1.0 - paint.opacity);
                     }
+                    photocraft_doc::mask_paint::EffectKind::Blur { radius } => {
+                        if *radius == 0 {
+                            continue;
+                        }
+                        // Keep the unblurred center value alive while the two convolution
+                        // passes allocate and recycle planner slots.
+                        let below = self.retain(coverage);
+                        let weights = mask_blur_weights(*radius);
+                        let mut horizontal = Pass::new(Kernel::MaskStack, 0);
+                        horizontal.adjust_kind = 6;
+                        horizontal.a = Some(coverage);
+                        horizontal.params[0] = [0.0, f32::from(*radius), 0.0, 0.0];
+                        horizontal.lut = Some(vec![weights]);
+                        let horizontal = self.emit(horizontal);
+
+                        let mut vertical = Pass::new(Kernel::MaskStack, 0);
+                        vertical.adjust_kind = 6;
+                        vertical.a = Some(horizontal);
+                        vertical.params[0] = [1.0, f32::from(*radius), 0.0, 0.0];
+                        vertical.lut = Some(vec![weights]);
+                        let blurred = self.emit(vertical);
+
+                        p.adjust_kind = 7;
+                        p.a = Some(blurred);
+                        p.b = Some(below);
+                    }
                 }
                 coverage = self.emit(p);
             }
             let mut quantize = Pass::new(Kernel::MaskStack, 0);
             quantize.adjust_kind = 2;
             quantize.a = Some(coverage);
-            if let Some(q) = photocraft_compose::adjustment_quantum(stack.base.format().sample) { quantize.params[0][0] = q; }
+            if let Some(q) = photocraft_compose::adjustment_quantum(stack.base.format().sample) {
+                quantize.params[0][0] = q;
+            }
             let coverage = self.emit(quantize);
             return Ok(Some(MaskUse { layer: layer.id, source: MaskSource::Slot(coverage), density: m.density, default }));
         }
@@ -903,7 +972,9 @@ impl<'a> Planner<'a> {
                 let m = self.mask_use(layer)?;
                 let masked = |me: &mut Self, slot: Slot| match &m {
                     Some(m) => {
-                        if let MaskSource::Slot(s) = &m.source { me.retain(*s); }
+                        if let MaskSource::Slot(s) = &m.source {
+                            me.retain(*s);
+                        }
                         let mut p = Pass::new(Kernel::Mask, 0);
                         p.a = Some(slot);
                         p.mask = Some(m.clone());
@@ -915,7 +986,9 @@ impl<'a> Planner<'a> {
                 let fill = masked(self, content);
                 content = masked(self, union);
                 let stroke = masked(self, s);
-                if let Some(MaskUse { source: MaskSource::Slot(slot), .. }) = &m { self.release(*slot); }
+                if let Some(MaskUse { source: MaskSource::Slot(slot), .. }) = &m {
+                    self.release(*slot);
+                }
                 (fill, Some(stroke))
             }
             None => (self.retain(content), None),
@@ -1503,4 +1576,21 @@ impl<'a> Planner<'a> {
         p.extra[3] = knockout;
         self.emit(p)
     }
+}
+
+/// CPU-compatible normalized Gaussian weights for an editable mask Blur.
+fn mask_blur_weights(radius: u8) -> [f32; 4096] {
+    let r = i32::from(radius);
+    let sigma = (f32::from(radius) / 3.0).max(0.5);
+    let mut row = [0.0; 4096];
+    let mut total = 0.0;
+    for (i, offset) in (-r..=r).enumerate() {
+        let weight = (-0.5 * (offset as f32 / sigma).powi(2)).exp();
+        row[i] = weight;
+        total += weight;
+    }
+    for weight in row.iter_mut().take((2 * r + 1) as usize) {
+        *weight /= total;
+    }
+    row
 }

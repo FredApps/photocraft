@@ -76,6 +76,8 @@ impl PhotocraftApp {
             secondary_erase: false,
             held_erase: false,
             defer_live_stroke: false,
+            #[cfg(feature = "uv-workbench")]
+            native_uv_surface_input: false,
             press_stroke: false,
             last_stroke_end: None,
             brush_resize: None,

@@ -232,7 +232,7 @@ mod tests {
         session.execute("uv.model.import", json!({"path":fixture})).unwrap();
         let mut app = PhotocraftApp::new(session, Default::default());
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app).unwrap();
+        crate::menus::apply_workspace(&mut app);
         app.ui.dock_tabs.properties = 3;
         let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).wgpu_setup(crate::gpu_canvas::wgpu_setup()).build_eframe(move |cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());

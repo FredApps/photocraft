@@ -672,7 +672,12 @@ impl GpuCanvas {
                     if r.is_empty() {
                         continue;
                     }
-                    let offset = [out.rect.x0 - tx, out.rect.y0 - ty, i32::from(encode_srgb), keep_hdr];
+                    // `out.rect` is in document coordinates, while the compositor texture can
+                    // include a Blur halo before its visible center. Map document pixels into
+                    // that texture by subtracting both the tile origin and the chunk's in-texture
+                    // origin; without the latter every blurred chunk is sampled shifted by its
+                    // halo when encoded into the 2D canvas texture.
+                    let offset = [out.rect.x0 - tx - out.origin[0] as i32, out.rect.y0 - ty - out.origin[1] as i32, i32::from(encode_srgb), keep_hdr];
                     let ubuf = init_buffer(device, "pc_encode", &offset.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>(), wgpu::BufferUsages::UNIFORM);
                     let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("pc_encode"),

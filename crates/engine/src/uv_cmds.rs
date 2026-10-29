@@ -330,9 +330,14 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let active_material = bindings.iter().position(Option::is_some).unwrap_or(0);
     let generation = s.uv.generation.wrapping_add(1);
+    // Prepare the immutable adjacency cache while the model is imported so the first wrapped
+    // brush sample never has to build a whole-mesh topology synchronously in the UI frame.
+    let scene = Arc::new(scene);
+    let wrap_mesh = photocraft_uv::wrap::Mesh::new(&scene).ok().map(Arc::new);
     s.uv = UvState {
-        scene: Some(Arc::new(scene)),
+        scene: Some(scene),
         topology: Some(Arc::new(topology)),
+        wrap_mesh,
         source,
         uv_set,
         source_stamp,
@@ -1117,6 +1122,8 @@ fn project_load(s: &mut Session, p: &Value) -> Result<Value> {
         map_bindings.insert(*kind, extra);
         extra = tail;
     }
+    let scene = Arc::new(project.scene);
+    let wrap_mesh = photocraft_uv::wrap::Mesh::new(&scene).ok().map(Arc::new);
     s.uv = UvState {
         blocked_exports,
         project_view: project.view,
@@ -1126,9 +1133,9 @@ fn project_load(s: &mut Session, p: &Value) -> Result<Value> {
         exported_revisions,
         saved_revisions,
         saved_generation: s.uv.generation.wrapping_add(1),
-        wrap_mesh: None,
+        wrap_mesh,
         wrapped_stroke: None,
-        scene: Some(Arc::new(project.scene)),
+        scene: Some(scene),
         topology: Some(Arc::new(topology)),
         source: project.source,
         uv_set: project.uv_set,

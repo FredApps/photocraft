@@ -5,6 +5,8 @@ use super::{
     theme, tiff_options_ui, timeline_ui, titlebar, tool_cursor, tool_memory, transform_tool, type_panels_ui, type_tool, updates_ui, vector_ui, view_cmds,
     wide_angle_ui, work_area, workspace_ui,
 };
+#[cfg(feature = "uv-workbench")]
+use crate::{uv_library, uv_project, uv_ui};
 
 impl PhotocraftApp {
     /// Wait out the rest of [`Self::min_frame_ms`] since the last frame started.

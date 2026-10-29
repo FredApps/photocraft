@@ -606,7 +606,7 @@ fn app_owned(app: &mut PhotocraftApp, command: DockCommand<String>) -> Result<Va
         DockCommand::NewWorkspace { name } => ("window.workspace.newWorkspace", json!({"name": name})),
         DockCommand::DeleteWorkspace { name } => ("window.workspace.deleteWorkspace", json!({"name": name})),
         DockCommand::ResetWorkspace {} => {
-            crate::menus::apply_workspace(app)?;
+            crate::menus::apply_workspace(app);
             return Ok(json!({"workspace": app.ui.workspace}));
         }
         _ => return Err("not a workspace command".into()),

@@ -600,6 +600,14 @@ pub(crate) fn sync_workspace(app: &mut PhotocraftApp) -> Result<(), String> {
     if app.session.uv_workspace.active == active {
         return Ok(());
     }
+    // Commit a valid transient edit before changing banks. app.run handles stale revisions
+    // without dropping the preview, and recognizes this exact command to avoid a second commit.
+    if let Some(commit) = crate::uv_mask_paint_preview::pending(app) {
+        app.run("uv.maskPaint.modify", commit.params()).inspect_err(|error| {
+            app.ui.status = error.clone();
+            app.ui.status_error = true;
+        })?;
+    }
     if !active {
         // A built-in preset is free to replace its own panels and dock. Remember the UV panel's
         // native layout first so returning to 3D restores its tabs, floating returns and visibility.
@@ -613,14 +621,6 @@ pub(crate) fn sync_workspace(app: &mut PhotocraftApp) -> Result<(), String> {
             dock_visible: app.ui.panels.dock,
             uv_open: app.ui.uv_workbench.open,
         });
-    }
-    // Commit a valid transient edit before changing banks. app.run handles stale revisions
-    // without dropping the preview, and recognizes this exact command to avoid a second commit.
-    if let Some(commit) = crate::uv_mask_paint_preview::pending(app) {
-        app.run("uv.maskPaint.modify", commit.params()).inspect_err(|error| {
-            app.ui.status = error.clone();
-            app.ui.status_error = true;
-        })?;
     }
     uv_ui::finish_paint(app);
     app.ui.brush_picker = None;
@@ -716,7 +716,7 @@ mod tests {
                 PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
                 let mut app = PhotocraftApp::new(session, Default::default());
                 app.ui.workspace = "3D".into();
-                crate::menus::apply_workspace(&mut app).unwrap();
+                crate::menus::apply_workspace(&mut app);
                 app
             });
             h.step();
@@ -775,7 +775,7 @@ mod tests {
             let mut app = PhotocraftApp::new(session, Default::default());
             app.set_uv_wgpu(cc.wgpu_render_state.clone().unwrap()).unwrap();
             app.ui.workspace = "3D".into();
-            crate::menus::apply_workspace(&mut app).unwrap();
+            crate::menus::apply_workspace(&mut app);
             app
         });
         h.step();
@@ -845,6 +845,7 @@ mod tests {
                 name: "Opacity".into(),
                 visible: true,
                 opacity: 1.0,
+                blend: photocraft_color::BlendMode::Normal,
                 surface: Surface::with_default(PixelFormat::RGBA8, &[1.0, 0.0, 0.0, 0.5]),
                 fill_map: None,
                 fill_map_size: [0, 0],
@@ -867,15 +868,24 @@ mod tests {
         assert_eq!(committed_history, history + 1, "valid preview commits once before switching");
         crate::menus::invoke(&mut app, &egui::Context::default(), "window.workspace.essentials", Value::Null).unwrap();
         assert!(!app.session.uv_workspace.active);
+        crate::menus::invoke(&mut app, &egui::Context::default(), "window.workspace.threeD", Value::Null).unwrap();
+        assert!(app.uv_cache.parked_dock.is_none(), "the parked layout is restored on re-entry");
 
-        crate::uv_mask_paint_preview::set(&mut app, layer, 0, 0.25);
+        // Returning to the UV bank makes a different document active. Build the second preview
+        // against that bank's actual target instead of reusing the ordinary-document LayerId.
+        app.run("uv.texture.create", json!({"width":32,"height":24,"depth":8})).unwrap();
+        let uv_layer = app.session.active().unwrap().active_layer.unwrap();
+        app.run("layer.layerMask.revealAll", json!({})).unwrap();
+        app.run("uv.maskPaint.add", json!({})).unwrap();
+        crate::uv_mask_paint_preview::set(&mut app, uv_layer, 0, 0.25);
         assert!(app.uv_mask_paint_preview.is_some());
         app.session.active_mut().unwrap().revision += 1;
 
-        let result = crate::menus::invoke(&mut app, &egui::Context::default(), "window.workspace.threeD", Value::Null);
+        let result = crate::menus::invoke(&mut app, &egui::Context::default(), "window.workspace.essentials", Value::Null);
         assert!(result.is_err());
-        assert_eq!(app.ui.workspace, "Essentials");
-        assert!(!app.session.uv_workspace.active);
+        assert_eq!(app.ui.workspace, "3D");
+        assert!(app.session.uv_workspace.active);
+        assert!(app.uv_cache.parked_dock.is_none(), "denied switch must not park a second layout");
         assert!(app.uv_mask_paint_preview.is_some(), "stale preview stays available for explicit cancellation");
         assert!(app.ui.status_error);
     }

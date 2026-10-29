@@ -1,9 +1,11 @@
 use super::{Arc, DocId, FieldKind, HashMap, LayerId, PixelFormat, Rect, Role, SampleType, Tile, TileCoord, fx, timing};
 
-/// A finished chunk: straight-alpha RGBA32F pixels of `rect` (document coordinates) at the
-/// texture's origin.
+/// A finished chunk: straight-alpha pixels of `rect` (document coordinates), starting at
+/// `origin` within the texture. Consumers must crop any padding before displaying the chunk.
 pub struct ChunkOut<'a> {
     pub rect: Rect,
+    /// Origin of `rect` within the texture (non-zero for Blur-padded work chunks).
+    pub origin: [u32; 2],
     pub texture: &'a wgpu::Texture,
     pub view: &'a wgpu::TextureView,
 }

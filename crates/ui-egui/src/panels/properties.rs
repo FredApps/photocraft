@@ -147,7 +147,7 @@ pub(super) fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 fn properties_body_inner(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     #[cfg(feature = "uv-workbench")]
-    if crate::uv_mask_paint::levels_properties(app, ui) || crate::uv_mask_paint::fill_properties(app, ui) {
+    if crate::uv_mask_paint::levels_properties(app, ui) || crate::uv_mask_paint::fill_properties(app, ui) || crate::uv_mask_paint::simple_properties(app, ui) {
         return;
     }
     let Some(st) = app.session.active() else {

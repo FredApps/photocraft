@@ -52,6 +52,8 @@ pub struct Plan<'a> {
     pub fx: Vec<FxLayer<'a>>,
     /// Complete root stack units, where only the accumulated backdrop remains live.
     pub checkpoints: Vec<Checkpoint>,
+    /// Maximum sum of active Blur radii within one editable mask stack.
+    pub mask_halo: u32,
 }
 
 /// Build the pass list for `doc`.

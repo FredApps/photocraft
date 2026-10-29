@@ -6,7 +6,10 @@
 //! (`{"scattering": {"enabled": true}}`). Strokes are deterministic: the jitter seed is the `seed`
 //! param or a hash of the points, so a journaled command replays to identical pixels.
 
-use photocraft_doc::{Document, LayerContent, LayerId, mask_paint::EffectKind};
+use photocraft_doc::{
+    Document, LayerContent, LayerId,
+    mask_paint::{EffectKind, Stack},
+};
 use photocraft_geom::Rect;
 use photocraft_paint::mixer::{MixerSettings, MixerState};
 use photocraft_paint::replace::{Limits, ReplaceMode, ReplaceSettings, Sampling, apply_color_replacement, color_replacement_effect};
@@ -16,7 +19,11 @@ use photocraft_paint::{
 };
 use photocraft_raster::Surface;
 use serde_json::{Value, json};
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
+};
 
 use crate::commands::{CommandSpec, has_paintable, is_mask_target, paint_surface};
 use crate::{EngineError, Result, Session};
@@ -80,6 +87,22 @@ pub fn parse_points(p: &Value, cmd: &str) -> Result<Vec<StrokePoint>> {
     }
     check_coords(&pts, cmd)?;
     Ok(pts)
+}
+
+/// Optional point indices where a single committed brush gesture starts a disconnected path.
+/// Indices are boundaries into the flat `points` array; no synthetic connector point is added.
+fn parse_breaks(p: &Value, points_len: usize, cmd: &str) -> Result<Vec<usize>> {
+    let Some(values) = p.get("breaks") else { return Ok(Vec::new()) };
+    let values = values.as_array().ok_or_else(|| bad(cmd, "`breaks` must be an array of point indices"))?;
+    let mut breaks = Vec::with_capacity(values.len());
+    for value in values {
+        let index = value.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(cmd, "`breaks` must contain nonnegative integer indices"))?;
+        if index == 0 || index >= points_len || breaks.last().is_some_and(|last| index <= *last) {
+            return Err(bad(cmd, "`breaks` must be strictly increasing indices inside `points`"));
+        }
+        breaks.push(index);
+    }
+    Ok(breaks)
 }
 
 /// A stroke runs dab by dab along its length: an absurd coordinate would mean billions of dabs.
@@ -288,6 +311,7 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
     let fg = brush.color;
     let symmetry = s.active().and_then(|st| st.symmetry.clone());
     let (id, brush, zoom) = stroke_target(s, p, brush)?;
+    let breaks = parse_breaks(p, pts.len(), cmd)?;
     let cmyk = doc_cmyk_space(s);
     // The live stroke the canvas already rendered for exactly these params: take its pixels
     // instead of rendering the whole stroke again (the hitch at pen-up).
@@ -315,30 +339,36 @@ fn stroke_with(s: &mut Session, cmd: &str, p: &Value, label: &str, brush: BrushS
             if auto_erase {
                 apply_auto_erase(&mut brush, surf, pts.first(), fg, bg);
             }
-            let damage = if let Some(axis) = &symmetry {
-                let reflected = axis.reflected_passes(&pts);
-                let copies: Vec<_> = reflected
-                    .iter()
-                    .filter(|p| crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(&pts, p))
-                    .map(|p| {
-                        let mut renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
-                        renderer.push(p);
-                        renderer.finish();
-                        renderer
-                    })
-                    .collect();
-                if copies.is_empty() {
-                    render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
+            let mut damage = Rect::EMPTY;
+            let mut start = 0;
+            for end in breaks.iter().copied().chain(std::iter::once(pts.len())) {
+                let segment = &pts[start..end];
+                if let Some(axis) = &symmetry {
+                    let reflected = axis.reflected_passes(segment);
+                    let copies: Vec<_> = reflected
+                        .iter()
+                        .filter(|p| crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(segment, p))
+                        .map(|p| {
+                            let mut renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+                            renderer.push(p);
+                            renderer.finish();
+                            renderer
+                        })
+                        .collect();
+                    if copies.is_empty() {
+                        damage = damage.union(&render_stroke(surf, &brush, segment, sel.as_ref(), lock, zoom));
+                    } else {
+                        let pre = surf.clone();
+                        let mut original = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+                        original.push(segment);
+                        original.finish();
+                        damage = damage.union(&original.composite_union_many(&copies, &pre, surf, sel.as_ref(), lock));
+                    }
                 } else {
-                    let pre = surf.clone();
-                    let mut original = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
-                    original.push(&pts);
-                    original.finish();
-                    original.composite_union_many(&copies, &pre, surf, sel.as_ref(), lock)
+                    damage = damage.union(&render_stroke(surf, &brush, segment, sel.as_ref(), lock, zoom));
                 }
-            } else {
-                render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
-            };
+                start = end;
+            }
             Ok(damage)
         })
     })?;
@@ -535,6 +565,8 @@ pub struct LiveStroke {
     pub seed: u64,
     cmd: String,
     renderer: StrokeRenderer,
+    brush: BrushSettings,
+    zoom: f32,
     symmetry: Option<crate::symmetry_cmds::PaintingSymmetry>,
     mirrors: Vec<StrokeRenderer>,
     mirror_distinct: Vec<bool>,
@@ -548,15 +580,162 @@ pub struct LiveStroke {
     params: Value,
     /// Where the doc shows the stroke's end as finishing it would draw it (see `push`).
     tail: Rect,
+    finished_bounds: Rect,
     /// The document's CMYK profile the commit enters (`stroke_with`), so the preview shows the
     /// pixels a `paint.stroke` with `seed` will write.
     cmyk: Option<std::sync::Arc<photocraft_color::convert::CmykSpace>>,
     /// Every point rendered so far, in order.
     points: Vec<StrokePoint>,
+    /// Point indices where a new disconnected renderer path starts.
+    breaks: Vec<usize>,
+    segment_break_pending: bool,
     /// The document and revision the stroke started on.
     base: (photocraft_doc::DocId, u64),
     /// Unquantized prefixes below the active mask Paint layer, kept only for this live stroke.
     mask_prefix: Option<MaskPrefixCache>,
+    /// Optional cadence for materializing the flattened mask preview during a live stroke.
+    mask_preview_cadence: Option<Duration>,
+    /// Damage accumulated since the last flattened mask preview refresh.
+    mask_preview_pending: Rect,
+    /// Start of the current mask preview cadence interval.
+    mask_preview_last_refresh: Option<Instant>,
+    /// Latest input generation whose flattened preview still needs to be published.
+    mask_preview_generation: u64,
+    /// Latest generation submitted to the optional worker.
+    mask_preview_submitted: u64,
+    /// A worker result for this generation exceeded the bounded compose path; defer exact sync
+    /// fallback until flush/release instead of stalling a pointer-move poll.
+    mask_preview_unsupported: Option<u64>,
+    /// Native-only, opt-in Blur cache compositor. Stroke samples are still rendered on the caller.
+    #[cfg(not(target_arch = "wasm32"))]
+    mask_preview_worker: Option<MaskPreviewWorker>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct MaskPreviewJob {
+    client: u64,
+    generation: u64,
+    stack: Stack,
+    damage: Rect,
+    canvas: Rect,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct MaskPreviewResult {
+    client: u64,
+    generation: u64,
+    composed: Option<(f32, Rect, Vec<f32>)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct MaskPreviewWorkerState {
+    active_client: Option<u64>,
+    pending: Option<MaskPreviewJob>,
+    result: Option<MaskPreviewResult>,
+}
+
+/// A handle into one process-wide worker. Sharing a thread bounds work left behind by canceled
+/// strokes: globally there is at most one running snapshot, one replaceable pending snapshot and
+/// one result.
+#[cfg(not(target_arch = "wasm32"))]
+struct MaskPreviewWorker {
+    state: std::sync::Arc<(std::sync::Mutex<MaskPreviewWorkerState>, std::sync::Condvar)>,
+    client: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static MASK_PREVIEW_CLIENT: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(not(target_arch = "wasm32"))]
+static MASK_PREVIEW_WORKER: std::sync::OnceLock<Option<std::sync::Arc<(std::sync::Mutex<MaskPreviewWorkerState>, std::sync::Condvar)>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MaskPreviewWorker {
+    fn new() -> Option<Self> {
+        let state = MASK_PREVIEW_WORKER
+            .get_or_init(|| {
+                let state = std::sync::Arc::new((std::sync::Mutex::new(MaskPreviewWorkerState::default()), std::sync::Condvar::new()));
+                let worker_state = state.clone();
+                std::thread::Builder::new()
+                    .name("mask-blur-preview".into())
+                    .spawn(move || {
+                        loop {
+                            let job = {
+                                let (lock, wake) = &*worker_state;
+                                let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                while state.pending.is_none() {
+                                    state = wake.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+                                }
+                                let Some(job) = state.pending.take() else { continue };
+                                job
+                            };
+                            let composed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                photocraft_compose::mask_paint::compose_damage(&job.stack, job.damage, job.canvas)
+                            }))
+                            .unwrap_or(None);
+                            let (lock, wake) = &*worker_state;
+                            let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if state.active_client == Some(job.client)
+                                && state.result.as_ref().is_none_or(|result| (result.client, result.generation) <= (job.client, job.generation))
+                            {
+                                state.result = Some(MaskPreviewResult { client: job.client, generation: job.generation, composed });
+                            }
+                            wake.notify_all();
+                        }
+                    })
+                    .ok()?;
+                Some(state)
+            })
+            .as_ref()?
+            .clone();
+        Some(Self { state, client: MASK_PREVIEW_CLIENT.fetch_add(1, Ordering::Relaxed).max(1) })
+    }
+
+    fn submit(&self, job: MaskPreviewJob) {
+        let (lock, wake) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Newer snapshots subsume old preview jobs; input itself was already rendered in order.
+        state.active_client = Some(self.client);
+        state.result = None;
+        state.pending = Some(job);
+        wake.notify_one();
+    }
+
+    fn take_result(&self) -> Option<MaskPreviewResult> {
+        let mut state = self.state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.result.as_ref().is_some_and(|result| result.client != self.client) {
+            state.result = None;
+        }
+        state.result.take()
+    }
+
+    fn wait_for_result(&self) {
+        let (lock, wake) = &*self.state;
+        let state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.result.as_ref().is_none_or(|result| result.client != self.client) {
+            let _ = wake.wait_timeout(state, Duration::from_millis(100)).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for MaskPreviewWorker {
+    fn drop(&mut self) {
+        let (lock, wake) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.active_client == Some(self.client) {
+            state.active_client = None;
+            if state.pending.as_ref().is_some_and(|job| job.client == self.client) {
+                state.pending = None;
+            }
+            if state.result.as_ref().is_some_and(|result| result.client == self.client) {
+                state.result = None;
+            }
+            wake.notify_all();
+        }
+    }
 }
 
 /// Reuses the immutable portion of a mask stack while the active Paint surface changes.
@@ -597,6 +776,13 @@ impl MaskPrefixCache {
         let stack = doc.layer(layer)?.mask.as_ref()?.paint.as_ref()?;
         let active = stack.active;
         if !matches!(stack.layers.get(active)?.kind, EffectKind::Paint) {
+            return None;
+        }
+        // A prefix cache can only apply pointwise layers after the active Paint. Blur needs the
+        // changed source rectangle plus its downstream spatial halo recomposed as one stack, so
+        // skip creating a cache that would be rejected on every dab and use that exact path.
+        if stack.layers.iter().skip(active.saturating_add(1)).any(|layer| layer.visible && layer.opacity > 0.0 && matches!(layer.kind, EffectKind::Blur { .. }))
+        {
             return None;
         }
         Some(Self { layer, active, blocks: HashMap::new(), order: VecDeque::new() })
@@ -683,6 +869,7 @@ pub struct LiveCommit {
     /// The Brush's and Pencil's seed; the retouching tools have none.
     pub(crate) seed: Option<u64>,
     pub(crate) points: Vec<StrokePoint>,
+    pub(crate) breaks: Vec<usize>,
     pub(crate) surface: Surface,
     pub(crate) bounds: Rect,
 }
@@ -700,10 +887,12 @@ impl LiveCommit {
 
     pub(crate) fn matches(&self, s: &Session, cmd: &str, p: &Value, pts: &[StrokePoint]) -> bool {
         let base = s.active().map(|st| (st.doc.id, st.revision));
+        let breaks = parse_breaks(p, pts.len(), cmd).unwrap_or_default();
         self.cmd == cmd
             && base == Some(self.base)
             && p.get("seed").and_then(Value::as_u64) == self.seed
             && self.points == pts
+            && self.breaks == breaks
             && Self::settings(p) == Self::settings(&self.params)
     }
 }
@@ -717,6 +906,17 @@ impl LiveStroke {
     /// Start a live stroke of `cmd`: `paint.stroke` (the Brush and Eraser) or `paint.pencil`.
     /// Committing `cmd` with the same params and `"seed": live.seed` gives the same pixels.
     pub fn begin_with(s: &Session, cmd: &str, p: &Value) -> Result<Self> {
+        Self::begin_internal(s, cmd, p, None)
+    }
+
+    /// Start a live mask stroke with an off-thread Blur cache preview when supported. This
+    /// installs the worker before rendering the initial point, avoiding a first-dab UI stall.
+    /// Unsupported targets and wasm retain the original synchronous path.
+    pub fn begin_with_mask_preview_worker(s: &Session, cmd: &str, p: &Value, cadence: Duration) -> Result<Self> {
+        Self::begin_internal(s, cmd, p, Some(cadence))
+    }
+
+    fn begin_internal(s: &Session, cmd: &str, p: &Value, worker_cadence: Option<Duration>) -> Result<Self> {
         has_paintable(s).map_err(EngineError::Other)?;
         let pts = parse_points(p, cmd)?;
         let pencil = match cmd {
@@ -737,6 +937,7 @@ impl LiveStroke {
             apply_auto_erase(&mut brush, surf, pts.first(), fg, s.tools.background);
         }
         let renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+        let renderer_brush = brush.clone();
         let symmetry = s.active().and_then(|st| st.symmetry.clone());
         let mirrors: Vec<_> = (0..symmetry.as_ref().map_or(0, |s| s.mirror_count())).map(|_| StrokeRenderer::new(&brush, Some(surf.format()), zoom)).collect();
         let mirror_distinct = vec![false; mirrors.len()];
@@ -747,6 +948,8 @@ impl LiveStroke {
             seed,
             cmd: cmd.into(),
             renderer,
+            brush: renderer_brush,
+            zoom,
             symmetry,
             mirrors,
             mirror_distinct,
@@ -757,26 +960,46 @@ impl LiveStroke {
             layer,
             params: p.clone(),
             tail: Rect::EMPTY,
+            finished_bounds: Rect::EMPTY,
             cmyk: doc_cmyk_space(s),
             points: Vec::new(),
+            breaks: Vec::new(),
+            segment_break_pending: false,
             base,
             mask_prefix,
+            mask_preview_cadence: None,
+            mask_preview_pending: Rect::EMPTY,
+            mask_preview_last_refresh: None,
+            mask_preview_generation: 0,
+            mask_preview_submitted: 0,
+            mask_preview_unsupported: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            mask_preview_worker: None,
         };
+        if let Some(cadence) = worker_cadence {
+            let _ = live.set_mask_preview_worker(cadence);
+        }
         live.push(&pts)?;
         Ok(live)
     }
 
     /// The stroke as its commit would take it over (see [`LiveCommit`]).
     pub fn into_commit(mut self) -> Result<LiveCommit> {
+        let _ = self.flush_mask_preview();
         let bounds = self.bounds();
         let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.layer, &self.params)?;
+        let mut params = self.params;
+        if !self.breaks.is_empty() {
+            params["breaks"] = json!(self.breaks);
+        }
         Ok(LiveCommit {
             mixer: None,
             cmd: self.cmd,
             base: self.base,
-            params: self.params,
+            params,
             seed: Some(self.seed),
             points: self.points,
+            breaks: self.breaks,
             surface: surf.clone(),
             bounds,
         })
@@ -784,8 +1007,70 @@ impl LiveStroke {
 
     /// Everything the stroke has touched so far.
     pub fn bounds(&self) -> Rect {
-        let bounds = self.renderer.bounds().union(&self.tail);
+        let bounds = self.finished_bounds.union(&self.renderer.bounds()).union(&self.tail);
         self.mirrors.iter().zip(&self.mirror_distinct).filter(|(_, distinct)| **distinct).fold(bounds, |b, (r, _)| b.union(&r.bounds()))
+    }
+
+    /// Finish the current disconnected path without ending the physical gesture or committing
+    /// history. The next pushed point starts a fresh renderer, so no coverage can bridge a UV
+    /// island boundary. The final command still commits the accumulated document once.
+    pub fn break_segment(&mut self) -> Result<Rect> {
+        check_coords(&self.points, &self.cmd)?;
+        if !self.supports_mask_segments() {
+            return Err(bad(&self.cmd, "disconnected segments are only enabled for mask strokes with downstream Blur"));
+        }
+        if self.points.is_empty() || self.segment_break_pending {
+            return Ok(Rect::EMPTY);
+        }
+        let cmyk = self.cmyk.clone();
+        photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
+            let old_tail = self.tail;
+            let mut segment_bounds = self.renderer.bounds().union(&old_tail);
+            for (renderer, distinct) in self.mirrors.iter().zip(&self.mirror_distinct) {
+                if *distinct {
+                    segment_bounds = segment_bounds.union(&renderer.bounds());
+                }
+            }
+            let damage = {
+                let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.layer, &self.params)?;
+                if !old_tail.is_empty() {
+                    surf.write_region(old_tail, &self.pre.read_region(old_tail));
+                }
+                self.renderer.finish();
+                for mirror in &mut self.mirrors {
+                    mirror.finish();
+                }
+                let damage = if self.mirror_distinct.iter().any(|distinct| *distinct) {
+                    let copies = self.mirrors.iter().zip(&self.mirror_distinct).filter(|(_, distinct)| **distinct).map(|(renderer, _)| renderer);
+                    self.renderer.composite_union_many(copies, &self.pre, surf, self.sel.as_ref(), self.lock)
+                } else {
+                    self.renderer.composite(&self.pre, surf, self.sel.as_ref(), self.lock, true)
+                };
+                self.pre = surf.clone();
+                self.renderer = StrokeRenderer::new(&self.brush, Some(surf.format()), self.zoom);
+                self.mirrors = (0..self.symmetry.as_ref().map_or(0, |s| s.mirror_count()))
+                    .map(|_| StrokeRenderer::new(&self.brush, Some(surf.format()), self.zoom))
+                    .collect();
+                damage
+            };
+            self.tail = Rect::EMPTY;
+            self.finished_bounds = self.finished_bounds.union(&segment_bounds);
+            self.union_live = None;
+            self.refresh_mask_preview(damage);
+            self.segment_break_pending = true;
+            self.mirror_distinct.fill(false);
+            Ok(damage)
+        })
+    }
+
+    /// Disconnected path boundaries included in the eventual single commit.
+    pub fn segment_breaks(&self) -> &[usize] {
+        &self.breaks
+    }
+
+    /// Whether this stroke is the native-mask Blur path that supports UV island breaks.
+    pub fn supports_mask_segments(&self) -> bool {
+        is_mask_target(&self.params) && self.has_visible_downstream_blur()
     }
 
     /// `(brush, pointer)` document positions while smoothing holds the brush back from the
@@ -800,7 +1085,208 @@ impl LiveStroke {
         self.renderer.wants_time()
     }
 
+    /// Defer flattened mask-cache updates until this cadence elapses. Stroke painting itself
+    /// remains exact and immediate; only the derived `mask.surface` preview is throttled.
+    /// Callers should enable this only when their active preview can tolerate a temporarily
+    /// stale flattened cache. The first point rendered by `begin_with` is always eager because
+    /// the policy is opt-in after construction.
+    pub fn set_mask_preview_cadence(&mut self, cadence: Duration) {
+        if !is_mask_target(&self.params) {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.mask_preview_worker.is_some() {
+                let _ = self.flush_mask_preview();
+            }
+            self.mask_preview_worker = None;
+        }
+        self.mask_preview_cadence = Some(cadence);
+        self.mask_preview_last_refresh = Some(Instant::now());
+    }
+
+    /// Enable off-thread flattened-cache updates for native 3D mask strokes with a visible
+    /// downstream Blur. Returns false for other strokes, wasm, or when the worker cannot start.
+    /// Brush sampling and renderer accumulation remain synchronous and ordered on the caller.
+    pub fn set_mask_preview_worker(&mut self, cadence: Duration) -> bool {
+        if !is_mask_target(&self.params) || !self.has_visible_downstream_blur() {
+            return false;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(worker) = MaskPreviewWorker::new() else { return false };
+            self.mask_preview_worker = Some(worker);
+            self.mask_preview_cadence = Some(cadence);
+            self.mask_preview_last_refresh = Some(Instant::now());
+            self.mask_preview_unsupported = None;
+            return true;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = cadence;
+            false
+        }
+    }
+
+    fn has_visible_downstream_blur(&self) -> bool {
+        let Some(id) = self.layer else { return false };
+        self.doc.layer(id).and_then(|layer| layer.mask.as_ref()).and_then(|mask| mask.paint.as_ref()).is_some_and(|stack| {
+            stack
+                .layers
+                .iter()
+                .skip(stack.active.saturating_add(1))
+                .any(|layer| layer.visible && layer.opacity > 0.0 && matches!(layer.kind, EffectKind::Blur { .. }))
+        })
+    }
+
+    /// Poll and apply the latest completed native mask preview without waiting. The returned
+    /// rectangle is the flattened cache region that the caller should invalidate for display.
+    pub fn poll_mask_preview(&mut self) -> Option<Rect> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let result = self.mask_preview_worker.as_ref()?.take_result();
+            if let Some(result) = result {
+                if result.generation == self.mask_preview_generation {
+                    return self.publish_mask_preview_result(result, false);
+                }
+            }
+            if !self.mask_preview_pending.is_empty()
+                && self.mask_preview_submitted < self.mask_preview_generation
+                && mask_preview_cadence_due(self.mask_preview_last_refresh, Instant::now(), self.mask_preview_cadence.unwrap_or_default())
+            {
+                self.submit_mask_preview();
+            }
+        }
+        None
+    }
+
+    /// Whether the off-thread mask cache still has damage that has not been published.
+    pub fn mask_preview_pending(&self) -> bool {
+        !self.mask_preview_pending.is_empty() && self.mask_preview_unsupported != Some(self.mask_preview_generation)
+    }
+
+    /// Materialize any mask-cache damage accumulated by a throttled live preview.
+    /// Safe to call repeatedly and required before exposing or committing the final document.
+    /// With the worker enabled this waits for the latest ordered input snapshot and publishes it.
+    pub fn flush_mask_preview(&mut self) -> Option<Rect> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.mask_preview_worker.is_some() {
+            if self.mask_preview_pending.is_empty() {
+                return None;
+            }
+            if self.mask_preview_unsupported == Some(self.mask_preview_generation) {
+                let damage = std::mem::replace(&mut self.mask_preview_pending, Rect::EMPTY);
+                self.refresh_mask_preview_now(damage);
+                self.mask_preview_last_refresh = Some(Instant::now());
+                return Some(self.expanded_mask_preview_damage(damage));
+            }
+            if self.mask_preview_submitted < self.mask_preview_generation {
+                self.submit_mask_preview();
+            }
+            loop {
+                if let Some(result) = self.mask_preview_worker.as_ref().and_then(MaskPreviewWorker::take_result) {
+                    if result.generation == self.mask_preview_generation {
+                        return self.publish_mask_preview_result(result, true);
+                    }
+                }
+                if self.mask_preview_submitted < self.mask_preview_generation {
+                    self.submit_mask_preview();
+                }
+                if let Some(worker) = &self.mask_preview_worker {
+                    worker.wait_for_result();
+                } else {
+                    break;
+                }
+            }
+            // Worker failure falls through to the existing exact synchronous path.
+        }
+        let damage = std::mem::replace(&mut self.mask_preview_pending, Rect::EMPTY);
+        if damage.is_empty() {
+            return None;
+        }
+        self.refresh_mask_preview_now(damage);
+        self.mask_preview_last_refresh = Some(Instant::now());
+        Some(self.expanded_mask_preview_damage(damage))
+    }
+
+    fn submit_mask_preview(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(worker) = &self.mask_preview_worker else { return };
+            let Some(id) = self.layer else { return };
+            let Some((stack, canvas)) =
+                self.doc.layer(id).and_then(|layer| layer.mask.as_ref()).and_then(|mask| mask.paint.as_ref().map(|stack| (stack.clone(), self.doc.bounds())))
+            else {
+                return;
+            };
+            if self.mask_preview_pending.is_empty() {
+                return;
+            }
+            let generation = self.mask_preview_generation;
+            if generation == 0 {
+                return;
+            }
+            worker.submit(MaskPreviewJob { client: worker.client, generation, stack, damage: self.mask_preview_pending, canvas });
+            self.mask_preview_submitted = generation;
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn publish_mask_preview_result(&mut self, result: MaskPreviewResult, allow_sync_fallback: bool) -> Option<Rect> {
+        if result.generation != self.mask_preview_generation {
+            return None;
+        }
+        if result.composed.is_none() && !allow_sync_fallback {
+            self.mask_preview_unsupported = Some(result.generation);
+            return None;
+        }
+        let pending = std::mem::replace(&mut self.mask_preview_pending, Rect::EMPTY);
+        let damage = if let Some((default, bounds, pixels)) = result.composed {
+            let id = self.layer?;
+            let doc = std::sync::Arc::make_mut(&mut self.doc);
+            let mask = doc.layer_mut(id)?.mask.as_mut()?;
+            mask.surface.set_default_pixel(&[default]);
+            mask.surface.write_region(bounds, &pixels);
+            bounds
+        } else {
+            self.refresh_mask_preview_now(pending);
+            self.expanded_mask_preview_damage(pending)
+        };
+        self.mask_preview_last_refresh = Some(Instant::now());
+        Some(damage)
+    }
+
+    fn expanded_mask_preview_damage(&self, damage: Rect) -> Rect {
+        let Some(id) = self.layer else { return damage };
+        let Some(doc) = self.doc.layer(id) else { return damage };
+        let Some(stack) = doc.mask.as_ref().and_then(|mask| mask.paint.as_ref()) else { return damage };
+        damage.inflate(photocraft_compose::mask_paint::downstream_blur_reach(stack, stack.active)).intersect(&self.doc.bounds())
+    }
+
     fn refresh_mask_preview(&mut self, damage: Rect) {
+        if damage.is_empty() || !is_mask_target(&self.params) {
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.mask_preview_worker.is_some() {
+            self.mask_preview_pending = self.mask_preview_pending.union(&damage);
+            self.mask_preview_generation = self.mask_preview_generation.wrapping_add(1).max(1);
+            if mask_preview_cadence_due(self.mask_preview_last_refresh, Instant::now(), self.mask_preview_cadence.unwrap_or_default()) {
+                self.submit_mask_preview();
+            }
+            return;
+        }
+        if let Some(cadence) = self.mask_preview_cadence {
+            self.mask_preview_pending = self.mask_preview_pending.union(&damage);
+            if mask_preview_cadence_due(self.mask_preview_last_refresh, Instant::now(), cadence) {
+                let _ = self.flush_mask_preview();
+            }
+            return;
+        }
+        self.refresh_mask_preview_now(damage);
+    }
+
+    fn refresh_mask_preview_now(&mut self, damage: Rect) {
         if damage.is_empty() || !is_mask_target(&self.params) {
             return;
         }
@@ -809,8 +1295,9 @@ impl LiveStroke {
         if self.mask_prefix.as_mut().is_some_and(|cache| cache.refresh(doc, damage)) {
             return;
         }
+        let canvas = doc.bounds();
         if let Some(mask) = doc.layer_mut(id).and_then(|layer| layer.mask.as_mut()) {
-            photocraft_compose::mask_paint::refresh(mask, Some(damage));
+            photocraft_compose::mask_paint::refresh_damage_in_canvas(mask, damage, canvas);
         }
     }
 
@@ -821,6 +1308,10 @@ impl LiveStroke {
     /// Invalid coordinates reject the whole batch without changing the preview.
     pub fn push(&mut self, pts: &[StrokePoint]) -> Result<Rect> {
         check_coords(pts, &self.cmd)?;
+        if !pts.is_empty() && self.segment_break_pending {
+            self.breaks.push(self.points.len());
+            self.segment_break_pending = false;
+        }
         self.points.extend_from_slice(pts);
         let cmyk = self.cmyk.clone();
         photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
@@ -873,6 +1364,10 @@ impl LiveStroke {
             Ok(dmg)
         })
     }
+}
+
+fn mask_preview_cadence_due(last_refresh: Option<Instant>, now: Instant, cadence: Duration) -> bool {
+    cadence.is_zero() || last_refresh.is_none_or(|last| now.saturating_duration_since(last) >= cadence)
 }
 
 fn pencil(s: &mut Session, p: &Value) -> Result<Value> {

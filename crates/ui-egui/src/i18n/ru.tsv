@@ -4793,6 +4793,7 @@ shape	Appearance	Оформление
 	3D / 2D                       F1	3D / 2D                       F1
 	HDR / EXR…	HDR / EXR…
 	Reimport	Повторный импорт
+	Add Blur layer	Добавить слой размытия
 	Add Fill layer	Добавить слой-заливку
 	Add Levels layer	Добавить слой «Уровни»
 	Add Paint layer	Добавить Paint-слой
@@ -4804,6 +4805,9 @@ shape	Appearance	Оформление
 	Output Black	Выходная чёрная точка
 	Output White	Выходная белая точка
 	Applied when you release the control	Применяется после отпускания элемента управления
+	Blend mode	Режим наложения
+	Delete Blur layer	Удалить слой размытия
+	Select mask effect	Выбрать эффект маски
 	Fill from selection	Заливка из выделения
 	Use as Fill image	Использовать как изображение заливки
 	Gray value	Уровень серого
@@ -4831,3 +4835,4 @@ shape	Appearance	Оформление
 	Font size presets	Наборы размеров шрифта
 	Leading presets	Наборы интерлиньяжа
 	Tracking presets	Наборы трекинга
+Legacy blend mode	Устаревший режим наложения

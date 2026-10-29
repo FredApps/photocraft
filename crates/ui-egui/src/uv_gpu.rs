@@ -221,6 +221,8 @@ pub(crate) struct Renderer {
     compositor: Option<photocraft_gpu::Compositor>,
     compositor_error: Option<String>,
     last_map_stats: Option<photocraft_gpu::Stats>,
+    #[cfg(test)]
+    pub(crate) last_map_counters: Option<photocraft_gpu::Stats>,
     map_blit_layout: wgpu::BindGroupLayout,
     map_blit: wgpu::RenderPipeline,
     pipelines: Vec<wgpu::RenderPipeline>,
@@ -328,8 +330,29 @@ impl Renderer {
                 if changed {
                     let hint = maps.regions.get(kind).and_then(|slots| slots.get(material)).cloned().flatten();
                     let map = if let Some(request) = gpu_request {
-                        let spare = self.surfaces.get_mut(material).and_then(|surface| surface.gpu_spares.get_mut(kind)).and_then(Option::take);
-                        match self.map_gpu_composite(&request.doc, request.key, request.linear_srgb, spare) {
+                        let active_matches = request.damage.is_some()
+                            && request.previous_key.is_some_and(|expected| {
+                                self.surfaces.get(material).and_then(|surface| surface.maps.get(kind)).is_some_and(|map| {
+                                    map.key == expected
+                                        && map.source == MapSource::GpuComposite
+                                        && map.size == [request.doc.size.width, request.doc.size.height]
+                                })
+                            });
+                        let previous = if active_matches {
+                            let empty = self.map_single(None, Key::default(), true, None, None)?;
+                            let previous =
+                                self.surfaces.get_mut(material).and_then(|surface| surface.maps.get_mut(kind)).map(|map| std::mem::replace(map, empty));
+                            if let Some(surface) = self.surfaces.get_mut(material)
+                                && let Some(spare) = surface.gpu_spares.get_mut(kind)
+                            {
+                                *spare = None;
+                            }
+                            previous
+                        } else {
+                            self.surfaces.get_mut(material).and_then(|surface| surface.gpu_spares.get_mut(kind)).and_then(Option::take)
+                        };
+                        let damage = active_matches.then_some(request.damage).flatten();
+                        match self.map_gpu_composite(&request.doc, request.key, request.linear_srgb, damage, previous) {
                             Ok(map) => map,
                             Err(_) => {
                                 // Unsupported GPU features and transient device errors keep a
@@ -390,7 +413,12 @@ impl Renderer {
         &self.adapter_label
     }
     pub(crate) fn take_map_stats(&mut self) -> Option<photocraft_gpu::Stats> {
-        self.last_map_stats.take()
+        let stats = self.last_map_stats.take();
+        #[cfg(test)]
+        {
+            self.last_map_counters = stats;
+        }
+        stats
     }
     pub fn texture_sizes(&self) -> Vec<([u32; 2], [u32; 2])> {
         self.materials.iter().map(|m| m.as_ref().map_or(([0; 2], [0; 2]), |m| (m.color.size(), m.normal.size))).collect()
@@ -766,7 +794,7 @@ impl Renderer {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: std::num::NonZeroU64::new(16),
+                        min_binding_size: std::num::NonZeroU64::new(24),
                     },
                     count: None,
                 },
@@ -817,6 +845,8 @@ impl Renderer {
             compositor,
             compositor_error,
             last_map_stats: None,
+            #[cfg(test)]
+            last_map_counters: None,
             map_blit_layout,
             map_blit,
             pipelines,
@@ -1075,7 +1105,14 @@ impl Renderer {
         self.mips.regenerate(&self.rs, &texture, size, &levels, [0, 0, size[0], size[1]]);
         Ok(Map { texture, view, size, key, data: Some(data), source: MapSource::Cpu, cutout, levels })
     }
-    fn map_gpu_composite(&mut self, doc: &photocraft_doc::Document, key: Key, linear_srgb: bool, previous: Option<Map>) -> Result<Map, String> {
+    fn map_gpu_composite(
+        &mut self,
+        doc: &photocraft_doc::Document,
+        key: Key,
+        linear_srgb: bool,
+        damage: Option<photocraft_geom::Rect>,
+        previous: Option<Map>,
+    ) -> Result<Map, String> {
         let size = [doc.size.width, doc.size.height];
         let max = self.rs.device.limits().max_texture_dimension_2d;
         if size.contains(&0) || size.iter().any(|side| *side > max) {
@@ -1111,15 +1148,29 @@ impl Renderer {
         let target = &map.levels[0];
         let linear_srgb = u32::from(linear_srgb);
         let compositor = self.compositor.as_mut().ok_or_else(|| "GPU map compositor unavailable".to_string())?;
+        let render_region = damage.map_or_else(|| doc.bounds(), |region| region.intersect(&doc.bounds()));
+        if render_region.is_empty() {
+            self.last_map_stats = Some(photocraft_gpu::Stats::default());
+            map.key = key;
+            return Ok(map);
+        }
         let stats = compositor
-            .render(device, queue, doc, doc.bounds(), |encoder, chunk| {
+            .render(device, queue, doc, render_region, |encoder, chunk| {
                 let [x, y, w, h] = [chunk.rect.x0.max(0) as u32, chunk.rect.y0.max(0) as u32, chunk.rect.width(), chunk.rect.height()];
                 if w == 0 || h == 0 || x.saturating_add(w) > size[0] || y.saturating_add(h) > size[1] {
                     return;
                 }
                 let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("uv compositor map chunk"),
-                    contents: &[x.to_le_bytes(), y.to_le_bytes(), linear_srgb.to_le_bytes(), 0u32.to_le_bytes()].concat(),
+                    contents: &[
+                        x.to_le_bytes(),
+                        y.to_le_bytes(),
+                        linear_srgb.to_le_bytes(),
+                        0u32.to_le_bytes(),
+                        chunk.origin[0].to_le_bytes(),
+                        chunk.origin[1].to_le_bytes(),
+                    ]
+                    .concat(),
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
                 let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1154,7 +1205,13 @@ impl Renderer {
         map.key = key;
         map.data = None;
         map.source = MapSource::GpuComposite;
-        self.mips.regenerate(&self.rs, &map.texture, size, &map.levels, [0, 0, size[0], size[1]]);
+        self.mips.regenerate(
+            &self.rs,
+            &map.texture,
+            size,
+            &map.levels,
+            [render_region.x0 as u32, render_region.y0 as u32, render_region.width(), render_region.height()],
+        );
         Ok(map)
     }
     fn materials(&mut self, draw: &Draw<'_>) -> Result<(), String> {
@@ -1565,7 +1622,7 @@ mod tests {
             photocraft_color::SampleType::U8,
             photocraft_color::Color::rgb(0.2, 0.4, 0.6),
         );
-        let map = renderer.map_gpu_composite(&doc, (doc.id.0, 1, 0, 0), false, None).unwrap();
+        let map = renderer.map_gpu_composite(&doc, (doc.id.0, 1, 0, 0), false, None, None).unwrap();
         renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
         assert_eq!(map.size, [4, 4]);
         assert_eq!(map.source, MapSource::GpuComposite);
@@ -1590,7 +1647,10 @@ mod tests {
         ));
         let (scene, geometry) = scene();
         let mut maps = crate::uv_lighting::SurfaceMaps::default();
-        maps.gpu[0] = vec![Some(crate::uv_lighting::GpuMapRequest { doc, key: (1, 1, 0, 1), linear_srgb: true }); scene.materials.len()];
+        maps.gpu[0] = vec![
+            Some(crate::uv_lighting::GpuMapRequest { doc, key: (1, 1, 0, 1), linear_srgb: true, previous_key: None, damage: None });
+            scene.materials.len()
+        ];
         maps.use_color_for_pbr = vec![true; scene.materials.len()];
         let settings = photocraft_uv::lighting::Settings { pbr: true, ..Default::default() };
         renderer.set_lighting(settings, &maps, Arc::new(photocraft_uv::lighting::Environment::studio())).unwrap();
@@ -1651,8 +1711,8 @@ mod tests {
         scene.materials.push(scene.materials[0].clone());
         let mut maps = crate::uv_lighting::SurfaceMaps::default();
         maps.gpu[0] = vec![
-            Some(crate::uv_lighting::GpuMapRequest { doc: doc.clone(), key: (doc.id.0, 1, 0, 1), linear_srgb: true }),
-            Some(crate::uv_lighting::GpuMapRequest { doc: doc.clone(), key: (doc.id.0, 1, 0, 1), linear_srgb: true }),
+            Some(crate::uv_lighting::GpuMapRequest { doc: doc.clone(), key: (doc.id.0, 1, 0, 1), linear_srgb: true, previous_key: None, damage: None }),
+            Some(crate::uv_lighting::GpuMapRequest { doc: doc.clone(), key: (doc.id.0, 1, 0, 1), linear_srgb: true, previous_key: None, damage: None }),
         ];
         maps.use_color_for_pbr = vec![true; 2];
         let settings = photocraft_uv::lighting::Settings { pbr: true, ..Default::default() };
@@ -1729,6 +1789,7 @@ mod tests {
                     name: format!("Paint {index}"),
                     visible: true,
                     opacity: 0.75,
+                    blend: photocraft_color::BlendMode::Normal,
                     surface,
                     fill_map: None,
                     fill_map_size: [0, 0],
@@ -1779,7 +1840,7 @@ mod tests {
                 let initial = preview.session.active().unwrap().doc.clone();
                 let initial_key = (initial.id.0, preview.session.active().unwrap().revision, 0, 0);
                 let cold_start = std::time::Instant::now();
-                let mut active_map = Some(renderer.map_gpu_composite(&initial, initial_key, true, None).unwrap());
+                let mut active_map = Some(renderer.map_gpu_composite(&initial, initial_key, true, None, None).unwrap());
                 let cold_submit_ms = cold_start.elapsed().as_secs_f64() * 1000.0;
                 let cold_wait = std::time::Instant::now();
                 renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
@@ -1790,7 +1851,7 @@ mod tests {
                 // the hot drag distributions below.
                 crate::uv_mask_paint_preview::set(&mut preview, layer, changed_index, 0.5);
                 let (warm_doc, warm_key) = crate::uv_mask_paint_preview::display_doc(&mut preview, 0).unwrap();
-                let mut spare_map = Some(renderer.map_gpu_composite(&warm_doc, (warm_doc.id.0, 1, warm_key, 0), true, None).unwrap());
+                let mut spare_map = Some(renderer.map_gpu_composite(&warm_doc, (warm_doc.id.0, 1, warm_key, 0), true, None, None).unwrap());
                 renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
                 let mut prep_times = Vec::with_capacity(FRAMES);
                 let mut submit_times = Vec::with_capacity(FRAMES);
@@ -1804,7 +1865,7 @@ mod tests {
                     prep_times.push(start.elapsed().as_secs_f64() * 1000.0);
 
                     let start = std::time::Instant::now();
-                    let map = renderer.map_gpu_composite(&doc, (doc.id.0, 1, key, 0), true, spare_map.take()).unwrap();
+                    let map = renderer.map_gpu_composite(&doc, (doc.id.0, 1, key, 0), true, None, spare_map.take()).unwrap();
                     submit_times.push(start.elapsed().as_secs_f64() * 1000.0);
                     spare_map = active_map.replace(map);
                     let stats = renderer.take_map_stats().unwrap();
@@ -1820,7 +1881,7 @@ mod tests {
                 // Drain the last asynchronous timestamp without including this duplicate render
                 // in the per-value submit and completion distributions.
                 let (final_doc, final_key) = crate::uv_mask_paint_preview::display_doc(&mut preview, 0).unwrap();
-                let final_map = renderer.map_gpu_composite(&final_doc, (final_doc.id.0, 1, final_key, 0), true, spare_map.take()).unwrap();
+                let final_map = renderer.map_gpu_composite(&final_doc, (final_doc.id.0, 1, final_key, 0), true, None, spare_map.take()).unwrap();
                 let _ = active_map.replace(final_map);
                 renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
                 if let Some(timing) = renderer.take_map_stats().and_then(|stats| stats.gpu_time) {
@@ -1861,7 +1922,7 @@ mod tests {
         let pixel = photocraft_raster::from_rgba(&format, [0.9, 0.1, 0.3, 0.4]);
         doc.layers[0].surface_mut().unwrap().fill_rect(bounds, &pixel);
         let key = (doc.id.0, 1, 0, 7);
-        let map = renderer.map_gpu_composite(&doc, key, true, None).unwrap();
+        let map = renderer.map_gpu_composite(&doc, key, true, None, None).unwrap();
         renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
         assert_eq!(map.source, MapSource::GpuComposite);
         assert_eq!(map.key, key);
@@ -1883,6 +1944,60 @@ mod tests {
         assert!((mip_pixel[0] - inside[0]).abs() < 0.02 && (mip_pixel[3] - inside[3]).abs() < 0.02, "PBR mip keeps linear color and alpha: {mip_pixel:?}");
     }
     #[test]
+    fn gpu_compositor_partial_damage_matches_full_refresh_and_mips() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut renderer = renderer();
+        let initial = photocraft_doc::Document::with_background(
+            "GPU partial map",
+            photocraft_geom::Size::new(1025, 1027),
+            photocraft_color::ColorMode::Rgb,
+            photocraft_color::SampleType::U8,
+            photocraft_color::Color::rgb(0.08, 0.12, 0.2),
+        );
+        let initial_key = (initial.id.0, 1, 0, 7);
+        let previous = renderer.map_gpu_composite(&initial, initial_key, true, None, None).unwrap();
+        renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+
+        // Simulate several missed refresh revisions: both sparse edits must be covered by the
+        // conservative union rectangle passed to the map compositor.
+        let mut updated = initial.clone();
+        let bounds_a = photocraft_geom::Rect::new(7, 9, 19, 23);
+        let bounds_b = photocraft_geom::Rect::new(850, 861, 901, 908);
+        let format = updated.pixel_format();
+        let a = photocraft_raster::from_rgba(&format, [0.9, 0.08, 0.15, 1.0]);
+        let b = photocraft_raster::from_rgba(&format, [0.05, 0.85, 0.2, 1.0]);
+        updated.layers[0].surface_mut().unwrap().fill_rect(bounds_a, &a);
+        updated.layers[0].surface_mut().unwrap().fill_rect(bounds_b, &b);
+        let union = photocraft_geom::Rect::new(bounds_a.x0, bounds_a.y0, bounds_b.x1, bounds_b.y1);
+        let next_key = (updated.id.0, 2, 3, 7);
+        let partial = renderer.map_gpu_composite(&updated, next_key, true, Some(union), Some(previous)).unwrap();
+        renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+        let partial_stats = renderer.last_map_stats.expect("partial refresh stats");
+        let full = renderer.map_gpu_composite(&updated, next_key, true, None, None).unwrap();
+        renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+        let full_stats = renderer.last_map_stats.expect("full refresh stats");
+
+        assert_eq!(partial.key, next_key);
+        assert_eq!(partial.source, MapSource::GpuComposite);
+        assert_eq!(partial.levels.len(), full.levels.len());
+        for mip in 0..partial.levels.len() as u32 {
+            let partial_pixels = read_rgba16f(&renderer, &partial.texture, mip);
+            let full_pixels = read_rgba16f(&renderer, &full.texture, mip);
+            assert_eq!(partial_pixels.len(), full_pixels.len());
+            for (index, (actual, expected)) in partial_pixels.iter().zip(&full_pixels).enumerate() {
+                for channel in 0..4 {
+                    assert!(
+                        (actual[channel] - expected[channel]).abs() < 0.002,
+                        "partial/full mismatch at mip {mip} pixel {index} channel {channel}: {} vs {}",
+                        actual[channel],
+                        expected[channel]
+                    );
+                }
+            }
+        }
+        assert!(partial_stats.chunks < full_stats.chunks, "partial update should visit fewer chunks: {partial_stats:?} vs {full_stats:?}");
+    }
+    #[test]
     fn pbr_material_binds_the_gpu_composited_surface_map() {
         let _gpu = photocraft_testkit::gpu_lock();
         let mut renderer = renderer();
@@ -1895,7 +2010,11 @@ mod tests {
         ));
         let (scene, geometry) = scene();
         let mut maps = crate::uv_lighting::SurfaceMaps::default();
-        maps.gpu[0] = vec![Some(crate::uv_lighting::GpuMapRequest { doc: doc.clone(), key: (doc.id.0, 1, 0, 7), linear_srgb: true }); scene.materials.len()];
+        maps.gpu[0] =
+            vec![
+                Some(crate::uv_lighting::GpuMapRequest { doc: doc.clone(), key: (doc.id.0, 1, 0, 7), linear_srgb: true, previous_key: None, damage: None });
+                scene.materials.len()
+            ];
         maps.use_color_for_pbr = vec![true; scene.materials.len()];
         let settings = photocraft_uv::lighting::Settings { pbr: true, ..Default::default() };
         renderer.set_lighting(settings, &maps, Arc::new(photocraft_uv::lighting::Environment::studio())).unwrap();
@@ -2033,6 +2152,144 @@ mod tests {
         assert!(!r.materials[0].as_ref().unwrap().masked);
         assert!(r.health.is_ok());
     }
+
+    #[test]
+    fn gpu_composited_pbr_map_crops_blurred_mask_chunks_to_their_canvas_origin() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut renderer = renderer();
+        let size = photocraft_geom::Size::new(1031, 1037);
+        let mut doc = photocraft_doc::Document::with_background(
+            "GPU map padded Blur",
+            size,
+            photocraft_color::ColorMode::Rgb,
+            photocraft_color::SampleType::U8,
+            photocraft_color::Color::BLACK,
+        );
+
+        let gray = photocraft_color::PixelFormat::GRAY8;
+        let rgba = photocraft_color::PixelFormat::RGBA8;
+        let base = photocraft_raster::Surface::with_default(gray, &[0.2]);
+        let mut paint = photocraft_raster::Surface::with_default(rgba, &[0.0; 4]);
+        paint.write_region(photocraft_geom::Rect::new(1023, 1023, 1024, 1024), &[1.0, 1.0, 1.0, 1.0]);
+        let empty = || photocraft_raster::Surface::with_default(rgba, &[0.0; 4]);
+        let mut mask = photocraft_doc::LayerMask::hide_all();
+        mask.paint = Some(photocraft_doc::mask_paint::Stack {
+            base,
+            layers: vec![
+                photocraft_doc::mask_paint::Paint {
+                    name: "Boundary impulse".into(),
+                    visible: true,
+                    opacity: 1.0,
+                    blend: photocraft_color::BlendMode::Normal,
+                    surface: paint,
+                    fill_map: None,
+                    fill_map_size: [0, 0],
+                    fill_bounds: None,
+                    kind: photocraft_doc::mask_paint::EffectKind::Paint,
+                },
+                photocraft_doc::mask_paint::Paint {
+                    name: "Blur 3".into(),
+                    visible: true,
+                    opacity: 1.0,
+                    blend: photocraft_color::BlendMode::Normal,
+                    surface: empty(),
+                    fill_map: None,
+                    fill_map_size: [0, 0],
+                    fill_bounds: None,
+                    kind: photocraft_doc::mask_paint::EffectKind::Blur { radius: 3 },
+                },
+                photocraft_doc::mask_paint::Paint {
+                    name: "Blur 2".into(),
+                    visible: true,
+                    opacity: 1.0,
+                    blend: photocraft_color::BlendMode::Normal,
+                    surface: empty(),
+                    fill_map: None,
+                    fill_map_size: [0, 0],
+                    fill_bounds: None,
+                    kind: photocraft_doc::mask_paint::EffectKind::Blur { radius: 2 },
+                },
+            ],
+            active: 2,
+        });
+        photocraft_compose::mask_paint::refresh_in_canvas(&mut mask, doc.bounds());
+
+        let mut layer = photocraft_doc::Layer::raster("Masked PBR source", rgba);
+        *layer.surface_mut().unwrap() = photocraft_raster::Surface::with_default(rgba, &[1.0, 1.0, 1.0, 1.0]);
+        let layer_id = layer.id;
+        layer.mask = Some(mask);
+        doc.layers.push(layer);
+
+        let cpu = photocraft_compose::render(&doc, doc.bounds());
+        let key = (doc.id.0, 1, 0, 9);
+        let mut map = renderer.map_gpu_composite(&doc, key, true, None, None).unwrap();
+        renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+        assert_eq!(map.source, MapSource::GpuComposite);
+
+        let gpu_pixels = read_rgba16f(&renderer, &map.texture, 0);
+        let mut worst = (0.0f32, 0usize, 0usize);
+        for (index, (actual, expected)) in gpu_pixels.iter().zip(&cpu.px).enumerate() {
+            for channel in 0..3 {
+                let expected = photocraft_color::convert::srgb_to_linear(expected[channel]);
+                let diff = (actual[channel] - expected).abs();
+                if diff > worst.0 {
+                    worst = (diff, index, channel);
+                }
+            }
+        }
+        assert!(worst.0 < 0.004, "GPU map/CPU composite mismatch across padded Blur chunks: {worst:?}");
+
+        let coverage = |x: usize, y: usize| gpu_pixels[y * size.width as usize + x][0];
+        // PBR maps store linear RGB, so compare the spill against the linearized 0.2
+        // background rather than treating the sRGB mask value as a linear threshold.
+        let baseline = photocraft_color::convert::srgb_to_linear(0.2);
+        assert!(coverage(1024, 1023) > baseline + 0.001, "Blur crosses the vertical chunk boundary");
+        assert!(coverage(1023, 1024) > baseline + 0.001, "Blur crosses the horizontal chunk boundary");
+        assert!(coverage(1024, 1024) > baseline + 0.001, "Blur reaches the diagonal chunk corner");
+
+        // Effect-property edits are global to the mask stack. Exercise the same retained GPU
+        // map after radius, opacity, and visibility changes, checking exact seam neighborhoods
+        // against a fresh CPU materialization after every update.
+        for (step, (radius, opacity, visible)) in [(7, 1.0, true), (7, 0.35, true), (7, 0.35, false), (5, 0.8, true)].into_iter().enumerate() {
+            let canvas = doc.bounds();
+            let mask = doc.layer_mut(layer_id).unwrap().mask.as_mut().unwrap();
+            let old = mask.paint.clone();
+            let stack = mask.paint.as_mut().unwrap();
+            if let photocraft_doc::mask_paint::EffectKind::Blur { radius: current } = &mut stack.layers[1].kind {
+                *current = radius;
+            }
+            stack.layers[1].opacity = opacity;
+            stack.layers[1].visible = visible;
+            photocraft_compose::mask_paint::refresh_changes_in_canvas(mask, old.as_ref(), canvas);
+
+            let cpu = photocraft_compose::render(&doc, canvas);
+            let next_key = (doc.id.0, 2 + step as u64, 0, 9);
+            map = renderer.map_gpu_composite(&doc, next_key, true, Some(canvas), Some(map)).unwrap();
+            renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+            let gpu_pixels = read_rgba16f(&renderer, &map.texture, 0);
+            let worst = gpu_pixels
+                .iter()
+                .zip(&cpu.px)
+                .enumerate()
+                .flat_map(|(index, (actual, expected))| {
+                    (0..3).map(move |channel| {
+                        let expected = photocraft_color::convert::srgb_to_linear(expected[channel]);
+                        ((actual[channel] - expected).abs(), index, channel)
+                    })
+                })
+                .max_by(|a, b| a.0.total_cmp(&b.0))
+                .unwrap_or_default();
+            assert!(worst.0 < 0.004, "GPU/CPU mismatch after Blur radius={radius}, opacity={opacity}, visible={visible}: {worst:?}");
+            for (x, y) in [(1023, 1023), (1024, 1023), (1023, 1024), (1024, 1024)] {
+                let i = y * size.width as usize + x;
+                let expected = photocraft_color::convert::srgb_to_linear(cpu.get(x as i32, y as i32)[0]);
+                assert!((gpu_pixels[i][0] - expected).abs() < 0.004, "chunk seam at ({x}, {y}) after Blur property edit");
+            }
+            assert_eq!(map.source, MapSource::GpuComposite);
+        }
+        assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
+    }
+
     fn scene() -> (Scene, Arc<Geometry>) {
         let bytes = include_bytes!("../../uv/tests/fixtures/normals-reflected.fbx");
         let scene = import::load("test.fbx", bytes, 0, |_| Err(photocraft_uv::Error("absent".into()))).unwrap();

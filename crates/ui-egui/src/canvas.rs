@@ -58,6 +58,8 @@ pub mod zoom_hold;
 pub mod zoom_levels;
 pub mod zoom_window_fit;
 
+#[cfg(feature = "uv-workbench")]
+pub(crate) use cursors::eyedropper_color;
 #[cfg(test)]
 pub(crate) use cursors::eyedropper_ring_colors;
 pub(crate) use cursors::{alt_samples, composite_color, paint_bucket_cursor, pen_cursor, pencil_cursor_rect, pencil_tip_is_round, pipette_cursor};
@@ -95,9 +97,13 @@ pub use selection::{SelCursor, selection_cursor};
 pub(crate) use selection::{floating_outline, selection_drag_delta};
 #[cfg(test)]
 use start_screen::start_screen_drop_hint;
+pub(crate) use strokes::break_native_uv_mask_segment;
+#[cfg(feature = "uv-workbench")]
+pub(crate) use strokes::clone_preview_texture;
+pub(crate) use strokes::feed_live_stroke;
 pub use strokes::paint_target;
 pub(crate) use strokes::{ClonePreviewCache, CommittedStroke, LiveStroke, cancel_mixer_on_context_change, freehand_tool, spread_ms, strokes_live};
-use strokes::{HOLD_REPEAT_MS, draw_clone_preview, feed_live_stroke, pointer_button_modifiers, pointer_moves, stroke_wants_time, tap_at_peak_pressure};
+use strokes::{HOLD_REPEAT_MS, draw_clone_preview, pointer_button_modifiers, pointer_moves, stroke_wants_time, tap_at_peak_pressure};
 #[cfg(test)]
 pub(crate) use strokes::{SPOT_HEALING_TRAIL, live_retouch_points};
 pub(crate) use tabs::arranged_cells;

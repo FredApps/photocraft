@@ -161,6 +161,147 @@ fn fill_and_levels_layers_compose_modify_undo_and_round_trip() {
 }
 
 #[test]
+fn paint_and_fill_blend_modes_are_grayscale_only_and_blur_stays_nondestructive() {
+    let mut s = fixture(16);
+    s.execute("uv.maskPaint.add", json!({"blend":"multiply","name":"Multiply paint"})).unwrap();
+    paint(&mut s, "#000000");
+    assert!(value(&s) < 0.01);
+    s.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.5,"blend":"screen"})).unwrap();
+    assert!(value(&s) > 0.45);
+    s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":4,"blend":"screen"})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"levels"})).unwrap();
+    let layer = s.active().unwrap().active_layer.unwrap();
+    let before = s.active().unwrap().doc.clone();
+    assert!(
+        s.execute("paint.stroke", json!({"target":"mask","points":[[8.5,8.5]],"size":8,"color":"#000000","brush":{"hardness":1.0}})).is_err(),
+        "selected Blur effects cannot receive brush strokes"
+    );
+    assert_eq!(s.active().unwrap().doc, before, "rejected brush edits leave the document unchanged");
+
+    for invalid in [
+        json!({"index":0,"blend":"hue"}),
+        json!({"index":0,"blend":"color_burn"}),
+        json!({"index":0,"blend":"overlay"}),
+        json!({"index":3,"blend":"multiply"}),
+        json!({"index":2,"radius":65}),
+    ] {
+        assert!(s.execute("uv.maskPaint.modify", invalid).is_err());
+        assert_eq!(s.active().unwrap().doc, before);
+    }
+    let stack = s.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap();
+    assert_eq!(stack.layers[0].blend, photocraft_color::BlendMode::Multiply);
+    assert!(matches!(stack.layers[2].kind, photocraft_doc::mask_paint::EffectKind::Blur { radius: 4 }));
+    assert_eq!(stack.layers[2].blend, photocraft_color::BlendMode::Screen, "Blur accepts scalar blend modes on creation");
+
+    s.execute("uv.maskPaint.modify", json!({"index":2,"blend":"multiply"})).unwrap();
+    let stack = s.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap();
+    assert_eq!(stack.layers[2].blend, photocraft_color::BlendMode::Multiply, "Blur accepts scalar mask blend modes");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mask-blur.pcuv");
+    s.execute("uv.project.save", json!({"path":path})).unwrap();
+    let mut restored = Session::new();
+    restored.execute("uv.project.load", json!({"path":path})).unwrap();
+    let stack = restored.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap();
+    assert_eq!(stack.layers[0].blend, photocraft_color::BlendMode::Multiply);
+    assert!(matches!(stack.layers[2].kind, photocraft_doc::mask_paint::EffectKind::Blur { radius: 4 }));
+    assert_eq!(stack.layers[2].blend, photocraft_color::BlendMode::Multiply, "Blur blend survives native save/load");
+}
+
+#[test]
+fn mask_blend_commands_accept_the_compact_scalar_set() {
+    let modes = [
+        ("normal", photocraft_color::BlendMode::Normal),
+        ("darken", photocraft_color::BlendMode::Darken),
+        ("multiply", photocraft_color::BlendMode::Multiply),
+        ("lighten", photocraft_color::BlendMode::Lighten),
+        ("screen", photocraft_color::BlendMode::Screen),
+        ("linear_dodge", photocraft_color::BlendMode::LinearDodge),
+        ("subtract", photocraft_color::BlendMode::Subtract),
+        ("difference", photocraft_color::BlendMode::Difference),
+    ];
+    for (name, expected) in modes {
+        let mut s = fixture(8);
+        s.execute("uv.maskPaint.add", json!({"blend":name})).unwrap();
+        let layer = s.active().unwrap().active_layer.unwrap();
+        let stack = s.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap();
+        assert_eq!(stack.layers[0].blend, expected, "{name}");
+    }
+    assert_eq!(photocraft_doc::mask_paint::MASK_BLEND_MODES.len(), modes.len());
+}
+
+#[test]
+fn mask_blend_change_undo_redo_recomposes_the_grayscale_stack() {
+    let mut s = fixture(8);
+    s.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.5})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.5})).unwrap();
+    assert!((value(&s) - 0.5).abs() < 0.01);
+
+    s.execute("uv.maskPaint.modify", json!({"index":1,"blend":"multiply"})).unwrap();
+    assert!((value(&s) - 0.25).abs() < 0.01, "multiply blends the fill into the existing white mask");
+
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!((value(&s) - 0.5).abs() < 0.01, "undo restores Normal blending");
+    s.execute("edit.redo", json!({})).unwrap();
+    assert!((value(&s) - 0.25).abs() < 0.01, "redo restores Multiply blending");
+}
+
+#[test]
+fn paint_damage_includes_downstream_blur_and_hiding_or_deleting_blur_invalidates_canvas() {
+    let mut s = fixture(8);
+    s.execute("uv.maskPaint.add", json!({"kind":"paint","name":"Source"})).unwrap();
+    paint(&mut s, "#ffffff");
+    s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":4})).unwrap();
+    let layer = s.active().unwrap().active_layer.unwrap();
+    let doc = s.active().unwrap().doc.clone();
+    let canvas = doc.bounds();
+    let source = &doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].surface;
+    let source_bounds = source.content_bounds();
+
+    s.execute("uv.maskPaint.select", json!({"index":0})).unwrap();
+    s.execute("uv.maskPaint.modify", json!({"index":0,"visible":false})).unwrap();
+    let expected = source_bounds.inflate(4).intersect(&canvas);
+    assert_eq!(s.active().unwrap().last_damage, Some(expected), "Paint edits report their downstream Blur halo");
+    assert_mask_cache_matches_full(&s);
+
+    s.execute("uv.maskPaint.modify", json!({"index":1,"visible":false})).unwrap();
+    assert_eq!(s.active().unwrap().last_damage, Some(canvas), "hiding a Blur can change its entire output area");
+    assert_mask_cache_matches_full(&s);
+
+    s.execute("uv.maskPaint.modify", json!({"index":1,"remove":true})).unwrap();
+    assert_eq!(s.active().unwrap().last_damage, Some(canvas), "deleting a Blur invalidates the full mask canvas");
+    assert_mask_cache_matches_full(&s);
+}
+
+#[test]
+fn adding_mask_effect_invalidates_gray_preview_even_when_layer_pixels_are_empty() {
+    let mut s = fixture(8);
+    let canvas = s.active().unwrap().doc.bounds();
+    s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":8})).unwrap();
+    assert_eq!(s.active().unwrap().last_damage, Some(canvas));
+}
+
+fn assert_mask_cache_matches_full(s: &Session) {
+    let state = s.active().unwrap();
+    let layer = state.doc.layer(state.active_layer.unwrap()).unwrap();
+    let mask = layer.mask.as_ref().unwrap();
+    let mut full = mask.clone();
+    photocraft_compose::mask_paint::refresh_in_canvas(&mut full, state.doc.bounds());
+    assert_eq!(mask.surface.read_region(state.doc.bounds()), full.surface.read_region(state.doc.bounds()));
+}
+
+#[test]
+fn blur_halo_budget_rejects_unbounded_stacks_without_mutation() {
+    let mut s = fixture(8);
+    for _ in 0..8 {
+        s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":64})).unwrap();
+    }
+    let before = s.active().unwrap().doc.clone();
+    assert!(s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":1})).is_err());
+    assert_eq!(s.active().unwrap().doc, before);
+}
+
+#[test]
 fn removing_fill_image_clears_source_and_is_undoable() {
     let mut s = fixture(8);
     s.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.4})).unwrap();

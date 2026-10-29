@@ -339,7 +339,7 @@ pub(crate) fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), no
         return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
     if seen.1 == now.1 ^ display_key && seen.0 + 1 == now.0 {
-        return last_damage;
+        return last_damage.map(|r| app.session.documents().get(idx).map_or(r, |st| if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) }));
     }
     if seen.0 == now.0
         && let Some(st) = app.session.documents().get(idx)
@@ -430,18 +430,35 @@ pub(crate) fn shown_as_document(app: &mut PhotocraftApp, doc: photocraft_doc::Do
 }
 
 /// How far beyond an edit's damage rect the composite can change: layer effects (shadows, glows,
-/// strokes, …) on the edited layer and on the groups around it reach that far.
+/// strokes, …), editable mask-stack Blur, and effects on the groups around it reach that far.
 pub(crate) fn effect_reach(layers: &[photocraft_doc::Layer]) -> i32 {
     layers
         .iter()
         .filter(|l| l.visible)
         .map(|l| {
-            let own = if photocraft_compose::effects::has_effects(l) { photocraft_compose::effects::margin(l) } else { 0 };
+            let layer_effect_reach = if photocraft_compose::effects::has_effects(l) { photocraft_compose::effects::margin(l) } else { 0 };
+            let mask_blur_reach = l
+                .mask
+                .as_ref()
+                .filter(|mask| mask.enabled)
+                .and_then(|mask| mask.paint.as_ref())
+                .map(|stack| {
+                    stack
+                        .layers
+                        .iter()
+                        .filter(|effect| effect.visible && effect.opacity > 0.0)
+                        .map(|effect| match &effect.kind {
+                            photocraft_doc::mask_paint::EffectKind::Blur { radius } => i32::from(*radius),
+                            _ => 0,
+                        })
+                        .sum::<i32>()
+                })
+                .unwrap_or(0);
             let inner = match &l.content {
                 LayerContent::Group(g) => effect_reach(&g.children),
                 _ => 0,
             };
-            own + inner
+            layer_effect_reach + mask_blur_reach + inner
         })
         .max()
         .unwrap_or(0)
@@ -605,7 +622,7 @@ pub(super) fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
         app.perf.gpu_passes = r.gpu_passes;
         app.perf.gpu_chunks = r.gpu_chunks;
     } else {
-        app.perf.gpu_fallback = r.fallback;
+        app.perf.gpu_fallback = r.fallback.map(|reason| reason.to_string());
     }
     let Some(cache) = app.canvases.get_mut(&(id, GPU_OUTPUT)) else { return true };
     cache.revision = revision;

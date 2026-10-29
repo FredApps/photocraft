@@ -337,7 +337,10 @@ fn advanced_blending_falls_back_to_the_cpu() {
 }
 #[test]
 fn editable_paint_mask_fill_uses_transformed_source_pass() {
-    use photocraft_doc::{LayerMask, mask_paint::{EffectKind, Paint, Stack}};
+    use photocraft_doc::{
+        LayerMask,
+        mask_paint::{EffectKind, Paint, Stack},
+    };
     use photocraft_raster::Surface;
 
     let mut doc = Document::new("mask fill", Size::new(8, 8), ColorMode::Rgb, SampleType::U8);
@@ -347,8 +350,13 @@ fn editable_paint_mask_fill_uses_transformed_source_pass() {
     mask.paint = Some(Stack {
         base: mask.surface.clone(),
         layers: vec![Paint {
-            name: "Fill".into(), visible: true, opacity: 0.75,
-            surface: Surface::new(PixelFormat::RGBA8), fill_map: Some(map), fill_map_size: [2, 3],
+            name: "Fill".into(),
+            visible: true,
+            opacity: 0.75,
+            blend: photocraft_color::BlendMode::Normal,
+            surface: Surface::new(PixelFormat::RGBA8),
+            fill_map: Some(map),
+            fill_map_size: [2, 3],
             fill_bounds: Some([1, 2, 7, 8]),
             kind: EffectKind::Fill { value: 0.4, rotation: 37.0, repeat_u: true, repeat_v: false, mirror_u: true, mirror_v: false },
         }],

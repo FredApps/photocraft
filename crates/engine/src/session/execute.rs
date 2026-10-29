@@ -220,7 +220,8 @@ impl Session {
         }
         // The regular mask surface is the render/export cache for non-destructive mask Paint stacks.
         let mask_canvas = doc.bounds();
-        let mask_ids: Vec<_> = doc.walk().iter().filter_map(|(_, _, layer)| layer.mask.as_ref().filter(|mask| mask.paint.is_some()).map(|_| layer.id)).collect();
+        let mask_ids: Vec<_> =
+            doc.walk().iter().filter_map(|(_, _, layer)| layer.mask.as_ref().filter(|mask| mask.paint.is_some()).map(|_| layer.id)).collect();
         for id in mask_ids {
             if let Some(mask) = doc.layer_mut(id).and_then(|layer| layer.mask.as_mut()) {
                 let old = before.layer(id).and_then(|layer| layer.mask.as_ref()).and_then(|mask| mask.paint.as_ref());

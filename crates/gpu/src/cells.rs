@@ -22,7 +22,8 @@ impl Compositor {
         first_pass: usize,
         stats: &mut Stats,
     ) -> Bound {
-        let cr = cell_rect(cell, self.page);
+        let source_halo = plan.mask_halo.div_ceil(TILE_SIZE as u32).saturating_mul(TILE_SIZE as u32) as i32;
+        let cr = cell_rect(cell, self.page).inflate(source_halo);
         let mut views: Vec<(Option<ResidentRef>, Option<BoundMask>)> = Vec::with_capacity(plan.passes.len());
         let mut keys: Vec<ResKey> = Vec::new();
         let mut maps = Vec::with_capacity(plan.passes.len());
@@ -41,9 +42,12 @@ impl Compositor {
                     },
                 );
             let mask = p.mask.as_ref().and_then(|m| match &m.source {
-                plan::MaskSource::Surface(surface) => self.sync(device, queue, encoder, doc, (m.layer, Role::Mask, cell), surface.get(), ma.intersect(&cr), stats).map(|(k, r)| {
-                    keys.push(k); BoundMask::Resident((keys.len() - 1, r))
-                }),
+                plan::MaskSource::Surface(surface) => {
+                    self.sync(device, queue, encoder, doc, (m.layer, Role::Mask, cell), surface.get(), ma.intersect(&cr), stats).map(|(k, r)| {
+                        keys.push(k);
+                        BoundMask::Resident((keys.len() - 1, r))
+                    })
+                }
                 plan::MaskSource::Slot(slot) => Some(BoundMask::Slot(*slot)),
             });
             views.push((tex, mask));
@@ -85,6 +89,8 @@ impl Compositor {
         if chunks.is_empty() {
             return;
         }
+        let halo = plan.mask_halo as i32;
+        let work_chunks: Vec<Rect> = chunks.iter().map(|chunk| chunk.inflate(halo)).collect();
         // Chunks may hold different checkpoints: bind from the lowest one any of them resumes at.
         let first_pass = checkpoint
             .and_then(|_| chunks.iter().map(|c| self.prefix.restore_point(*c).map(|r| r.pass_end)).try_fold(usize::MAX, |m, p| Some(m.min(p?))))
@@ -96,10 +102,14 @@ impl Compositor {
         }
 
         // Chunk pool.
+        let pool_side = self.chunk.saturating_add(plan.mask_halo.saturating_mul(2));
+        if self.pool.first().is_some_and(|(texture, _)| texture.size().width != pool_side) {
+            self.pool.clear();
+        }
         while self.pool.len() < plan.slots as usize {
             let t = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("pc_compose_chunk"),
-                size: wgpu::Extent3d { width: self.chunk, height: self.chunk, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d { width: pool_side, height: pool_side, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -118,7 +128,7 @@ impl Compositor {
         // the length, device capacity and dynamic offsets before any GPU work for this frame.
         let op_base = chunks.len() as u64 * STRIDE;
         let mut data = vec![0u8; (op_base + plan.passes.len() as u64 * STRIDE) as usize];
-        for (i, c) in chunks.iter().enumerate() {
+        for (i, c) in work_chunks.iter().enumerate() {
             let w = words(&[I(c.x0), I(c.y0), I(c.width() as i32), I(c.height() as i32)]);
             data[i * STRIDE as usize..][..w.len()].copy_from_slice(&w);
         }
@@ -177,6 +187,7 @@ impl Compositor {
         }
 
         for (ci, c) in chunks.iter().enumerate() {
+            let work = work_chunks[ci];
             let mut resume = 0;
             if let Some(cp) = checkpoint.and_then(|_| self.prefix.restore_point(*c))
                 && let Some((dst, _)) = self.pool.get(cp.slot as usize)
@@ -214,13 +225,13 @@ impl Compositor {
                 }
                 let scissor = match p.clip {
                     Some(clip) => {
-                        let r = clip.intersect(c);
+                        let r = clip.intersect(&work);
                         if r.is_empty() {
                             continue;
                         }
-                        Rect::new(r.x0 - c.x0, r.y0 - c.y0, r.x1 - c.x0, r.y1 - c.y0)
+                        Rect::new(r.x0 - work.x0, r.y0 - work.y0, r.x1 - work.x0, r.y1 - work.y0)
                     }
-                    None => Rect::new(0, 0, c.width() as i32, c.height() as i32),
+                    None => Rect::new(0, 0, work.width() as i32, work.height() as i32),
                 };
                 match p.kernel {
                     Kernel::CopyRect | Kernel::CopyFull => {
@@ -297,7 +308,7 @@ impl Compositor {
                 self.prefix.capture(device, encoder, *c, src, cp);
             }
             let (t, v) = &self.pool[plan.root as usize];
-            sink(encoder, ChunkOut { rect: *c, texture: t, view: v });
+            sink(encoder, ChunkOut { rect: *c, origin: [halo as u32, halo as u32], texture: t, view: v });
         }
     }
 

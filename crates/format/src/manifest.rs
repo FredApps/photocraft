@@ -428,6 +428,8 @@ pub struct MaskPaintLayerM {
     pub name: String,
     pub visible: bool,
     pub opacity: f32,
+    #[serde(default = "mask_paint_blend_default")]
+    pub blend: BlendMode,
     pub surface: SurfaceM,
     #[serde(default)]
     pub fill_map: Option<SurfaceM>,
@@ -450,6 +452,8 @@ pub struct MaskPaintLayerM {
     pub kind: String,
     #[serde(default = "mask_paint_value_default")]
     pub value: f32,
+    #[serde(default = "mask_paint_radius_default")]
+    pub radius: u8,
     #[serde(default)]
     pub input_black: f32,
     #[serde(default = "mask_paint_one_default")]
@@ -464,6 +468,12 @@ pub struct MaskPaintLayerM {
 
 fn mask_paint_kind_default() -> String {
     "paint".into()
+}
+fn mask_paint_blend_default() -> BlendMode {
+    BlendMode::Normal
+}
+fn mask_paint_radius_default() -> u8 {
+    8
 }
 fn mask_paint_value_default() -> f32 {
     1.0
@@ -485,6 +495,7 @@ mod mask_paint_rotation_compatibility_tests {
             name: "Fill".into(),
             visible: true,
             opacity: 1.0,
+            blend: BlendMode::Normal,
             surface: SurfaceM { format: PixelFormat::RGBA8, default: "000000ff".into(), tiles: Vec::new() },
             fill_map: None,
             fill_map_size: [0, 0],
@@ -496,15 +507,26 @@ mod mask_paint_rotation_compatibility_tests {
             mirror_v: false,
             kind: "fill".into(),
             value: 1.0,
+            radius: 8,
             input_black: 0.0,
             gamma: 1.0,
             input_white: 1.0,
             output_black: 0.0,
             output_white: 1.0,
         };
+        let mut legacy_scalar = layer.clone();
+        legacy_scalar.blend = BlendMode::ColorBurn;
+        let encoded = serde_json::to_value(legacy_scalar).unwrap();
+        let decoded: MaskPaintLayerM = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.blend, BlendMode::ColorBurn, "old scalar mask blends survive serialization");
+
         let mut legacy = serde_json::to_value(layer).unwrap();
         legacy.as_object_mut().unwrap().remove("rotation");
+        legacy.as_object_mut().unwrap().remove("blend");
+        legacy.as_object_mut().unwrap().remove("radius");
         let loaded: MaskPaintLayerM = serde_json::from_value(legacy).unwrap();
         assert_eq!(loaded.rotation, 0.0);
+        assert_eq!(loaded.blend, BlendMode::Normal);
+        assert_eq!(loaded.radius, 8);
     }
 }

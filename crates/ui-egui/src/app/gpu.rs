@@ -1,4 +1,6 @@
 use super::{PhotocraftApp, gpu_canvas, gpu_status};
+#[cfg(feature = "uv-workbench")]
+use crate::uv_gpu;
 
 impl PhotocraftApp {
     /// Draw the document canvas on the GPU (custom WGSL shader) instead of via egui textures.

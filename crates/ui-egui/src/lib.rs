@@ -416,6 +416,9 @@ pub struct PhotocraftApp {
     /// While a batch of recovered pointer samples is replayed, defer the live-stroke update to one
     /// call for the whole frame (see `canvas::canvas_view`).
     defer_live_stroke: bool,
+    /// True only while the native UV surface path feeds 3D pointer samples to a live stroke.
+    #[cfg(feature = "uv-workbench")]
+    pub(crate) native_uv_surface_input: bool,
     /// A live painting stroke started on the press (`canvas_view`): the drag egui recognises later,
     /// or the click, continues or ends it rather than starting another.
     press_stroke: bool,

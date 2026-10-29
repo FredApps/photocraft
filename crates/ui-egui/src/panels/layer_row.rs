@@ -449,11 +449,10 @@ fn select_row_on_click(app: &mut PhotocraftApp, ui: &egui::Ui, rc: &RowCtx<'_>, 
         }
         #[cfg(feature = "uv-workbench")]
         if app.ui.workspace == "3D" && on_mask {
-            // A regular 3D click opens the editable effect stack and targets the mask while
-            // showing the ordinary composite; Alt-click remains the grayscale-view gesture.
-            crate::uv_mask_paint::clear_effect_selection(ctx, doc.id.0, l.id.0);
+            // Open the editable effect stack while keeping its active effect selected in Properties;
+            // the dispatcher preserves the mask paint target and shows the ordinary composite.
             crate::uv_mask_paint::expand_effects(ctx, doc.id.0, l.id.0);
-            actions.push(("ui.maskTarget".into(), json!(false)));
+            actions.push(("ui.maskTarget".into(), json!({"enabled":true,"show":false,"select_active_effect":true})));
         } else {
             actions.push(("ui.maskTarget".into(), json!(true)));
         }

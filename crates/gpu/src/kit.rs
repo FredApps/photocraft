@@ -155,3 +155,4 @@ pub(crate) struct FrameRes {
     pub(crate) patterns: Vec<Option<wgpu::TextureView>>,
     pub(crate) mask_fills: Vec<Option<wgpu::TextureView>>,
 }
+use super::plan;

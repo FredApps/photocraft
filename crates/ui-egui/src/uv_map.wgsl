@@ -3,6 +3,7 @@ struct Params {
     origin: vec2<u32>,
     linear_srgb: u32,
     _pad: u32,
+    source_origin: vec2<u32>,
 };
 @group(0) @binding(1) var<uniform> params: Params;
 
@@ -21,7 +22,7 @@ fn srgb_to_linear(v: f32) -> f32 {
 
 @fragment
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let local = vec2<i32>(pos.xy) - vec2<i32>(params.origin);
+    let local = vec2<i32>(pos.xy) - vec2<i32>(params.origin) + vec2<i32>(params.source_origin);
     var pixel = textureLoad(source_map, local, 0);
     if params.linear_srgb != 0u {
         pixel = vec4<f32>(srgb_to_linear(pixel.r), srgb_to_linear(pixel.g), srgb_to_linear(pixel.b), pixel.a);

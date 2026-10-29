@@ -153,13 +153,7 @@ pub(crate) fn close(app: &mut PhotocraftApp) {
     app.uv_cache.library = Default::default();
     if in_3d {
         app.ui.workspace = "Essentials".into();
-        if let Err(error) = crate::menus::apply_workspace(app) {
-            // The engine close has already removed the UV documents. Keep the UI aligned with
-            // the still-active, now empty UV bank if switching back was refused.
-            app.ui.workspace = "3D".into();
-            app.ui.status = error;
-            app.ui.status_error = true;
-        }
+        crate::menus::apply_workspace(app);
     } else if let Err(error) = crate::uv_workspace::sync_workspace(app) {
         // The engine close activates and clears the UV bank before this UI transition.
         // If ordinary-bank activation fails, keep the workspace label aligned with the bank.
@@ -193,15 +187,8 @@ pub(crate) fn intercept(app: &mut PhotocraftApp, id: &str, params: &Value) -> bo
     }
     if id == "file.exit" && app.session.uv_workspace.active {
         // The project has already been answered; native prompts now cover only ordinary docs.
-        let previous_ui = app.ui.clone();
         app.ui.workspace = "Essentials".into();
-        if let Err(error) = crate::menus::apply_workspace(app) {
-            app.ui = previous_ui;
-            app.ui.status = error;
-            app.ui.status_error = true;
-            app.uv_cache.project.exit_approved = false;
-            return true;
-        }
+        crate::menus::apply_workspace(app);
     }
     false
 }
@@ -372,7 +359,7 @@ mod container_tests {
         let mut app = PhotocraftApp::new(s, Default::default());
         app.sync_views();
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app).unwrap();
+        crate::menus::apply_workspace(&mut app);
         let mesh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
         app.run("uv.model.import", json!({"path":mesh})).unwrap();
         app.run("uv.texture.create", json!({"width":32,"height":32})).unwrap();
@@ -421,7 +408,7 @@ mod container_tests {
         let _gpu = photocraft_testkit::gpu_lock();
         let mut app = app();
         app.ui.workspace = "Painting".into();
-        crate::menus::apply_workspace(&mut app).unwrap();
+        crate::menus::apply_workspace(&mut app);
         assert!(dirty(&app));
         assert!(intercept(&mut app, "file.exit", &json!({})));
         assert!(app.discard.is_none());

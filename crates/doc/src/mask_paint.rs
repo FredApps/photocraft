@@ -1,7 +1,28 @@
 //! Editable effects composited into a layer mask. The flattened surface remains
 //! available to existing compositors and exports.
 use crate::LayerMask;
+use photocraft_color::BlendMode;
 use photocraft_raster::Surface;
+
+/// Compact blend-mode choices exposed by mask Paint and Fill effects.
+/// These modes have simple, useful scalar grayscale behavior; color-component modes are excluded.
+pub const MASK_BLEND_MODES: [BlendMode; 8] = [
+    BlendMode::Normal,
+    BlendMode::Darken,
+    BlendMode::Multiply,
+    BlendMode::Lighten,
+    BlendMode::Screen,
+    BlendMode::LinearDodge,
+    BlendMode::Subtract,
+    BlendMode::Difference,
+];
+
+pub fn is_mask_blend_mode(mode: BlendMode) -> bool {
+    MASK_BLEND_MODES.contains(&mode)
+}
+
+/// Bound total accumulated Blur halo so tile previews and cache refreshes remain predictable.
+pub const MAX_BLUR_RADIUS_SUM: u16 = 512;
 
 /// Ordered editable effect in a mask stack. Fill and Levels keep their parameters
 /// separate from the cached flattened mask, so they remain non-destructive.
@@ -10,6 +31,9 @@ pub struct Paint {
     pub name: String,
     pub visible: bool,
     pub opacity: f32,
+    /// Scalar grayscale compositing mode. Commands expose [`MASK_BLEND_MODES`]; the native format
+    /// also preserves older scalar blend values for compatibility.
+    pub blend: BlendMode,
     /// Paint pixels. Effects keep an empty placeholder here for format/API compatibility.
     pub surface: Surface,
     /// Optional grayscale Fill input (a cropped selection or a library image).
@@ -30,6 +54,8 @@ pub enum EffectKind {
     Fill { value: f32, rotation: f32, repeat_u: bool, repeat_v: bool, mirror_u: bool, mirror_v: bool },
     /// Tonal remapping applied to the accumulated mask at this stack position.
     Levels { input_black: f32, gamma: f32, input_white: f32, output_black: f32, output_white: f32 },
+    /// Gaussian blur applied to the accumulated grayscale mask at this stack position.
+    Blur { radius: u8 },
 }
 
 impl Paint {
@@ -37,7 +63,7 @@ impl Paint {
     pub fn paint_surface(&self) -> Option<&Surface> {
         match &self.kind {
             EffectKind::Paint => Some(&self.surface),
-            EffectKind::Fill { .. } | EffectKind::Levels { .. } => None,
+            EffectKind::Fill { .. } | EffectKind::Levels { .. } | EffectKind::Blur { .. } => None,
         }
     }
 
@@ -45,7 +71,7 @@ impl Paint {
     pub fn paint_surface_mut(&mut self) -> Option<&mut Surface> {
         match &mut self.kind {
             EffectKind::Paint => Some(&mut self.surface),
-            EffectKind::Fill { .. } | EffectKind::Levels { .. } => None,
+            EffectKind::Fill { .. } | EffectKind::Levels { .. } | EffectKind::Blur { .. } => None,
         }
     }
 }

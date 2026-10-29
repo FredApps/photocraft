@@ -12,8 +12,8 @@ use photocraft_geom::{TILE_SIZE, TileCoord};
 use photocraft_raster::{Surface, Tile, decode_pixel, encode_pixel};
 
 use crate::manifest::{
-    ChannelM, CompAppearanceM, CompStateM, ContentM, DocM, EffectsM, FillCacheM, Hash, LayerCompM, LayerM, MaskM, MetadataM, NamedPathM, PatternM,
-    SmartSourceM, SurfaceM, TileRef,
+    ChannelM, CompAppearanceM, CompStateM, ContentM, DocM, EffectsM, FillCacheM, Hash, LayerCompM, LayerM, MaskM, MaskPaintLayerM, MaskPaintM, MetadataM,
+    NamedPathM, PatternM, SmartSourceM, SurfaceM, TileRef,
 };
 use crate::{FormatError, Result};
 
@@ -107,6 +107,34 @@ fn validate_mask_paint_bounds(kind: &photocraft_doc::mask_paint::EffectKind, bou
         (_, None) => Ok(()),
         (_, Some(_)) => Err(FormatError::corrupt("Fill bounds are only valid on Fill effects")),
     }
+}
+
+fn valid_mask_paint_blend(mode: photocraft_color::BlendMode) -> bool {
+    // Older local mask-stack files stored these scalar modes. Keep loading them even though new
+    // commands expose the smaller, more predictable MASK_BLEND_MODES set.
+    matches!(
+        mode,
+        photocraft_color::BlendMode::Normal
+            | photocraft_color::BlendMode::Darken
+            | photocraft_color::BlendMode::Multiply
+            | photocraft_color::BlendMode::ColorBurn
+            | photocraft_color::BlendMode::LinearBurn
+            | photocraft_color::BlendMode::Lighten
+            | photocraft_color::BlendMode::Screen
+            | photocraft_color::BlendMode::ColorDodge
+            | photocraft_color::BlendMode::LinearDodge
+            | photocraft_color::BlendMode::Overlay
+            | photocraft_color::BlendMode::SoftLight
+            | photocraft_color::BlendMode::HardLight
+            | photocraft_color::BlendMode::VividLight
+            | photocraft_color::BlendMode::LinearLight
+            | photocraft_color::BlendMode::PinLight
+            | photocraft_color::BlendMode::HardMix
+            | photocraft_color::BlendMode::Difference
+            | photocraft_color::BlendMode::Exclusion
+            | photocraft_color::BlendMode::Subtract
+            | photocraft_color::BlendMode::Divide
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +433,9 @@ impl Loader<'_> {
             {
                 return Err(crate::FormatError::Corrupt("invalid mask paint layer".into()));
             }
+            if !valid_mask_paint_blend(p.blend) {
+                return Err(FormatError::corrupt("invalid grayscale mask blend mode"));
+            }
             let kind = match p.kind.as_str() {
                 "paint" => photocraft_doc::mask_paint::EffectKind::Paint,
                 "fill" if p.value.is_finite() && (0.0..=1.0).contains(&p.value) && p.rotation.is_finite() => photocraft_doc::mask_paint::EffectKind::Fill {
@@ -437,20 +468,42 @@ impl Loader<'_> {
                         output_white: p.output_white,
                     }
                 }
+                "blur" if (1..=64).contains(&p.radius) => photocraft_doc::mask_paint::EffectKind::Blur { radius: p.radius },
                 _ => return Err(FormatError::corrupt("invalid mask paint effect")),
             };
+            if !matches!(
+                &kind,
+                photocraft_doc::mask_paint::EffectKind::Paint
+                    | photocraft_doc::mask_paint::EffectKind::Fill { .. }
+                    | photocraft_doc::mask_paint::EffectKind::Blur { .. }
+            )
+                && p.blend != photocraft_color::BlendMode::Normal
+            {
+                return Err(FormatError::corrupt("mask blend mode does not apply to Levels effects"));
+            }
             validate_mask_paint_bounds(&kind, p.fill_bounds)?;
             let fill_map = self.opt_surface(&p.fill_map)?;
             layers.push(photocraft_doc::mask_paint::Paint {
                 name: p.name.clone(),
                 visible: p.visible,
                 opacity: p.opacity,
+                blend: p.blend,
                 surface,
                 fill_map,
                 fill_map_size: p.fill_map_size,
                 fill_bounds: p.fill_bounds,
                 kind,
             });
+        }
+        let blur_radius_sum = layers
+            .iter()
+            .filter_map(|layer| match &layer.kind {
+                photocraft_doc::mask_paint::EffectKind::Blur { radius } => Some(u32::from(*radius)),
+                _ => None,
+            })
+            .fold(0u32, u32::saturating_add);
+        if blur_radius_sum > u32::from(photocraft_doc::mask_paint::MAX_BLUR_RADIUS_SUM) {
+            return Err(FormatError::corrupt("mask paint Blur radius sum exceeds 512 pixels"));
         }
         Ok(Some(photocraft_doc::mask_paint::Stack { base, layers, active: s.active }))
     }
@@ -776,17 +829,19 @@ mod mask_paint_bounds_tests {
 
     #[test]
     fn loader_rejects_inverted_fill_and_bounds_on_non_fill_layers() {
-        let fill = photocraft_doc::mask_paint::EffectKind::Fill {
-            value: 0.5,
-            rotation: 0.0,
-            repeat_u: false,
-            repeat_v: false,
-            mirror_u: false,
-            mirror_v: false,
-        };
+        let fill =
+            photocraft_doc::mask_paint::EffectKind::Fill { value: 0.5, rotation: 0.0, repeat_u: false, repeat_v: false, mirror_u: false, mirror_v: false };
         assert!(validate_mask_paint_bounds(&fill, Some([0, 0, 0, 2])).is_err());
         assert!(validate_mask_paint_bounds(&photocraft_doc::mask_paint::EffectKind::Paint, Some([0, 0, 1, 1])).is_err());
         assert!(validate_mask_paint_bounds(&fill, Some([i32::MIN, i32::MIN, i32::MAX, i32::MAX])).is_ok());
+    }
+
+    #[test]
+    fn loader_keeps_legacy_scalar_mask_blend_values_readable() {
+        assert!(valid_mask_paint_blend(photocraft_color::BlendMode::ColorBurn));
+        assert!(valid_mask_paint_blend(photocraft_color::BlendMode::Overlay));
+        assert!(!valid_mask_paint_blend(photocraft_color::BlendMode::Hue));
+        assert!(!valid_mask_paint_blend(photocraft_color::BlendMode::Luminosity));
     }
 }
 
@@ -813,17 +868,19 @@ fn mask_paint_m(m: &LayerMask, sink: &mut dyn Sink) -> Option<MaskPaintM> {
             .layers
             .iter()
             .map(|p| {
-                let (kind, value, rotation, input_black, gamma, input_white, output_black, output_white) = match &p.kind {
-                    photocraft_doc::mask_paint::EffectKind::Paint => ("paint", 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0),
-                    photocraft_doc::mask_paint::EffectKind::Fill { value, rotation, .. } => ("fill", *value, *rotation, 0.0, 1.0, 1.0, 0.0, 1.0),
+                let (kind, value, rotation, radius, input_black, gamma, input_white, output_black, output_white) = match &p.kind {
+                    photocraft_doc::mask_paint::EffectKind::Paint => ("paint", 1.0, 0.0, 8, 0.0, 1.0, 1.0, 0.0, 1.0),
+                    photocraft_doc::mask_paint::EffectKind::Fill { value, rotation, .. } => ("fill", *value, *rotation, 8, 0.0, 1.0, 1.0, 0.0, 1.0),
+                    photocraft_doc::mask_paint::EffectKind::Blur { radius } => ("blur", 1.0, 0.0, *radius, 0.0, 1.0, 1.0, 0.0, 1.0),
                     photocraft_doc::mask_paint::EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
-                        ("levels", 1.0, 0.0, *input_black, *gamma, *input_white, *output_black, *output_white)
+                        ("levels", 1.0, 0.0, 8, *input_black, *gamma, *input_white, *output_black, *output_white)
                     }
                 };
                 MaskPaintLayerM {
                     name: p.name.clone(),
                     visible: p.visible,
                     opacity: p.opacity,
+                    blend: p.blend,
                     surface: surface_m(&p.surface, sink),
                     fill_map: p.fill_map.as_ref().map(|map| surface_m(map, sink)),
                     fill_map_size: p.fill_map_size,
@@ -847,6 +904,7 @@ fn mask_paint_m(m: &LayerMask, sink: &mut dyn Sink) -> Option<MaskPaintM> {
                     },
                     kind: kind.into(),
                     value,
+                    radius,
                     input_black,
                     gamma,
                     input_white,

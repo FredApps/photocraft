@@ -88,7 +88,11 @@ fn render_capture(
             wgpu::TexelCopyTextureInfo {
                 texture: out.texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d { x: (overlap.x0 - out.rect.x0) as u32, y: (overlap.y0 - out.rect.y0) as u32, z: 0 },
+                origin: wgpu::Origin3d {
+                    x: out.origin[0] + (overlap.x0 - out.rect.x0) as u32,
+                    y: out.origin[1] + (overlap.y0 - out.rect.y0) as u32,
+                    z: 0,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {

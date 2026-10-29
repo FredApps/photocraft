@@ -1,9 +1,12 @@
 //! Incremental compositor for editable mask stack effects.
+use photocraft_color::BlendMode;
 use photocraft_doc::{
     LayerMask,
     mask_paint::{EffectKind, Stack},
 };
 use photocraft_geom::Rect;
+
+const MAX_MASK_REGION_PIXELS: usize = 16 * 1024 * 1024;
 
 /// `refresh(None)` has no canvas rectangle to clip a persisted Fill to. Keep its fallback work
 /// bounded and let document callers use `refresh_in_canvas` for larger valid canvases.
@@ -18,9 +21,13 @@ pub fn refresh_changes(mask: &mut LayerMask, old: Option<&Stack>) {
 /// Keep procedural Fill cache work inside the document even when its transform extends far
 /// beyond the canvas. Source Paint surfaces remain intact and retain their sparse edit path.
 pub fn refresh_changes_in_canvas(mask: &mut LayerMask, old: Option<&Stack>, canvas: Rect) {
-    let spatial_fill =
-        mask.paint.iter().chain(old).flat_map(|stack| &stack.layers).any(|layer| layer.fill_bounds.is_some() && matches!(&layer.kind, EffectKind::Fill { .. }));
-    refresh_changes_bounded(mask, old, spatial_fill.then_some(canvas));
+    let needs_canvas = mask
+        .paint
+        .iter()
+        .chain(old)
+        .flat_map(|stack| &stack.layers)
+        .any(|layer| (layer.fill_bounds.is_some() && matches!(&layer.kind, EffectKind::Fill { .. })) || matches!(layer.kind, EffectKind::Blur { .. }));
+    refresh_changes_bounded(mask, old, needs_canvas.then_some(canvas));
 }
 
 fn refresh_changes_bounded(mask: &mut LayerMask, old: Option<&Stack>, canvas: Option<Rect>) {
@@ -43,7 +50,8 @@ fn refresh_changes_bounded(mask: &mut LayerMask, old: Option<&Stack>, canvas: Op
         return;
     }
     let mut changed = std::collections::BTreeSet::new();
-    for (now, before) in stack.layers.iter().zip(&old.layers) {
+    for (index, (now, before)) in stack.layers.iter().zip(&old.layers).enumerate() {
+        let mut layer_changed = std::collections::BTreeSet::new();
         if now.fill_map != before.fill_map || now.fill_map_size != before.fill_map_size || now.fill_bounds != before.fill_bounds {
             refresh(mask, canvas);
             return;
@@ -53,39 +61,61 @@ fn refresh_changes_bounded(mask: &mut LayerMask, old: Option<&Stack>, canvas: Op
                 refresh(mask, canvas);
                 return;
             }
-            changed.extend(now.surface.tiles().map(|(coord, _)| *coord));
-            changed.extend(before.surface.tiles().map(|(coord, _)| *coord));
+            layer_changed.extend(now.surface.tiles().map(|(coord, _)| *coord));
+            layer_changed.extend(before.surface.tiles().map(|(coord, _)| *coord));
         }
-        if now.visible != before.visible || now.opacity != before.opacity || now.kind != before.kind {
+        if now.visible != before.visible || now.opacity != before.opacity || now.kind != before.kind || now.blend != before.blend {
             // Fill and Levels can affect every pixel in the accumulated mask.
             if !matches!(&now.kind, EffectKind::Paint) || !matches!(&before.kind, EffectKind::Paint) {
                 refresh(mask, canvas);
                 return;
             }
-            changed.extend(now.surface.tiles().map(|(coord, _)| *coord));
-            changed.extend(before.surface.tiles().map(|(coord, _)| *coord));
+            layer_changed.extend(now.surface.tiles().map(|(coord, _)| *coord));
+            layer_changed.extend(before.surface.tiles().map(|(coord, _)| *coord));
         }
         for (coord, tile) in now.surface.tiles() {
             if before.surface.tile(*coord).is_none_or(|prior| !std::sync::Arc::ptr_eq(prior, tile)) {
-                changed.insert(*coord);
+                layer_changed.insert(*coord);
             }
         }
         for (coord, _) in before.surface.tiles() {
             if now.surface.tile(*coord).is_none() {
-                changed.insert(*coord);
+                layer_changed.insert(*coord);
             }
+        }
+        let halo = stack
+            .layers
+            .iter()
+            .skip(index.saturating_add(1))
+            .filter(|layer| layer.visible && layer.opacity > 0.0)
+            .filter_map(|layer| match &layer.kind {
+                EffectKind::Blur { radius } => Some(i32::from(*radius)),
+                _ => None,
+            })
+            .fold(0i32, i32::saturating_add);
+        if halo > 0 {
+            let mut expanded = std::collections::BTreeSet::new();
+            for coord in layer_changed {
+                let bounds = coord.rect().inflate(halo);
+                let bounds = canvas.map_or(bounds, |canvas| bounds.intersect(&canvas));
+                expanded.extend(bounds.tiles());
+            }
+            changed.extend(expanded);
+        } else {
+            changed.extend(layer_changed);
         }
     }
     if changed.len() <= 1 {
         for coord in changed {
-            refresh(mask, Some(coord.rect()));
+            refresh_region(mask, coord.rect());
         }
     } else {
         refresh_tiles(mask, changed.into_iter().collect());
     }
 }
 
-/// Recompose only the damaged rectangle, in bounded scanline bands.
+/// Recompose only damaged output pixels, in bounded scanline bands. `region` describes source
+/// pixels that changed; Blur layers above the active Paint layer can expand the output damage.
 pub fn refresh(mask: &mut LayerMask, region: Option<Rect>) {
     let Some(stack) = &mask.paint else { return };
     let default = composite_default(stack);
@@ -139,62 +169,176 @@ pub fn refresh(mask: &mut LayerMask, region: Option<Rect>) {
                 tiles.extend(bounds.tiles());
             }
         }
+        let halo = stack
+            .layers
+            .iter()
+            .filter(|layer| layer.visible && layer.opacity > 0.0)
+            .filter_map(|layer| match &layer.kind {
+                EffectKind::Blur { radius } => Some(i32::from(*radius)),
+                _ => None,
+            })
+            .fold(0i32, i32::saturating_add);
+        if halo > 0 {
+            let source_tiles = tiles.iter().copied().collect::<Vec<_>>();
+            for coord in source_tiles {
+                tiles.extend(coord.rect().inflate(halo).tiles());
+            }
+        }
         refresh_tiles(mask, tiles.into_iter().collect());
         return;
     };
     if bounds.is_empty() {
         return;
     }
+    let bounds = bounds.inflate(downstream_blur_reach(stack, stack.active));
+    refresh_region(mask, bounds);
+}
+
+/// Refresh a live Paint edit, including its downstream Blur halo and clipping to the document.
+/// The active stack layer is the edited Paint layer; earlier Blurs do not depend on its pixels.
+pub fn refresh_damage_in_canvas(mask: &mut LayerMask, damage: Rect, canvas: Rect) {
+    if damage.is_empty() || canvas.is_empty() {
+        return;
+    }
+    let Some(stack) = &mask.paint else { return };
+    let bounds = damage.inflate(downstream_blur_reach(stack, stack.active)).intersect(&canvas);
+    refresh_region(mask, bounds);
+}
+
+/// Compose an immutable mask-stack snapshot only over changed output pixels, including the
+/// spatial reach of visible Blur effects below the active Paint layer. The returned tuple is
+/// `(default_value, output_bounds, row_major_pixels)` and can be applied to a transient cache.
+/// `None` means the requested region is invalid or exceeds the bounded compositor budget.
+pub fn compose_damage(stack: &Stack, damage: Rect, canvas: Rect) -> Option<(f32, Rect, Vec<f32>)> {
+    if damage.is_empty() || canvas.is_empty() {
+        return None;
+    }
+    let output = damage.inflate(downstream_blur_reach(stack, stack.active)).intersect(&canvas);
+    if output.is_empty() {
+        return None;
+    }
+    let pixels = compose_stack_region(stack, stack.layers.len(), output)?;
+    Some((composite_default(stack), output, pixels))
+}
+
+/// Spatial reach of visible Blur layers after `index`, in document pixels.
+pub fn downstream_blur_reach(stack: &Stack, index: usize) -> i32 {
+    stack
+        .layers
+        .iter()
+        .skip(index.saturating_add(1))
+        .filter(|layer| layer.visible && layer.opacity > 0.0)
+        .filter_map(|layer| match &layer.kind {
+            EffectKind::Blur { radius } => Some(i32::from(*radius)),
+            _ => None,
+        })
+        .fold(0i32, i32::saturating_add)
+}
+
+fn refresh_region(mask: &mut LayerMask, bounds: Rect) {
+    let Some(stack) = &mask.paint else { return };
+    if bounds.is_empty() {
+        return;
+    }
+    mask.surface.set_default_pixel(&[composite_default(stack)]);
+    // Keep Blur regions narrow enough to expose parallel work even when one brush dab spans
+    // the full 4K canvas width. Non-Blur stacks retain the wider bands to avoid extra writes.
+    let bands = refresh_bands(bounds, if refresh_halo(stack) > 0 { 512 } else { 8_192 });
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+
+        let worker_count = rayon::current_num_threads().max(1);
+        let halo = refresh_halo(stack);
+        if worker_count > 1 && bands.len() > 1 && halo > 0 {
+            // A Blur stage may keep several full-sized working buffers alive at once.
+            // Bound concurrent regions to an estimated 64 MiB total (8 f32 buffers per
+            // padded pixel); very large halo regions therefore fall back to one worker.
+            const WORKING_SET_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+            let largest_region_bytes = bands
+                .iter()
+                .map(|band| {
+                    let padded = band.inflate(halo);
+                    usize::try_from(padded.width())
+                        .ok()
+                        .and_then(|width| usize::try_from(padded.height()).ok().and_then(|height| width.checked_mul(height)))
+                        .and_then(|pixels| pixels.checked_mul(8 * std::mem::size_of::<f32>()))
+                        .unwrap_or(usize::MAX)
+                })
+                .max()
+                .unwrap_or(0);
+            let memory_workers = if largest_region_bytes == 0 { worker_count } else { (WORKING_SET_BUDGET_BYTES / largest_region_bytes).max(1) };
+            let batch_size = worker_count.min(memory_workers).max(1);
+            for batch in bands.chunks(batch_size) {
+                let composed = batch.par_iter().map(|band| compose_stack_region(stack, stack.layers.len(), *band)).collect::<Vec<_>>();
+                // Keep all Surface writes on this thread. Bands do not overlap, and
+                // indexed Rayon collection preserves input order for deterministic writes.
+                for (band, pixels) in batch.iter().zip(composed) {
+                    if let Some(pixels) = pixels {
+                        mask.surface.write_region(*band, &pixels);
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    for band in bands {
+        if let Some(pixels) = compose_stack_region(stack, stack.layers.len(), band) {
+            mask.surface.write_region(band, &pixels);
+        }
+    }
+}
+
+fn refresh_bands(bounds: Rect, max_width: i32) -> Vec<Rect> {
+    let mut bands = Vec::new();
     let mut y = bounds.y0;
     while y < bounds.y1 {
         let end = y.saturating_add(32).min(bounds.y1);
-        let band = Rect::new(bounds.x0, y, bounds.x1, end);
-        let mut pixels = stack.base.read_region(band);
-        for layer in &stack.layers {
-            if !layer.visible || layer.opacity <= 0.0 {
-                continue;
-            }
-            match &layer.kind {
-                EffectKind::Paint => {
-                    let source = layer.surface.read_region(band);
-                    for (dst, px) in pixels.iter_mut().zip(source.as_chunks::<4>().0) {
-                        let alpha = px[3] * layer.opacity;
-                        *dst = px[0] * alpha + *dst * (1.0 - alpha);
-                    }
-                }
-                EffectKind::Fill { value, .. } => {
-                    for (offset, dst) in pixels.iter_mut().enumerate() {
-                        let x = band.x0 + (offset as i32 % band.width() as i32);
-                        let y = band.y0 + (offset as i32 / band.width() as i32);
-                        if let Some(fill) = fill_sample(layer, *value, x, y) {
-                            *dst = fill * layer.opacity + *dst * (1.0 - layer.opacity);
-                        }
-                    }
-                }
-                EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
-                    for dst in &mut pixels {
-                        let adjusted = levels(*dst, *input_black, *gamma, *input_white, *output_black, *output_white);
-                        *dst = adjusted * layer.opacity + *dst * (1.0 - layer.opacity);
-                    }
-                }
-            }
+        let mut x = bounds.x0;
+        while x < bounds.x1 {
+            let end_x = x.saturating_add(max_width.max(1)).min(bounds.x1);
+            bands.push(Rect::new(x, y, end_x, end));
+            x = end_x;
         }
-        mask.surface.write_region(band, &pixels);
         y = end;
     }
+    bands
+}
+
+fn refresh_halo(stack: &Stack) -> i32 {
+    stack
+        .layers
+        .iter()
+        .filter(|layer| layer.visible && layer.opacity > 0.0)
+        .filter_map(|layer| match &layer.kind {
+            EffectKind::Blur { radius } => Some(i32::from(*radius)),
+            _ => None,
+        })
+        .fold(0i32, i32::saturating_add)
 }
 
 /// Rebuild a transient mask cache while clipping procedural Fill work to its document canvas.
 /// Fill bounds are persisted input and can extend far beyond the canvas; iterating every tile in
 /// those bounds is unnecessary because only canvas pixels are consumed by document rendering.
 pub fn refresh_in_canvas(mask: &mut LayerMask, canvas: Rect) {
-    refresh(mask, Some(canvas));
+    if canvas.is_empty() {
+        return;
+    }
+    let Some(stack) = &mask.paint else { return };
+    mask.surface.set_default_pixel(&[composite_default(stack)]);
+    refresh_region(mask, canvas);
 }
 
 /// Evaluate one output pixel of a Paint mask stack without allocating or materializing its
 /// flattened surface. This is used for bounded transient display sampling; commits still call
 /// [`refresh`] for the full-quality cache.
 pub fn sample_stack_pixel(stack: &Stack, x: i32, y: i32) -> f32 {
+    if stack.layers.iter().any(|layer| matches!(layer.kind, EffectKind::Blur { .. })) {
+        return compose_stack_region(stack, stack.layers.len(), Rect::new(x, y, x.saturating_add(1), y.saturating_add(1)))
+            .and_then(|pixels| pixels.first().copied())
+            .unwrap_or_default();
+    }
     let mut value = stack.base.sample_channel(x, y, 0);
     for layer in &stack.layers {
         if !layer.visible || layer.opacity <= 0.0 {
@@ -204,17 +348,18 @@ pub fn sample_stack_pixel(stack: &Stack, x: i32, y: i32) -> f32 {
             EffectKind::Paint => {
                 let source = layer.surface.sample_channel(x, y, 0);
                 let alpha = if layer.surface.channels() > 3 { layer.surface.sample_channel(x, y, 3) } else { 0.0 } * layer.opacity;
-                value = source * alpha + value * (1.0 - alpha);
+                value = blend_coverage(layer.blend, value, source, alpha);
             }
             EffectKind::Fill { value: fill, .. } => {
                 if let Some(fill) = fill_sample(layer, *fill, x, y) {
-                    value = fill * layer.opacity + value * (1.0 - layer.opacity);
+                    value = blend_coverage(layer.blend, value, fill, layer.opacity);
                 }
             }
             EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
                 let adjusted = levels(value, *input_black, *gamma, *input_white, *output_black, *output_white);
-                value = adjusted * layer.opacity + value * (1.0 - layer.opacity);
+                value = blend_coverage(layer.blend, value, adjusted, layer.opacity);
             }
+            EffectKind::Blur { .. } => {}
         }
     }
     value
@@ -228,16 +373,17 @@ fn composite_default(stack: &Stack) -> f32 {
                 EffectKind::Paint => {
                     let source = layer.surface.default_pixel();
                     let alpha = source.get(3).copied().unwrap_or(0.0) * layer.opacity;
-                    source.first().copied().unwrap_or(0.0) * alpha + value * (1.0 - alpha)
+                    blend_coverage(layer.blend, value, source.first().copied().unwrap_or(0.0), alpha)
                 }
                 EffectKind::Fill { value: fill, .. } => {
                     let map_value = layer.fill_map.as_ref().map(|map| map.default_pixel().first().copied().unwrap_or(*fill)).unwrap_or(*fill);
-                    if layer.fill_bounds.is_none() { map_value * layer.opacity + value * (1.0 - layer.opacity) } else { value }
+                    if layer.fill_bounds.is_none() { blend_coverage(layer.blend, value, map_value, layer.opacity) } else { value }
                 }
                 EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
                     let adjusted = levels(value, *input_black, *gamma, *input_white, *output_black, *output_white);
-                    adjusted * layer.opacity + value * (1.0 - layer.opacity)
+                    blend_coverage(layer.blend, value, adjusted, layer.opacity)
                 }
+                EffectKind::Blur { .. } => value,
             };
         }
     }
@@ -261,8 +407,7 @@ pub fn compose_prefix(stack: &Stack, end_layer: usize, region: Rect) -> Option<V
     if count > 256 * 256 * 4 {
         return None;
     }
-    let pixels = stack.base.read_region(region);
-    Some(composite_layers(stack, 0, end_layer, region, pixels))
+    compose_stack_region(stack, end_layer, region)
 }
 
 /// Apply stack layers from `start_layer` onward to a cached prefix buffer and write one region.
@@ -275,7 +420,16 @@ pub fn refresh_from_prefix(mask: &mut LayerMask, region: Rect, start_layer: usiz
     let Some(count) = usize::try_from(region.width()).ok().and_then(|w| usize::try_from(region.height()).ok().and_then(|h| w.checked_mul(h))) else {
         return false;
     };
-    if count != initial.len() || start_layer > stack.layers.len() || count > 256 * 256 * 4 {
+    if count != initial.len()
+        || start_layer > stack.layers.len()
+        || count > 256 * 256 * 4
+        || stack
+            .layers
+            .get(start_layer..)
+            .unwrap_or_default()
+            .iter()
+            .any(|layer| layer.visible && layer.opacity > 0.0 && matches!(layer.kind, EffectKind::Blur { .. }))
+    {
         return false;
     }
     let pixels = composite_layers(stack, start_layer, stack.layers.len(), region, initial.to_vec());
@@ -291,31 +445,37 @@ fn composite_layers(stack: &Stack, start_layer: usize, end_layer: usize, region:
         }
         match &layer.kind {
             EffectKind::Paint => {
-                composite_paint_region(&mut pixels, &layer.surface, region, layer.opacity);
+                composite_paint_region(&mut pixels, &layer.surface, region, layer.opacity, layer.blend);
             }
             EffectKind::Fill { value, .. } => {
                 for (offset, dst) in pixels.iter_mut().enumerate() {
                     let x = region.x0 + (offset as i32 % region.width() as i32);
                     let y = region.y0 + (offset as i32 / region.width() as i32);
                     if let Some(fill) = fill_sample(layer, *value, x, y) {
-                        *dst = fill * layer.opacity + *dst * (1.0 - layer.opacity);
+                        *dst = blend_coverage(layer.blend, *dst, fill, layer.opacity);
                     }
                 }
             }
             EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
                 for dst in &mut pixels {
                     let adjusted = levels(*dst, *input_black, *gamma, *input_white, *output_black, *output_white);
-                    *dst = adjusted * layer.opacity + *dst * (1.0 - layer.opacity);
+                    *dst = blend_coverage(layer.blend, *dst, adjusted, layer.opacity);
                 }
             }
+            EffectKind::Blur { .. } => {}
         }
     }
     pixels
 }
 
-fn composite_paint_region(dst: &mut [f32], surface: &photocraft_raster::Surface, region: Rect, opacity: f32) {
+fn composite_paint_region(dst: &mut [f32], surface: &photocraft_raster::Surface, region: Rect, opacity: f32, mode: BlendMode) {
     let tile = photocraft_geom::TILE_SIZE;
-    if region.width() == tile as u32 && region.height() == tile as u32 && region.x0.rem_euclid(tile) == 0 && region.y0.rem_euclid(tile) == 0 {
+    if mode == BlendMode::Normal
+        && region.width() == tile as u32
+        && region.height() == tile as u32
+        && region.x0.rem_euclid(tile) == 0
+        && region.y0.rem_euclid(tile) == 0
+    {
         let coord = photocraft_geom::TileCoord::new(region.x0.div_euclid(tile), region.y0.div_euclid(tile));
         if composite_rgba_tile_into_gray(dst, surface, coord, opacity) {
             return;
@@ -324,7 +484,7 @@ fn composite_paint_region(dst: &mut [f32], surface: &photocraft_raster::Surface,
     let source = surface.read_region(region);
     for (dst, px) in dst.iter_mut().zip(source.as_chunks::<4>().0) {
         let alpha = px[3] * opacity;
-        *dst = px[0] * alpha + *dst * (1.0 - alpha);
+        *dst = blend_coverage(mode, *dst, px[0], alpha);
     }
 }
 
@@ -338,51 +498,387 @@ fn refresh_tiles(mask: &mut LayerMask, coords: Vec<photocraft_geom::TileCoord>) 
     let format = mask.surface.format();
     let default = mask.surface.default_pixel();
     let shared_default_tile = mask.surface.solid_tile(&default);
-    let compose = |coord: &photocraft_geom::TileCoord| {
+    let compose_tile = |coord: &photocraft_geom::TileCoord| {
         let region = coord.rect();
-        let mut pixels = stack.base.read_region(region);
-        for layer in &stack.layers {
-            if !layer.visible || layer.opacity <= 0.0 {
-                continue;
-            }
-            match &layer.kind {
-                EffectKind::Paint => {
-                    composite_paint_region(&mut pixels, &layer.surface, region, layer.opacity);
-                }
-                EffectKind::Fill { value, .. } => {
-                    for (offset, dst) in pixels.iter_mut().enumerate() {
-                        let x = region.x0 + (offset as i32 % region.width() as i32);
-                        let y = region.y0 + (offset as i32 / region.width() as i32);
-                        if let Some(fill) = fill_sample(layer, *value, x, y) {
-                            *dst = fill * layer.opacity + *dst * (1.0 - layer.opacity);
-                        }
-                    }
-                }
-                EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
-                    for dst in &mut pixels {
-                        let adjusted = levels(*dst, *input_black, *gamma, *input_white, *output_black, *output_white);
-                        *dst = adjusted * layer.opacity + *dst * (1.0 - layer.opacity);
-                    }
-                }
-            }
-        }
+        let pixels = compose_stack_region(stack, stack.layers.len(), region).unwrap_or_default();
         let mut output = photocraft_raster::Surface::with_default(format, &default);
         output.write_region(region, &pixels);
         let tile = output.tile(*coord).cloned().unwrap_or_else(|| shared_default_tile.clone());
         (*coord, tile)
     };
+    let regions = merge_adjacent_tiles(&coords);
+    let compose_region = |(region, tiles): &(Rect, Vec<photocraft_geom::TileCoord>)| {
+        compose_stack_region(stack, stack.layers.len(), *region).map(|pixels| {
+            let mut output = photocraft_raster::Surface::with_default(format, &default);
+            output.write_region(*region, &pixels);
+            tiles.iter().map(|coord| (*coord, output.tile(*coord).cloned().unwrap_or_else(|| shared_default_tile.clone()))).collect::<Vec<_>>()
+        })
+    };
     #[cfg(not(target_arch = "wasm32"))]
-    let output = {
+    let region_output = {
         use rayon::prelude::*;
-        if coords.len() >= 2 * rayon::current_num_threads() {
-            coords.par_iter().map(compose).collect::<Vec<_>>()
+        if regions.len() >= 2 * rayon::current_num_threads() {
+            regions.par_iter().map(compose_region).collect::<Vec<_>>()
         } else {
-            coords.iter().map(compose).collect::<Vec<_>>()
+            regions.iter().map(compose_region).collect::<Vec<_>>()
         }
     };
     #[cfg(target_arch = "wasm32")]
-    let output = coords.iter().map(compose).collect::<Vec<_>>();
+    let region_output = regions.iter().map(compose_region).collect::<Vec<_>>();
+    let mut output = Vec::with_capacity(coords.len());
+    let mut fallback = Vec::new();
+    for ((_, tiles), result) in regions.iter().zip(region_output) {
+        if let Some(tiles) = result {
+            output.extend(tiles);
+        } else {
+            // A merged region may exceed the bounded compositor budget even though its member
+            // tiles were individually serviceable. Preserve the old exact per-tile fallback.
+            fallback.extend(tiles.iter().copied());
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        if fallback.len() >= 2 * rayon::current_num_threads() {
+            output.extend(fallback.par_iter().map(compose_tile).collect::<Vec<_>>());
+        } else {
+            output.extend(fallback.iter().map(compose_tile));
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    output.extend(fallback.iter().map(compose_tile));
     mask.surface.put_tiles(output);
+}
+
+/// Merge changed tiles only when they form a complete rectangle. Any sparse gaps stay
+/// separate, so a merged Blur halo never causes unrelated output pixels to be rewritten.
+fn merge_adjacent_tiles(coords: &[photocraft_geom::TileCoord]) -> Vec<(Rect, Vec<photocraft_geom::TileCoord>)> {
+    use photocraft_geom::TileCoord;
+    let mut ordered = coords.to_vec();
+    ordered.sort_unstable_by_key(|coord| (coord.ty, coord.tx));
+    ordered.dedup();
+    let mut remaining: std::collections::HashSet<_> = ordered.iter().copied().collect();
+    let mut regions = Vec::new();
+    for first in ordered {
+        if !remaining.remove(&first) {
+            continue;
+        }
+        let mut row = vec![first];
+        let mut x = first.tx;
+        while let Some(next_x) = x.checked_add(1) {
+            let next = TileCoord::new(next_x, first.ty);
+            if !remaining.remove(&next) {
+                break;
+            }
+            row.push(next);
+            x = next_x;
+        }
+        let mut tiles = row.clone();
+        let mut y = first.ty;
+        while let Some(next_y) = y.checked_add(1) {
+            let next_row: Vec<_> = row.iter().map(|coord| TileCoord::new(coord.tx, next_y)).collect();
+            if !next_row.iter().all(|coord| remaining.contains(coord)) {
+                break;
+            }
+            for coord in &next_row {
+                remaining.remove(coord);
+            }
+            tiles.extend(next_row);
+            y = next_y;
+        }
+        let bounds = tiles.iter().map(TileCoord::rect).reduce(|a, b| a.union(&b)).unwrap_or(Rect::EMPTY);
+        regions.push((bounds, tiles));
+    }
+    regions
+}
+
+fn blend_coverage(mode: BlendMode, below: f32, source: f32, coverage: f32) -> f32 {
+    if mode == BlendMode::Normal {
+        return source * coverage + below * (1.0 - coverage);
+    }
+    let blended = photocraft_color::blend::blend_channel(mode, below, source);
+    below + (blended - below) * coverage.clamp(0.0, 1.0)
+}
+
+/// Compose a stack prefix while carrying only the halo required by Blur layers.
+/// The halo is bounded to 64 pixels per effect by command and format validation.
+fn compose_stack_region(stack: &Stack, end_layer: usize, requested: Rect) -> Option<Vec<f32>> {
+    if end_layer > stack.layers.len() || requested.is_empty() {
+        return None;
+    }
+    let halo = stack
+        .layers
+        .iter()
+        .take(end_layer)
+        .filter(|layer| layer.visible && layer.opacity > 0.0)
+        .filter_map(|layer| match &layer.kind {
+            EffectKind::Blur { radius } => Some(i32::from(*radius)),
+            _ => None,
+        })
+        .fold(0i32, i32::saturating_add);
+    let region = requested.inflate(halo);
+    let width = usize::try_from(region.width()).ok()?;
+    let height = usize::try_from(region.height()).ok()?;
+    let count = width.checked_mul(height)?;
+    if count > MAX_MASK_REGION_PIXELS {
+        return None;
+    }
+    let mut pixels = stack.base.read_region(region);
+    let mut current = region;
+    for layer in stack.layers.iter().take(end_layer) {
+        if !layer.visible || layer.opacity <= 0.0 {
+            continue;
+        }
+        match &layer.kind {
+            EffectKind::Paint => {
+                composite_paint_region(&mut pixels, &layer.surface, current, layer.opacity, layer.blend);
+            }
+            EffectKind::Fill { value, .. } => {
+                for (offset, dst) in pixels.iter_mut().enumerate() {
+                    let x = current.x0 + (offset % current.width() as usize) as i32;
+                    let y = current.y0 + (offset / current.width() as usize) as i32;
+                    if let Some(fill) = fill_sample(layer, *value, x, y) {
+                        *dst = blend_coverage(layer.blend, *dst, fill, layer.opacity);
+                    }
+                }
+            }
+            EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
+                for dst in &mut pixels {
+                    let adjusted = levels(*dst, *input_black, *gamma, *input_white, *output_black, *output_white);
+                    *dst = blend_coverage(layer.blend, *dst, adjusted, layer.opacity);
+                }
+            }
+            EffectKind::Blur { radius } => {
+                let (blurred, next_region) = gaussian_blur_region(&pixels, current, *radius)?;
+                let r = usize::from(*radius);
+                let old_width = usize::try_from(current.width()).ok()?;
+                let new_width = usize::try_from(next_region.width()).ok()?;
+                let mut mixed = Vec::with_capacity(blurred.len());
+                for y in 0..usize::try_from(next_region.height()).ok()? {
+                    for x in 0..new_width {
+                        let old = pixels.get((y + r).checked_mul(old_width)?.checked_add(x + r)?)?;
+                        let value = blurred.get(y.checked_mul(new_width)?.checked_add(x)?)?;
+                        mixed.push(blend_coverage(layer.blend, *old, *value, layer.opacity));
+                    }
+                }
+                pixels = mixed;
+                current = next_region;
+            }
+        }
+    }
+    let ox = usize::try_from(requested.x0 - current.x0).ok()?;
+    let oy = usize::try_from(requested.y0 - current.y0).ok()?;
+    let rw = usize::try_from(requested.width()).ok()?;
+    let rh = usize::try_from(requested.height()).ok()?;
+    let cw = usize::try_from(current.width()).ok()?;
+    let mut out = Vec::with_capacity(rw.checked_mul(rh)?);
+    for y in oy..oy.checked_add(rh)? {
+        out.extend_from_slice(pixels.get(y.checked_mul(cw)?.checked_add(ox)?..y.checked_mul(cw)?.checked_add(ox)?.checked_add(rw)?)?);
+    }
+    Some(out)
+}
+
+fn gaussian_blur_region(input: &[f32], region: Rect, radius: u8) -> Option<(Vec<f32>, Rect)> {
+    let r = i32::from(radius);
+    let output = Rect::new(region.x0.saturating_add(r), region.y0.saturating_add(r), region.x1.saturating_sub(r), region.y1.saturating_sub(r));
+    if output.is_empty() {
+        return None;
+    }
+    let width = usize::try_from(region.width()).ok()?;
+    let height = usize::try_from(region.height()).ok()?;
+    if width.checked_mul(height)? != input.len() {
+        return None;
+    }
+    let sigma = (f32::from(radius) / 3.0).max(0.5);
+    let mut kernel = Vec::with_capacity(usize::from(radius).saturating_mul(2).saturating_add(1));
+    let mut total = 0.0f32;
+    for dx in -r..=r {
+        let weight = (-0.5 * (dx as f32 / sigma).powi(2)).exp();
+        kernel.push(weight);
+        total += weight;
+    }
+    if !total.is_finite() || total <= 0.0 {
+        return None;
+    }
+    for weight in &mut kernel {
+        *weight /= total;
+    }
+    let ow = usize::try_from(output.width()).ok()?;
+    let oh = usize::try_from(output.height()).ok()?;
+    let mut temp = vec![0.0; ow.checked_mul(height)?];
+    for y in 0..height {
+        for x in 0..ow {
+            let center = x + usize::try_from(r).ok()?;
+            let mut value = 0.0;
+            for (k, weight) in kernel.iter().enumerate() {
+                let sx = center + k - usize::try_from(r).ok()?;
+                value += input[y * width + sx] * weight;
+            }
+            temp[y * ow + x] = value;
+        }
+    }
+    let mut output_pixels = vec![0.0; ow.checked_mul(oh)?];
+    for y in 0..oh {
+        let center = y + usize::try_from(r).ok()?;
+        for x in 0..ow {
+            let mut value = 0.0;
+            for (k, weight) in kernel.iter().enumerate() {
+                let sy = center + k - usize::try_from(r).ok()?;
+                value += temp[sy * ow + x] * weight;
+            }
+            output_pixels[y * ow + x] = value;
+        }
+    }
+    Some((output_pixels, output))
+}
+
+/// Compose a mask stack into a small preview grid. Spatial Blur radii are scaled to the
+/// preview resolution so callers never perform a full-resolution convolution for each sample.
+pub fn sample_stack_resampled(stack: &Stack, region: Rect, size: [u32; 2]) -> Option<Vec<f32>> {
+    if region.is_empty() || size[0] == 0 || size[1] == 0 || size[0] > 256 || size[1] > 256 {
+        return None;
+    }
+    let width = usize::try_from(size[0]).ok()?;
+    let height = usize::try_from(size[1]).ok()?;
+    let sx = region.width() as f32 / size[0] as f32;
+    let sy = region.height() as f32 / size[1] as f32;
+    if !sx.is_finite() || !sy.is_finite() || sx <= 0.0 || sy <= 0.0 {
+        return None;
+    }
+    // A later Blur consumes the already blurred lower prefix, so its support adds to
+    // every earlier Blur's support. Keep that full halo around the requested preview
+    // grid and crop only after all effects have run. Clamping each Gaussian at the
+    // requested grid edge makes previews disagree with the same region in a larger
+    // UV map and creates visible seams while panning.
+    let blur_radii: Vec<usize> = stack
+        .layers
+        .iter()
+        .filter(|layer| layer.visible && layer.opacity > 0.0)
+        .filter_map(|layer| match &layer.kind {
+            EffectKind::Blur { radius } => Some((f32::from(*radius) / sx.max(sy)).round().clamp(0.0, 64.0) as usize),
+            _ => None,
+        })
+        .collect();
+    let padding = blur_radii.iter().try_fold(0usize, |total, radius| total.checked_add(*radius))?;
+    let padded_width = width.checked_add(padding.checked_mul(2)?)?;
+    let padded_height = height.checked_add(padding.checked_mul(2)?)?;
+    let count = padded_width.checked_mul(padded_height)?;
+    // Keep temporary Gaussian buffers bounded. Returning None lets the caller skip
+    // an unsupported extreme preview rather than silently drawing a clipped Blur.
+    if count > MAX_MASK_REGION_PIXELS / 3 {
+        return None;
+    }
+    let sample_x = |x: usize| region.x0.saturating_add(((x as f32 - padding as f32 + 0.5) * sx).floor() as i32);
+    let sample_y = |y: usize| region.y0.saturating_add(((y as f32 - padding as f32 + 0.5) * sy).floor() as i32);
+    let mut values = vec![0.0; count];
+    for y in 0..padded_height {
+        for x in 0..padded_width {
+            values[y * padded_width + x] = stack.base.sample_channel(sample_x(x), sample_y(y), 0);
+        }
+    }
+    let mut blur_index = 0;
+    for layer in &stack.layers {
+        if !layer.visible || layer.opacity <= 0.0 {
+            continue;
+        }
+        match &layer.kind {
+            EffectKind::Paint => {
+                for y in 0..padded_height {
+                    for x in 0..padded_width {
+                        let dx = sample_x(x);
+                        let dy = sample_y(y);
+                        let source = layer.surface.sample_channel(dx, dy, 0);
+                        let alpha = if layer.surface.channels() > 3 { layer.surface.sample_channel(dx, dy, 3) } else { 0.0 } * layer.opacity;
+                        let index = y * padded_width + x;
+                        values[index] = blend_coverage(layer.blend, values[index], source, alpha);
+                    }
+                }
+            }
+            EffectKind::Fill { value, .. } => {
+                for y in 0..padded_height {
+                    for x in 0..padded_width {
+                        let dx = sample_x(x);
+                        let dy = sample_y(y);
+                        if let Some(fill) = fill_sample(layer, *value, dx, dy) {
+                            let index = y * padded_width + x;
+                            values[index] = blend_coverage(layer.blend, values[index], fill, layer.opacity);
+                        }
+                    }
+                }
+            }
+            EffectKind::Levels { input_black, gamma, input_white, output_black, output_white } => {
+                for value in &mut values {
+                    let adjusted = levels(*value, *input_black, *gamma, *input_white, *output_black, *output_white);
+                    *value = blend_coverage(layer.blend, *value, adjusted, layer.opacity);
+                }
+            }
+            EffectKind::Blur { .. } => {
+                let scaled = u8::try_from(*blur_radii.get(blur_index)?).ok()?;
+                blur_index += 1;
+                if scaled > 0
+                    && let Some(blurred) = gaussian_blur_grid(&values, padded_width, padded_height, scaled)
+                {
+                    for (value, blur) in values.iter_mut().zip(blurred) {
+                        *value = blend_coverage(layer.blend, *value, blur, layer.opacity);
+                    }
+                }
+            }
+        }
+    }
+    let output_count = width.checked_mul(height)?;
+    let mut output = vec![0.0; output_count];
+    for y in 0..height {
+        let source_start = (y + padding) * padded_width + padding;
+        let target_start = y * width;
+        output[target_start..target_start + width].copy_from_slice(&values[source_start..source_start + width]);
+    }
+    Some(output)
+}
+
+fn gaussian_blur_grid(input: &[f32], width: usize, height: usize, radius: u8) -> Option<Vec<f32>> {
+    if width.checked_mul(height)? != input.len() {
+        return None;
+    }
+    let r = usize::from(radius);
+    let sigma = (f32::from(radius) / 3.0).max(0.5);
+    let mut kernel = Vec::with_capacity(r.saturating_mul(2).saturating_add(1));
+    let mut total = 0.0;
+    for offset in -(r as i32)..=(r as i32) {
+        let weight = (-0.5 * (offset as f32 / sigma).powi(2)).exp();
+        kernel.push(weight);
+        total += weight;
+    }
+    if total <= 0.0 || !total.is_finite() {
+        return None;
+    }
+    for weight in &mut kernel {
+        *weight /= total;
+    }
+    let mut temp = vec![0.0; input.len()];
+    let mut output = vec![0.0; input.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let mut value = 0.0;
+            for (i, weight) in kernel.iter().enumerate() {
+                let ox = i as isize - r as isize;
+                let sx = (x as isize + ox).clamp(0, width.saturating_sub(1) as isize) as usize;
+                value += input[y * width + sx] * weight;
+            }
+            temp[y * width + x] = value;
+        }
+    }
+    for y in 0..height {
+        for x in 0..width {
+            let mut value = 0.0;
+            for (i, weight) in kernel.iter().enumerate() {
+                let oy = i as isize - r as isize;
+                let sy = (y as isize + oy).clamp(0, height.saturating_sub(1) as isize) as usize;
+                value += temp[sy * width + x] * weight;
+            }
+            output[y * width + x] = value;
+        }
+    }
+    Some(output)
 }
 
 fn fill_sample(layer: &photocraft_doc::mask_paint::Paint, value: f32, x: i32, y: i32) -> Option<f32> {
@@ -553,6 +1049,7 @@ mod tests {
             name: "effect".into(),
             visible: true,
             opacity,
+            blend: BlendMode::Normal,
             surface: Surface::new(PixelFormat::RGBA8),
             fill_map: None,
             fill_map_size: [0, 0],
@@ -580,6 +1077,7 @@ mod tests {
                     name: "paint".into(),
                     visible: true,
                     opacity: 0.8,
+                    blend: BlendMode::Normal,
                     surface: paint_surface,
                     fill_map: None,
                     fill_map_size: [0, 0],
@@ -619,6 +1117,7 @@ mod tests {
                 name: "many tiles".into(),
                 visible: true,
                 opacity: 1.0,
+                blend: BlendMode::Normal,
                 surface: surface.clone(),
                 fill_map: None,
                 fill_map_size: [0, 0],
@@ -676,6 +1175,7 @@ mod tests {
                     name: "source".into(),
                     visible: true,
                     opacity: 0.73,
+                    blend: BlendMode::Normal,
                     surface,
                     fill_map: None,
                     fill_map_size: [0, 0],
@@ -714,6 +1214,7 @@ mod tests {
                 name: "negative source".into(),
                 visible: true,
                 opacity: 0.65,
+                blend: BlendMode::Normal,
                 surface,
                 fill_map: None,
                 fill_map_size: [0, 0],
@@ -747,6 +1248,7 @@ mod tests {
                 name: "default".into(),
                 visible: true,
                 opacity: 0.5,
+                blend: BlendMode::Normal,
                 surface: surface.clone(),
                 fill_map: None,
                 fill_map_size: [0, 0],
@@ -895,5 +1397,242 @@ mod tests {
         assert!((mask.surface.read_region(Rect::new(0, 0, 1, 1))[0] - 0.5).abs() < 0.001);
         let stored_base = mask.paint.as_ref().map(|s| s.base.default_pixel()[0]);
         assert!((stored_base.unwrap_or_default() - 0.25).abs() < 0.00002);
+    }
+
+    #[test]
+    fn blur_is_a_global_gaussian_stack_effect_with_halo_correct_incremental_damage() {
+        let gray = PixelFormat::GRAY8;
+        let rgba = PixelFormat::RGBA8;
+        let mut surface = Surface::with_default(rgba, &[0.0, 0.0, 0.0, 0.0]);
+        surface.write_region(Rect::new(255, 8, 256, 9), &[1.0, 1.0, 1.0, 1.0]);
+        let base = Surface::with_default(gray, &[0.0]);
+        let mut paint = layer(EffectKind::Paint, 1.0);
+        paint.surface = surface;
+        let blur = layer(EffectKind::Blur { radius: 4 }, 1.0);
+        let mut mask = LayerMask::hide_all();
+        mask.surface = base.clone();
+        mask.paint = Some(Stack { base, layers: vec![paint, blur], active: 0 });
+
+        refresh_in_canvas(&mut mask, Rect::new(0, 0, 512, 16));
+        assert!(mask.surface.sample_channel(255, 8, 0) > 0.08, "cache and point sample must preserve the blurred impulse");
+        assert!(mask.surface.sample_channel(256, 8, 0) > 0.01, "blur crosses the 256px tile boundary");
+        assert!(mask.surface.sample_channel(262, 8, 0) < 0.01, "finite Gaussian support leaves distant pixels unchanged");
+        let stack = mask.paint.as_ref().unwrap();
+        for x in 250..=262 {
+            assert!((sample_stack_pixel(stack, x, 8) - mask.surface.sample_channel(x, 8, 0)).abs() < 0.01);
+        }
+
+        let old = mask.paint.clone();
+        if let Some(stack) = &mut mask.paint {
+            stack.layers[0].surface.write_region(Rect::new(255, 8, 256, 9), &[0.0, 0.0, 0.0, 0.0]);
+        }
+        refresh_changes_in_canvas(&mut mask, old.as_ref(), Rect::new(0, 0, 512, 16));
+        assert!(mask.surface.sample_channel(256, 8, 0) < 0.01, "changing source Paint invalidates downstream Blur halo");
+    }
+
+    #[test]
+    fn resampled_blur_uses_padded_support_across_preview_boundaries() {
+        let base = Surface::with_default(PixelFormat::GRAY8, &[0.0]);
+        let mut paint = layer(EffectKind::Paint, 1.0);
+        let mut surface = Surface::with_default(PixelFormat::RGBA8, &[0.0, 0.0, 0.0, 0.0]);
+        surface.write_region(Rect::new(7, 8, 8, 9), &[1.0, 1.0, 1.0, 1.0]);
+        paint.surface = surface;
+        let stack = Stack { base, layers: vec![paint, layer(EffectKind::Blur { radius: 3 }, 1.0), layer(EffectKind::Blur { radius: 2 }, 1.0)], active: 0 };
+
+        // Both requests use one source pixel per preview pixel. The smaller request
+        // begins five pixels from the impulse; only the combined support of both
+        // sequential Gaussian stages can carry it into the crop.
+        let full = sample_stack_resampled(&stack, Rect::new(0, 0, 32, 16), [32, 16]).unwrap();
+        let crop = sample_stack_resampled(&stack, Rect::new(12, 0, 20, 16), [8, 16]).unwrap();
+        for y in 0..16 {
+            for x in 0..8 {
+                assert!((crop[y * 8 + x] - full[y * 32 + x + 12]).abs() < 1e-6, "preview seam at ({x}, {y})");
+            }
+        }
+        assert!(crop[8 * 8] > 0.0, "padded stages preserve Blur energy entering through the preview boundary");
+    }
+
+    #[test]
+    fn hidden_downstream_blur_does_not_disable_prefix_refresh() {
+        let region = Rect::new(0, 0, 16, 16);
+        let base = Surface::with_default(PixelFormat::GRAY8, &[0.2]);
+        let lower = layer(EffectKind::Fill { value: 0.4, rotation: 0.0, repeat_u: false, repeat_v: false, mirror_u: false, mirror_v: false }, 1.0);
+        let mut active = layer(EffectKind::Paint, 1.0);
+        active.surface = Surface::with_default(PixelFormat::RGBA8, &[0.0; 4]);
+        let mut blur = layer(EffectKind::Blur { radius: 8 }, 1.0);
+        blur.visible = false;
+        let mut mask = LayerMask::hide_all();
+        mask.surface = base.clone();
+        mask.paint = Some(Stack { base, layers: vec![lower, active, blur], active: 1 });
+        let prefix = compose_prefix(mask.paint.as_ref().unwrap(), 1, region).unwrap();
+        mask.paint.as_mut().unwrap().layers[1].surface.write_region(Rect::new(7, 7, 8, 8), &[1.0, 1.0, 1.0, 1.0]);
+
+        assert!(refresh_from_prefix(&mut mask, region, 1, &prefix), "an invisible Blur is an identity suffix");
+        let mut full = mask.clone();
+        refresh_in_canvas(&mut full, region);
+        assert_eq!(mask.surface.read_region(region), full.surface.read_region(region));
+    }
+
+    #[test]
+    fn live_blur_damage_recomputes_neighbors_and_clips_at_canvas_edges() {
+        let canvas = Rect::new(0, 0, 32, 24);
+        let base = Surface::with_default(PixelFormat::GRAY8, &[0.15]);
+        let mut source = Surface::with_default(PixelFormat::RGBA8, &[0.0, 0.0, 0.0, 0.0]);
+        source.write_region(Rect::new(0, 9, 1, 10), &[1.0, 1.0, 1.0, 1.0]);
+        let mut paint = layer(EffectKind::Paint, 1.0);
+        paint.surface = source;
+        let blur = layer(EffectKind::Blur { radius: 4 }, 1.0);
+        let mut cached = LayerMask::hide_all();
+        cached.surface = base.clone();
+        cached.paint = Some(Stack { base: base.clone(), layers: vec![paint, blur], active: 0 });
+        refresh_in_canvas(&mut cached, canvas);
+        assert!(cached.surface.sample_channel(1, 9, 0) > 0.2, "Blur spreads onto neighboring output pixels");
+
+        let stack = cached.paint.as_mut().unwrap();
+        stack.layers[0].surface.write_region(Rect::new(0, 9, 1, 10), &[0.0, 0.0, 0.0, 0.0]);
+        refresh_damage_in_canvas(&mut cached, Rect::new(0, 9, 1, 10), canvas);
+
+        let mut full = cached.clone();
+        refresh_in_canvas(&mut full, canvas);
+        assert_eq!(cached.surface.read_region(canvas), full.surface.read_region(canvas));
+        assert!(cached.surface.sample_channel(1, 9, 0) < 0.16, "source damage refreshes the Blur halo during a live stroke");
+        assert!(cached.surface.tiles().all(|(coord, _)| coord.tx >= 0 && coord.ty >= 0), "damage is clipped to the document canvas");
+    }
+
+    #[test]
+    fn blur_damage_banded_refresh_matches_single_region_composition() {
+        let canvas = Rect::new(0, 0, 1024, 768);
+        let base = Surface::with_default(PixelFormat::GRAY8, &[0.12]);
+        let mut paint = layer(EffectKind::Paint, 1.0);
+        paint.surface = Surface::with_default(PixelFormat::RGBA8, &[0.0; 4]);
+        let blur = layer(EffectKind::Blur { radius: 12 }, 0.75);
+        let mut cached = LayerMask::hide_all();
+        cached.surface = base.clone();
+        cached.paint = Some(Stack { base, layers: vec![paint, blur], active: 0 });
+        refresh_in_canvas(&mut cached, canvas);
+
+        let damage = Rect::new(0, 0, 768, 768);
+        let bands = refresh_bands(damage, 512);
+        assert!(bands.len() > 1, "regression must exercise multiple non-overlapping bands");
+        cached.paint.as_mut().unwrap().layers[0].surface.write_region(Rect::new(254, 254, 258, 258), &vec![0.9; 4 * 4 * 4]);
+        refresh_damage_in_canvas(&mut cached, damage, canvas);
+
+        let stack = cached.paint.as_ref().unwrap();
+        let full_pixels = compose_stack_region(stack, stack.layers.len(), canvas).unwrap();
+        let mut full = Surface::with_default(cached.surface.format(), &cached.surface.default_pixel());
+        full.write_region(canvas, &full_pixels);
+        assert_eq!(cached.surface.read_region(canvas), full.read_region(canvas), "parallel band composition must match a single full-region Blur");
+    }
+
+    #[test]
+    fn multi_tile_blur_damage_merges_only_complete_rectangles_and_matches_full_refresh() {
+        use photocraft_geom::TileCoord;
+
+        let canvas = Rect::new(0, 0, 768, 768);
+        let base = Surface::with_default(PixelFormat::GRAY8, &[0.12]);
+        let mut paint = layer(EffectKind::Paint, 1.0);
+        paint.surface = Surface::with_default(PixelFormat::RGBA8, &[0.0; 4]);
+        let blur = layer(EffectKind::Blur { radius: 12 }, 0.8);
+        let mut cached = LayerMask::hide_all();
+        cached.surface = base.clone();
+        cached.paint = Some(Stack { base, layers: vec![paint, blur], active: 0 });
+        refresh_in_canvas(&mut cached, canvas);
+
+        let old = cached.paint.clone();
+        let damage = Rect::new(220, 220, 550, 550);
+        let source = (0..damage.width() as usize * damage.height() as usize).flat_map(|_| [0.82, 0.1, 0.0, 1.0]).collect::<Vec<_>>();
+        cached.paint.as_mut().unwrap().layers[0].surface.write_region(damage, &source);
+        refresh_changes_in_canvas(&mut cached, old.as_ref(), canvas);
+
+        let changed_tiles = (0..3).flat_map(|y| (0..3).map(move |x| TileCoord::new(x, y))).collect::<Vec<_>>();
+        let merged = merge_adjacent_tiles(&changed_tiles);
+        assert_eq!(merged.len(), 1, "nine adjacent output tiles need one Blur recomposition");
+        assert_eq!(merged[0].0, canvas);
+        let sparse = merge_adjacent_tiles(&[TileCoord::new(0, 0), TileCoord::new(1, 0), TileCoord::new(3, 0)]);
+        assert_eq!(sparse.len(), 2, "a gap must remain outside both recomposition regions");
+        assert_eq!(sparse[0].0, Rect::new(0, 0, 512, 256));
+        assert_eq!(sparse[1].0, Rect::new(768, 0, 1024, 256));
+
+        let mut full = cached.clone();
+        refresh_in_canvas(&mut full, canvas);
+        assert_eq!(cached.surface.read_region(canvas), full.surface.read_region(canvas), "merged incremental Blur exactly matches a full rebuild");
+    }
+
+    #[test]
+    fn blur_parameter_visibility_and_order_changes_match_a_full_refresh() {
+        let canvas = Rect::new(0, 0, 512, 512);
+        let base = Surface::with_default(PixelFormat::GRAY8, &[0.1]);
+        let mut source = Surface::with_default(PixelFormat::RGBA8, &[0.0, 0.0, 0.0, 0.0]);
+        source.write_region(Rect::new(248, 248, 264, 264), &vec![1.0; 16 * 16 * 4]);
+        let mut paint = layer(EffectKind::Paint, 1.0);
+        paint.surface = source;
+        let blur = layer(EffectKind::Blur { radius: 4 }, 0.8);
+        let fill = layer(EffectKind::Fill { value: 0.35, rotation: 0.0, repeat_u: true, repeat_v: true, mirror_u: false, mirror_v: false }, 0.6);
+        let initial = Stack { base: base.clone(), layers: vec![paint, blur, fill], active: 1 };
+
+        let assert_matches_full = |mut cached: LayerMask, edit: &dyn Fn(&mut Stack)| {
+            let old = cached.paint.clone();
+            if let Some(stack) = &mut cached.paint {
+                edit(stack);
+            }
+            refresh_changes_in_canvas(&mut cached, old.as_ref(), canvas);
+            let mut full = cached.clone();
+            refresh_in_canvas(&mut full, canvas);
+            assert_eq!(cached.surface.read_region(canvas), full.surface.read_region(canvas));
+        };
+
+        for scenario in 0..6 {
+            let mut cached = LayerMask::hide_all();
+            cached.surface = base.clone();
+            cached.paint = Some(initial.clone());
+            refresh_in_canvas(&mut cached, canvas);
+            assert_matches_full(cached, &|stack| match scenario {
+                0 => stack.layers[1].kind = EffectKind::Blur { radius: 9 },
+                1 => stack.layers[1].opacity = 0.35,
+                2 => stack.layers[1].visible = false,
+                3 => stack.layers.swap(0, 1),
+                4 => {
+                    stack.layers.remove(1);
+                }
+                _ => stack.layers.insert(1, layer(EffectKind::Blur { radius: 7 }, 0.65)),
+            });
+        }
+    }
+
+    #[test]
+    fn grayscale_blend_modes_use_layer_coverage_for_paint_and_fill() {
+        let mut fill = layer(EffectKind::Fill { value: 0.5, rotation: 0.0, repeat_u: true, repeat_v: true, mirror_u: false, mirror_v: false }, 0.5);
+        fill.blend = BlendMode::Multiply;
+        let mut paint = layer(EffectKind::Paint, 0.5);
+        paint.blend = BlendMode::Multiply;
+        paint.surface.set_default_pixel(&[0.5, 0.5, 0.5, 1.0]);
+        let base = Surface::with_default(PixelFormat::GRAY8, &[0.5]);
+        let stack = Stack { base, layers: vec![fill, paint], active: 1 };
+        assert!((sample_stack_pixel(&stack, 0, 0) - 0.28125).abs() < 0.01);
+    }
+
+    #[test]
+    fn compact_mask_blend_modes_have_scalar_coverage_semantics() {
+        let below = 0.25;
+        let source = 0.75;
+        let coverage = 0.5;
+        let cases = [
+            (BlendMode::Normal, 0.5),
+            (BlendMode::Darken, 0.25),
+            (BlendMode::Multiply, 0.21875),
+            (BlendMode::Lighten, 0.5),
+            (BlendMode::Screen, 0.53125),
+            (BlendMode::LinearDodge, 0.625),
+            (BlendMode::Subtract, 0.125),
+            (BlendMode::Difference, 0.375),
+        ];
+        assert_eq!(photocraft_doc::mask_paint::MASK_BLEND_MODES.len(), cases.len());
+        for (mode, expected) in cases {
+            assert!(photocraft_doc::mask_paint::is_mask_blend_mode(mode));
+            assert!((blend_coverage(mode, below, source, coverage) - expected).abs() < 1e-6, "{mode:?}");
+        }
+        for rejected in [BlendMode::ColorBurn, BlendMode::Overlay, BlendMode::Hue, BlendMode::Saturation, BlendMode::Color, BlendMode::Luminosity] {
+            assert!(!photocraft_doc::mask_paint::is_mask_blend_mode(rejected), "{rejected:?} is outside the mask blend set");
+        }
     }
 }

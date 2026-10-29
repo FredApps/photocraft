@@ -6,10 +6,14 @@ use std::sync::Arc;
 pub(crate) fn regions(previous: &mut Option<Arc<Document>>, doc: &Arc<Document>, fallback: Option<Rect>) -> Vec<Rect> {
     let old = previous.replace(doc.clone());
     let regions = match sparse(old.as_deref(), doc) {
+        // Mask Paint stack edits can change the Gray UV display without changing
+        // ordinary layer pixels. In that case sparse() correctly finds no raster
+        // delta, and the engine's command damage is the only useful invalidation.
+        Some(regions) if regions.is_empty() => fallback.filter(|rect| !rect.is_empty()).into_iter().collect(),
         Some(regions) => regions.into_iter().map(|r| fallback.map_or(r, |f| r.intersect(&f))).filter(|r| !r.is_empty()).collect(),
-        None => vec![fallback.unwrap_or_else(|| doc.bounds())],
+        None => vec![fallback.filter(|rect| !rect.is_empty()).unwrap_or_else(|| doc.bounds())],
     };
-    coalesce(regions, doc.bounds())
+    coalesce(regions.into_iter().map(|rect| rect.intersect(&doc.bounds())).filter(|rect| !rect.is_empty()).collect(), doc.bounds())
 }
 
 fn coalesce(mut regions: Vec<Rect>, bounds: Rect) -> Vec<Rect> {
@@ -80,6 +84,13 @@ fn sparse(old: Option<&Document>, doc: &Document) -> Option<Vec<Rect>> {
     let mut regions = Vec::new();
     // Group/effect/adjustment changes use the compositor's conservative damage path.
     for (a, b) in old.layers.iter().zip(&mut probe.layers) {
+        // The sparse byte diff below only examines ordinary raster content. Mask
+        // Paint stacks have their own flattened surface and can drive the Gray UV
+        // view without changing those bytes, so defer to the engine command's
+        // reported damage whenever a layer mask changed.
+        if a.mask != b.mask {
+            return None;
+        }
         match (&a.content, &mut b.content) {
             (LayerContent::Raster(x), LayerContent::Raster(y)) => {
                 if x.format() != y.format() || x.default_bytes() != y.default_bytes() {
@@ -140,5 +151,18 @@ mod tests {
         assert_eq!(rects.iter().map(|r| u64::from(r.width()) * u64::from(r.height())).sum::<u64>(), 2);
         s.execute("edit.undo", serde_json::json!({})).unwrap();
         assert_eq!(regions(&mut previous, &s.active().unwrap().doc, None).len(), 1);
+    }
+
+    #[test]
+    fn empty_fallback_uses_canvas_only_when_sparse_diff_is_unavailable() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", serde_json::json!({"width":64,"height":48})).unwrap();
+        let doc = session.active().unwrap().doc.clone();
+        let mut no_snapshot = None;
+        assert_eq!(regions(&mut no_snapshot, &doc, Some(Rect::EMPTY)), vec![doc.bounds()]);
+
+        let mut unchanged_snapshot = Some(doc.clone());
+        assert!(regions(&mut unchanged_snapshot, &doc, Some(Rect::EMPTY)).is_empty());
     }
 }
