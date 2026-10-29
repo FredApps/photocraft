@@ -8,6 +8,7 @@ use std::sync::{Mutex, OnceLock};
 
 use photocraft_color::{PixelFormat, SampleType};
 use photocraft_doc::vector::ShapeLayer;
+use photocraft_doc::{Layer, LayerContent};
 use photocraft_geom::{Rect, TileCoord};
 use photocraft_raster::Surface;
 
@@ -95,6 +96,26 @@ pub fn split(sh: &ShapeLayer, canvas: Rect, depth: SampleType) -> Option<(Surfac
     let tick = c.1;
     c.0.insert(key, (parts.clone(), tick, sh.cache.clone()));
     Some(parts)
+}
+
+/// The stroke-only shape a Frame's stroke draws: the Frame tool's own border (`Layer::frame`),
+/// else a Photoshop Frame's `Group::frame_stroke` along the group's enabled vector mask (the
+/// frame outline). `None` for other layers and for a frame without a visible stroke (or, for a
+/// Photoshop Frame, a vector mask).
+pub fn frame_shape(layer: &Layer) -> Option<ShapeLayer> {
+    let LayerContent::Group(g) = &layer.content else { return None };
+    if let Some(shape) = layer.frame.as_ref().and_then(photocraft_doc::Frame::stroke_shape) {
+        return Some(shape);
+    }
+    let stroke = g.frame_stroke.as_ref().filter(|s| s.width.is_finite() && s.width > 0.0 && s.opacity > 0.0)?;
+    let vm = layer.vector_mask.as_ref().filter(|m| m.enabled && !m.path.is_empty())?;
+    Some(ShapeLayer { path: vm.path.clone(), fill: None, stroke: Some(stroke.clone()), ..ShapeLayer::default() })
+}
+
+/// A Photoshop Frame's stroke ([`frame_shape`]) rendered over `canvas` in RGBA at `depth`, from
+/// the same cache as the shape strokes. It goes above the frame's (masked) content.
+pub fn frame_stroke(layer: &Layer, canvas: Rect, depth: SampleType) -> Option<Surface> {
+    split(&frame_shape(layer)?, canvas, depth).map(|(_, stroke)| stroke)
 }
 
 /// Fits the stroke part to the shape's own pixels: where they reach past the fill, the stroke

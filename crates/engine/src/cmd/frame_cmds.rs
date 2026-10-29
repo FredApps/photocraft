@@ -113,7 +113,12 @@ fn new_frame(s: &mut Session, p: &Value) -> Result<Value> {
         g.blend = BlendMode::Normal;
         g.frame = Some(f);
         refresh(&mut g);
-        let gid = doc.insert_above(content.or(*active), g);
+        // A frame is one row, as in Photoshop: closed, so the next new layer goes above it rather
+        // than into it.
+        if let LayerContent::Group(group) = &mut g.content {
+            group.expanded = false;
+        }
+        let gid = crate::layer_place::insert_new(doc, content.or(*active), g, crate::layer_place::Place::AutoEditable);
         if let Some(child) = child {
             doc.remove(child.id).ok_or(EngineError::NoLayer(child.id))?;
             doc.layer_mut(gid).and_then(Layer::children_mut).ok_or(EngineError::NoLayer(gid))?.push(child);
@@ -164,11 +169,10 @@ fn frame_from_layers(s: &mut Session, p: &Value) -> Result<Value> {
             Ok(json!({"layer":id.0,"frame":[bounds.x0,bounds.y0,bounds.width(),bounds.height()]}))
         }
         Err(e) => {
-            s.undo();
+            // The group couldn't be framed: take the grouping back, leaving nothing to redo and
+            // no grouping step to record.
+            s.rollback();
             s.journal.truncate(journal);
-            if let Some(st) = s.active_mut() {
-                st.history.clear_redo();
-            }
             Err(e)
         }
     }
@@ -227,7 +231,7 @@ fn convert(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let name = p.get("name").map(|v| v.as_str().ok_or_else(|| bad("name must be a string"))).transpose()?.unwrap_or(&l.name).to_string();
         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
-        l.content = LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None });
+        l.content = LayerContent::Group(photocraft_doc::Group { children: vec![], expanded: false, artboard: None, frame_stroke: None });
         l.name = name;
         l.frame = Some(f);
         l.mask = None;

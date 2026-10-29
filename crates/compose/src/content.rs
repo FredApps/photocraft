@@ -1,8 +1,8 @@
-use super::composite::{adjustment_quantum, composite_stack};
+use super::composite::{adjustment_quantum, blend_into, composite_stack};
 use super::ctx::Ctx;
 use super::extents::{effect_shape, effect_source_bounds, mask_vals, shapeless_stroke_bounds, transparent_outside};
 use super::fx_cache::effect_maps;
-use super::*;
+use super::{BlendMode, Buffer, Document, Fill, Layer, LayerContent, Pattern, Rect, Surface, bounds, effects, gradient_fill, pattern, shape_split};
 
 /// Tile size for parallel rendering (tile results are independent).
 pub const RENDER_TILE: i32 = 256;
@@ -94,19 +94,11 @@ pub(crate) fn render_content(layer: &Layer, rect: Rect, cx: &Ctx) -> Option<Buff
             p[3] *= k;
         }
     }
-    if let Some(stroke) = frame_stroke(layer, cx.canvas, cx.depth) {
-        let border = surface_to_buffer(&stroke, rect);
-        for (d, s) in buf.px.iter_mut().zip(&border.px) {
-            *d = psblend::composite(BlendMode::Normal, *d, *s, 1.0);
-        }
+    // A Frame's stroke lies over its masked content; the frame doesn't clip it.
+    if let Some(stroke) = shape_split::frame_stroke(layer, cx.canvas, cx.depth) {
+        blend_into(&mut buf, &surface_to_buffer(&stroke, rect), BlendMode::Normal, 1.0);
     }
     Some(buf)
-}
-
-/// A frame's vector border, cached by shape geometry and depth, shared by CPU and GPU.
-pub fn frame_stroke(layer: &Layer, canvas: Rect, depth: photocraft_color::SampleType) -> Option<Surface> {
-    let shape = layer.frame.as_ref()?.stroke_shape()?;
-    shape_split::split(&shape, canvas, depth).map(|(_, stroke)| stroke)
 }
 
 /// The shape `layer`'s effect maps are built from over `rect` (row-major; for the GPU
