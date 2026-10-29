@@ -1183,7 +1183,8 @@ impl LiveStroke {
             if self.mask_preview_submitted < self.mask_preview_generation {
                 self.submit_mask_preview();
             }
-            loop {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
                 if let Some(result) = self.mask_preview_worker.as_ref().and_then(MaskPreviewWorker::take_result) {
                     if result.generation == self.mask_preview_generation {
                         return self.publish_mask_preview_result(result, true);

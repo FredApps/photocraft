@@ -108,7 +108,7 @@ def make_stroke(control: Control, x: int, y: int, moves: int, previous: Any) -> 
         if summary and summary.get("frames", 0) > 0 and summary != previous:
             return snapshot, refreshes
         time.sleep(0.04)
-    return control.inspect(), refreshes
+    raise TimeoutError(f"no new strokeTrace after the stroke at ({x}, {y}); the trace channel may be disabled")
 
 
 def summarize(kind: str, snapshots: list[dict[str, Any]], refreshes: list[list[dict[str, Any]]], warmup: int) -> dict[str, Any]:

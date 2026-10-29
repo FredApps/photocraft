@@ -803,8 +803,8 @@ fn mask_blend_command(mode: photocraft_color::BlendMode) -> Option<&'static str>
 
 fn blend_selector(ui: &mut egui::Ui, doc: u64, layer: u64, index: usize, canonical: photocraft_color::BlendMode, actions: &mut Vec<(String, Value)>) {
     use photocraft_doc::mask_paint::MASK_BLEND_MODES;
-    let id = egui::Id::unique(("mask-effect-blend", doc, layer, index));
-    let mut selected = ui.ctx().data_mut(|data| data.get_temp::<String>(id)).unwrap_or_else(|| mask_blend_command(canonical).unwrap_or("legacy").to_owned());
+    let _ = doc;
+    let mut selected = mask_blend_command(canonical).unwrap_or("legacy").to_owned();
     let previous = selected.clone();
     let selected_label = MASK_BLEND_MODES
         .iter()
@@ -861,7 +861,6 @@ fn blend_selector(ui: &mut egui::Ui, doc: u64, layer: u64, index: usize, canonic
             actions.push(("uv.maskPaint.modify".into(), json!({"layer":layer,"index":index,"blend":value})));
         }
     }
-    ui.ctx().data_mut(|data| data.insert_temp(id, selected));
 }
 
 /// Black-to-white source-value control. It stages pointer movement in UI memory and commits one

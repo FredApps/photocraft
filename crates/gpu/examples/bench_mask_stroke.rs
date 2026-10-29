@@ -88,11 +88,7 @@ fn render_capture(
             wgpu::TexelCopyTextureInfo {
                 texture: out.texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: out.origin[0] + (overlap.x0 - out.rect.x0) as u32,
-                    y: out.origin[1] + (overlap.y0 - out.rect.y0) as u32,
-                    z: 0,
-                },
+                origin: wgpu::Origin3d { x: out.origin[0] + (overlap.x0 - out.rect.x0) as u32, y: out.origin[1] + (overlap.y0 - out.rect.y0) as u32, z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
@@ -200,7 +196,8 @@ fn max_difference(a: &[[f32; 4]], b: &[[f32; 4]]) -> Result<f32, Box<dyn Error>>
 fn main() -> Result<(), Box<dyn Error>> {
     let backend = match std::env::var("PHOTOCRAFT_MASK_BENCH_BACKEND").ok().as_deref() {
         Some("vulkan") => wgpu::Backends::VULKAN,
-        Some("dx12") | None => wgpu::Backends::DX12,
+        Some("dx12") => wgpu::Backends::DX12,
+        None => wgpu::Backends::PRIMARY,
         Some(other) => return Err(format!("unsupported PHOTOCRAFT_MASK_BENCH_BACKEND: {other}").into()),
     };
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: backend, ..wgpu::InstanceDescriptor::new_without_display_handle() });

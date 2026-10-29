@@ -220,15 +220,27 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
                 }
                 let width = bounds.width();
                 let height = bounds.height();
-                let mut pixels = Vec::with_capacity((width as usize).saturating_mul(height as usize).saturating_mul(4));
-                for y in bounds.y0..bounds.y1 {
-                    for x in bounds.x0..bounds.x1 {
-                        let value = selection.sample_channel(x, y, 0).clamp(0.0, 1.0);
-                        pixels.extend_from_slice(&[value, value, value, 1.0]);
-                    }
+                if u64::from(width) * u64::from(height) > 64_000_000 {
+                    return Err(bad("Fill selections must contain at most 64 million pixels"));
                 }
                 let mut map = Surface::with_default(format, &[0.0, 0.0, 0.0, 1.0]);
-                map.write_region(photocraft_geom::Rect::new(0, 0, width as i32, height as i32), &pixels);
+                for y0 in (bounds.y0..bounds.y1).step_by(256) {
+                    let y1 = y0.saturating_add(256).min(bounds.y1);
+                    let pixel_count = (width as usize)
+                        .checked_mul((y1 - y0) as usize)
+                        .and_then(|count| count.checked_mul(4))
+                        .ok_or_else(|| bad("Fill selection is too large"))?;
+                    let mut pixels = Vec::new();
+                    pixels.try_reserve_exact(pixel_count).map_err(|_| bad("Could not allocate Fill selection band"))?;
+                    for y in y0..y1 {
+                        for x in bounds.x0..bounds.x1 {
+                            let value = selection.sample_channel(x, y, 0).clamp(0.0, 1.0);
+                            pixels.extend_from_slice(&[value, value, value, 1.0]);
+                        }
+                    }
+                    let band = photocraft_geom::Rect::new(0, y0 - bounds.y0, width as i32, y1 - bounds.y0);
+                    map.try_write_region(band, &pixels).map_err(EngineError::from)?;
+                }
                 (Some(map), [width, height], Some([bounds.x0, bounds.y0, bounds.x1, bounds.y1]))
             } else {
                 (None, [0, 0], Some([canvas.x0, canvas.y0, canvas.x1, canvas.y1]))
