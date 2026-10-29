@@ -3,7 +3,9 @@ use super::consts::{ACC_FORMAT, CHUNK, CHUNK_UNIFORM, FX_BUDGET, MAP16, MAP32, O
 use super::kit::{Kit, SHADER, tex_entry, uniform_entry};
 use super::paging::{cell_rect, field_reaches, first_error, grid_rects};
 use super::textures::{FxEntry, Resident, Tex, TexKind};
-use super::*;
+use super::{
+    Compositor, DeviceHealth, DocId, Document, Fault, HashMap, Kernel, LayerContent, Plan, Rect, Role, TILE_SIZE, Unsupported, fx, plan, prefix, timing,
+};
 
 pub(crate) fn mask_fill_source_bytes([width, height]: [u32; 2], max_side: u32) -> Result<u64, Unsupported> {
     let row_width = width.div_ceil(64).checked_mul(64).ok_or_else(|| Unsupported("mask Fill image width overflows".into()))?;

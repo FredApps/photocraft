@@ -1,6 +1,6 @@
 use super::invoke::{panel_alias, proof_preset, workspace_name};
 use super::items::MenuItem;
-use super::*;
+use super::{DOCUMENT_ITEM, PhotocraftApp, Value};
 
 pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
     #[cfg(feature = "uv-workbench")]

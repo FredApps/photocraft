@@ -1,4 +1,4 @@
-use super::*;
+use super::{DOCUMENT_ITEM, DialogKind, PhotocraftApp, Value, json};
 
 /// Photoshop's Window › <panel> ids for the panels the shell already has, as `window.toggle.*`.
 pub(crate) fn panel_alias(id: &str) -> Option<&'static str> {
@@ -34,26 +34,16 @@ pub(super) fn workspace_name(id: &str) -> Option<&'static str> {
         "graphicAndWeb" => "Graphic and Web",
         "pixelArt" => "Pixel Art",
         "motion" => "Motion",
-        #[cfg(feature = "uv-workbench")]
-        "threeD" => "3D",
         _ => return None,
     })
 }
 
 /// Run a command id from any source (menu, shortcut, palette, automation).
 pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
-    #[cfg(feature = "uv-workbench")]
-    if id != "file.exit" {
-        crate::uv_project::cancel_exit(app);
-    }
     if app.automation_input
         && let Some(authorize) = app.services.automation_command.as_ref()
     {
         authorize(id, &params)?;
-    }
-    #[cfg(feature = "uv-workbench")]
-    if crate::uv_project::intercept(app, id, &params) {
-        return Ok(Value::Null);
     }
     if crate::discard_ui::intercept(app, id, &params) {
         return Ok(Value::Null);
@@ -67,158 +57,161 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
 }
 
 /// [`invoke`] without the unsaved-changes prompt, for once the user has already answered it.
-pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+fn invoke_early_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
     #[cfg(feature = "uv-workbench")]
     if let Some(result) = crate::uv_workspace::menu(app, id) {
-        return result;
+        return Some(result);
     }
     #[cfg(feature = "uv-workbench")]
     if id == "window.uvWorkbench" {
-        // With a custom native dock, its persisted layout is authoritative. The cached toggle
-        // can lag while UV tabs are projected out of an ordinary workspace.
-        let is_open = if app.ui.workspace == "3D" {
-            app.ui.docking.as_ref().map_or(app.ui.uv_workbench.open, |workspace| workspace.layout.contains(&"uvWorkbench".to_owned()))
-        } else {
-            app.ui.uv_workbench.open
-        };
-        let opening = !is_open;
-        if opening {
-            crate::uv_ui::reveal(app)?;
-        } else {
-            if app.ui.docking.is_some() {
+        return Some((|| {
+            let is_open = if app.ui.workspace == "3D" {
+                app.ui.docking.as_ref().map_or(app.ui.uv_workbench.open, |workspace| workspace.layout.contains(&"uvWorkbench".to_owned()))
+            } else {
+                app.ui.uv_workbench.open
+            };
+            if !is_open {
+                crate::uv_ui::reveal(app)?;
+            } else if app.ui.docking.is_some() {
                 crate::panel_docking::command(app, "window.panel.close", &json!({"panel":"uvWorkbench"}))
                     .ok_or("native UV panel close command was unavailable")??;
+                app.ui.uv_workbench.open = false;
             } else {
                 app.ui.dock_tabs.properties = 0;
+                app.ui.uv_workbench.open = false;
             }
-            app.ui.uv_workbench.open = false;
-        }
-        return Ok(json!({"open": app.ui.uv_workbench.open}));
+            Ok(json!({"open": app.ui.uv_workbench.open}))
+        })());
     }
     if let Some(tool) = crate::tool_shortcuts::tool(id) {
         crate::tool_memory::select(app, tool);
-        return Ok(json!({"tool": tool}));
+        return Some(Ok(json!({"tool": tool})));
     }
     if id == "help.checkForUpdates" {
-        return crate::updates_ui::check(app, ctx, params);
+        return Some(crate::updates_ui::check(app, ctx, params.clone()));
     }
     if id == "ui.symmetryTransform" {
-        return crate::symmetry_ui::begin(app).map(|_| Value::Null);
+        return Some(crate::symmetry_ui::begin(app).map(|_| Value::Null));
     }
-    if let Some(r) = crate::tool_reset::invoke(app, id, &params) {
-        return r;
+    if let Some(r) = crate::tool_reset::invoke(app, id, params) {
+        return Some(r);
     }
     // A filter on a type layer asks to rasterize it first (#4303).
-    if let Some(r) = crate::rasterize_prompt::intercept_filter(app, id, &params) {
-        return r;
+    if let Some(r) = crate::rasterize_prompt::intercept_filter(app, id, params) {
+        return Some(r);
     }
     // A pending Pen anchor is gesture state; Edit › Undo must match the keyboard.
     if id == "edit.undo" && crate::vector_ui::pen_undo_last_point(app) {
-        return Ok(Value::Null);
+        return Some(Ok(Value::Null));
     }
     // Image › Crop while the Crop tool has a pending frame commits that frame (#1918).
     if id == "image.crop" && crate::crop_ui::pending(app) {
         crate::canvas::commit_crop(app);
-        return Ok(json!({"committed": true}));
+        return Some(Ok(json!({"committed": true})));
     }
-    if let Some(result) = crate::panel_docking::command(app, id, &params) {
-        return result;
+    if let Some(result) = crate::panel_docking::command(app, id, params) {
+        return Some(result);
     }
     // Help › Discord, website, GitHub, Report an Issue.
     if let Some(url) = crate::links::url_for(id) {
-        return Ok(crate::links::open(app, ctx, url));
+        return Some(Ok(crate::links::open(app, ctx, url)));
     }
     if id == "view.proofSetup.custom" {
-        return Ok(json!({"dialog": crate::filter_dialog::open(app, "view.proofSetup")}));
+        return Some(Ok(json!({"dialog": crate::filter_dialog::open(app, "view.proofSetup")})));
     }
     // Image › Analysis tools/dialogs, Measurement Log and Notes panels, File › Import › Notes.
-    if let Some(r) = crate::analysis_ui::menu(app, id, &params) {
-        return r;
+    if let Some(r) = crate::analysis_ui::menu(app, id, params) {
+        return Some(r);
     }
     // Workspace New/Delete/Lock, Modifier Keys, custom pixel aspect, Extras/32-bit options.
-    if let Some(r) = crate::workspace_ui::menu(app, id, &params) {
-        return r;
+    if let Some(r) = crate::workspace_ui::menu(app, id, params) {
+        return Some(r);
     }
     // Window › Gradients, Patterns, Styles, Shapes, Tool Presets, Clone Source.
-    if let Some(r) = crate::preset_panels::menu(app, id, &params) {
-        return r;
+    if let Some(r) = crate::preset_panels::menu(app, id, params) {
+        return Some(r);
     }
     // Character/Paragraph Styles, Glyphs, Edit › Check Spelling dialog.
-    if let Some(r) = crate::type_panels_ui::menu(app, id, &params) {
-        return r;
+    if let Some(r) = crate::type_panels_ui::menu(app, id, params) {
+        return Some(r);
     }
     // Image > Variables (Define / Data Sets), Apply Data Set.
-    if let Some(r) = crate::variables_ui::menu(app, id, &params) {
-        return r;
+    if let Some(r) = crate::variables_ui::menu(app, id, params) {
+        return Some(r);
     }
     // Window > Timeline panel.
-    if let Some(r) = crate::timeline_ui::menu(app, id, &params) {
-        return r;
+    if let Some(r) = crate::timeline_ui::menu(app, id, params) {
+        return Some(r);
     }
     // Filter › Plug-ins (installed WebAssembly plug-ins, Install Plug-in…).
-    if let Some(r) = crate::plugin_ui::menu(app, id, &params) {
-        return r;
+    if let Some(r) = crate::plugin_ui::menu(app, id, params) {
+        return Some(r);
     }
+    // History panel menu › History Options… (without params: its dialog).
+    if let Some(r) = crate::history_options_ui::menu(app, id, params) {
+        return Some(r);
+    }
+    None
+}
+
+fn invoke_shell_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
     if id == "window.panel.brushSettings" {
         app.ui.brush_tab = 0;
     }
     // View/Window/Type shell items, and dialogs/pickers in front of File commands.
     // Edit › Preferences, Keyboard Shortcuts, Color Settings and other Edit dialogs.
-    if let Some(r) = crate::prefs_ui::invoke(app, ctx, id, &params) {
-        return r;
+    if let Some(r) = crate::prefs_ui::invoke(app, ctx, id, params) {
+        return Some(r);
     }
     // Save for Web's dialog would export the committed document, not the open Free Transform (#6737).
     if id == crate::transform_tool::SAVE_FOR_WEB
         && let Some(r) = crate::transform_tool::intercept(app, id)
     {
-        return r;
+        return Some(r);
     }
     // Save for Web, Print and the other File-menu dialogs added with slices.
-    if let Some(r) = crate::file_ui::invoke(app, ctx, id, &params) {
-        return r;
+    if let Some(r) = crate::file_ui::invoke(app, ctx, id, params) {
+        return Some(r);
     }
-    if let Some(r) = crate::view_cmds::invoke(app, ctx, id, &params) {
-        return r;
+    if let Some(r) = crate::view_cmds::invoke(app, ctx, id, params) {
+        return Some(r);
     }
     // Liquify dialog, Puppet Warp and Perspective Warp modes (and their control params).
-    if let Some(r) = crate::distort_ui::menu(app, ctx, id, &params) {
-        return r;
+    if let Some(r) = crate::distort_ui::menu(app, ctx, id, params) {
+        return Some(r);
     }
     // Camera Raw Filter dialog (and its control params).
-    if let Some(r) = crate::camera_raw_ui::menu(app, ctx, id, &params) {
-        return r;
+    if let Some(r) = crate::camera_raw_ui::menu(app, ctx, id, params) {
+        return Some(r);
     }
-    if let Some(r) = crate::wide_angle_ui::menu(app, ctx, id, &params) {
-        return r;
+    if let Some(r) = crate::wide_angle_ui::menu(app, ctx, id, params) {
+        return Some(r);
     }
     if let Some(profile) = proof_preset(id) {
         // View › Proof Setup presets: set the proof profile and turn Proof Colors on.
-        app.run("view.proofSetup", json!({"profile": profile}))?;
-        return app.run("view.proofColors", json!({"on": true}));
+        return Some(app.run("view.proofSetup", json!({"profile": profile})).and_then(|_| app.run("view.proofColors", json!({"on": true}))));
     }
     if let Some(alias) = panel_alias(id) {
-        return invoke(app, ctx, alias, params);
+        return Some(invoke(app, ctx, alias, params.clone()));
     }
     if let Some(ws) = workspace_name(id) {
         // Reset re-applies the current workspace; Essentials is the default layout.
-        let previous_ui = app.ui.clone();
         match (ws, id) {
             (_, "window.workspace.resetWorkspace") => {}
             ("", _) => app.ui.workspace = "Essentials".into(),
             (name, _) => app.ui.workspace = name.into(),
         }
-        if let Err(error) = apply_workspace(app) {
-            app.ui = previous_ui;
-            app.ui.status = error.clone();
-            app.ui.status_error = true;
-            return Err(error);
-        }
-        return Ok(json!({"workspace": app.ui.workspace}));
+        apply_workspace(app);
+        return Some(Ok(json!({"workspace": app.ui.workspace})));
     }
-    match id {
+    None
+}
+
+fn invoke_file_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Result<Option<Value>, String> {
+    let result = match id {
         // ⌘↩ / Ctrl+Enter (#306): load the path selected in the Paths panel (or the one being
         // drawn) as a selection.
-        "path.toSelection" if params.get("name").is_none() => crate::vector_ui::path_to_selection(app, params),
+        "path.toSelection" if params.get("name").is_none() => crate::vector_ui::path_to_selection(app, params.clone()),
         // Layer › Rename Layer from a menu starts in-place renaming in the Layers panel.
         "layer.renameLayer" if params.get("name").is_none() => {
             let st = app.session.active().ok_or("no document")?;
@@ -249,7 +242,7 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
         "file.save" => {
             // Writes back only to a layered file that holds the whole document; anything else
             // goes through Save As, so the original is never overwritten with less (#3806).
-            let choices = crate::FormatChoices::from_params(&params, id)?;
+            let choices = crate::FormatChoices::from_params(params, id)?;
             match params.get("path").and_then(Value::as_str) {
                 Some(path) => app.save_as_with(Some(path.to_string()), choices),
                 None => {
@@ -307,56 +300,37 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
             }
         }
         "file.saveAs" => {
-            let choices = crate::FormatChoices::from_params(&params, id)?;
+            let choices = crate::FormatChoices::from_params(params, id)?;
             app.save_as_with(params.get("path").and_then(Value::as_str).map(str::to_string), choices)
         }
-        "view.zoomIn" | "view.zoomOut" | "view.fitOnScreen" | "view.actualPixels" => app.run(id, params),
-        "window.newWindowForDocument" => {
-            let doc = app.session.active_index().ok_or("no document")?;
-            let wid = app.ui.alloc_id();
-            let view = app.ui.views[doc].clone();
-            app.ui.windows.push(crate::state::DocWindow { id: wid, document: doc, view, open: true, position: None });
-            Ok(json!({"window": wid}))
-        }
-        "window.theme.toggle" => {
-            crate::prefs_ui::cycle_appearance(app, ctx);
-            Ok(Value::Null)
-        }
-        "view.darkenInterface" | "view.lightenInterface" => {
-            crate::prefs_ui::step_brightness(app, ctx, id == "view.lightenInterface")?;
-            Ok(json!({"theme": app.ui.theme.id()}))
-        }
-        "window.theme.system" => {
-            app.run("prefs.set", json!({"path": "interface.appearanceMode", "value": "auto"}))?;
-            crate::prefs_ui::sync_appearance(app, ctx);
-            Ok(Value::Null)
-        }
-        "window.theme.pro"
-        | "window.theme.proMedium"
-        | "window.theme.proLightGray"
-        | "window.theme.proLight"
-        | "window.theme.studio"
-        | "window.theme.studioLight"
-        | "window.theme.classic"
-        | "window.theme.solarizedDark"
-        | "window.theme.adwaita"
-        | "window.theme.adwaitaDark"
-        | "window.theme.breezeLight"
-        | "window.theme.breezeDark"
-        | "window.theme.softLight"
-        | "window.theme.softDark" => {
-            let k = crate::theme::ThemeKind::from_name(&id["window.theme.".len()..]).unwrap_or_default();
-            app.set_theme(ctx, k);
-            Ok(Value::Null)
-        }
-        // The macOS app menu's Language (`native_menu::language_node`).
-        i if i.starts_with(crate::native_menu::LANGUAGE_PREFIX) => {
-            let code = &i[crate::native_menu::LANGUAGE_PREFIX.len()..];
-            if code != "auto" && !crate::i18n::Lang::all().any(|l| l.code() == code) {
-                return Err(format!("unknown UI language `{code}`"));
-            }
-            app.run("prefs.set", json!({"values": {"interface.language": code}}))
-        }
+        _ => return Ok(None),
+    };
+    result.map(Some)
+}
+
+pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    if let Some(result) = invoke_early_commands(app, ctx, id, &params) {
+        return result;
+    }
+    if let Some(result) = invoke_shell_commands(app, ctx, id, &params) {
+        return result;
+    }
+    if let Some(result) = invoke_file_commands(app, ctx, id, &params)? {
+        return Ok(result);
+    }
+    if let Some(result) = invoke_window_command(app, ctx, id) {
+        return result;
+    }
+    if let Some(result) = invoke_export_command(app, id, &params)? {
+        return result;
+    }
+    if let Some(result) = invoke_type_command(app, ctx, id, &params) {
+        return result;
+    }
+    if let Some(result) = invoke_view_command(app, ctx, id, &params) {
+        return result;
+    }
+    match id {
         "edit.search" => {
             app.ui.palette_open = !app.ui.palette_open;
             Ok(Value::Null)
@@ -367,39 +341,6 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
             fields.insert("systemInfo".into(), json!(true));
             let dialog = app.ui.open_dialog(DialogKind::About, fields);
             Ok(json!({"dialog": dialog, "info": crate::gpu_status::system_info_json(app)}))
-        }
-        "file.export.exportAs" => Ok(json!({"dialog": crate::export_dialog::open(app)?})),
-        "file.export.quickExportAsPng" => crate::export_dialog::quick_export_png(app),
-        // Render Video exports a sequence of frames into a folder, not a named file.
-        // Keep explicit directory arguments from automation and the control channel unchanged.
-        "file.export.renderVideo" if params.get("dir").is_none() => {
-            #[cfg(target_arch = "wasm32")]
-            {
-                Err("Render Video to a local directory is unavailable on the web".into())
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let doc = app.session.active().ok_or("no document")?.doc.id;
-                let mut render_params = params.as_object().cloned().unwrap_or_default();
-                app.ask_folder(move |app, dir| {
-                    render_params.insert("dir".into(), json!(dir));
-                    app.with_document(doc, |app| app.run("file.export.renderVideo", Value::Object(render_params)))
-                })
-            }
-        }
-        // Layer › Export As… / Quick Export as PNG: the export pipeline on just the active layer.
-        l if matches!(l, "layer.exportAs" | "layer.quickExportAsPng") && params.as_object().is_none_or(|o| o.is_empty()) => {
-            let layer = app.session.active().and_then(|d| d.active_layer).ok_or("no active layer")?;
-            if l == "layer.exportAs" {
-                // Several layers (artboards, say) selected: one file each (#3629).
-                let layers = app.session.active().map(|d| d.selected_layers()).unwrap_or_default();
-                if layers.len() > 1 {
-                    return Ok(json!({"dialog": crate::export_dialog::open_layers(app, &layers)?}));
-                }
-                Ok(json!({"dialog": crate::export_dialog::open_layer(app, layer)?}))
-            } else {
-                crate::export_dialog::quick_export_selected_layers_png(app)
-            }
         }
         "layer.smartFilter.blendingOptions" if params.get("blend").is_none() && params.get("opacity").is_none() => {
             let st = app.session.active().ok_or("no document open")?;
@@ -415,36 +356,6 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
         }
         "layer.layerStyle.blendingOptions" if params.as_object().is_none_or(|o| o.is_empty()) => {
             crate::layer_style::open(app, Some(crate::layer_style::BLENDING)).map(|d| json!({"dialog": d})).ok_or_else(|| "no active layer".to_string())
-        }
-        // ⇧⌘> / ⇧⌘<: the selected characters while typing, else the whole type layer.
-        "type.increaseSize" | "type.decreaseSize" | "type.increaseSizeMore" | "type.decreaseSizeMore" if params.as_object().is_none_or(|o| o.is_empty()) => {
-            let p = crate::type_tool::with_target(app, json!({})).ok_or("the active layer is not a type layer")?;
-            app.run(id, p)
-        }
-        // Formatting menus follow an inline text selection when editing. Outside an edit,
-        // snapshot the selected type layers; explicit automation targets retain their scope.
-        t if (t.starts_with("type.antiAlias.")
-            || t.starts_with("type.orientation.")
-            || t.starts_with("type.openType.")
-            || matches!(t, "type.warpText" | "type.loadDefaultTypeStyles"))
-            && params.get("layer").is_none()
-            && params.get("layers").is_none()
-            && params.get("range").is_none() =>
-        {
-            let Some(mut p) = crate::type_tool::formatting_params(app) else { return app.run(id, params) };
-            if let Some(props) = params.as_object() {
-                for (key, value) in props {
-                    p[key] = value.clone();
-                }
-            }
-            app.run(id, p)
-        }
-        "type.editText" => {
-            crate::type_tool::edit_active(app)?;
-            if let Some(focus) = ctx.memory(|m| m.focused()) {
-                ctx.memory_mut(|m| m.surrender_focus(focus));
-            }
-            Ok(Value::Null)
         }
         // Only interactive creation opens the Color Picker; it creates the layer on OK,
         // so Cancel leaves neither an orphan layer nor an undo/redo history entry.
@@ -474,6 +385,15 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
                 return Err(why);
             }
             Ok(json!({"dialog": crate::stroke_ui::open(app)}))
+        }
+        // Layer › New › Group… / Group from Layers… (and the Layers panel's menu, ⌥-click on its
+        // New Group button): Photoshop's New Group dialog. Explicit params run the engine directly,
+        // and Group Layers (⌘G) never asks.
+        _ if crate::new_group_ui::fronts(id) && params.as_object().is_none_or(|o| o.is_empty()) => {
+            if let Some(Err(why)) = photocraft_engine::commands::find(id).map(|c| (c.enabled)(&app.session)) {
+                return Err(why);
+            }
+            Ok(json!({"dialog": crate::new_group_ui::open(app, id)}))
         }
         // Channels › Channel Options… without params: the dialog on the targeted alpha/spot
         // channel, Layer Mask Display Options on a targeted layer mask, or Quick Mask Options while
@@ -515,23 +435,6 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
         "select.transformSelection" if params.as_object().is_none_or(|o| o.is_empty()) => {
             crate::transform_tool::begin_selection(app, ctx).map(|_| json!({"transform": app.ui.transform}))
         }
-        // While editing type, the clipboard rows and Select > All work on the text (#1355, #2893).
-        "edit.cut" if app.ui.text_edit.is_some() => {
-            crate::type_tool::cut_selection(app, ctx);
-            Ok(Value::Null)
-        }
-        "edit.copy" if app.ui.text_edit.is_some() => {
-            crate::type_tool::copy_selection(app, ctx);
-            Ok(Value::Null)
-        }
-        "edit.paste" if app.ui.text_edit.is_some() => {
-            crate::type_tool::request_paste(ctx);
-            Ok(Value::Null)
-        }
-        "select.all" if app.ui.text_edit.is_some() => {
-            crate::type_tool::select_all(app);
-            Ok(Value::Null)
-        }
         "edit.paste" if params.as_object().is_none_or(|o| o.is_empty()) => {
             // Photoshop: paste in place when the copied area is visible, else centred in the view;
             // images from other apps are always centred.
@@ -553,141 +456,8 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
             };
             app.run("edit.paste", p)
         }
-        "view.rulers" | "view.show.grid" | "view.show.guides" | "view.snap" | "view.lockGuides" => {
-            let e = &mut app.ui.extras;
-            let slot = match id {
-                "view.rulers" => &mut e.rulers,
-                "view.show.grid" => &mut e.grid,
-                "view.show.guides" => &mut e.guides,
-                "view.snap" => &mut e.snap,
-                _ => &mut e.lock_guides,
-            };
-            *slot = !*slot;
-            let on = *slot;
-            if id == "view.show.grid" && on {
-                // Like the other Show items, enabling Grid also restores hidden Extras.
-                app.ui.view.extras = true;
-            }
-            if id == "view.rulers" {
-                crate::prefs_ui::remember_rulers(app, on);
-            }
-            Ok(json!(on))
-        }
-        "edit.freeTransform"
-        | "edit.transform.scale"
-        | "edit.transform.rotate"
-        | "edit.transform.skew"
-        | "edit.transform.distort"
-        | "edit.transform.perspective" => {
-            if crate::transform_tool::route_to_mask_fill(app, ctx) {
-                return Ok(json!({"transform": null, "maskFill": true}));
-            }
-            // While a box is up, Scale / Rotate / Skew / Distort / Perspective (and Free Transform)
-            // switch its mode; otherwise they start one in that mode.
-            if app.ui.transform.as_ref().is_some_and(|t| t.content_aware.is_some()) {
-                return Err(crate::transform_tool::CAS_ONLY_SCALES.into());
-            }
-            if app.ui.transform.is_none() {
-                crate::transform_tool::begin(app, ctx)?;
-            }
-            if let Some(t) = app.ui.transform.as_mut() {
-                t.mode = crate::state::TransformMode::for_command(id);
-            }
-            Ok(json!({"transform": app.ui.transform}))
-        }
-        "edit.freeTransformCopy" => crate::transform_tool::begin_copy(app, ctx).map(|_| json!({"transform": app.ui.transform})),
-        // Edit › Transform › Warp from the menu: interactive Warp mode (with params: the engine).
-        "edit.transform.warp" | "layer.smartObjects.warp" if params.as_object().is_none_or(|o| o.is_empty()) => {
-            crate::transform_tool::begin_warp(app, ctx).map(|_| json!({"transform": app.ui.transform}))
-        }
-        // Split warps edit the mesh of an active Warp session.
-        "edit.transform.splitWarpCrosswise"
-        | "edit.transform.splitWarpHorizontally"
-        | "edit.transform.splitWarpVertically"
-        | "edit.transform.removeWarpSplit"
-            if app.ui.transform.as_ref().is_some_and(|t| t.warp.is_some()) && params.get("warp").is_none() =>
-        {
-            let at = params.get("at").and_then(Value::as_array).and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]));
-            crate::transform_tool::split(app, id, at).map(|_| json!({"transform": app.ui.transform}))
-        }
-        "edit.transform.warpGrid" if app.ui.transform.as_ref().is_some_and(|t| t.warp.is_some()) && params.get("warp").is_none() => {
-            crate::transform_tool::edit_session_warp(app, id, &params).map(|_| json!({"transform": app.ui.transform}))
-        }
         // Layer › New › Layer… (⇧⌘N) asks first, as in Photoshop; with params it runs as is.
         crate::new_layer_ui::COMMAND if params.as_object().is_none_or(|o| o.is_empty()) => Ok(json!({"dialog": crate::new_layer_ui::open(app)?})),
-        sz if crate::sizing::is_sizing(sz) && params.as_object().is_none_or(|o| o.is_empty()) => {
-            Ok(json!({"dialog": crate::sizing::open(app, sz).ok_or("no document")?}))
-        }
-        "view.newGuide" if params.as_object().is_none_or(|o| o.is_empty()) => Ok(json!({"dialog": crate::new_guide_ui::open(app)})),
-        fl if crate::filter_dialog::has_dialog(fl) && params.as_object().is_none_or(|o| o.is_empty()) => {
-            Ok(json!({"dialog": crate::filter_dialog::open(app, fl)}))
-        }
-        a if crate::adjust_dialog::has_dialog(a) && params.as_object().is_none_or(|o| o.is_empty()) => {
-            Ok(json!({"dialog": crate::adjust_dialog::open(app, a).ok_or("no document")?}))
-        }
-        "window.togglePanels" => {
-            // Tab hides the Tools panel, the options bar and the dock; Tab again shows what it hid.
-            if app.ui.view.hides_chrome() {
-                // Full Screen Mode: Tab only shows or hides the chrome for now (#6760); the panels'
-                // own state, `hidden_by_tab` included, stays as it was before entering.
-                app.ui.panels.full_screen_chrome = !app.ui.panels.full_screen_chrome;
-                return Ok(Value::Null);
-            }
-            let p = &mut app.ui.panels;
-            match p.hidden_by_tab.take() {
-                Some([toolbar, options, dock]) if !(p.toolbar || p.options_bar || p.dock) => {
-                    (p.toolbar, p.options_bar, p.dock) = (toolbar, options, dock);
-                }
-                _ if p.toolbar || p.options_bar || p.dock => {
-                    p.hidden_by_tab = Some([p.toolbar, p.options_bar, p.dock]);
-                    (p.toolbar, p.options_bar, p.dock) = (false, false, false);
-                }
-                _ => (p.toolbar, p.options_bar, p.dock) = (true, true, true),
-            }
-            Ok(Value::Null)
-        }
-        "window.nextDocument" | "window.previousDocument" => {
-            // Tabs are in document order, so the next tab is the next document, wrapping around.
-            let n = app.session.documents().len();
-            let at = app.session.active_index().ok_or("no document open")?;
-            let to = if id == "window.nextDocument" { (at + 1) % n } else { (at + n - 1) % n };
-            app.session.set_active(to);
-            app.jobs.focus = None;
-            Ok(json!({"document": to}))
-        }
-        id if let Some(index) = id.strip_prefix(DOCUMENT_ITEM) => {
-            let n = app.session.documents().len();
-            let to = index.parse::<usize>().ok().filter(|i| *i < n).ok_or("no such document")?;
-            app.session.set_active(to);
-            app.jobs.focus = None;
-            Ok(json!({"document": to}))
-        }
-        t if t.starts_with("window.toggle.") => {
-            // A shown but collapsed dock group is expanded rather than hidden (#129).
-            if let Some(g) = crate::dock::Group::from_key(&t["window.toggle.".len()..]).filter(|g| g.shown(&app.ui.panels) && app.ui.dock.is_collapsed(*g)) {
-                crate::dock::reveal(app, g);
-                return Ok(Value::Null);
-            }
-            let p = &mut app.ui.panels;
-            let slot = match &t["window.toggle.".len()..] {
-                "layers" => &mut p.layers,
-                "history" => &mut p.history,
-                "properties" => &mut p.properties,
-                "color" => &mut p.color,
-                "navigator" => &mut p.navigator,
-                "toolbar" => &mut p.toolbar,
-                "options" => &mut p.options_bar,
-                "brushSettings" => &mut p.brush_settings,
-                "brushes" => &mut p.brushes,
-                "dock" => &mut p.dock,
-                _ => return Err(format!("unknown panel in {t}")),
-            };
-            *slot = !*slot;
-            if let Some(g) = crate::dock::Group::from_key(&t["window.toggle.".len()..]).filter(|g| g.shown(&app.ui.panels)) {
-                crate::dock::reveal(app, g);
-            }
-            Ok(Value::Null)
-        }
         // Layer › Layer Style › <effect>… opens the Layer Style dialog on that effect.
         ls if params.as_object().is_none_or(|o| o.is_empty())
             && ls.strip_prefix("layer.layerStyle.").is_some_and(|k| crate::layer_style::KINDS.iter().any(|(kind, _)| *kind == k)) =>
@@ -703,22 +473,307 @@ fn open_path(app: &mut PhotocraftApp, path: &str) -> Result<Value, String> {
     app.open_path(path).map(|w| json!({"warnings": w}))
 }
 
-/// Workspace presets (Window → Workspace): which panels are visible.
-pub fn apply_workspace(app: &mut PhotocraftApp) -> Result<(), String> {
-    // Restoring a parked UV dock is only for a transition back into 3D. Reset Workspace while
-    // already in 3D keeps the built-in preset's normal reset behavior.
-    #[cfg(feature = "uv-workbench")]
-    let restore_uv_dock = app.ui.workspace == "3D" && !app.session.uv_workspace.active;
-    #[cfg(feature = "uv-workbench")]
-    crate::uv_workspace::sync_workspace(app)?;
-    #[cfg(feature = "uv-workbench")]
-    if app.ui.workspace == "3D" && matches!(app.ui.tool, crate::state::Tool::Crop | crate::state::Tool::PerspectiveCrop) {
-        // Image crop tools cannot operate on the isolated 3D/UV workspace.
-        app.ui.tool = crate::state::Tool::Move;
+fn invoke_export_command(app: &mut PhotocraftApp, id: &str, params: &Value) -> Result<Option<Result<Value, String>>, String> {
+    let result = match id {
+        "file.export.exportAs" => Some(Ok(json!({"dialog": crate::export_dialog::open(app)?}))),
+        "file.export.quickExportAsPng" => Some(crate::export_dialog::quick_export_png(app)),
+        "file.export.renderVideo" if params.get("dir").is_none() => {
+            #[cfg(target_arch = "wasm32")]
+            {
+                Some(Err("Render Video to a local directory is unavailable on the web".into()))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let document = app.session.active().ok_or("no document")?.doc.id;
+                let mut render_params = params.as_object().cloned().unwrap_or_default();
+                Some(app.ask_folder(move |app, dir| {
+                    render_params.insert("dir".into(), json!(dir));
+                    app.with_document(document, |app| app.run("file.export.renderVideo", Value::Object(render_params)))
+                }))
+            }
+        }
+        layer if matches!(layer, "layer.exportAs" | "layer.quickExportAsPng") && params.as_object().is_none_or(|object| object.is_empty()) => {
+            let selected = app.session.active().and_then(|document| document.active_layer).ok_or("no active layer")?;
+            if layer == "layer.exportAs" {
+                // Several layers (artboards, say) selected: one file each (#3629).
+                let layers = app.session.active().map(|document| document.selected_layers()).unwrap_or_default();
+                if layers.len() > 1 {
+                    Some(Ok(json!({"dialog": crate::export_dialog::open_layers(app, &layers)?})))
+                } else {
+                    Some(Ok(json!({"dialog": crate::export_dialog::open_layer(app, selected)?})))
+                }
+            } else {
+                Some(crate::export_dialog::quick_export_selected_layers_png(app))
+            }
+        }
+        _ => None,
+    };
+    Ok(result)
+}
+
+fn invoke_type_command(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    match id {
+        "type.increaseSize" | "type.decreaseSize" | "type.increaseSizeMore" | "type.decreaseSizeMore"
+            if params.as_object().is_none_or(|object| object.is_empty()) =>
+        {
+            Some((|| {
+                let target = type_command_target(app).ok_or("the active layer is not a type layer")?;
+                app.run(id, target)
+            })())
+        }
+        command
+            if (command.starts_with("type.antiAlias.")
+                || command.starts_with("type.orientation.")
+                || command.starts_with("type.openType.")
+                || matches!(command, "type.warpText" | "type.loadDefaultTypeStyles"))
+                && params.get("layer").is_none()
+                && params.get("layers").is_none()
+                && params.get("range").is_none() =>
+        {
+            Some((|| {
+                let Some(mut target) = crate::type_tool::formatting_params(app) else { return app.run(id, params.clone()) };
+                if let Some(properties) = params.as_object() {
+                    for (key, value) in properties {
+                        target[key] = value.clone();
+                    }
+                }
+                app.run(id, target)
+            })())
+        }
+        "type.editText" => Some((|| {
+            crate::type_tool::edit_active(app)?;
+            if let Some(focus) = ctx.memory(|memory| memory.focused()) {
+                ctx.memory_mut(|memory| memory.surrender_focus(focus));
+            }
+            Ok(Value::Null)
+        })()),
+        // While editing type, the clipboard rows and Select > All work on the text (#1355, #2893).
+        "edit.cut" if app.ui.text_edit.is_some() => {
+            crate::type_tool::cut_selection(app, ctx);
+            Some(Ok(Value::Null))
+        }
+        "edit.copy" if app.ui.text_edit.is_some() => {
+            crate::type_tool::copy_selection(app, ctx);
+            Some(Ok(Value::Null))
+        }
+        "edit.paste" if app.ui.text_edit.is_some() => {
+            crate::type_tool::request_paste(ctx);
+            Some(Ok(Value::Null))
+        }
+        "select.all" if app.ui.text_edit.is_some() => {
+            crate::type_tool::select_all(app);
+            Some(Ok(Value::Null))
+        }
+        _ => None,
     }
+}
+
+fn type_command_target(app: &PhotocraftApp) -> Option<Value> {
+    let (layer, range) = crate::type_tool::target(app)?;
+    let mut params = json!({"layer": layer});
+    if let Some(range) = range {
+        params["range"] = json!(range);
+    }
+    if let Some(session) = app.ui.text_edit.as_ref().map(|edit| edit.session.clone()) {
+        params["coalesce"] = json!(session);
+    }
+    Some(params)
+}
+
+fn invoke_view_command(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
+    match id {
+        "view.zoomIn" | "view.zoomOut" | "view.fitOnScreen" | "view.actualPixels" => Some(app.run(id, params.clone())),
+        "view.rulers" | "view.show.grid" | "view.show.guides" | "view.snap" | "view.lockGuides" => {
+            let extras = &mut app.ui.extras;
+            let slot = match id {
+                "view.rulers" => &mut extras.rulers,
+                "view.show.grid" => &mut extras.grid,
+                "view.show.guides" => &mut extras.guides,
+                "view.snap" => &mut extras.snap,
+                _ => &mut extras.lock_guides,
+            };
+            *slot = !*slot;
+            let enabled = *slot;
+            if id == "view.show.grid" && enabled {
+                app.ui.view.extras = true;
+            }
+            if id == "view.rulers" {
+                crate::prefs_ui::remember_rulers(app, enabled);
+            }
+            Some(Ok(json!(enabled)))
+        }
+        "edit.freeTransform"
+        | "edit.transform.scale"
+        | "edit.transform.rotate"
+        | "edit.transform.skew"
+        | "edit.transform.distort"
+        | "edit.transform.perspective" => Some((|| {
+            if crate::transform_tool::route_to_mask_fill(app, ctx) {
+                return Ok(json!({"transform": null, "maskFill": true}));
+            }
+            if app.ui.transform.as_ref().is_some_and(|transform| transform.content_aware.is_some()) {
+                return Err(crate::transform_tool::CAS_ONLY_SCALES.into());
+            }
+            if app.ui.transform.is_none() {
+                crate::transform_tool::begin(app, ctx)?;
+            }
+            if let Some(transform) = app.ui.transform.as_mut() {
+                transform.mode = crate::state::TransformMode::for_command(id);
+            }
+            Ok(json!({"transform": app.ui.transform}))
+        })()),
+        "edit.freeTransformCopy" => Some(crate::transform_tool::begin_copy(app, ctx).map(|_| json!({"transform": app.ui.transform}))),
+        "edit.transform.warp" | "layer.smartObjects.warp" if params.as_object().is_none_or(|object| object.is_empty()) => {
+            Some(crate::transform_tool::begin_warp(app, ctx).map(|_| json!({"transform": app.ui.transform})))
+        }
+        "edit.transform.splitWarpCrosswise"
+        | "edit.transform.splitWarpHorizontally"
+        | "edit.transform.splitWarpVertically"
+        | "edit.transform.removeWarpSplit"
+            if app.ui.transform.as_ref().is_some_and(|transform| transform.warp.is_some()) && params.get("warp").is_none() =>
+        {
+            let at = params.get("at").and_then(Value::as_array).and_then(|array| Some([array.first()?.as_f64()?, array.get(1)?.as_f64()?]));
+            Some(crate::transform_tool::split(app, id, at).map(|_| json!({"transform": app.ui.transform})))
+        }
+        "edit.transform.warpGrid" if app.ui.transform.as_ref().is_some_and(|transform| transform.warp.is_some()) && params.get("warp").is_none() => {
+            Some(crate::transform_tool::edit_session_warp(app, id, params).map(|_| json!({"transform": app.ui.transform})))
+        }
+        sz if crate::sizing::is_sizing(sz) && params.as_object().is_none_or(|object| object.is_empty()) => {
+            Some(crate::sizing::open(app, sz).map(|dialog| json!({"dialog": dialog})).ok_or_else(|| "no document".to_string()))
+        }
+        "view.newGuide" if params.as_object().is_none_or(|object| object.is_empty()) => Some(Ok(json!({"dialog": crate::new_guide_ui::open(app)}))),
+        fl if crate::filter_dialog::has_dialog(fl) && params.as_object().is_none_or(|object| object.is_empty()) => {
+            Some(Ok(json!({"dialog": crate::filter_dialog::open(app, fl)})))
+        }
+        a if crate::adjust_dialog::has_dialog(a) && params.as_object().is_none_or(|object| object.is_empty()) => {
+            Some(crate::adjust_dialog::open(app, a).map(|dialog| json!({"dialog": dialog})).ok_or_else(|| "no document".to_string()))
+        }
+        _ => None,
+    }
+}
+
+fn invoke_window_command(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str) -> Option<Result<Value, String>> {
+    match id {
+        "window.newWindowForDocument" => Some((|| {
+            let doc = app.session.active_index().ok_or("no document")?;
+            let wid = app.ui.alloc_id();
+            let view = app.ui.views[doc].clone();
+            app.ui.windows.push(crate::state::DocWindow { id: wid, document: doc, view, open: true, position: None });
+            Ok(json!({"window": wid}))
+        })()),
+        "window.theme.toggle" => {
+            crate::prefs_ui::cycle_appearance(app, ctx);
+            Some(Ok(Value::Null))
+        }
+        "view.darkenInterface" | "view.lightenInterface" => {
+            Some(crate::prefs_ui::step_brightness(app, ctx, id == "view.lightenInterface").map(|()| json!({"theme": app.ui.theme.id()})))
+        }
+        "window.theme.system" => Some(app.run("prefs.set", json!({"path": "interface.appearanceMode", "value": "auto"})).map(|_| {
+            crate::prefs_ui::sync_appearance(app, ctx);
+            Value::Null
+        })),
+        "window.theme.pro"
+        | "window.theme.proMedium"
+        | "window.theme.proLightGray"
+        | "window.theme.proLight"
+        | "window.theme.studio"
+        | "window.theme.studioLight"
+        | "window.theme.classic"
+        | "window.theme.solarizedDark"
+        | "window.theme.adwaita"
+        | "window.theme.adwaitaDark"
+        | "window.theme.breezeLight"
+        | "window.theme.breezeDark"
+        | "window.theme.softLight"
+        | "window.theme.softDark" => {
+            let theme = crate::theme::ThemeKind::from_name(&id["window.theme.".len()..]).unwrap_or_default();
+            app.set_theme(ctx, theme);
+            Some(Ok(Value::Null))
+        }
+        _ if id.starts_with(crate::native_menu::LANGUAGE_PREFIX) => {
+            let code = &id[crate::native_menu::LANGUAGE_PREFIX.len()..];
+            if code != "auto" && !crate::i18n::Lang::all().any(|lang| lang.code() == code) {
+                Some(Err(format!("unknown UI language `{code}`")))
+            } else {
+                Some(app.run("prefs.set", json!({"values": {"interface.language": code}})))
+            }
+        }
+        "window.togglePanels" => Some(toggle_panels(app)),
+        "window.nextDocument" | "window.previousDocument" => Some((|| {
+            let count = app.session.documents().len();
+            let active = app.session.active_index().ok_or("no document open")?;
+            let next = if id == "window.nextDocument" { (active + 1) % count } else { (active + count - 1) % count };
+            app.session.set_active(next);
+            app.jobs.focus = None;
+            Ok(json!({"document": next}))
+        })()),
+        _ if id.starts_with(DOCUMENT_ITEM) => Some((|| {
+            let count = app.session.documents().len();
+            let next =
+                id.strip_prefix(DOCUMENT_ITEM).ok_or("no such document")?.parse::<usize>().ok().filter(|index| *index < count).ok_or("no such document")?;
+            app.session.set_active(next);
+            app.jobs.focus = None;
+            Ok(json!({"document": next}))
+        })()),
+        _ if id.starts_with("window.toggle.") => Some(toggle_panel(app, id)),
+        _ => None,
+    }
+}
+
+fn toggle_panels(app: &mut PhotocraftApp) -> Result<Value, String> {
+    if app.ui.view.hides_chrome() {
+        // Full Screen Mode: Tab only shows or hides the chrome for now (#6760); the panels'
+        // own state, `hidden_by_tab` included, stays as it was before entering.
+        app.ui.panels.full_screen_chrome = !app.ui.panels.full_screen_chrome;
+        return Ok(Value::Null);
+    }
+    let panels = &mut app.ui.panels;
+    match panels.hidden_by_tab.take() {
+        Some([toolbar, options, dock]) if !(panels.toolbar || panels.options_bar || panels.dock) => {
+            (panels.toolbar, panels.options_bar, panels.dock) = (toolbar, options, dock);
+        }
+        _ if panels.toolbar || panels.options_bar || panels.dock => {
+            panels.hidden_by_tab = Some([panels.toolbar, panels.options_bar, panels.dock]);
+            (panels.toolbar, panels.options_bar, panels.dock) = (false, false, false);
+        }
+        _ => (panels.toolbar, panels.options_bar, panels.dock) = (true, true, true),
+    }
+    Ok(Value::Null)
+}
+
+fn toggle_panel(app: &mut PhotocraftApp, id: &str) -> Result<Value, String> {
+    let key = &id["window.toggle.".len()..];
+    // A shown but collapsed dock group is expanded rather than hidden (#129).
+    if let Some(group) = crate::dock::Group::from_key(key).filter(|group| group.shown(&app.ui.panels) && app.ui.dock.is_collapsed(*group)) {
+        crate::dock::reveal(app, group);
+        return Ok(Value::Null);
+    }
+    let panels = &mut app.ui.panels;
+    let slot = match key {
+        "layers" => &mut panels.layers,
+        "history" => &mut panels.history,
+        "properties" => &mut panels.properties,
+        "color" => &mut panels.color,
+        "navigator" => &mut panels.navigator,
+        "toolbar" => &mut panels.toolbar,
+        "options" => &mut panels.options_bar,
+        "brushSettings" => &mut panels.brush_settings,
+        "brushes" => &mut panels.brushes,
+        "dock" => &mut panels.dock,
+        _ => return Err(format!("unknown panel in {id}")),
+    };
+    *slot = !*slot;
+    if let Some(group) = crate::dock::Group::from_key(key).filter(|group| group.shown(&app.ui.panels)) {
+        crate::dock::reveal(app, group);
+    }
+    Ok(Value::Null)
+}
+
+/// Workspace presets (Window → Workspace): which panels are visible.
+pub fn apply_workspace(app: &mut PhotocraftApp) {
     // Saved workspaces (Window › Workspace › New Workspace…) restore their own layout.
     if crate::workspace_ui::apply_custom(app) {
-        return Ok(());
+        return;
     }
     // Presets use the default group order, heights and tabs (Reset brings everything back).
     app.ui.dock = Default::default();
@@ -738,8 +793,6 @@ pub fn apply_workspace(app: &mut PhotocraftApp) -> Result<(), String> {
         // Color includes Swatches; Navigator keeps the pixel canvas easy to inspect.
         "Pixel Art" => (true, true, true, false, false),
         "Motion" => (false, false, true, false, true),
-        #[cfg(feature = "uv-workbench")]
-        "3D" => (false, false, true, false, true),
         _ => (false, true, true, false, true),
     };
     p.navigator = nav;
@@ -748,31 +801,10 @@ pub fn apply_workspace(app: &mut PhotocraftApp) -> Result<(), String> {
     p.history = history;
     p.properties = props;
     p.character = app.ui.workspace == "Graphic and Web";
-    #[cfg(feature = "uv-workbench")]
-    if app.ui.workspace == "3D" {
-        app.ui.uv_workbench.open = true;
-        if app.uv_cache.project.parked_view.is_none() {
-            app.ui.uv_workbench.view_3d = true;
-        }
-        app.ui.dock_tabs.properties = 2;
-        app.ui.dock.heights.insert(crate::dock::Group::Properties, 500.0);
-    }
-    #[cfg(feature = "uv-workbench")]
-    if restore_uv_dock && let Some(parked) = app.uv_cache.parked_dock.take() {
-        app.ui.dock = parked.dock;
-        app.ui.docking = parked.docking;
-        app.ui.docking_returns = parked.returns;
-        app.ui.docking_kept = parked.kept;
-        app.ui.docking_collapsed = parked.collapsed;
-        app.ui.dock_tabs = parked.tabs;
-        app.ui.panels.dock = parked.dock_visible;
-        app.ui.uv_workbench.open = parked.uv_open;
-    }
     // Timeline is a floating panel, not a dock group. Showing it does not create or edit
     // a document timeline; changing away from Motion closes it just like its Close button.
     app.ui.timeline.open = app.ui.workspace == "Motion";
     if !app.ui.timeline.open {
         app.ui.timeline.playing = false;
     }
-    Ok(())
 }
