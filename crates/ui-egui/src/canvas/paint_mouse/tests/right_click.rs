@@ -197,3 +197,43 @@ fn a_right_press_moved_during_a_left_stroke_opens_no_picker() {
         assert_eq!(strokes(&h).len(), 1, "moved {moved}: one stroke");
     }
 }
+
+/// One key going down and up, each in its own frame, with `mods` held.
+fn key(h: &mut Harness<'static, PhotocraftApp>, key: egui::Key, mods: Modifiers) {
+    for pressed in [true, false] {
+        h.event(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: mods });
+        h.run_steps(1);
+    }
+}
+
+/// Escape pressed while the right button is down cancels the right-click: a moved release opens
+/// neither the Brush Preset picker nor the canvas tool menu. That also holds after Escape closed a
+/// Shift+Alt+right HUD Color Picker, whose button is still down.
+#[test]
+fn escape_while_the_right_button_is_down_cancels_the_right_click() {
+    for (tool, mods) in [(Tool::Brush, Modifiers::NONE), (Tool::Pen, Modifiers::NONE), (Tool::Brush, Modifiers::SHIFT | Modifiers::ALT)] {
+        let mut h = harness(None);
+        h.state_mut().ui.tool = tool;
+        h.run_steps(2);
+        let c = h.state().last_canvas_rect.center();
+        h.event(egui::Event::ModifiersChanged(mods));
+        h.event(egui::Event::PointerMoved(c));
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: c, button: PointerButton::Secondary, pressed: true, modifiers: mods });
+        h.run_steps(1);
+        let hud = mods.alt;
+        assert_eq!(crate::color_hud::is_open(&h.state().ui), hud, "{tool:?} {mods:?}: the HUD opens only for Shift+Alt");
+        let p = move_by(&mut h, c, vec2(20.0, 0.0), 2);
+        key(&mut h, egui::Key::Escape, mods);
+        assert!(!crate::color_hud::is_open(&h.state().ui), "{tool:?} {mods:?}: Escape closes the HUD");
+        let p = move_by(&mut h, p, vec2(20.0, 8.0), 2);
+        button(&mut h, p, PointerButton::Secondary, false);
+        h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+        h.run_steps(2);
+        assert!(nothing_opened(&h), "{tool:?} {mods:?}: Escape cancelled the right-click");
+        assert!(strokes(&h).is_empty(), "{tool:?} {mods:?}: and nothing paints");
+        // The next right-click is one again.
+        right_click_in_one_frame(&mut h, c, c + vec2(30.0, 0.0), true);
+        assert!(!nothing_opened(&h), "{tool:?} {mods:?}: the next right-click opens its menu");
+    }
+}

@@ -115,7 +115,7 @@ pub fn right_erases(app: &PhotocraftApp, tool: Tool) -> bool {
 /// `secondary_clicked` only within its click distance of the press, and a high-DPI mouse can move
 /// that far just from the button going down; egui then sees a drag (#10183). A right press that a
 /// gesture used (an Alt+right brush resize, a right-erase stroke, a pan, another button pressed
-/// with it) is no click.
+/// with it), or that Escape cancelled, is no click.
 pub fn right_clicked(response: &Response) -> bool {
     right_click_at(response).is_some()
 }
@@ -123,8 +123,9 @@ pub fn right_clicked(response: &Response) -> bool {
 /// Where the right button came up for a `right_clicked` click, in the canvas's coordinates.
 ///
 /// Past egui's click distance, the canvas's own record of the press (`track_right_press`) decides:
-/// it went down on the canvas itself and no gesture used it. That also covers a slow frame where
-/// the move and the release arrive together, which egui reports as neither a click nor a drag.
+/// it went down on the canvas itself, no gesture used it and Escape did not cancel it. That also
+/// covers a slow frame where the move and the release arrive together, which egui reports as
+/// neither a click nor a drag.
 pub fn right_click_at(response: &Response) -> Option<Pos2> {
     if response.secondary_clicked() {
         return response.interact_pointer_pos();
@@ -177,11 +178,12 @@ fn right_pressed_id(response: &Response) -> egui::Id {
 
 /// Keeps `right_pressed_id` for this frame: set on a right press (on the canvas or not), dropped
 /// once the button is up again. A right-click is the right button on its own: a press made while
-/// another button is down is none, and another button pressed while it is held uses it. The canvas
-/// runs this every frame, panning or not, before the open brush mode menu skips the buttons, so a
-/// press made while the menu is open is not mistaken for an older one.
+/// another button is down is none, and another button pressed while it is held uses it. Escape
+/// pressed while it is held cancels it. The canvas runs this every frame, panning or not, before
+/// the open brush mode menu skips the buttons, so a press made while the menu is open is not
+/// mistaken for an older one.
 pub fn track_right_press(response: &Response) {
-    let (pressed, released, held, origin, others) = response.ctx.input(|i| {
+    let (pressed, released, held, origin, others, escape) = response.ctx.input(|i| {
         // Where the button went down. With the release in the same frame, the pointer is
         // already where it came up and egui has dropped the press origin: the event has it.
         let pressed_at = i.events.iter().rev().find_map(|e| match e {
@@ -191,16 +193,19 @@ pub fn track_right_press(response: &Response) {
         let others = [PointerButton::Primary, PointerButton::Middle, PointerButton::Extra1, PointerButton::Extra2]
             .into_iter()
             .any(|b| i.pointer.button_down(b) || i.pointer.button_pressed(b));
+        // The frame's own events: a shortcut, a closing popup or the HUD may already have
+        // consumed this Escape from `events`, and it still cancels the press.
+        let escape = i.raw.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. }));
         let b = PointerButton::Secondary;
-        (i.pointer.button_pressed(b), i.pointer.button_released(b), i.pointer.secondary_down(), pressed_at.or_else(|| i.pointer.press_origin()), others)
+        (i.pointer.button_pressed(b), i.pointer.button_released(b), i.pointer.secondary_down(), pressed_at.or_else(|| i.pointer.press_origin()), others, escape)
     });
     let id = right_pressed_id(response);
     if pressed {
-        let on = !others && origin.is_some_and(|p| on_canvas(response, p));
+        let on = !others && !escape && origin.is_some_and(|p| on_canvas(response, p));
         response.ctx.data_mut(|d| d.insert_temp(id, on));
     } else if !released && !held {
         response.ctx.data_mut(|d| d.remove_temp::<bool>(id));
-    } else if others {
+    } else if others || escape {
         right_press_used(response);
     }
 }
