@@ -830,15 +830,13 @@ fn handle_canvas_tool_menus(app: &mut PhotocraftApp, input: &CanvasToolInput<'_>
     let xf = input.xf;
     let tool = input.tool;
     let transform_owns_pointer = input.transform_owns_pointer;
-    // Released after a small move too (#10183).
-    let right_click = crate::paint_mouse::right_clicked(response);
+    // Released after a small move too (#10183), even one egui saw as no click and no drag.
+    let right_at = crate::paint_mouse::right_click_at(response);
+    let right_click = right_at.is_some();
     // Right-click while transforming: switch the box's mode (Free Transform, Scale, Rotate,
     // Skew, Distort, Perspective, Warp), or rotate or flip the box.
     let transforming = app.ui.transform.as_ref().is_some_and(|t| t.warp.is_none());
-    if right_click
-        && transforming
-        && let Some(p) = response.interact_pointer_pos()
-    {
+    if transforming && let Some(p) = right_at {
         crate::canvas_tool_menu::open_transform(app, ctx, [p.x, p.y]);
     }
     let lasso_retracted = right_click
@@ -859,14 +857,14 @@ fn handle_canvas_tool_menus(app: &mut PhotocraftApp, input: &CanvasToolInput<'_>
     let guide_menu = right_click
         && !lasso_retracted
         && !transforming
-        && response.interact_pointer_pos().is_some_and(|p| crate::canvas_tool_menu::open_guide(app, ctx, tool, mods, [p.x, p.y], xf.to_doc(p)));
+        && right_at.is_some_and(|p| crate::canvas_tool_menu::open_guide(app, ctx, tool, mods, [p.x, p.y], xf.to_doc(p)));
     // Right-click with the Move tool, or ⌘/Ctrl+right-click: the layers under the pointer.
     if right_click
         && !lasso_retracted
         && !transforming
         && !guide_menu
         && crate::layer_pick_ui::is_gesture(tool, mods)
-        && let Some(p) = response.interact_pointer_pos()
+        && let Some(p) = right_at
     {
         let d = xf.to_doc(p);
         app.ui.canvas_tool_menu = None;
@@ -880,7 +878,7 @@ fn handle_canvas_tool_menus(app: &mut PhotocraftApp, input: &CanvasToolInput<'_>
         && !transforming
         && !guide_menu
         && !crate::layer_pick_ui::is_gesture(tool, mods)
-        && let Some(p) = response.interact_pointer_pos()
+        && let Some(p) = right_at
     {
         // A pending crop: its menu, also outside the image, where the frame can reach (#6561).
         // Outside the image: the pasteboard colour menu (#2462), else the tool's own. The view
