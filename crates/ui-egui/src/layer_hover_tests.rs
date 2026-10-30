@@ -8,7 +8,6 @@ use serde_json::json;
 
 use crate::PhotocraftApp;
 use crate::canvas::ToolEvent;
-use crate::dock::{Group, last_rects};
 use crate::state::Tool;
 use crate::theme::ThemeKind;
 
@@ -49,7 +48,7 @@ fn harness(app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
             if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
                 return;
             }
-            crate::panels::right_dock(app, ui);
+            crate::panels::dock_area(app, ui);
             egui::CentralPanel::default().show(ui, |_| {});
         },
         app,
@@ -61,7 +60,7 @@ fn harness(app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
 }
 
 fn row(h: &Harness<'static, PhotocraftApp>, name: &str) -> Option<Rect> {
-    let layers = last_rects(&h.ctx).into_iter().find(|(g, _)| *g == Group::Layers)?.1;
+    let layers = crate::panel_docking::probe::group_rect(h.state(), &h.ctx, "layers")?;
     h.query_all_by_label(name).map(|n| n.rect()).find(|r| layers.contains(r.center()))
 }
 

@@ -291,6 +291,18 @@ fn handle_move_pointer(app: &mut PhotocraftApp, ev: ToolEvent, tool: Tool, mods:
     false
 }
 
+fn pick_path_layer_on_press(app: &mut PhotocraftApp, x: f64, y: f64) {
+    if !crate::vector_ui::path_picks(app) {
+        return;
+    }
+    let tol = 6.0 / f64::from(app.point_zoom().max(0.01));
+    if let Some(st) = app.session.active()
+        && let Some(id) = crate::vector_ui::pick_shape_at(&st.doc, [x, y], tol)
+    {
+        let _ = app.run("layer.select", json!({"layer": id.0}));
+    }
+}
+
 /// Tool state machine. Shared by mouse input and automation.
 pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
     let Some((armed, mods)) = preflight_tool_event(app, ev, mods) else { return };
@@ -385,14 +397,7 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                 return;
             }
             match tool {
-                Tool::PathSelection if crate::vector_ui::path_picks(app) => {
-                    let tol = 6.0 / f64::from(app.point_zoom().max(0.01));
-                    if let Some(st) = app.session.active()
-                        && let Some(id) = crate::vector_ui::pick_shape_at(&st.doc, [x, y], tol)
-                    {
-                        let _ = app.run("layer.select", json!({"layer": id.0}));
-                    }
-                }
+                Tool::PathSelection => pick_path_layer_on_press(app, x, y),
                 Tool::Pen => {
                     if !(mods.alt && crate::vector_ui::pen_grab_handle(app, x, y)) {
                         crate::vector_ui::pen_down(app, x, y, mods.shift);
