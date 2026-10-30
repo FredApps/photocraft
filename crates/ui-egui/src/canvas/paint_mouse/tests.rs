@@ -852,3 +852,58 @@ fn behind_and_clear_are_greyed_on_the_background_layer() {
     h.state_mut().session.active_mut().unwrap().active_layer = Some(top);
     assert!(enabled(h.state(), Item::Behind) && enabled(h.state(), Item::Clear));
 }
+
+/// A right press, a move of `by` and the release there, with `mods` held throughout.
+fn right_drag_by(h: &mut Harness<'static, PhotocraftApp>, by: egui::Vec2, mods: Modifiers) -> Pos2 {
+    let c = h.state().last_canvas_rect.center();
+    h.event(egui::Event::ModifiersChanged(mods));
+    h.event(egui::Event::PointerMoved(c));
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: c, button: PointerButton::Secondary, pressed: true, modifiers: mods });
+    h.run_steps(1);
+    for i in 1..=4 {
+        h.event(egui::Event::PointerMoved(c + by * (i as f32 / 4.0)));
+        h.run_steps(1);
+    }
+    h.event(egui::Event::PointerButton { pos: c + by, button: PointerButton::Secondary, pressed: false, modifiers: mods });
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    h.run_steps(2);
+    c + by
+}
+
+/// A high-DPI mouse moves a few pixels while its right button goes down, past egui's click
+/// distance: the right-click still opens the picker or the canvas menu (#10183). A right drag a
+/// gesture used (Alt+right brush resize, a right-erase stroke) opens nothing.
+#[test]
+fn a_right_click_that_moved_still_opens_its_menu() {
+    for by in [vec2(7.0, 3.0), vec2(40.0, -25.0)] {
+        let mut h = harness(None);
+        let at = right_drag_by(&mut h, by, Modifiers::NONE);
+        assert_eq!(h.state().ui.brush_picker, Some([at.x, at.y]), "moved {by:?}: the picker opens where the button came up");
+        assert!(strokes(&h).is_empty(), "and nothing paints");
+        // The canvas tool menu (Pen) and the layer menu (Move tool) read the same right-click.
+        let mut h = harness(None);
+        h.state_mut().ui.tool = Tool::Pen;
+        right_drag_by(&mut h, by, Modifiers::NONE);
+        assert!(h.state().ui.canvas_tool_menu.is_some(), "moved {by:?}: the Pen's menu opens");
+    }
+    // Alt+right drag resizes the brush: no picker after it.
+    let mut h = harness(None);
+    let size = h.state().session.tools.brush.size;
+    right_drag_by(&mut h, vec2(60.0, 0.0), Modifiers::ALT);
+    assert_ne!(h.state().session.tools.brush.size, size, "the drag resized the brush");
+    assert_eq!(h.state().ui.brush_picker, None, "a resize is no right-click");
+    // ... and the next plain right-click is one again.
+    right_drag_by(&mut h, vec2(8.0, 0.0), Modifiers::NONE);
+    assert!(h.state().ui.brush_picker.is_some());
+    // With right-erase on, a right drag erases and opens nothing.
+    let mut h = harness(Some("erase"));
+    right_drag_by(&mut h, vec2(60.0, 0.0), Modifiers::NONE);
+    assert_eq!(h.state().ui.brush_picker, None);
+    assert_eq!(h.state().ui.canvas_tool_menu, None);
+    // Released off the canvas: no click.
+    let mut h = harness(None);
+    let rect = h.state().last_canvas_rect;
+    right_drag_by(&mut h, vec2(rect.width(), 0.0), Modifiers::NONE);
+    assert_eq!(h.state().ui.brush_picker, None, "released outside the canvas");
+}

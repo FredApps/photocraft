@@ -830,16 +830,18 @@ fn handle_canvas_tool_menus(app: &mut PhotocraftApp, input: &CanvasToolInput<'_>
     let xf = input.xf;
     let tool = input.tool;
     let transform_owns_pointer = input.transform_owns_pointer;
+    // Released after a small move too (#10183).
+    let right_click = crate::paint_mouse::right_clicked(response);
     // Right-click while transforming: switch the box's mode (Free Transform, Scale, Rotate,
     // Skew, Distort, Perspective, Warp), or rotate or flip the box.
     let transforming = app.ui.transform.as_ref().is_some_and(|t| t.warp.is_none());
-    if response.secondary_clicked()
+    if right_click
         && transforming
         && let Some(p) = response.interact_pointer_pos()
     {
         crate::canvas_tool_menu::open_transform(app, ctx, [p.x, p.y]);
     }
-    let lasso_retracted = response.secondary_clicked()
+    let lasso_retracted = right_click
         && match tool {
             Tool::Lasso | Tool::FreeformPen => crate::lasso_ui::undo_last_vertex(app),
             Tool::PolygonLasso => polygon_retract(app),
@@ -854,12 +856,12 @@ fn handle_canvas_tool_menus(app: &mut PhotocraftApp, input: &CanvasToolInput<'_>
     }
     // Right-click on a guide where it could be dragged (the Move tool, or ⌘ with a selection
     // tool): select it and open the guide menu, as Photoshop does.
-    let guide_menu = response.secondary_clicked()
+    let guide_menu = right_click
         && !lasso_retracted
         && !transforming
         && response.interact_pointer_pos().is_some_and(|p| crate::canvas_tool_menu::open_guide(app, ctx, tool, mods, [p.x, p.y], xf.to_doc(p)));
     // Right-click with the Move tool, or ⌘/Ctrl+right-click: the layers under the pointer.
-    if response.secondary_clicked()
+    if right_click
         && !lasso_retracted
         && !transforming
         && !guide_menu
@@ -873,7 +875,7 @@ fn handle_canvas_tool_menus(app: &mut PhotocraftApp, input: &CanvasToolInput<'_>
             crate::canvas_tool_menu::open_pasteboard(app, ctx, tool, [p.x, p.y]);
         }
     }
-    if response.secondary_clicked()
+    if right_click
         && !lasso_retracted
         && !transforming
         && !guide_menu

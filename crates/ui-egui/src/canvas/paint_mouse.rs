@@ -110,6 +110,21 @@ pub fn right_erases(app: &PhotocraftApp, tool: Tool) -> bool {
     matches!(tool, Tool::Brush | Tool::Eraser) && app.session.prefs().tools.right_click_with_painting_tools == RightClickPaint::Erase
 }
 
+/// A right-click on the canvas, as the system reads one: the right button released over the
+/// canvas, however far the pointer moved while it was down. egui reports `secondary_clicked` only
+/// within its click distance of the press, and a high-DPI mouse can move that far just from the
+/// button going down; egui then sees a drag (#10183). A right drag that a gesture used (an
+/// Alt+right brush resize or a right-erase stroke, `canvas_buttons`) is no click.
+pub fn right_clicked(response: &Response) -> bool {
+    let released_over = response.drag_stopped_by(PointerButton::Secondary) && response.interact_pointer_pos().is_some_and(|p| response.rect.contains(p));
+    response.secondary_clicked() || (released_over && !response.ctx.data(|d| d.get_temp::<bool>(right_gesture_id())).unwrap_or(false))
+}
+
+/// Temp-data key: the right press now down (or last released) started a drag gesture.
+fn right_gesture_id() -> egui::Id {
+    egui::Id::unique("canvas-right-gesture")
+}
+
 /// Route the canvas response's buttons: the left one drives the tool; the right one resizes the
 /// brush with Alt held (#297), erases (Erase preference) or opens the Brush Preset picker. Arms
 /// `secondary_erase` or `brush_resize_armed` for this frame's `Down`.
@@ -117,6 +132,9 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
     if crate::brush_mode_menu::blocks_canvas(app, &response.ctx) {
         app.secondary_erase = false;
         return Buttons::default();
+    }
+    if response.ctx.input(|i| i.pointer.button_pressed(PointerButton::Secondary)) {
+        response.ctx.data_mut(|d| d.insert_temp(right_gesture_id(), false));
     }
     let physical_right = app.services.right_button_down.as_ref().is_some_and(|f| f());
     let (mods, mut right_down) = response.ctx.input(|i| (i.modifiers, i.pointer.secondary_down()));
@@ -145,7 +163,7 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
     let mode_menu = crate::brush_mode_menu::is_gesture(tool, crate::workspace_ui::sticky_mods(app, crate::brush_mode_menu::gesture_mods(&response.ctx, mods)));
     if mode_menu && !resizing && app.drag.is_none() {
         app.secondary_erase = false;
-        if response.secondary_clicked()
+        if right_clicked(response)
             && let Some(p) = response.interact_pointer_pos()
         {
             crate::brush_mode_menu::open(app, &response.ctx, [p.x, p.y]);
@@ -171,7 +189,10 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
     }
     let right_stroke = erase && app.drag.is_some();
     let right_start = erase && right_started;
-    let right_click = response.secondary_clicked();
+    if right_start || resize_start || resizing {
+        response.ctx.data_mut(|d| d.insert_temp(right_gesture_id(), true));
+    }
+    let right_click = right_clicked(response);
     if right_click
         && !erase
         && !layer_menu
