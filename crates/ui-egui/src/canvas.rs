@@ -1954,10 +1954,11 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     let hand_pan = tool == Tool::Hand && !transform_owns_pointer;
     // The Hand pans with a drag of any button, but the selected Hand's right button is its view
     // menu, as in Photoshop: a drag with that button alone is a right-click that moved, which
-    // opens the menu instead (#10183). Space over another tool still pans with the right button.
+    // opens the menu instead (#10183). Space is the pan itself, so with Space held the right
+    // button pans over any tool, the selected Hand included.
     let others = [PointerButton::Primary, PointerButton::Middle, PointerButton::Extra1, PointerButton::Extra2];
     let right_alone = response.dragged_by(PointerButton::Secondary) && !others.into_iter().any(|b| response.dragged_by(b));
-    let hand_drag = hand_pan && response.dragged() && !(app.ui.tool == Tool::Hand && right_alone);
+    let hand_drag = hand_pan && response.dragged() && !(app.ui.tool == Tool::Hand && !space_pan && right_alone);
     // A pan the right button took part in used it: its release is no right-click.
     if hand_drag && ctx.input(|i| i.pointer.secondary_down()) {
         crate::paint_mouse::right_press_used(&response);

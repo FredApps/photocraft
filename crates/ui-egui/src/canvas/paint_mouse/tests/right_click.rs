@@ -95,7 +95,7 @@ fn nothing_opened(h: &Harness<'static, PhotocraftApp>) -> bool {
 }
 
 /// Space is the Hand over any tool, and a right drag with it pans, as before: only the selected
-/// Hand's right button is its view menu. The pan opens nothing and paints nothing.
+/// Hand's right button without Space is its view menu. The pan opens nothing and paints nothing.
 #[test]
 fn space_and_a_right_drag_pan_with_any_tool() {
     for (tool, prefs) in [(Tool::Brush, None), (Tool::Brush, Some("erase")), (Tool::Pen, None)] {
@@ -236,4 +236,23 @@ fn escape_while_the_right_button_is_down_cancels_the_right_click() {
         right_click_in_one_frame(&mut h, c, c + vec2(30.0, 0.0), true);
         assert!(!nothing_opened(&h), "{tool:?} {mods:?}: the next right-click opens its menu");
     }
+}
+
+/// Space is the Hand's pan over the selected Hand too: with Space held, the Hand's right drag pans
+/// and opens no view menu. Without Space it opens the menu without panning (#10183).
+#[test]
+fn space_and_a_right_drag_pan_with_the_hand_selected() {
+    let mut h = zoomed(Tool::Hand, None);
+    let center = h.state().ui.views[0].center;
+    space(&mut h, true);
+    right_drag_by(&mut h, vec2(60.0, 36.0), Modifiers::NONE);
+    space(&mut h, false);
+    assert_ne!(h.state().ui.views[0].center, center, "Space and a right drag pan with the Hand");
+    assert!(h.state().ui.canvas_tool_menu.is_none(), "and open no view menu");
+    // A fresh view: the Space pan can glide on (flick panning).
+    let mut h = zoomed(Tool::Hand, None);
+    let center = h.state().ui.views[0].center;
+    right_drag_by(&mut h, vec2(60.0, 36.0), Modifiers::NONE);
+    assert_eq!(h.state().ui.views[0].center, center, "without Space the right drag does not pan");
+    assert_eq!(h.state().ui.canvas_tool_menu.as_ref().map(|m| m.tool), Some(Tool::Hand), "it opens the view menu");
 }
