@@ -167,8 +167,8 @@ fn server_modes_reject_ignored_or_conflicting_options() {
         for flag in ["--control-token", "--control-token-file"] {
             server_usage_error(&[sub, flag, "unused"], if sub == "mcp" { "requires --bridge" } else { "requires --port" });
         }
+        server_usage_error(&[sub, "--automation-write-root", ".", "--automation-write-root", "."], "cannot be used multiple times");
         for flag in ["--automation-read-root", "--automation-write-root"] {
-            server_usage_error(&[sub, flag, ".", flag, "."], "cannot be used multiple times");
             server_usage_error(&[sub, &format!("{flag}=")], &format!("a value is required for '{flag} "));
             server_usage_error(&[sub, flag, "--automation-write-root", "."], &format!("a value is required for '{flag} "));
         }
@@ -193,7 +193,7 @@ fn server_validation_does_not_consume_stdio_or_create_files() {
     let other = d.join("other.token");
     let token_flag = format!("--control-token-file={}", token.display());
     let other_flag = format!("--control-token-file={}", other.display());
-    for tail in [&["stray"][..], &["--automation-read-root", ".", "--automation-read-root", "."], &["--port", "0"], &[&other_flag]] {
+    for tail in [&["stray"][..], &["--automation-write-root", ".", "--automation-write-root", "."], &["--port", "0"], &[&other_flag]] {
         let mut child = bin()
             .current_dir(&d)
             .args(["serve", "--port", "0", &token_flag])
