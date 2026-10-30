@@ -31,7 +31,9 @@ fn a_right_press_on_a_popup_over_the_canvas_is_no_canvas_click() {
             let (on, off) = (popup.center(), canvas.left_top() + vec2(30.0, 30.0));
             assert!(canvas.contains(on) && !popup.contains(off));
             right_click_in_one_frame(&mut h, on, off, split);
-            assert_ne!(popup_at(&h, pen), Some([off.x, off.y]), "pen {pen}, split {split}: a press on the popup is no canvas right-click");
+            for p in [on, off] {
+                assert_ne!(popup_at(&h, pen), Some([p.x, p.y]), "pen {pen}, split {split}: a press on the popup is no canvas right-click");
+            }
             assert!(strokes(&h).is_empty());
         }
     }
@@ -255,4 +257,23 @@ fn space_and_a_right_drag_pan_with_the_hand_selected() {
     right_drag_by(&mut h, vec2(60.0, 36.0), Modifiers::NONE);
     assert_eq!(h.state().ui.views[0].center, center, "without Space the right drag does not pan");
     assert_eq!(h.state().ui.canvas_tool_menu.as_ref().map(|m| m.tool), Some(Tool::Hand), "it opens the view menu");
+}
+
+/// A right-click that moved past the click distance points where the button went down, at what
+/// the user right-clicked: a guide under the press gets the guide menu, at the press, even when the
+/// pointer came up a few pixels off the guide (#10183).
+#[test]
+fn a_moved_right_click_on_a_guide_opens_the_guide_menu() {
+    for split in [true, false] {
+        let mut h = harness(None);
+        h.state_mut().ui.tool = Tool::Move;
+        let x = h.state().ui.views[0].center[0];
+        h.state_mut().run("view.newGuide", json!({"orientation": "vertical", "position": x})).unwrap();
+        h.run_steps(2);
+        let c = h.state().last_canvas_rect.center();
+        right_click_in_one_frame(&mut h, c, c + vec2(8.0, 0.0), split);
+        let menu = h.state().ui.canvas_tool_menu.as_ref().map(|m| (m.guide, m.pos));
+        assert_eq!(menu, Some((true, [c.x, c.y])), "split {split}: the guide menu opens at the press");
+        assert!(h.state().ui.layer_menu.is_none(), "split {split}: not the layers under the release");
+    }
 }

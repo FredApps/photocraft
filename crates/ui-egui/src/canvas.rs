@@ -830,7 +830,8 @@ fn handle_canvas_tool_menus(app: &mut PhotocraftApp, input: &CanvasToolInput<'_>
     let xf = input.xf;
     let tool = input.tool;
     let transform_owns_pointer = input.transform_owns_pointer;
-    // Released after a small move too (#10183), even one egui saw as no click and no drag.
+    // Released after a small move too (#10183), even one egui saw as no click and no drag. Such a
+    // click points where the button went down: each menu below hit-tests and opens there.
     let right_at = crate::paint_mouse::right_click_at(response);
     let right_click = right_at.is_some();
     // Right-click while transforming: switch the box's mode (Free Transform, Scale, Rotate,

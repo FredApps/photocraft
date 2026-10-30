@@ -855,7 +855,8 @@ fn behind_and_clear_are_greyed_on_the_background_layer() {
     assert!(enabled(h.state(), Item::Behind) && enabled(h.state(), Item::Clear));
 }
 
-/// A right press, a move of `by` and the release there, with `mods` held throughout.
+/// A right press at the canvas centre, a move of `by` and the release there, with `mods` held
+/// throughout; returns where the button went down.
 fn right_drag_by(h: &mut Harness<'static, PhotocraftApp>, by: egui::Vec2, mods: Modifiers) -> Pos2 {
     let c = h.state().last_canvas_rect.center();
     h.event(egui::Event::ModifiersChanged(mods));
@@ -870,18 +871,19 @@ fn right_drag_by(h: &mut Harness<'static, PhotocraftApp>, by: egui::Vec2, mods: 
     h.event(egui::Event::PointerButton { pos: c + by, button: PointerButton::Secondary, pressed: false, modifiers: mods });
     h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
     h.run_steps(2);
-    c + by
+    c
 }
 
 /// A high-DPI mouse moves a few pixels while its right button goes down, past egui's click
-/// distance: the right-click still opens the picker or the canvas menu (#10183). A right drag a
-/// gesture used (Alt+right brush resize, a right-erase stroke) opens nothing.
+/// distance: the right-click still opens the picker or the canvas menu, where the button went
+/// down (#10183). A right drag a gesture used (Alt+right brush resize, a right-erase stroke) opens
+/// nothing.
 #[test]
 fn a_right_click_that_moved_still_opens_its_menu() {
     for by in [vec2(7.0, 3.0), vec2(40.0, -25.0)] {
         let mut h = harness(None);
         let at = right_drag_by(&mut h, by, Modifiers::NONE);
-        assert_eq!(h.state().ui.brush_picker, Some([at.x, at.y]), "moved {by:?}: the picker opens where the button came up");
+        assert_eq!(h.state().ui.brush_picker, Some([at.x, at.y]), "moved {by:?}: the picker opens where the button went down");
         assert!(strokes(&h).is_empty(), "and nothing paints");
         // The canvas tool menu (Pen) and the layer menu (Move tool) read the same right-click.
         let mut h = harness(None);
@@ -963,8 +965,8 @@ fn a_right_click_moved_and_released_in_one_frame_still_opens_its_menu() {
         let c = h.state().last_canvas_rect.center();
         let at = c + vec2(30.0, 12.0);
         right_click_in_one_frame(&mut h, c, at, split);
-        let picker = h.state().ui.brush_picker.map(|p| (p[0] - at.x).abs() < 0.5 && (p[1] - at.y).abs() < 0.5);
-        assert_eq!(picker, Some(true), "split {split}: the picker opens where the button came up");
+        let picker = h.state().ui.brush_picker.map(|p| (p[0] - c.x).abs() < 0.5 && (p[1] - c.y).abs() < 0.5);
+        assert_eq!(picker, Some(true), "split {split}: the picker opens where the button went down");
         assert!(strokes(&h).is_empty(), "and nothing paints");
         // The canvas tool menu reads the same click.
         let mut h = harness(None);

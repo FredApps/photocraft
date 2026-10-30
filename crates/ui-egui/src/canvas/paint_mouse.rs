@@ -120,27 +120,37 @@ pub fn right_clicked(response: &Response) -> bool {
     right_click_at(response).is_some()
 }
 
-/// Where the right button came up for a `right_clicked` click, in the canvas's coordinates.
+/// Where a `right_clicked` click points, in the canvas's coordinates: every canvas menu hit-tests
+/// its target there (a guide, the layers under it, the pasteboard, a pending crop) and opens there.
 ///
-/// Past egui's click distance, the canvas's own record of the press (`track_right_press`) decides:
-/// it went down on the canvas itself, no gesture used it and Escape did not cancel it. That also
-/// covers a slow frame where the move and the release arrive together, which egui reports as
-/// neither a click nor a drag.
+/// A click egui reports itself (`secondary_clicked`, within its click distance and click time)
+/// counts as it always has, at the pointer. Otherwise the canvas's own record of the press
+/// (`track_right_press`) decides, and the release is a right-click when all of these hold:
+/// - the press went down on the canvas itself: inside it, under no popup or window, and on no
+///   widget drawn over it (a scrollbar);
+/// - no other mouse button was down when it went down, and none was pressed while it was held;
+/// - no gesture used it: an Alt+right brush resize, a right-erase stroke, a pan (Space's too);
+/// - Escape was not pressed while it was held;
+/// - it came up on the canvas.
+///
+/// Such a click points where the button went down, at what was right-clicked, not where a few
+/// pixels of movement took the pointer by the release. The record also covers a slow frame where
+/// the move and the release arrive together, which egui reports as neither a click nor a drag,
+/// and a still press held past egui's click time, which egui no longer calls a click: that counts
+/// on release, as a system context menu does.
 pub fn right_click_at(response: &Response) -> Option<Pos2> {
     if response.secondary_clicked() {
         return response.interact_pointer_pos();
     }
     let ctx = &response.ctx;
-    if !ctx.data(|d| d.get_temp::<bool>(right_pressed_id(response))).unwrap_or(false) {
-        return None;
-    }
+    let down = ctx.data(|d| d.get_temp::<Option<Pos2>>(right_pressed_id(response))).flatten()?;
     let up = ctx.input(|i| i.pointer.button_released(PointerButton::Secondary).then(|| i.pointer.latest_pos()).flatten())?;
-    on_canvas(response, up).then(|| to_layer(response, up))
+    on_canvas(response, up).then(|| to_layer(response, down))
 }
 
 /// The right press now down was used by a gesture, so its release is no right-click.
 pub fn right_press_used(response: &Response) {
-    response.ctx.data_mut(|d| d.insert_temp(right_pressed_id(response), false));
+    response.ctx.data_mut(|d| d.insert_temp::<Option<Pos2>>(right_pressed_id(response), None));
 }
 
 /// A screen point in the coordinates of `response`'s layer (its `rect`'s).
@@ -170,8 +180,9 @@ fn on_canvas(response: &Response, p: Pos2) -> bool {
     top.is_none_or(|id| id == response.id)
 }
 
-/// Temp-data key, one per canvas: the right press now down (or released this frame) went down
-/// on this canvas, and no gesture has used it.
+/// Temp-data key, one per canvas: where the right press now down (or released this frame) went
+/// down, in screen points, when that was on this canvas and nothing has used it since; `None` once
+/// it is no right-click.
 fn right_pressed_id(response: &Response) -> egui::Id {
     response.id.with("canvas-right-pressed")
 }
@@ -201,10 +212,10 @@ pub fn track_right_press(response: &Response) {
     });
     let id = right_pressed_id(response);
     if pressed {
-        let on = !others && !escape && origin.is_some_and(|p| on_canvas(response, p));
-        response.ctx.data_mut(|d| d.insert_temp(id, on));
+        let at = origin.filter(|&p| !others && !escape && on_canvas(response, p));
+        response.ctx.data_mut(|d| d.insert_temp(id, at));
     } else if !released && !held {
-        response.ctx.data_mut(|d| d.remove_temp::<bool>(id));
+        response.ctx.data_mut(|d| d.remove_temp::<Option<Pos2>>(id));
     } else if others || escape {
         right_press_used(response);
     }
