@@ -773,7 +773,7 @@ async fn doc_replace_smart_object_is_capability_scoped() {
     assert_ne!(replaced.is_error, Some(true), "{}", text(&replaced));
     let refused = call(&client, "doc_replace_smart_object", json!({"path": outside.join("outside.png").to_string_lossy(), "layer": layer})).await;
     assert_eq!(refused.is_error, Some(true));
-    assert!(text(&refused).contains("must be inside the automation root"), "{}", text(&refused));
+    assert!(text(&refused).contains("must be inside an automation read root"), "{}", text(&refused));
     let ambient = call(&client, "command_run", json!({"id": "layer.smartObjects.replaceContents", "params": {"path": "inside.png", "layer": layer}})).await;
     assert_eq!(ambient.is_error, Some(true));
     assert!(text(&ambient).contains("ambient filesystem paths"), "{}", text(&ambient));
