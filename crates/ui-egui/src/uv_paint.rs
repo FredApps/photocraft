@@ -20,12 +20,13 @@ struct Sample {
     shell: u32,
     point: [f64; 2],
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SurfaceStrokeAnchor {
     position: [f64; 3],
     pressure: Option<PenSample>,
     doc: photocraft_doc::DocId,
-    scene_generation: u64,
+    /// Keep the source scene alive so identity cannot be confused with an allocator-reused pointer.
+    scene: std::sync::Arc<Scene>,
 }
 #[derive(Clone, Copy)]
 struct MirrorSample {
@@ -196,7 +197,10 @@ fn push_mirror_sample(state: &mut State, sample: MirrorSample) -> bool {
 /// document's 2D symmetry while creating, previewing and committing these mapped texture points.
 /// Otherwise the engine would reflect them again in unrelated texture space.
 fn tool_event(app: &mut PhotocraftApp, state: &State, event: ToolEvent, modifiers: Modifiers) {
-    let modifiers = if state.surface_line_active { Modifiers { shift: false, ..modifiers } } else { modifiers };
+    // In 3D, Shift belongs to the surface line gesture even if there is no usable anchor yet.
+    // Never let the canvas reinterpret it as a stale 2D UV connection or angle constraint.
+    let surface_shift = app.ui.workspace == "3D" && state.action == Action::Paint && state.tool.is_some_and(crate::stroke_constraint::connects);
+    let modifiers = if surface_shift { Modifiers { shift: false, ..modifiers } } else { modifiers };
     let native_uv_mask_gpu_disabled = std::mem::replace(&mut app.native_uv_mask_gpu_disabled, state.suppress_document_symmetry);
     let saved = if state.suppress_document_symmetry {
         app.session.active_mut().and_then(|document| document.symmetry.take().map(|symmetry| (document.doc.id, symmetry)))
@@ -289,6 +293,15 @@ enum Action {
     CloneSource,
     Eyedropper,
 }
+fn action_for_down(modifiers: Modifiers, tool: Tool) -> Action {
+    if modifiers.ctrl && matches!(tool, Tool::CloneStamp | Tool::Healing) {
+        Action::CloneSource
+    } else if modifiers.ctrl && tool == Tool::Brush {
+        Action::Eyedropper
+    } else {
+        Action::Paint
+    }
+}
 pub(crate) fn pending(state: &State) -> bool {
     state.doc.is_some() && (state.last.is_some() || state.mask_segmented_live) && state.tool.is_some_and(canvas::strokes_live)
 }
@@ -379,7 +392,7 @@ fn finish_inner(app: &mut PhotocraftApp, state: &mut State, preserve_contour: bo
         && state.action == Action::Paint
         && matches!(state.tool, Some(Tool::PolygonLasso | Tool::MagneticLasso))
         && state.contour_sample.is_some();
-    let line_anchor = state.stroke_end.or(state.line_anchor);
+    let line_anchor = state.stroke_end.clone().or_else(|| state.line_anchor.clone());
     if keep {
         let contour_sample = state.contour_sample;
         let contour_tool = state.tool;
@@ -519,8 +532,8 @@ fn document_at_surface_point(app: &PhotocraftApp, view: &View<'_>, point: PathPo
 /// visible there. This lets Shift-click remain attached to the model if the camera moved between
 /// strokes, while refusing to start a line from an occluded or newly rebound surface point.
 fn surface_line_start(app: &PhotocraftApp, state: &State, view: &View<'_>, endpoint: PathPoint, tool: Tool) -> Option<PathPoint> {
-    let anchor = state.line_anchor?;
-    if anchor.scene_generation != app.session.uv.generation || !crate::stroke_constraint::connects(tool) {
+    let anchor = state.line_anchor.as_ref()?;
+    if !app.session.uv.scene.as_ref().is_some_and(|scene| std::sync::Arc::ptr_eq(scene, &anchor.scene)) || !crate::stroke_constraint::connects(tool) {
         return None;
     }
     if document_at_surface_point(app, view, endpoint) != Some(anchor.doc) {
@@ -537,7 +550,7 @@ fn surface_line_start(app: &PhotocraftApp, state: &State, view: &View<'_>, endpo
 }
 
 fn draw_surface_line_preview(app: &PhotocraftApp, ui: &egui::Ui, state: &State, view: &View<'_>, tool: Tool) {
-    if !ui.input(|input| input.modifiers.shift) || state.held || !crate::stroke_constraint::connects(tool) {
+    if !ui.input(|input| input.modifiers.shift && !input.modifiers.alt) || state.held || !crate::stroke_constraint::connects(tool) {
         return;
     }
     let Some(pointer) = ui.input(|input| input.pointer.hover_pos()) else { return };
@@ -658,6 +671,14 @@ fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view:
         (st.doc.id, st.doc.size, point)
     };
     let tool = app.active_tool();
+    if action == Action::Paint && crate::stroke_constraint::connects(tool) {
+        state.stroke_end = app.session.uv.scene.clone().map(|scene| SurfaceStrokeAnchor {
+            position: std::array::from_fn(|index| (hit.position[index] - view.geometry.center[index]) / view.geometry.diameter),
+            pressure: path_point.pen,
+            doc: doc_id,
+            scene,
+        });
+    }
     let mirrored_hit = (action == Action::Paint && state.suppress_document_symmetry)
         .then(|| symmetry_hit(ctx, view, &hit, tool))
         .flatten()
@@ -738,14 +759,6 @@ fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view:
         ToolEvent::Down { x: point[0], y: point[1], pressure }
     };
     let source_sample = Sample { triangle: hit.triangle, shell: triangle.shell, point };
-    if action == Action::Paint && state.tool.is_some_and(crate::stroke_constraint::connects) {
-        state.stroke_end = Some(SurfaceStrokeAnchor {
-            position: std::array::from_fn(|index| (hit.position[index] - view.geometry.center[index]) / view.geometry.diameter),
-            pressure: path_point.pen,
-            doc: doc_id,
-            scene_generation: app.session.uv.generation,
-        });
-    }
     let segment_start = state.mask_segment_start_pending.then(|| app.drag.as_ref().map_or(0, |drag| drag.points.len()));
     tool_event(app, state, event, state.modifiers);
     state.output_last = Some(source_sample);
@@ -1073,13 +1086,7 @@ pub(crate) fn input(
                 static GESTURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                 app.uv_paint_key = Some(format!("uv3d-{}", GESTURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
                 app.tool_override = Some(down_tool);
-                let action = if (modifiers.shift || modifiers.ctrl) && matches!(down_tool, Tool::CloneStamp | Tool::Healing) {
-                    Action::CloneSource
-                } else if modifiers.ctrl && down_tool == Tool::Brush {
-                    Action::Eyedropper
-                } else {
-                    Action::Paint
-                };
+                let action = action_for_down(modifiers, down_tool);
                 let line_start = (action == Action::Paint && modifiers.shift).then(|| surface_line_start(app, state, &view, point, down_tool)).flatten();
                 state.held = true;
                 state.path_release_pending = false;
@@ -1380,7 +1387,7 @@ mod tests {
     #[test]
     fn shift_line_anchor_reprojects_only_to_its_visible_bound_surface() {
         let _gpu = photocraft_testkit::gpu_lock();
-        let (app, scene, geometry) = setup(Tool::Brush);
+        let (mut app, scene, geometry) = setup(Tool::Brush);
         let maps = Materials::default();
         let view = make_view(&scene, &geometry, &maps);
         let endpoint = screen(&view, 0);
@@ -1389,16 +1396,33 @@ mod tests {
         let material = geometry.triangles[hit.triangle].material;
         let doc = app.session.uv.map_bindings(app.session.uv.current_channel())[material].unwrap();
         let position = std::array::from_fn(|index| (hit.position[index] - geometry.center[index]) / geometry.diameter);
-        let anchor = SurfaceStrokeAnchor { position, pressure: None, doc, scene_generation: app.session.uv.generation };
-        let state = State { tool: Some(Tool::Brush), line_anchor: Some(anchor), ..Default::default() };
+        let anchor = SurfaceStrokeAnchor { position, pressure: None, doc, scene: scene.clone() };
+        let state = State { tool: Some(Tool::Brush), line_anchor: Some(anchor.clone()), ..Default::default() };
         let line_start = surface_line_start(&app, &state, &view, PathPoint::from(endpoint), Tool::Brush).unwrap();
         assert!(line_start.screen.distance(endpoint) < 1.0);
 
-        let stale = State { line_anchor: Some(SurfaceStrokeAnchor { scene_generation: app.session.uv.generation.wrapping_add(1), ..anchor }), ..state };
+        app.session.uv.generation = app.session.uv.generation.wrapping_add(1);
+        assert!(
+            surface_line_start(&app, &state, &view, PathPoint::from(endpoint), Tool::Brush).is_some(),
+            "non-geometric UV view changes must not invalidate the surface anchor"
+        );
+
+        let stale_scene = std::sync::Arc::new((*scene).clone());
+        let stale = State { line_anchor: Some(SurfaceStrokeAnchor { scene: stale_scene, ..anchor }), ..state };
         assert!(
             surface_line_start(&app, &stale, &view, PathPoint::from(endpoint), Tool::Brush).is_none(),
             "a replaced model cannot reuse the old surface point"
         );
+    }
+
+    #[test]
+    fn shift_connects_clone_and_healing_instead_of_selecting_the_clone_source() {
+        let shift = Modifiers { shift: true, ..Default::default() };
+        let ctrl = Modifiers { ctrl: true, ..Default::default() };
+        assert_eq!(action_for_down(shift, Tool::CloneStamp), Action::Paint);
+        assert_eq!(action_for_down(shift, Tool::Healing), Action::Paint);
+        assert_eq!(action_for_down(ctrl, Tool::CloneStamp), Action::CloneSource);
+        assert_eq!(action_for_down(ctrl, Tool::Healing), Action::CloneSource);
     }
 
     #[test]

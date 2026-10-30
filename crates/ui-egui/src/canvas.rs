@@ -113,6 +113,7 @@ pub(crate) use strokes::{
     complete_native_mask_gpu_release, fail_native_mask_gpu_brush, native_mask_gpu_brush_active, native_mask_gpu_input, request_native_mask_gpu_release,
 };
 pub(crate) use tabs::arranged_cells;
+pub(crate) use tabs::tab_title_at;
 #[cfg(feature = "uv-workbench")]
 pub(crate) use tabs::uv_documents;
 #[cfg(test)]
@@ -129,10 +130,7 @@ use textures::{ensure_gpu, redraw_focus, visible_doc_rect};
 pub use tool_input::{ToolEvent, selection_drag_kind, tool_event};
 pub(crate) use tool_input::{command_guide_at, command_moves_layer, event_tool};
 pub(crate) use transform_controls::{LAYER_EDGES, layer_edges_rect};
-use transform_controls::{
-    begin_transform_controls_at, draw_transform_controls, transform_controls_cursor, transform_controls_rect, transform_controls_several,
-    transform_controls_turn,
-};
+use transform_controls::{begin_transform_controls_at, draw_transform_controls, transform_controls_cursor, transform_controls_rect, transform_controls_turn};
 #[cfg(test)]
 use transform_controls::{transform_controls_hit, transform_controls_layers};
 pub use view_xform::{ViewXform, doc_point_at, fill_view, fit_view};
@@ -1380,10 +1378,8 @@ fn draw_canvas_tool_cursor(app: &mut PhotocraftApp, ui: &mut egui::Ui, input: &C
         // corner badge, as Photoshop's corner radius cursor.
         ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
         crate::icons::cursor_badge(ctx, "scan", p);
-    } else if let Some((r, p, c)) = response
-        .hover_pos()
-        .filter(|_| !transform_controls_several(app))
-        .and_then(|p| transform_controls_rect(app, xf).and_then(|r| transform_controls_cursor(r, p).map(|c| (r, p, c))))
+    } else if let Some((r, p, c)) =
+        response.hover_pos().and_then(|p| transform_controls_rect(app, xf).and_then(|r| transform_controls_cursor(r, p).map(|c| (r, p, c))))
     {
         // The Move tool draws handles without opening a Free Transform session.
         // Give them their resize/rotate cursors before the first pointer press (#2871).
