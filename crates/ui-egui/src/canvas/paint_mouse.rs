@@ -114,7 +114,8 @@ pub fn right_erases(app: &PhotocraftApp, tool: Tool) -> bool {
 /// and released over it, however far the pointer moved while it was down. egui reports
 /// `secondary_clicked` only within its click distance of the press, and a high-DPI mouse can move
 /// that far just from the button going down; egui then sees a drag (#10183). A right press that a
-/// gesture used (an Alt+right brush resize or a right-erase stroke, `canvas_buttons`) is no click.
+/// gesture used (an Alt+right brush resize, a right-erase stroke, a pan, another button pressed
+/// with it) is no click.
 pub fn right_clicked(response: &Response) -> bool {
     right_click_at(response).is_some()
 }
@@ -137,7 +138,7 @@ pub fn right_click_at(response: &Response) -> Option<Pos2> {
 }
 
 /// The right press now down was used by a gesture, so its release is no right-click.
-fn right_press_used(response: &Response) {
+pub fn right_press_used(response: &Response) {
     response.ctx.data_mut(|d| d.insert_temp(right_pressed_id(response), false));
 }
 
@@ -175,25 +176,32 @@ fn right_pressed_id(response: &Response) -> egui::Id {
 }
 
 /// Keeps `right_pressed_id` for this frame: set on a right press (on the canvas or not), dropped
-/// once the button is up again. It runs before the open brush mode menu skips the buttons, so a
+/// once the button is up again. A right-click is the right button on its own: a press made while
+/// another button is down is none, and another button pressed while it is held uses it. The canvas
+/// runs this every frame, panning or not, before the open brush mode menu skips the buttons, so a
 /// press made while the menu is open is not mistaken for an older one.
-fn track_right_press(response: &Response) {
-    let (pressed, released, held, origin) = response.ctx.input(|i| {
+pub fn track_right_press(response: &Response) {
+    let (pressed, released, held, origin, others) = response.ctx.input(|i| {
         // Where the button went down. With the release in the same frame, the pointer is
         // already where it came up and egui has dropped the press origin: the event has it.
         let pressed_at = i.events.iter().rev().find_map(|e| match e {
             egui::Event::PointerButton { pos, button: PointerButton::Secondary, pressed: true, .. } => Some(*pos),
             _ => None,
         });
+        let others = [PointerButton::Primary, PointerButton::Middle, PointerButton::Extra1, PointerButton::Extra2]
+            .into_iter()
+            .any(|b| i.pointer.button_down(b) || i.pointer.button_pressed(b));
         let b = PointerButton::Secondary;
-        (i.pointer.button_pressed(b), i.pointer.button_released(b), i.pointer.secondary_down(), pressed_at.or_else(|| i.pointer.press_origin()))
+        (i.pointer.button_pressed(b), i.pointer.button_released(b), i.pointer.secondary_down(), pressed_at.or_else(|| i.pointer.press_origin()), others)
     });
     let id = right_pressed_id(response);
     if pressed {
-        let on = origin.is_some_and(|p| on_canvas(response, p));
+        let on = !others && origin.is_some_and(|p| on_canvas(response, p));
         response.ctx.data_mut(|d| d.insert_temp(id, on));
     } else if !released && !held {
         response.ctx.data_mut(|d| d.remove_temp::<bool>(id));
+    } else if others {
+        right_press_used(response);
     }
 }
 
@@ -201,7 +209,6 @@ fn track_right_press(response: &Response) {
 /// brush with Alt held (#297), erases (Erase preference) or opens the Brush Preset picker. Arms
 /// `secondary_erase` or `brush_resize_armed` for this frame's `Down`.
 pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) -> Buttons {
-    track_right_press(response);
     if crate::brush_mode_menu::blocks_canvas(app, &response.ctx) {
         app.secondary_erase = false;
         return Buttons::default();

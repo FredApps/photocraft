@@ -1831,6 +1831,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     let xf = ViewXform { zoom: display_view.zoom / ppp, center: display_view.center, ..target_xf }.pixel_aligned_for(app, ppp);
     let pixel_grid = app.ui.view.shows(app.ui.view.show.pixel_grid);
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
+    crate::paint_mouse::track_right_press(&response);
     let stroke_dismissal = primary && crate::shape_stroke_ui::dismiss_from_canvas(app, &response);
     let painter = ui.painter_at(rect);
 
@@ -1951,9 +1952,16 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     // box is only drawn and driven on the primary canvas.
     let transform_owns_pointer = primary && app.ui.transform.is_some() && temporary.is_none() && !middle;
     let hand_pan = tool == Tool::Hand && !transform_owns_pointer;
-    // The Hand pans with the left (or middle) button only, as in Photoshop: a right drag is a
-    // right-click that moved, which opens the view menu instead (#10183).
-    let hand_drag = hand_pan && (response.dragged_by(PointerButton::Primary) || response.dragged_by(PointerButton::Middle));
+    // The Hand pans with a drag of any button, but the selected Hand's right button is its view
+    // menu, as in Photoshop: a drag with that button alone is a right-click that moved, which
+    // opens the menu instead (#10183). Space over another tool still pans with the right button.
+    let others = [PointerButton::Primary, PointerButton::Middle, PointerButton::Extra1, PointerButton::Extra2];
+    let right_alone = response.dragged_by(PointerButton::Secondary) && !others.into_iter().any(|b| response.dragged_by(b));
+    let hand_drag = hand_pan && response.dragged() && !(app.ui.tool == Tool::Hand && right_alone);
+    // A pan the right button took part in used it: its release is no right-click.
+    if hand_drag && ctx.input(|i| i.pointer.secondary_down()) {
+        crate::paint_mouse::right_press_used(&response);
+    }
     // Preferences › Tools › Enable Flick Panning: a Hand drag let go while moving glides on.
     let flick_id = egui::Id::unique(("pc-flick-pan", idx, primary, ctx.viewport_id()));
     let flick_on = app.session.prefs().tools.enable_flick_panning;
