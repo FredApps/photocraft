@@ -278,6 +278,152 @@ fn merged_surface(doc: &Document) -> Surface {
     photocraft_compose::flatten_to_surface(doc, PixelFormat::new(fmt.mode, fmt.sample, true), None)
 }
 
+/// Estimated per-pixel effect-map storage and extra memory while building those maps.
+#[derive(Clone, Copy, Default)]
+struct MaskedCopyFxMemory {
+    retained: u64,
+    build: u64,
+}
+
+/// Additional retained stand-in tiles and conversion scratch for the split CMYK compositor.
+#[derive(Clone, Copy, Default)]
+struct MaskedCopyCmykSplitMemory {
+    retained: u64,
+    building: u64,
+    enabled: bool,
+}
+
+/// Two RGB stand-ins are built for every allocated CMYK source tile, even outside the render
+/// rectangle. The second is built while the first remains alive; converting up to one batch keeps
+/// both input and converted f32 samples in flight. Their effect maps can also coexist.
+fn masked_copy_cmyk_split_memory(tile_count: usize, source: PixelFormat) -> Option<MaskedCopyCmykSplitMemory> {
+    let tiles = u64::try_from(tile_count).ok()?;
+    let side = u64::try_from(photocraft_geom::TILE_SIZE).ok()?;
+    let tile_pixels = side.checked_mul(side)?;
+    let rgb = PixelFormat::new(ColorMode::Rgb, source.sample, source.alpha);
+    let tile_bytes = tile_pixels.checked_mul(u64::try_from(rgb.bytes_per_pixel()).ok()?)?;
+    // Include modest allowance for the tile maps and the list of source coordinates.
+    let retained = tiles.checked_mul(tile_bytes.checked_add(256)?)?.checked_mul(2)?;
+    let batch_tiles = photocraft_compose::BAND_PIXELS.div_ceil(tile_pixels).min(tiles);
+    let batch_pixels = batch_tiles.checked_mul(tile_pixels)?;
+    let float_channels = u64::try_from(source.channels()).ok()?.checked_add(u64::try_from(rgb.channels()).ok()?)?;
+    let building = batch_pixels.checked_mul(float_channels.checked_mul(4)?)?;
+    Some(MaskedCopyCmykSplitMemory { retained, building, enabled: true })
+}
+
+/// Match the compositor's split-ink branch without charging CMYK paths that do not use it.
+fn masked_copy_uses_cmyk_split(doc: &Document) -> bool {
+    doc.mode == ColorMode::Cmyk && !photocraft_compose::cmyk::supports(doc) && photocraft_compose::cmyk::renders_inks(doc)
+}
+
+/// Estimate the maps kept by a raster layer's enabled effects. Overlays reuse one shape map;
+/// shadows/glows/satin keep one map each, bevel keeps two, and strokes share up to three distance
+/// maps. Building a map may need additional temporary maps, and making the shape may hold a
+/// full-region RGBA-f32 buffer and its alpha together. The builder can evolve independently,
+/// so these allowances are deliberately a workload estimate, not a guaranteed upper bound.
+fn masked_copy_effect_memory(layer: &Layer) -> Option<MaskedCopyFxMemory> {
+    if !layer.effects.enabled {
+        return Some(MaskedCopyFxMemory::default());
+    }
+    let mut maps = 1u64; // The shared shape map.
+    let mut temp = 0u64;
+    let mut any = false;
+    let mut stroke = false;
+    for effect in layer.effects.items.iter().filter(|effect| effect.enabled()) {
+        any = true;
+        match effect {
+            photocraft_doc::Effect::DropShadow(_)
+            | photocraft_doc::Effect::InnerShadow(_)
+            | photocraft_doc::Effect::OuterGlow(_)
+            | photocraft_doc::Effect::InnerGlow(_)
+            | photocraft_doc::Effect::Satin(_) => {
+                maps = maps.checked_add(1)?;
+                temp = temp.max(16);
+            }
+            photocraft_doc::Effect::BevelEmboss(_) => {
+                maps = maps.checked_add(2)?;
+                temp = temp.max(32);
+            }
+            photocraft_doc::Effect::Stroke(_) => {
+                stroke = true;
+                temp = temp.max(32);
+            }
+            photocraft_doc::Effect::ColorOverlay { .. } | photocraft_doc::Effect::GradientOverlay { .. } | photocraft_doc::Effect::PatternOverlay { .. } => {}
+        }
+    }
+    if !any {
+        return Some(MaskedCopyFxMemory::default());
+    }
+    if stroke {
+        maps = maps.checked_add(3)?;
+    }
+    let retained = maps.checked_mul(4)?;
+    Some(MaskedCopyFxMemory { retained, build: retained.checked_add(temp)?.max(20) })
+}
+
+/// Estimated allocation workload for the new masked-layer bitmap.
+///
+/// The compositor holds destination tiles through the final prune, including transparent ones.
+/// Band reserves are 48 bytes per RGB/gray pixel, 56 for Lab, and 64 for CMYK; they account for
+/// the float composite/conversion buffers and, on native paths, source and mask buffers. Effect
+/// maps can cover the entire effect region, not merely the current band. The CMYK split path
+/// retains two stand-ins and two sets of effect maps. Map building, stand-in conversion, and band
+/// rendering are estimated separately. This is a workload guard, not a proof of peak memory:
+/// effects, prepared patterns, allocator overhead and other live documents may need more. The OS
+/// export is a separate optional operation and is budgeted by the UI clipboard bridge.
+fn masked_copy_estimate(area: Rect, fx_region: Rect, fmt: PixelFormat, effects: MaskedCopyFxMemory, split: MaskedCopyCmykSplitMemory) -> Option<u64> {
+    let pixel_count = |r: Rect| u64::from(r.width()).checked_mul(u64::from(r.height()));
+    let tile_side = i64::from(photocraft_geom::TILE_SIZE);
+    let tile_count = |start: i32, end: i32| -> Option<u64> {
+        if start >= end {
+            return Some(0);
+        }
+        u64::try_from((i64::from(end) - 1).div_euclid(tile_side) - i64::from(start).div_euclid(tile_side) + 1).ok()
+    };
+    let tiles = tile_count(area.x0, area.x1)?.checked_mul(tile_count(area.y0, area.y1)?)?;
+    let tile_pixels = u64::try_from(tile_side.checked_mul(tile_side)?).ok()?;
+    let destination = tiles.checked_mul(tile_pixels)?.checked_mul(u64::try_from(fmt.bytes_per_pixel()).ok()?)?;
+    let rows = u64::try_from(photocraft_compose::band_rows_for(area.width(), 0)).ok()?.min(u64::from(area.height()));
+    let band_pixels = u64::from(area.width()).checked_mul(rows)?;
+    let base_scratch = match fmt.mode {
+        ColorMode::Cmyk => 64u64,
+        ColorMode::Lab => 56u64,
+        _ => 48u64,
+    };
+    let fx_pixels = pixel_count(fx_region)?;
+    let resident = destination.checked_add(split.retained)?;
+    let fx_render = effects.retained.checked_mul(if split.enabled { 2 } else { 1 })?;
+    let fx_build = effects.build.checked_add(if split.enabled { effects.retained } else { 0 })?;
+    let render_peak = resident.checked_add(band_pixels.checked_mul(base_scratch)?)?.checked_add(fx_pixels.checked_mul(fx_render)?)?;
+    // The conversion Vec from an earlier band can remain allocated while a later band's effect
+    // maps are rebuilt. Native CMYK needs one f32 for each channel, so count those bytes too.
+    let conversion = band_pixels.checked_mul(u64::try_from(fmt.channels()).ok()?.checked_mul(4)?)?;
+    let build_peak = resident.checked_add(conversion)?.checked_add(fx_pixels.checked_mul(fx_build)?)?;
+    let standin_peak = resident.checked_add(split.building)?;
+    Some(render_peak.max(build_peak).max(standin_peak))
+}
+
+/// Bound the estimated bitmap workload to half the configured document budget, capped at 1.5 GiB.
+/// The remainder is intended to leave headroom; it is not a reservation or an available-RAM check.
+/// The web preference already caps at 1.5 GiB. Actual memory use may exceed this estimate.
+fn check_masked_copy_budget(
+    area: Rect,
+    fx_region: Rect,
+    fmt: PixelFormat,
+    effects: MaskedCopyFxMemory,
+    split: MaskedCopyCmykSplitMemory,
+    memory_mb: u32,
+) -> Result<()> {
+    let limit = (u64::from(memory_mb) * (1 << 20) / 2).min(3 << 29);
+    let estimate = masked_copy_estimate(area, fx_region, fmt, effects, split);
+    if estimate.is_none_or(|bytes| bytes > limit) {
+        return Err(EngineError::Other(format!(
+            "Could not copy the masked layer: its estimated bitmap working set exceeds the {limit}-byte copy memory limit; the clipboard was not changed"
+        )));
+    }
+    Ok(())
+}
+
 fn copy(s: &mut Session, merged: bool, take_whole: bool) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let canvas = d.doc.bounds();
@@ -312,10 +458,35 @@ fn copy(s: &mut Session, merged: bool, take_whole: bool) -> Result<Value> {
                 // cases safely fall back to the whole canvas.
                 let area = shown.layers.first().and_then(|layer| photocraft_compose::composite_bounds(layer, canvas)).unwrap_or(canvas).intersect(&canvas);
                 let fmt = shown.pixel_format();
+                let fmt = PixelFormat::new(fmt.mode, fmt.sample, true);
+                let (fx_region, effects) = if let Some(layer) = shown.layers.first() {
+                    let effects = masked_copy_effect_memory(layer)
+                        .ok_or_else(|| EngineError::Other("Could not estimate masked-layer effects; the clipboard was not changed".into()))?;
+                    let margin = photocraft_compose::effects::margin(layer);
+                    let region = photocraft_compose::effect_source_bounds(layer, canvas).inflate(margin).intersect(&canvas.inflate(margin));
+                    (region, effects)
+                } else {
+                    (Rect::EMPTY, MaskedCopyFxMemory::default())
+                };
+                let split = if masked_copy_uses_cmyk_split(&shown) {
+                    let source = shown
+                        .layers
+                        .first()
+                        .and_then(Layer::surface)
+                        .ok_or_else(|| EngineError::Other("Could not estimate CMYK clipboard pixels; the clipboard was not changed".into()))?;
+                    masked_copy_cmyk_split_memory(source.tile_count(), source.format())
+                        .ok_or_else(|| EngineError::Other("Could not estimate CMYK clipboard memory; the clipboard was not changed".into()))?
+                } else {
+                    MaskedCopyCmykSplitMemory::default()
+                };
+                check_masked_copy_budget(area, fx_region, fmt, effects, split, s.prefs().performance.effective_memory_usage_mb())?;
                 crate::allocation::checkpoint("rendering the copied layer")?;
-                let surface = photocraft_compose::composite_to_surface(&shown, area, PixelFormat::new(fmt.mode, fmt.sample, true), None);
-                let bitmap = lift(&surface, None, canvas)?;
-                Clip { layers, bounds: bounds.union(&bitmap.bounds), ..bitmap }
+                let surface = photocraft_compose::composite_to_surface(&shown, area, fmt, None);
+                // The compositor already returns an alpha surface limited to `area` inside the
+                // canvas and prunes empty tiles. Re-lifting it would needlessly copy every edge
+                // tile while keeping this surface alive (all tiles for a one-pixel-high layer).
+                let bitmap_bounds = surface.content_bounds().intersect(&canvas);
+                Clip { surface, layers, bounds: bounds.union(&bitmap_bounds), resolution: None, source: None }
             }
             (Some(surf), _) => Clip { layers, ..lift(surf, d.doc.selection.as_ref(), canvas)? },
             // A group or fill layer has no pixels of its own: the clipboard pixels are what it

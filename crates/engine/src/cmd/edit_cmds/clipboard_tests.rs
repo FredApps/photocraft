@@ -210,6 +210,216 @@ fn failed_masked_bitmap_render_preserves_previous_clipboard_and_document() {
 }
 
 #[test]
+fn masked_copy_estimate_counts_aligned_tiles_band_formats_and_effect_region() {
+    let area = Rect::new(255, 255, 257, 257); // crosses both tile boundaries
+    let rgba8 = PixelFormat::new(ColorMode::Rgb, SampleType::U8, true);
+    let rgba16 = PixelFormat::new(ColorMode::Rgb, SampleType::U16, true);
+    let gray8 = PixelFormat::new(ColorMode::Grayscale, SampleType::U8, true);
+    let cmyk32 = PixelFormat::new(ColorMode::Cmyk, SampleType::F32, true);
+    let none = MaskedCopyFxMemory::default();
+    let overlay = MaskedCopyFxMemory { retained: 4, build: 20 };
+    let unsplit = MaskedCopyCmykSplitMemory::default();
+    let pixels_in_four_tiles = 4 * 256 * 256;
+    let rgba = masked_copy_estimate(area, area, rgba8, none, unsplit).unwrap();
+    assert_eq!(rgba, pixels_in_four_tiles * 4 + 4 * 48);
+    assert_eq!(masked_copy_estimate(area, area, rgba16, none, unsplit).unwrap(), pixels_in_four_tiles * 8 + 4 * 48);
+    assert_eq!(masked_copy_estimate(area, area, gray8, none, unsplit).unwrap(), pixels_in_four_tiles * 2 + 4 * 48);
+    assert_eq!(masked_copy_estimate(area, area, cmyk32, none, unsplit).unwrap(), pixels_in_four_tiles * 20 + 4 * 64);
+    assert_eq!(masked_copy_estimate(area, area, rgba8, overlay, unsplit).unwrap(), rgba + 4 * 4);
+    let raw = Rect::new(0, 0, 20_000, 20_000);
+    assert_eq!(masked_copy_estimate(area, raw, rgba8, none, unsplit).unwrap(), rgba, "large raw bounds alone must not count as a render allocation");
+    assert!(masked_copy_estimate(area, raw, rgba8, overlay, unsplit).unwrap() >= pixels_in_four_tiles * 4 + 20_000 * 20_000 * 20);
+    assert!(check_masked_copy_budget(area, raw, rgba8, none, unsplit, 1).is_err(), "one tile-aligned RGBA8 output already exceeds this tiny budget");
+    assert!(check_masked_copy_budget(Rect::new(0, 0, 8, 8), raw, rgba8, none, unsplit, 1).is_ok(), "a cheap render is not rejected just for large raw bounds");
+    assert!(check_masked_copy_budget(Rect::new(0, 0, 8, 8), raw, rgba8, overlay, unsplit, 8192).is_err(), "an expensive full-region effect is rejected");
+    let huge = Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX);
+    assert!(masked_copy_estimate(huge, huge, cmyk32, none, unsplit).is_none(), "size overflow must be rejected");
+}
+
+#[test]
+fn narrow_composite_surface_matches_lift_for_color_modes_and_depths() {
+    for mode in [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab] {
+        for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            let fmt = PixelFormat::new(mode, depth, true);
+            let mut doc = Document::new("fixture", photocraft_geom::Size::new(520, 32), mode, depth);
+            let mut l = Layer::raster("narrow", fmt);
+            let mut pixel = vec![0.25; fmt.channels()];
+            *pixel.last_mut().unwrap() = 1.0;
+            for x in [1, 256, 519] {
+                l.surface_mut().unwrap().write_pixel(x, 2, &pixel);
+            }
+            l.mask = Some(LayerMask::reveal_all());
+            doc.layers.push(l);
+            let area = Rect::new(1, 2, 520, 3);
+            let surface = photocraft_compose::composite_to_surface(&doc, area, fmt, None);
+            assert!(surface.tile_count() > 1, "the fixture crosses tile boundaries");
+            let lifted = lift(&surface, None, doc.bounds()).unwrap();
+            assert_eq!(surface, lifted.surface, "the direct bitmap matches lift for {mode:?} {depth:?}");
+            assert_eq!(surface.content_bounds().intersect(&doc.bounds()), lifted.bounds);
+        }
+    }
+}
+
+#[test]
+fn cmyk_split_estimate_counts_two_standins_batches_and_effect_map_sets() {
+    use photocraft_doc::{BlendMode, Color, Effect, FxCommon};
+
+    let area = Rect::new(0, 0, 6000, 4000);
+    let fx_region = area.inflate(2);
+    let effect = MaskedCopyFxMemory { retained: 4, build: 20 };
+    let dense_tiles = 24 * 16; // 6000x4000 rounded to 256x256 tiles
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let fmt = PixelFormat::new(ColorMode::Cmyk, depth, true);
+        let mut doc = Document::new("fixture", photocraft_geom::Size::new(6000, 4000), ColorMode::Cmyk, depth);
+        let mut l = Layer::raster("cmyk", fmt);
+        l.surface_mut().unwrap().write_pixel(1, 1, &[0.1, 0.2, 0.3, 0.4, 1.0]);
+        l.surface_mut().unwrap().write_pixel(5999, 3999, &[0.1, 0.2, 0.3, 0.4, 1.0]);
+        l.surface_mut().unwrap().write_pixel(-5, -5, &[0.1, 0.2, 0.3, 0.4, 1.0]);
+        l.mask = Some(LayerMask::reveal_all());
+        l.effects.enabled = true;
+        l.effects.items.push(Effect::ColorOverlay { common: FxCommon::new(BlendMode::Normal, 1.0), color: Color::rgb(0.0, 0.0, 1.0) });
+        assert_eq!(l.surface().unwrap().tile_count(), 3, "the sparse source includes a tile outside the canvas");
+        doc.layers.push(l);
+        assert_eq!(masked_copy_uses_cmyk_split(&doc), depth != SampleType::F32, "only 8/16-bit use the split compositor");
+        let split = masked_copy_cmyk_split_memory(doc.layers[0].surface().unwrap().tile_count(), fmt).unwrap();
+        let rgb = PixelFormat::new(ColorMode::Rgb, depth, true);
+        assert_eq!(split.retained, 2 * 3 * (256 * 256 * rgb.bytes_per_pixel() as u64 + 256), "both stand-ins include the off-canvas tile");
+        assert_eq!(split.building, 3 * 256 * 256 * (fmt.channels() + rgb.channels()) as u64 * 4);
+        let unsplit = MaskedCopyCmykSplitMemory::default();
+        let no_extra_tiles = MaskedCopyCmykSplitMemory { retained: 0, building: 0, enabled: true };
+        let without = masked_copy_estimate(area, fx_region, fmt, effect, unsplit).unwrap();
+        let with_second_map = masked_copy_estimate(area, fx_region, fmt, effect, no_extra_tiles).unwrap();
+        assert!(with_second_map >= without + u64::from(fx_region.width()) * u64::from(fx_region.height()) * 4);
+        let actual_path = if depth == SampleType::F32 { unsplit } else { masked_copy_cmyk_split_memory(dense_tiles, fmt).unwrap() };
+        assert!(check_masked_copy_budget(area, fx_region, fmt, effect, actual_path, 8192).is_ok(), "native 24 MP CMYK {depth:?} overlay");
+        doc.layers[0].effects.items.push(Effect::PatternOverlay {
+            common: FxCommon::new(BlendMode::Normal, 1.0),
+            name: "fixture".into(),
+            id: "fixture".into(),
+            scale: 1.0,
+            angle: 0.0,
+            link: true,
+            phase: (0.0, 0.0),
+        });
+        assert!(!masked_copy_uses_cmyk_split(&doc), "pattern overlays use the generic compositor instead of split CMYK");
+    }
+    #[cfg(target_pointer_width = "64")]
+    assert!(masked_copy_cmyk_split_memory(usize::MAX, PixelFormat::new(ColorMode::Cmyk, SampleType::U16, true)).is_none());
+}
+
+#[test]
+fn disabled_effects_do_not_consume_masked_copy_effect_budget() {
+    use photocraft_doc::{BlendMode, Color, Effect, FxCommon, FxPaint, StrokeFx, StrokePosition};
+
+    let (mut s, id) = masked(8);
+    s.edit("disabled effects", |doc, _| {
+        let layer = doc.layer_mut(id).unwrap();
+        layer.effects.enabled = true;
+        let mut effect = Effect::Stroke(StrokeFx {
+            common: FxCommon::new(BlendMode::Normal, 1.0),
+            size: 6.0,
+            position: StrokePosition::Outside,
+            paint: FxPaint::Color(Color::rgb(0.0, 0.0, 1.0)),
+            overprint: false,
+        });
+        effect.set_enabled(false);
+        layer.effects.items = vec![effect; 100];
+        Ok(())
+    })
+    .unwrap();
+    s.edit_prefs(|p| p.performance.memory_usage_mb = 1);
+    s.execute("edit.copy", json!({})).expect("disabled effects do not consume the copy estimate");
+    assert!(s.clipboard.as_ref().unwrap().layers.is_some());
+}
+
+#[test]
+fn masked_copy_budget_allows_typical_rgb8_photos_on_default_web_budget() {
+    let fmt = PixelFormat::new(ColorMode::Rgb, SampleType::U8, true);
+    let none = MaskedCopyFxMemory::default();
+    let unsplit = MaskedCopyCmykSplitMemory::default();
+    for (w, h) in [(6000, 4000), (6000, 6000), (9000, 4000)] {
+        let area = Rect::new(0, 0, w, h);
+        assert!(check_masked_copy_budget(area, area, fmt, none, unsplit, 1536).is_ok(), "{w}x{h}");
+    }
+    let area = Rect::new(0, 0, 6000, 6000);
+    for sample in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let fmt = PixelFormat::new(ColorMode::Rgb, sample, true);
+        assert!(check_masked_copy_budget(area, area, fmt, none, unsplit, 8192).is_ok(), "native 36 MP {sample:?}");
+    }
+    let very_wide = Rect::new(0, 0, 300_000, 256);
+    assert!(check_masked_copy_budget(very_wide, very_wide, fmt, none, unsplit, 1536).is_err());
+}
+
+#[test]
+fn common_24mp_effects_use_type_specific_memory_estimates() {
+    use photocraft_doc::{BlendMode, Color, Effect, FxCommon, FxPaint, StrokeFx, StrokePosition};
+
+    let fmt = PixelFormat::new(ColorMode::Rgb, SampleType::U8, true);
+    let unsplit = MaskedCopyCmykSplitMemory::default();
+    let area = Rect::new(0, 0, 6000, 4000);
+    let mut layer = Layer::raster("effects", fmt);
+    layer.effects.enabled = true;
+    let overlay = Effect::ColorOverlay { common: FxCommon::new(BlendMode::Normal, 1.0), color: Color::rgb(0.0, 0.0, 1.0) };
+    layer.effects.items.push(overlay.clone());
+    let one = masked_copy_effect_memory(&layer).unwrap();
+    assert_eq!((one.retained, one.build), (4, 20), "an overlay only needs the shared shape map");
+    let fx_region = area.inflate(photocraft_compose::effects::margin(&layer));
+    assert!(check_masked_copy_budget(area, fx_region, fmt, one, unsplit, 8192).is_ok(), "24 MP overlay on native");
+    assert!(check_masked_copy_budget(area, fx_region, fmt, one, unsplit, 1536).is_ok(), "24 MP overlay on web");
+    layer.effects.items.push(overlay);
+    let two = masked_copy_effect_memory(&layer).unwrap();
+    assert_eq!((two.retained, two.build), (one.retained, one.build), "overlays share their shape map");
+    assert!(check_masked_copy_budget(area, fx_region, fmt, two, unsplit, 1536).is_ok(), "24 MP with multiple overlays on web");
+    layer.effects.items.push(Effect::Stroke(StrokeFx {
+        common: FxCommon::new(BlendMode::Normal, 1.0),
+        size: 6.0,
+        position: StrokePosition::Outside,
+        paint: FxPaint::Color(Color::rgb(0.0, 0.0, 1.0)),
+        overprint: false,
+    }));
+    let stroke = masked_copy_effect_memory(&layer).unwrap();
+    assert_eq!((stroke.retained, stroke.build), (16, 48));
+    let fx_region = area.inflate(photocraft_compose::effects::margin(&layer));
+    assert!(check_masked_copy_budget(area, fx_region, fmt, stroke, unsplit, 8192).is_ok(), "24 MP stroke and overlays on native");
+    assert!(check_masked_copy_budget(area, fx_region, fmt, stroke, unsplit, 1536).is_err(), "complex full-area stroke needs more memory than web budget");
+}
+
+#[test]
+fn oversized_sparse_masked_copy_keeps_clipboard_document_and_history() {
+    let (mut s, _) = masked(8);
+    s.execute("edit.copy", json!({})).unwrap();
+    s.execute("file.new", json!({"width": 3000, "height": 2000, "background": "transparent"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Two distant pixels"})).unwrap();
+    let id = s.active().unwrap().active_layer.unwrap();
+    s.edit("sparse fixture", |doc, _| {
+        let l = doc.layer_mut(id).unwrap();
+        let surface = l.surface_mut().unwrap();
+        surface.write_pixel(0, 0, &[1.0, 0.0, 0.0, 1.0]);
+        surface.write_pixel(2999, 1999, &[0.0, 0.0, 1.0, 1.0]);
+        l.mask = Some(LayerMask::reveal_all());
+        Ok(())
+    })
+    .unwrap();
+    s.edit_prefs(|p| p.performance.memory_usage_mb = 1);
+    let old_clip = s.clipboard.clone().unwrap();
+    let old_doc = s.active().unwrap().doc.clone();
+    let revision = s.active().unwrap().revision;
+    let steps = s.active().unwrap().history.past_len();
+    let result = s.execute("edit.copy", json!({}));
+    assert!(result.as_ref().is_err_and(|e| e.to_string().contains("copy memory limit")), "{result:?}");
+    let clip = s.clipboard.as_ref().unwrap();
+    assert_eq!(clip.surface, old_clip.surface);
+    assert_eq!(clip.bounds, old_clip.bounds);
+    assert_eq!(clip.layers, old_clip.layers);
+    assert_eq!(clip.resolution, old_clip.resolution);
+    assert_eq!(clip.source, old_clip.source);
+    let st = s.active().unwrap();
+    assert_eq!(st.doc, old_doc);
+    assert_eq!(st.revision, revision);
+    assert_eq!(st.history.past_len(), steps);
+}
+
+#[test]
 fn source_edits_after_copy_do_not_change_the_clipboard() {
     let (mut s, src) = masked(32);
     let original = layer(&s, src).clone();
