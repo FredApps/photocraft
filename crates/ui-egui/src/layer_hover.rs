@@ -31,7 +31,7 @@ pub(crate) fn target(app: &PhotocraftApp, pass: u64) -> Option<photocraft_geom::
     if !app.session.prefs().tools.show_highlight_on_rollover || app.drag.is_some() || app.ui.transform.is_some() {
         return None;
     }
-    let h = app.panel_hover.filter(|h| h.pass + 1 >= pass)?;
+    let h = app.panel_hover.filter(|h| h.pass.saturating_add(1) >= pass)?;
     let st = app.session.active().filter(|st| st.doc.id == h.doc)?;
     crate::move_hover::outline(&st.doc, h.layer)
 }
