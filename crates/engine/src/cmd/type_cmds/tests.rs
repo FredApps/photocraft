@@ -205,6 +205,37 @@ fn a_duplicated_type_layer_follows_its_new_text() {
     }
 }
 
+/// #9023: only a change of its text renames a copy. Size, style and layout edits keep "Title
+/// copy" (they used to rename it "Title"); editing its text still renames it after the text.
+#[test]
+fn a_duplicated_type_layer_keeps_its_name_until_its_text_changes() {
+    let mut s = session();
+    let id = s.execute("type.create", json!({"x": 0, "y": 40, "text": "Title"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.select", json!({"layer": id})).unwrap();
+    s.execute("layer.duplicate", json!({})).unwrap();
+    let copy = s.active().unwrap().active_layer.unwrap().0;
+    assert_eq!(layer_name_of(&s, copy), "Title copy");
+    s.execute("type.increaseSize", json!({"layer": copy})).unwrap();
+    assert_eq!(layer_name_of(&s, copy), "Title copy", "Change Type Size");
+    s.execute("type.edit", json!({"layer": copy, "color": "#ff0000", "tracking": 50})).unwrap();
+    assert_eq!(layer_name_of(&s, copy), "Title copy", "a style-only type.edit");
+    s.execute("type.edit", json!({"layer": copy, "kerning": "optical"})).unwrap();
+    assert_eq!(layer_name_of(&s, copy), "Title copy", "kerning");
+    s.execute("type.edit", json!({"layer": copy, "text": "Title"})).unwrap();
+    assert_eq!(layer_name_of(&s, copy), "Title copy", "the same text again");
+    s.execute("type.convertToParagraphText", json!({"layer": copy})).unwrap();
+    assert_eq!(layer_name_of(&s, copy), "Title copy", "Convert to Paragraph Text");
+    s.execute("type.convertToPointText", json!({"layer": copy})).unwrap();
+    assert_eq!(layer_name_of(&s, copy), "Title copy", "Convert to Point Text");
+    s.execute("type.edit", json!({"layer": copy, "text": "Subtitle"})).unwrap();
+    assert_eq!(layer_name_of(&s, copy), "Subtitle", "a text change still renames it");
+    // A layer named exactly after its text behaves as before.
+    s.execute("type.increaseSize", json!({"layer": id})).unwrap();
+    assert_eq!(layer_name_of(&s, id), "Title");
+    s.execute("type.edit", json!({"layer": id, "text": "Heading"})).unwrap();
+    assert_eq!(layer_name_of(&s, id), "Heading");
+}
+
 #[test]
 fn size_keys_step_each_run_and_respect_layer_scale() {
     let mut s = session();

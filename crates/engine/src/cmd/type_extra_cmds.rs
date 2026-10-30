@@ -82,9 +82,11 @@ pub(crate) fn with_text<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOn
         let LayerContent::Text(t) = &mut l.content else {
             return Err(EngineError::Other(format!("layer {} is {} {} layer, not a type layer", id.0, l.content.article(), l.content.kind_name())));
         };
+        // Only a text change renames: a style or layout edit keeps a copy's "Title copy" (#9023).
+        let old_text = auto_named.then(|| t.text.clone());
         let r = f(t, dpi)?;
         refresh_at(dpi, format, t);
-        let name = auto_named.then(|| layer_name(&t.text));
+        let name = old_text.is_some_and(|old| old != t.text).then(|| layer_name(&t.text));
         if let Some(n) = name {
             l.name = n;
         }

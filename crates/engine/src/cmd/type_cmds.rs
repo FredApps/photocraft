@@ -682,13 +682,15 @@ fn with_text_layer<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&m
             return Err(EngineError::Other(format!("layer {} is {} {} layer, not a type layer", id.0, l.content.article(), l.content.kind_name())));
         };
         let before = t.cache.as_ref().map(|c| c.tile_bounds());
+        // Only a text change renames: a style or layout edit keeps a copy's "Title copy" (#9023).
+        let old_text = auto_named.then(|| t.text.clone());
         let mut rename = None;
         let r = f(t, dpi, &mut rename)?;
         refresh_at(dpi, format, t);
         // Only this layer's pixels changed: the canvas recomposites their old and new area
         // instead of the whole document (#124). Unknown old pixels mean a full refresh.
         let damage = before.zip(t.cache.as_ref().map(|c| c.tile_bounds())).map(|(a, b)| a.union(&b));
-        let name = rename.or_else(|| auto_named.then(|| layer_name(&t.text)));
+        let name = rename.or_else(|| old_text.is_some_and(|old| old != t.text).then(|| layer_name(&t.text)));
         if let Some(n) = name {
             l.name = n;
         }
