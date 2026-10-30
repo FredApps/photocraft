@@ -1,6 +1,6 @@
-use super::{JobEvent, JobId, JobOutcome, PendingFill, json};
 use super::preview::{Base, Preview, cancel_preview, compute_base, plan_params, points_limit, rebase, refresh};
 use super::{CMD, CafOpts, CafTool, CafWorkspace, MAX_CAF_EDITS, MAX_CAF_POINTS, PROXY_SIDE, PhotocraftApp, REMEMBERED, Rect, Step, Value};
+use super::{JobEvent, JobId, JobOutcome, PendingFill, json};
 
 /// Opens the workspace on the active layer and its selection.
 pub fn open(app: &mut PhotocraftApp) -> Result<(), String> {

@@ -10,7 +10,6 @@ fn finish_pending_job(app: &mut PhotocraftApp) {
     }
 }
 
-
 /// A textured layer (a checker of two colours over a gradient) with a 20 px square selected.
 fn app_with_selection() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
@@ -288,13 +287,8 @@ fn failed_cancelled_and_stale_jobs_do_not_close_a_caf_workspace() {
     let job = JobId(71);
     app.distort.caf.as_mut().unwrap().pending_fill = Some(PendingFill { job, close_on_success: true });
 
-    let mut event = JobEvent {
-        id: JobId(70),
-        command: CMD.into(),
-        label: "Content-Aware Fill".into(),
-        document: Some(document),
-        outcome: JobOutcome::Done(Value::Null),
-    };
+    let mut event =
+        JobEvent { id: JobId(70), command: CMD.into(), label: "Content-Aware Fill".into(), document: Some(document), outcome: JobOutcome::Done(Value::Null) };
     on_job_event(&mut app, &event);
     assert_eq!(ws(&app).pending_fill.map(|p| p.job), Some(job), "a different job is ignored");
 
@@ -334,8 +328,7 @@ fn a_success_for_an_inactive_document_does_not_close_its_workspace() {
     app.distort.caf.as_mut().unwrap().pending_fill = Some(PendingFill { job, close_on_success: true });
     app.session.execute("file.new", json!({"width": 32, "height": 32, "depth": 8})).unwrap();
 
-    let event =
-        JobEvent { id: job, command: CMD.into(), label: "Content-Aware Fill".into(), document: Some(document), outcome: JobOutcome::Done(Value::Null) };
+    let event = JobEvent { id: job, command: CMD.into(), label: "Content-Aware Fill".into(), document: Some(document), outcome: JobOutcome::Done(Value::Null) };
     on_job_event(&mut app, &event);
     assert!(app.distort.caf.is_some(), "completion for the inactive document does not close another dialog");
     assert!(ws(&app).pending_fill.is_none());

@@ -42,8 +42,8 @@ mod preview;
 mod view;
 
 pub use controls::{control, keys, pointer};
-pub use lifecycle::{apply, cancel, commit, open};
 pub(crate) use lifecycle::on_job_event;
+pub use lifecycle::{apply, cancel, commit, open};
 #[cfg(test)]
 use preview::plan_params;
 use preview::{Base, Preview, outline, points_limit};
