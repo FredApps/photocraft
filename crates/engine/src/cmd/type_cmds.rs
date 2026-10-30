@@ -792,9 +792,14 @@ fn shown_style_params<'a>(t: &TextLayer, p: &'a Value) -> Result<std::borrow::Co
 }
 
 /// Whether a type layer still has the name it got from its text, so the name follows edits to
-/// the text. A layer renamed to anything else keeps its name (#483).
+/// the text. A layer renamed to anything else keeps its name (#483). A duplicate's name ("Title
+/// copy", "Title copy 2") still comes from its text, so the copy is renamed after its new text
+/// as Photoshop does (#9023).
 pub(crate) fn is_auto_named(l: &Layer) -> bool {
-    matches!(&l.content, LayerContent::Text(t) if l.name == layer_name(&t.text))
+    let LayerContent::Text(t) = &l.content else { return false };
+    let auto = layer_name(&t.text);
+    let copy = l.name.strip_prefix(auto.as_str()).and_then(|rest| rest.strip_prefix(" copy"));
+    l.name == auto || copy.is_some_and(|n| n.is_empty() || n.strip_prefix(' ').is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())))
 }
 
 /// The name a type layer gets from its text: its first non-empty line, at most 40 characters.

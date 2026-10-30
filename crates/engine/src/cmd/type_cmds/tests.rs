@@ -169,6 +169,34 @@ fn auto_name_follows_the_text() {
     assert_eq!(layer_name_of(&s, id), "Type Layer");
 }
 
+/// #9023: a duplicated type layer ("Title copy") is named after its new text once that is
+/// edited, as the original would be; a renamed copy keeps its name.
+#[test]
+fn a_duplicated_type_layer_follows_its_new_text() {
+    let mut s = session();
+    let id = s.execute("type.create", json!({"x": 0, "y": 40, "text": "Title"})).unwrap()["layer"].as_u64().unwrap();
+    let mut copies = Vec::new();
+    for expected in ["Title copy", "Title copy 2"] {
+        s.execute("layer.select", json!({"layer": id})).unwrap();
+        s.execute("layer.duplicate", json!({})).unwrap();
+        let copy = s.active().unwrap().active_layer.unwrap().0;
+        assert_ne!(copy, id);
+        assert_eq!(layer_name_of(&s, copy), expected);
+        copies.push(copy);
+    }
+    s.execute("type.edit", json!({"layer": copies[0], "text": "Subtitle"})).unwrap();
+    assert_eq!(layer_name_of(&s, copies[0]), "Subtitle", "the copy follows its new text");
+    s.execute("type.edit", json!({"layer": copies[1], "text": "Caption"})).unwrap();
+    assert_eq!(layer_name_of(&s, copies[1]), "Caption");
+    assert_eq!(layer_name_of(&s, id), "Title", "the original keeps its own");
+    // Names that only look like copies, or a copy renamed by hand, are kept.
+    for name in ["Title copy two", "Title copy 2b", "Title copyedit", "Title  copy", "My Title copy"] {
+        s.execute("type.edit", json!({"layer": id, "name": name})).unwrap();
+        s.execute("type.edit", json!({"layer": id, "text": "Title"})).unwrap();
+        assert_eq!(layer_name_of(&s, id), name, "{name}");
+    }
+}
+
 #[test]
 fn size_keys_step_each_run_and_respect_layer_scale() {
     let mut s = session();
