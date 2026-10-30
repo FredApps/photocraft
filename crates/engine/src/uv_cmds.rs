@@ -1291,7 +1291,7 @@ fn project_load(s: &mut Session, p: &Value) -> Result<Value> {
                     !Path::new(source)
                         .canonicalize()
                         .ok()
-                        .zip(Path::new(path(p).unwrap_or("")).parent().and_then(|p| p.canonicalize().ok()))
+                        .zip(model_directory(path(p).unwrap_or("")).canonicalize().ok())
                         .is_some_and(|(file, base)| file.starts_with(base) && file.is_file())
                 });
                 let index = s.add_document(doc, source);
@@ -1444,6 +1444,11 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod asset_path_tests {
+    #[test]
+    fn bare_project_filename_resolves_to_the_current_directory() {
+        assert_eq!(super::model_directory("scene.pcuv"), std::path::Path::new("."));
+    }
+
     #[test]
     fn model_references_cannot_escape_the_asset_directory() {
         let root = tempfile::tempdir().unwrap();

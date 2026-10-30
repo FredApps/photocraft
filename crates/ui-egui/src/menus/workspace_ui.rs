@@ -269,12 +269,14 @@ fn delete_workspace(app: &mut PhotocraftApp, p: &Value) -> Result<Value, String>
 
 fn select_workspace(app: &mut PhotocraftApp, p: &Value) -> Result<Value, String> {
     let name = p.get("name").and_then(Value::as_str).ok_or("pass `name`")?.to_string();
-    if PRESETS.contains(&name.as_str()) {
-        app.ui.workspace = name.clone();
-        crate::menus::apply_workspace(app);
-        return Ok(json!({"workspace": name}));
-    }
-    if !app.session.prefs().workspaces.contains_key(&name) {
+    select_workspace_named(app, name)
+}
+
+/// Change the document bank before applying a built-in or saved workspace layout.
+/// The dock being replaced may contain the UV workspace, so `sync_workspace` must first park it.
+pub(crate) fn select_workspace_named(app: &mut PhotocraftApp, name: String) -> Result<Value, String> {
+    let preset = PRESETS.contains(&name.as_str());
+    if !preset && !app.session.prefs().workspaces.contains_key(&name) {
         return Err(format!("no workspace \"{name}\""));
     }
     #[cfg(feature = "uv-workbench")]
@@ -285,7 +287,11 @@ fn select_workspace(app: &mut PhotocraftApp, p: &Value) -> Result<Value, String>
         app.ui.workspace = previous_workspace;
         return Err(error);
     }
-    apply_custom(app);
+    if preset {
+        crate::menus::apply_workspace(app);
+    } else {
+        apply_custom(app);
+    }
     Ok(json!({"workspace": name}))
 }
 
@@ -791,6 +797,39 @@ mod tests {
         assert_eq!(app.ui.workspace, "3D");
         assert!(app.session.uv_workspace.active);
         assert!(!app.session.prefs().workspaces.contains_key("3D"));
+    }
+
+    #[cfg(feature = "uv-workbench")]
+    #[test]
+    fn built_in_workspace_commands_switch_the_uv_document_bank() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let (mut app, ctx) = app();
+        app.run("file.new", json!({"width":32,"height":32})).unwrap();
+        let normal = app.session.active().unwrap().doc.id;
+
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.threeD", json!({})).unwrap();
+        assert_eq!(app.ui.workspace, "3D");
+        assert!(app.session.uv_workspace.active);
+        let mesh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
+        app.run("uv.model.import", json!({"path":mesh})).unwrap();
+        app.run("uv.texture.create", json!({"width":32,"height":32})).unwrap();
+        let uv = app.session.active().unwrap().doc.id;
+
+        // Both the direct Window menu command and the workspace switcher must park/restore
+        // the UV document bank before applying their preset layouts.
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.painting", json!({})).unwrap();
+        assert_eq!(app.ui.workspace, "Painting");
+        assert!(!app.session.uv_workspace.active);
+        assert_eq!(app.session.active().unwrap().doc.id, normal);
+        assert!(app.session.uv_workspace.parked().iter().any(|state| state.doc.id == uv));
+
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.select", json!({"name":"3D"})).unwrap();
+        assert!(app.session.uv_workspace.active);
+        assert_eq!(app.session.active().unwrap().doc.id, uv);
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.essentials", json!({})).unwrap();
+        assert_eq!(app.ui.workspace, "Essentials");
+        assert!(!app.session.uv_workspace.active);
+        assert_eq!(app.session.active().unwrap().doc.id, normal);
     }
 
     #[cfg(feature = "uv-workbench")]

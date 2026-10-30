@@ -64,6 +64,48 @@ fn legacy_set_cannot_select_a_parked_uv_tab_while_showing_properties() {
 
 #[cfg(feature = "uv-workbench")]
 #[test]
+fn properties_rail_falls_back_when_the_selected_uv_tab_is_parked() {
+    let mut app = app();
+    app.ui.workspace = "3D".into();
+    let layout = Layout {
+        root: Some(Node::Split {
+            axis: craft_ui::layout::SplitAxis::Horizontal,
+            size: craft_ui::layout::SplitSize::FixedSecond(300.0),
+            first: Box::new(Node::Tabs { panels: vec![CANVAS.to_owned()], active: 0 }),
+            second: Box::new(Node::Tabs { panels: vec!["uvWorkbench".to_owned()], active: 0 }),
+        }),
+        floating: Vec::new(),
+    };
+    app.ui.docking = Some(Workspace::new(layout));
+    app.ui.dock_tabs.properties = 2;
+    app.ui.workspace = "Painting".into();
+
+    rail_click(&mut app, Group::Properties);
+
+    assert!(lay(&app).contains(&"properties".to_owned()), "the rail activates an available Properties panel");
+    assert!(!scoped_layout(&app, lay(&app).clone()).contains(&"uvWorkbench".to_owned()));
+}
+
+#[cfg(feature = "uv-workbench")]
+#[test]
+fn legacy_set_can_unhide_and_select_a_properties_tab_in_one_request() {
+    let mut app = app();
+    app.ui.workspace = "3D".into();
+    let pro = app.ui.theme.is_pro();
+    app.ui.dock.hide_tab(Group::Properties, 2, pro);
+    app.ui.docking = Some(Workspace::new(legacy(&app)));
+
+    let mut target_dock = app.ui.dock.clone();
+    target_dock.show_tab(Group::Properties, 2, pro);
+    let result = control_set(&mut app, &egui::Context::default(), json!({"dock":target_dock,"dockTabs":{"properties":2}}));
+
+    assert_eq!(result["ok"], true, "{result}");
+    assert!(lay(&app).contains(&"uvWorkbench".to_owned()));
+    assert!(panel_active(lay(&app), "uvWorkbench"));
+}
+
+#[cfg(feature = "uv-workbench")]
+#[test]
 fn stale_uv_toggle_state_reopens_the_missing_custom_panel() {
     let mut app = app();
     app.ui.workspace = "3D".into();

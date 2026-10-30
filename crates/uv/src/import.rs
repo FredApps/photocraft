@@ -5,6 +5,32 @@ use crate::{Corner, Error, MAX_FILE_BYTES, MAX_TRIANGLES, MAX_VERTICES, Material
 use std::collections::BTreeMap;
 use std::path::Path;
 
+// Earcut's worst-case work is quadratic in the number of polygon corners. Keep
+// both a per-face cap and an aggregate budget so many moderate n-gons cannot
+// multiply that work across an otherwise valid model.
+const MAX_FACE_CORNERS: usize = 4_096;
+const MAX_TRIANGULATION_WORK: usize = 64 * 1024 * 1024;
+
+#[derive(Default)]
+pub(super) struct TriangulationBudget {
+    work: usize,
+}
+
+impl TriangulationBudget {
+    fn account_face(&mut self, corners: usize) -> Result<()> {
+        if corners > MAX_FACE_CORNERS {
+            return Err(Error(format!("Polygon exceeds the {MAX_FACE_CORNERS}-corner import limit")));
+        }
+        let face_work = corners.checked_mul(corners).ok_or_else(|| Error("Polygon triangulation budget overflow".into()))?;
+        let total = self.work.checked_add(face_work).ok_or_else(|| Error("Model triangulation budget overflow".into()))?;
+        if total > MAX_TRIANGULATION_WORK {
+            return Err(Error("Model exceeds the bounded polygon triangulation budget".into()));
+        }
+        self.work = total;
+        Ok(())
+    }
+}
+
 /// Dependencies are supplied by the host; no filesystem access is needed by the parser.
 pub fn load(name: &str, bytes: &[u8], uv_set: usize, mut resolve: impl FnMut(&str) -> Result<Vec<u8>>) -> Result<Scene> {
     if bytes.len() as u64 > MAX_FILE_BYTES {
@@ -37,6 +63,7 @@ fn obj(bytes: &[u8], resolve: &mut impl FnMut(&str) -> Result<Vec<u8>>) -> Resul
     let mut uvs: Vec<[f64; 2]> = Vec::new();
     let mut normals = Vec::new();
     let mut material = 0;
+    let mut triangulation_budget = TriangulationBudget::default();
     for (line_number, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         let mut parts = line.split_whitespace();
@@ -118,8 +145,8 @@ fn obj(bytes: &[u8], resolve: &mut impl FnMut(&str) -> Result<Vec<u8>>) -> Resul
             "f" => {
                 let mut face = Vec::new();
                 for word in parts {
-                    if face.len() >= 65_536 {
-                        return Err(Error("OBJ polygon is too large".into()));
+                    if face.len() >= MAX_FACE_CORNERS {
+                        return Err(Error(format!("OBJ polygon exceeds the {MAX_FACE_CORNERS}-corner import limit")));
                     }
                     let mut fields = word.split('/');
                     let v = index(fields.next().unwrap_or(""), scene.positions.len())?;
@@ -133,7 +160,7 @@ fn obj(bytes: &[u8], resolve: &mut impl FnMut(&str) -> Result<Vec<u8>>) -> Resul
                         .transpose()?;
                     face.push(Corner { vertex: v, uv, normal });
                 }
-                if triangulate(&scene.positions, &face, material, &mut scene.triangles)? && scene.warnings.len() < 100 {
+                if triangulate(&scene.positions, &face, material, &mut scene.triangles, &mut triangulation_budget)? && scene.warnings.len() < 100 {
                     scene.warnings.push(format!("OBJ line {}: redundant or degenerate polygon corners omitted", line_number + 1));
                 }
             }
@@ -150,13 +177,20 @@ fn index(s: &str, len: usize) -> Result<usize> {
 }
 
 /// Ear clipping in the polygon's dominant 3D plane also handles concave n-gons.
-fn triangulate(positions: &[[f64; 3]], face: &[Corner], material: usize, output: &mut Vec<Triangle>) -> Result<bool> {
+fn triangulate(
+    positions: &[[f64; 3]],
+    face: &[Corner],
+    material: usize,
+    output: &mut Vec<Triangle>,
+    budget: &mut TriangulationBudget,
+) -> Result<bool> {
     if face.len() < 3 {
         return Err(Error("Polygon has fewer than three vertices".into()));
     }
     if face.iter().any(|c| c.uv.iter().any(|v| !v.is_finite() || v.abs() > 100_000.0)) {
         return Err(Error("Polygon contains invalid UV coordinates".into()));
     }
+    budget.account_face(face.len())?;
     if output.len().saturating_add(face.len().saturating_sub(2)) > MAX_TRIANGLES {
         return Err(Error("Too many triangles".into()));
     }
@@ -219,4 +253,34 @@ fn triangulate(positions: &[[f64; 3]], face: &[Corner], material: usize, output:
         output.push(Triangle { corners, material });
     }
     Ok(repaired)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn obj_rejects_oversized_ngon_before_earcut() {
+        let mut source = String::new();
+        for index in 1..=MAX_FACE_CORNERS {
+            source.push_str(&format!("v {index} 0 0\nvt {index} 0\n"));
+        }
+        source.push_str("f");
+        for index in 1..=MAX_FACE_CORNERS + 1 {
+            source.push_str(&format!(" {index}/{index}"));
+        }
+
+        let error = obj(source.as_bytes(), &mut |_| Err(Error("unused resolver".into()))).unwrap_err();
+        assert!(error.to_string().contains("4096-corner import limit"));
+    }
+
+    #[test]
+    fn triangulation_budget_bounds_per_face_and_total_work() {
+        let mut budget = TriangulationBudget::default();
+        for _ in 0..4 {
+            assert!(budget.account_face(MAX_FACE_CORNERS).is_ok());
+        }
+        assert!(budget.account_face(MAX_FACE_CORNERS).is_err());
+        assert!(TriangulationBudget::default().account_face(MAX_FACE_CORNERS + 1).is_err());
+    }
 }

@@ -97,6 +97,16 @@ pub(crate) fn apply_bound_mask_cache_updates(s: &mut Session, updates: Vec<(DocI
         for (id, document) in updates {
             if let Some(state) = docs.iter_mut().find(|state| state.doc.id == id) {
                 state.doc = Arc::new(document);
+                // The cache refresh changes the rendered pixels without making the document
+                // content dirty or adding an undo step. Move the UI revision and its view-only
+                // portion together so texture-export revisions stay unchanged.
+                let was_clean = state.saved_revision == state.revision;
+                state.revision += 1;
+                state.view_revision = state.view_revision.wrapping_add(1);
+                if was_clean {
+                    state.saved_revision = state.revision;
+                }
+                state.last_damage = None;
                 published.push(Arc::clone(&state.doc));
             }
         }
@@ -205,6 +215,64 @@ fn reload(s: &mut Session, p: &Value) -> Result<Value> {
     apply_bound_mask_cache_updates(s, mask_updates);
     Ok(json!({"reimported":true,"uvChanged":uv_changed,"triangles":s.uv.scene.as_ref().map_or(0,|s|s.triangles.len())}))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn bound_mask_cache_refresh_invalidates_views_without_dirtying_documents_or_exports() {
+        let mut session = Session::new();
+        session.execute("file.new", json!({"width":32,"height":32})).unwrap();
+        let id = session.active().unwrap().doc.id;
+
+        let initial_content_revision = {
+            let state = session.active().unwrap();
+            state.revision.saturating_sub(state.view_revision)
+        };
+        session.uv.exported_revisions.insert(id, initial_content_revision);
+        session.uv.saved_revisions.insert(id, initial_content_revision);
+        session.uv.scene = Some(Arc::new(photocraft_uv::Scene::default()));
+        session.uv.saved_generation = session.uv.generation;
+
+        let before = session.active().unwrap();
+        let clean_revision = before.revision;
+        let clean_saved_revision = before.saved_revision;
+        let clean_view_revision = before.view_revision;
+        let mut refreshed = (*before.doc).clone();
+        refreshed.name.push_str(" refreshed");
+        apply_bound_mask_cache_updates(&mut session, vec![(id, refreshed)]);
+
+        let clean = session.active().unwrap();
+        assert_eq!(clean.revision, clean_revision + 1);
+        assert_eq!(clean.saved_revision, clean_saved_revision + 1);
+        assert_eq!(clean.view_revision, clean_view_revision + 1);
+        assert!(!clean.is_dirty(), "cache-only refresh keeps a clean document clean");
+        assert!(!session.uv.needs_export(clean), "view revision is excluded from texture export state");
+        assert!(!session.uv.has_unsaved_project(session.uv_documents()), "view revision is excluded from project save state");
+        assert!(!clean.history.can_undo(), "cache-only refresh does not add an undo step");
+
+        let state = session.active_mut().unwrap();
+        state.revision += 1;
+        let dirty_revision = state.revision;
+        let dirty_saved_revision = state.saved_revision;
+        let dirty_view_revision = state.view_revision;
+        let mut refreshed = (*state.doc).clone();
+        refreshed.name.push_str(" again");
+        apply_bound_mask_cache_updates(&mut session, vec![(id, refreshed)]);
+
+        let dirty = session.active().unwrap();
+        assert_eq!(dirty.revision, dirty_revision + 1);
+        assert_eq!(dirty.saved_revision, dirty_saved_revision, "a dirty document stays dirty");
+        assert_eq!(dirty.view_revision, dirty_view_revision + 1);
+        assert!(dirty.is_dirty());
+        assert!(session.uv.needs_export(dirty), "cache refresh preserves a pending texture export");
+        assert!(session.uv.has_unsaved_project(session.uv_documents()), "cache refresh preserves the unsaved project state");
+        assert!(!dirty.history.can_undo());
+    }
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec {

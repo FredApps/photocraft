@@ -1581,6 +1581,11 @@ impl Renderer {
         previous: Option<Map>,
     ) -> Result<Map, String> {
         let size = [doc.size.width, doc.size.height];
+        // Avoid allocating a full-resolution texture and every mip view when the optional
+        // compositor could not be created. The caller will use its normal CPU map fallback.
+        if self.compositor.is_none() {
+            return Err("GPU map compositor unavailable".into());
+        }
         let max = self.rs.device.limits().max_texture_dimension_2d;
         if size.contains(&0) || size.iter().any(|side| *side > max) {
             return Err("GPU-composited map exceeds the full-resolution texture limit".into());

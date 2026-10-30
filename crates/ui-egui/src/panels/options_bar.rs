@@ -41,7 +41,7 @@ pub(super) fn options_bar_height(pro: bool, narrow: bool) -> f32 {
 
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     #[cfg(feature = "uv-workbench")]
-    if app.ui.workspace == "3D" && app.ui.uv_workbench.select_shells && app.session.uv.scene.is_some() {
+    if app.ui.transform.is_none() && app.ui.workspace == "3D" && app.ui.uv_workbench.select_shells && app.session.uv.scene.is_some() {
         egui::Panel::top("options_bar").exact_size(36.0).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.menu_button(tl!("UV shell selection"), |ui| {

@@ -317,32 +317,26 @@ impl Topology {
         let point = |uv: [f64; 2]| [(uv[0] - f64::from(tile[0])) * w as f64, (1.0 - (uv[1] - f64::from(tile[1]))) * h as f64];
         let mut result = PaddingMask::default();
         let radius = *padding + std::f64::consts::FRAC_1_SQRT_2;
-        let scan_radius = radius + 0.5;
-        let diameter = (scan_radius.ceil() as usize).saturating_mul(2).saturating_add(1);
         let mut candidates = 0usize;
         for edge in self.boundaries.iter().filter(|edge| edge.shell == shell_id) {
             let pts = edge.uv.map(point);
-            let length = (pts[1][0] - pts[0][0]).hypot(pts[1][1] - pts[0][1]);
-            let steps = length.ceil().max(1.0) as usize;
-            candidates = candidates.saturating_add(steps.saturating_add(1).saturating_mul(diameter.saturating_mul(diameter)));
-            if candidates > MAX_PADDING_CANDIDATES {
-                return Err(Error("UV shell padding exceeds the 16M candidate budget".into()));
+            if pts.iter().flatten().any(|value| !value.is_finite()) {
+                return Err(Error("UV shell boundary contains invalid coordinates".into()));
             }
-            for step in 0..=steps {
-                let t = step as f64 / steps as f64;
-                let center = [pts[0][0] + (pts[1][0] - pts[0][0]) * t, pts[0][1] + (pts[1][1] - pts[0][1]) * t];
-                let x0 = (center[0] - scan_radius).floor().clamp(0.0, w as f64) as i32;
-                let y0 = (center[1] - scan_radius).floor().clamp(0.0, h as f64) as i32;
-                let x1 = (center[0] + scan_radius).ceil().clamp(0.0, w as f64) as i32;
-                let y1 = (center[1] + scan_radius).ceil().clamp(0.0, h as f64) as i32;
-                for y in y0..y1 {
-                    for x in x0..x1 {
-                        if occupancy.contains(x, y) {
-                            continue;
-                        }
-                        if segment_delta([x as f64 + 0.5, y as f64 + 0.5], pts).iter().map(|v| v * v).sum::<f64>() <= radius * radius {
-                            result.insert(x, y);
-                        }
+            let y0 = (pts[0][1].min(pts[1][1]) - radius - 0.5).ceil().clamp(0.0, h as f64) as i32;
+            let y1 = (pts[0][1].max(pts[1][1]) + radius - 0.5).floor().clamp(-1.0, h as f64 - 1.0) as i32;
+            for y in y0..=y1 {
+                let Some((left, right)) = capsule_row_span(pts, f64::from(y) + 0.5, radius) else { continue };
+                let x0 = (left - 0.5).ceil().clamp(0.0, w as f64) as i32;
+                let x1 = ((right - 0.5).floor() + 1.0).clamp(0.0, w as f64) as i32;
+                let row_candidates = usize::try_from(x1.saturating_sub(x0)).unwrap_or(0);
+                candidates = candidates.checked_add(row_candidates).ok_or_else(|| Error("UV shell padding candidate budget overflow".into()))?;
+                if candidates > MAX_PADDING_CANDIDATES {
+                    return Err(Error("UV shell padding exceeds the 16M candidate budget".into()));
+                }
+                for x in x0..x1 {
+                    if !occupancy.contains(x, y) {
+                        result.insert(x, y);
                     }
                 }
             }
@@ -500,6 +494,104 @@ fn segment_delta(p: [f64; 2], [a, b]: [[f64; 2]; 2]) -> [f64; 2] {
     let len = d[0] * d[0] + d[1] * d[1];
     let t = if len > 1e-15 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len).clamp(0.0, 1.0) } else { 0.0 };
     [p[0] - a[0] - t * d[0], p[1] - a[1] - t * d[1]]
+}
+
+/// Horizontal cross-section of the capsule around a segment. The rectangular
+/// strip and its circular caps are intersected with a scanline so long diagonal
+/// edges do work proportional to their covered area rather than their bounding box.
+fn capsule_row_span([a, b]: [[f64; 2]; 2], y: f64, radius: f64) -> Option<(f64, f64)> {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let length = dx.hypot(dy);
+    if !length.is_finite() || !y.is_finite() || !radius.is_finite() || radius < 0.0 {
+        return None;
+    }
+    if length <= f64::EPSILON {
+        return circle_row_span(a, y, radius);
+    }
+
+    let normal = [-dy / length, dx / length];
+    let rectangle = [
+        [a[0] + normal[0] * radius, a[1] + normal[1] * radius],
+        [b[0] + normal[0] * radius, b[1] + normal[1] * radius],
+        [b[0] - normal[0] * radius, b[1] - normal[1] * radius],
+        [a[0] - normal[0] * radius, a[1] - normal[1] * radius],
+    ];
+    let mut span: Option<(f64, f64)> = None;
+    let mut add = |x: f64| {
+        if x.is_finite() {
+            span = Some(span.map_or((x, x), |(left, right)| (left.min(x), right.max(x))));
+        }
+    };
+    for index in 0..rectangle.len() {
+        let p = rectangle[index];
+        let q = rectangle[(index + 1) % rectangle.len()];
+        if (p[1] - q[1]).abs() <= f64::EPSILON {
+            if (y - p[1]).abs() <= f64::EPSILON {
+                add(p[0]);
+                add(q[0]);
+            }
+        } else if y >= p[1].min(q[1]) && y <= p[1].max(q[1]) {
+            add(p[0] + (y - p[1]) * (q[0] - p[0]) / (q[1] - p[1]));
+        }
+    }
+    for endpoint in [a, b] {
+        if let Some((left, right)) = circle_row_span(endpoint, y, radius) {
+            add(left);
+            add(right);
+        }
+    }
+    span
+}
+
+fn circle_row_span(center: [f64; 2], y: f64, radius: f64) -> Option<(f64, f64)> {
+    let dy = y - center[1];
+    let remainder = radius * radius - dy * dy;
+    (remainder >= 0.0 && remainder.is_finite()).then(|| {
+        let half_width = remainder.sqrt();
+        (center[0] - half_width, center[0] + half_width)
+    })
+}
+
+#[cfg(test)]
+mod capsule_scanline_tests {
+    use super::*;
+
+    #[test]
+    fn capsule_scanline_matches_distance_oracle_for_axes_diagonals_and_points() {
+        let segments: [([[f64; 2]; 2], f64); 4] = [
+            ([[1.2, 2.7], [9.1, 2.7]], 2.25),
+            ([[4.4, 0.8], [4.4, 10.2]], 1.75),
+            ([[1.0, 1.0], [10.0, 9.0]], 2.5),
+            ([[6.0, 6.0], [6.0, 6.0]], 1.5),
+        ];
+        for (segment, radius) in segments {
+            for y in -3..14 {
+                let span = capsule_row_span(segment, f64::from(y) + 0.5, radius);
+                for x in -3..14 {
+                    let point = [f64::from(x) + 0.5, f64::from(y) + 0.5];
+                    let delta = segment_delta(point, segment);
+                    let expected = delta[0] * delta[0] + delta[1] * delta[1] <= radius * radius + 1e-10;
+                    let actual = span.is_some_and(|(left, right)| point[0] >= left - 1e-10 && point[0] <= right + 1e-10);
+                    assert_eq!(actual, expected, "segment={segment:?}, radius={radius}, pixel=({x},{y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn long_diagonal_capsule_candidate_count_tracks_covered_rows_not_square_bounds() {
+        let segment: [[f64; 2]; 2] = [[4.0, 4.0], [4_092.0, 4_092.0]];
+        let radius = 8.75;
+        let y0 = (segment[0][1] - radius - 0.5).ceil() as i32;
+        let y1 = (segment[1][1] + radius - 0.5).floor() as i32;
+        let candidates: usize = (y0..=y1)
+            .filter_map(|y| capsule_row_span(segment, f64::from(y) + 0.5, radius))
+            .map(|(left, right)| ((right - 0.5).floor() - (left - 0.5).ceil() + 1.0).max(0.0) as usize)
+            .sum();
+        assert!(candidates < 200_000, "scanline candidate count was {candidates}");
+        assert!(candidates < MAX_PADDING_CANDIDATES);
+    }
 }
 
 #[cfg(test)]

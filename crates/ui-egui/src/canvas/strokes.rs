@@ -295,6 +295,7 @@ pub(crate) fn fail_native_mask_gpu_brush(app: &mut PhotocraftApp) {
 }
 
 /// Take the pending bridge payload when the UV GPU source is built for this frame.
+#[cfg(feature = "uv-workbench")]
 pub(crate) fn native_mask_gpu_input(app: &mut PhotocraftApp) -> Option<crate::uv_gpu::GrayMaskGpuBrushInput> {
     let live = app.live_stroke.as_mut()?;
     let bridge = live.native_mask_gpu.as_mut()?;

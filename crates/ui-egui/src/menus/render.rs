@@ -168,6 +168,22 @@ mod tests {
             assert!(!app.ui.uv_workbench.open);
         }
     }
+
+    #[cfg(feature = "uv-workbench")]
+    #[test]
+    fn uv_workbench_reopens_from_non_3d_with_a_saved_open_flag() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.ui.workspace = "Painting".into();
+        // This is the persisted open state from the previous 3D visit. It must not make a
+        // click outside 3D act as a close operation.
+        app.ui.uv_workbench.open = true;
+
+        invoke(&mut app, &egui::Context::default(), "window.uvWorkbench", json!({})).unwrap();
+
+        assert_eq!(app.ui.workspace, "3D");
+        assert!(app.ui.uv_workbench.open);
+        assert!(app.session.uv_workspace.active);
+    }
 }
 
 /// The command a menu click runs: ⌥ + Merge Down / Merge Layers / Merge Visible keep the

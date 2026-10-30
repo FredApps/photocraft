@@ -950,11 +950,11 @@ pub(crate) fn reveal(app: &mut PhotocraftApp) -> Result<(), String> {
     if app.ui.workspace != "3D" {
         let previous = app.ui.clone();
         app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(app);
         if let Err(error) = crate::uv_workspace::sync_workspace(app) {
             app.ui = previous;
             return Err(error);
         }
+        crate::menus::apply_workspace(app);
     } else {
         crate::uv_workspace::sync_workspace(app)?;
     }
@@ -1962,12 +1962,7 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             .iter()
                             .enumerate()
                             .filter_map(|(id, tri)| {
-                                if !active_materials.contains(&tri.material)
-                                    || app.session.uv.hidden_materials.contains(&tri.material)
-                                    || (camera.cull_backfaces
-                                        && state.selection_depth == SelectionDepth::VisibleOnly
-                                        && !wireframe_front_facing(tri.face, camera))
-                                {
+                                if !active_materials.contains(&tri.material) || app.session.uv.hidden_materials.contains(&tri.material) {
                                     return None;
                                 }
                                 let points = projected_face(g, tri.positions, camera, [w as u32, h as u32], rect)?;
@@ -2094,19 +2089,20 @@ pub(crate) fn fill_manipulator_active(app: &PhotocraftApp, ctx: &egui::Context, 
 }
 
 /// View-only overlay: it never changes the image pixels or the persistent seam mask.
-pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &crate::canvas::ViewXform, index: usize, _primary: bool) -> Option<Rect> {
+pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &crate::canvas::ViewXform, index: usize, _primary: bool) -> (Option<Rect>, bool) {
     if app.ui.workspace != "3D" {
-        return None;
+        return (None, false);
     }
-    let topology = app.session.uv.topology.clone()?;
+    let Some(topology) = app.session.uv.topology.clone() else { return (None, false) };
     let materials = canvas_materials(app, index);
     if materials.is_empty() {
-        return None;
+        return (None, false);
     }
-    let document = app.session.documents().get(index)?;
+    let Some(document) = app.session.documents().get(index) else { return (None, false) };
     let size = [document.doc.size.width, document.doc.size.height];
     let t = Tokens::get(ui.ctx());
     let mut fill_area = None;
+    let mut fill_owns_pointer = false;
     // A selected Fill exposes an editable rectangle directly on the active 2D map.
     // The document pixels remain untouched; only the Fill's destination bounds change.
     if let Some((layer_id, effect_index, bounds, rotation)) = app.session.active().and_then(|st| {
@@ -2163,6 +2159,7 @@ pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &cr
         let owns_gesture = ui.ctx().data_mut(|data| data.get_temp::<FillDragState>(drag_id)).is_some();
         let response = ((owns_gesture || !navigating) && response_rect.width() > 0.0 && response_rect.height() > 0.0)
             .then(|| ui.interact(response_rect, id, Sense::click_and_drag()));
+        let hit_overlay = |point: Pos2| fill_overlay_contains(point, corners, rotation_handle);
         if !owns_gesture
             && let Some(response) = response.as_ref()
             && response.drag_started_by(egui::PointerButton::Primary)
@@ -2189,9 +2186,11 @@ pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &cr
         }
         // Once the Fill owns the pointer, read global pointer state as well as the widget
         // response. This keeps resize and release working after the pointer leaves the frame.
-        let (latest_pos, primary_down, primary_released, focused) =
-            ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down(), i.pointer.primary_released(), i.focused));
+        let (latest_pos, primary_down, primary_released, press_origin, focused) =
+            ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down(), i.pointer.primary_released(), i.pointer.press_origin(), i.focused));
         let drag = ui.ctx().data_mut(|data| data.get_temp::<FillDragState>(drag_id));
+        let drag_active = drag.is_some();
+        let mut drag_stopped = false;
         if let Some(drag) = drag {
             let response_pointer = response.as_ref().and_then(egui::Response::interact_pointer_pos);
             let stopped = fill_drag_stopped(
@@ -2201,6 +2200,7 @@ pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &cr
                 focused,
                 response.as_ref().is_some_and(|response| response.drag_stopped_by(egui::PointerButton::Primary)),
             );
+            drag_stopped = stopped;
             // On blur, commit the last rendered preview. The OS may leave primary_down true
             // and the reported pointer position may be stale, so do not derive a new transform.
             let pointer = if !focused {
@@ -2249,6 +2249,9 @@ pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &cr
                 }
             }
         }
+        let press_captured =
+            !navigating && press_origin.is_some_and(hit_overlay) && response.as_ref().is_some_and(|response| response.is_pointer_button_down_on());
+        fill_owns_pointer = owns_gesture || drag_active || drag_stopped || press_captured;
         draw_bounds(displayed_bounds, displayed_rotation);
         if crate::uv_mask_paint_preview::fill_preview_pending(app, photocraft_doc::LayerId(layer_id), effect_index) {
             let pending_rect = Rect::from_min_size(xf.rect.left_top() + vec2(8.0, 8.0), vec2(154.0, 22.0));
@@ -2290,7 +2293,7 @@ pub(crate) fn canvas_overlay(app: &mut PhotocraftApp, ui: &mut egui::Ui, xf: &cr
             }
         }
     }
-    fill_area
+    (fill_area, fill_owns_pointer)
 }
 
 pub(crate) fn fill_corners(bounds: [i32; 4], rotation: f32) -> [[f32; 2]; 4] {
@@ -2319,6 +2322,10 @@ fn fill_handles(corners: [Pos2; 4]) -> [Pos2; 8] {
         corners[3],
         corners[3].lerp(corners[0], 0.5),
     ]
+}
+
+fn fill_overlay_contains(point: Pos2, corners: [Pos2; 4], rotation_handle: Pos2) -> bool {
+    rotation_handle.distance(point) <= 12.0 || fill_handles(corners).iter().any(|handle| handle.distance(point) <= 12.0) || point_in_quad(point, corners)
 }
 
 pub(crate) fn fill_rotation_handle(corners: [Pos2; 4], canvas: Rect) -> Pos2 {
@@ -3142,6 +3149,19 @@ mod tests {
         assert!(!point_in_quad(pos2(0.0, -2.0), corners), "empty corners of the rotated AABB must not start a drag");
         let local = inverse_rotate_point([4.0, 2.0], [0, 0, 8, 4], 45.0);
         assert!((local[0] - 4.0).abs() < 1e-5 && (local[1] - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn fill_overlay_hit_testing_does_not_claim_nearby_canvas_clicks() {
+        let corners = [pos2(0.0, 0.0), pos2(100.0, 0.0), pos2(100.0, 100.0), pos2(0.0, 100.0)];
+        let rotation = pos2(50.0, -24.0);
+        assert!(fill_overlay_contains(pos2(50.0, 50.0), corners, rotation), "the Fill interior belongs to the overlay");
+        assert!(fill_overlay_contains(pos2(0.0, 0.0), corners, rotation), "resize handles belong to the overlay");
+        assert!(fill_overlay_contains(rotation, corners, rotation), "the rotation handle belongs to the overlay");
+        assert!(
+            !fill_overlay_contains(pos2(20.0, -20.0), corners, rotation),
+            "a nearby canvas point outside the quad and handles remains available to the active tool"
+        );
     }
 
     fn input_key(h: &mut egui_kittest::Harness<'_, PhotocraftApp>, key: egui::Key, mods: egui::Modifiers) {

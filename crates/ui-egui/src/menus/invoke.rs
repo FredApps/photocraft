@@ -34,6 +34,8 @@ pub(super) fn workspace_name(id: &str) -> Option<&'static str> {
         "graphicAndWeb" => "Graphic and Web",
         "pixelArt" => "Pixel Art",
         "motion" => "Motion",
+        #[cfg(feature = "uv-workbench")]
+        "threeD" => "3D",
         _ => return None,
     })
 }
@@ -65,11 +67,8 @@ fn invoke_early_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str,
     #[cfg(feature = "uv-workbench")]
     if id == "window.uvWorkbench" {
         return Some((|| {
-            let is_open = if app.ui.workspace == "3D" {
-                app.ui.docking.as_ref().map_or(app.ui.uv_workbench.open, |workspace| workspace.layout.contains(&"uvWorkbench".to_owned()))
-            } else {
-                app.ui.uv_workbench.open
-            };
+            let is_open = app.ui.workspace == "3D"
+                && app.ui.docking.as_ref().map_or(app.ui.uv_workbench.open, |workspace| workspace.layout.contains(&"uvWorkbench".to_owned()));
             if !is_open {
                 crate::uv_ui::reveal(app)?;
             } else if app.ui.docking.is_some() {
@@ -195,11 +194,18 @@ fn invoke_shell_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str,
         return Some(invoke(app, ctx, alias, params.clone()));
     }
     if let Some(ws) = workspace_name(id) {
-        // Reset re-applies the current workspace; Essentials is the default layout.
-        match (ws, id) {
-            (_, "window.workspace.resetWorkspace") => {}
-            ("", _) => app.ui.workspace = "Essentials".into(),
-            (name, _) => app.ui.workspace = name.into(),
+        // Reset re-applies the current layout. All actual preset changes use the same
+        // document-bank transition as the workspace switcher before replacing the layout.
+        if id != "window.workspace.resetWorkspace" {
+            let name = if ws.is_empty() { "Essentials" } else { ws };
+            #[cfg(feature = "uv-workbench")]
+            {
+                return Some(crate::workspace_ui::select_workspace_named(app, name.to_string()));
+            }
+            #[cfg(not(feature = "uv-workbench"))]
+            {
+                app.ui.workspace = name.into();
+            }
         }
         apply_workspace(app);
         return Some(Ok(json!({"workspace": app.ui.workspace})));

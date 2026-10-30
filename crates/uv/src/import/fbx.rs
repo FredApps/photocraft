@@ -346,6 +346,7 @@ pub(super) fn load(bytes: &[u8], uv_set: usize) -> Result<Scene> {
     let default_material = scene.materials.len();
     scene.materials.push(Material::default());
     let mut warned_skin = false;
+    let mut triangulation_budget = super::TriangulationBudget::default();
     for geometry in objects.children_by_name("Geometry").filter(|n| string(*n, 2) == Some("Mesh")) {
         let gid = id(geometry).ok_or_else(|| Error("FBX geometry id missing".into()))?;
         let vertices = floats(geometry, "Vertices")?;
@@ -450,17 +451,19 @@ pub(super) fn load(bytes: &[u8], uv_set: usize) -> Result<Scene> {
                 } else {
                     None
                 };
-                face.push(Corner { vertex: vertex + offset, uv: [u, v], normal });
-                if face.len() > 65_536 {
-                    return Err(Error("FBX polygon is too large".into()));
+                if face.len() >= super::MAX_FACE_CORNERS {
+                    return Err(Error(format!("FBX polygon exceeds the {}-corner import limit", super::MAX_FACE_CORNERS)));
                 }
+                face.push(Corner { vertex: vertex + offset, uv: [u, v], normal });
                 if raw < 0 {
                     let slot = material_indices.get(if all_same { 0 } else { polygon }).copied().unwrap_or(0);
                     let material = usize::try_from(slot).ok().and_then(|i| attached.get(i)).copied().unwrap_or(default_material);
                     if reflected {
                         face.reverse();
                     }
-                    if super::triangulate(&scene.positions, &face, material, &mut scene.triangles)? && scene.warnings.len() < 100 {
+                    if super::triangulate(&scene.positions, &face, material, &mut scene.triangles, &mut triangulation_budget)?
+                        && scene.warnings.len() < 100
+                    {
                         scene.warnings.push("FBX: redundant or degenerate polygon corners omitted during triangulation".into());
                     }
                     face.clear();

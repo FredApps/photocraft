@@ -23,6 +23,51 @@ fn place(app: &mut PhotocraftApp, id: u64) {
         app.ui.uv_workbench.status = error;
     }
 }
+
+fn fill_target_is_current(app: &PhotocraftApp, target: (Rect, u64, u64, usize)) -> bool {
+    let (_, document, layer_id, index) = target;
+    app.session.active().is_some_and(|st| {
+        st.doc.id.0 == document
+            && st.doc.layer(photocraft_doc::LayerId(layer_id)).is_some_and(|layer| {
+                layer
+                    .mask
+                    .as_ref()
+                    .and_then(|mask| mask.paint.as_ref())
+                    .and_then(|stack| stack.layers.get(index))
+                    .is_some_and(|effect| matches!(&effect.kind, photocraft_doc::mask_paint::EffectKind::Fill { .. }))
+            })
+    })
+}
+
+fn import_dialog_answer(app: &mut PhotocraftApp, answer: crate::file_dialog::FileDialogAnswer) -> Result<serde_json::Value, String> {
+    use crate::file_dialog::FileDialogAnswer;
+
+    let mut errors = Vec::new();
+    match answer {
+        FileDialogAnswer::Paths(paths) => {
+            for path in paths {
+                if let Err(error) = app.run("uv.asset.import", json!({"path":path})) {
+                    errors.push(error);
+                }
+            }
+        }
+        FileDialogAnswer::Contents(name, bytes) => {
+            if let Err(error) = photocraft_engine::uv_asset_cmds::import_bytes(&mut app.session, &name, bytes) {
+                errors.push(format!("{name}: {error}"));
+            }
+        }
+        FileDialogAnswer::ContentsMany(files) => {
+            for (name, bytes) in files {
+                if let Err(error) = photocraft_engine::uv_asset_cmds::import_bytes(&mut app.session, &name, bytes) {
+                    errors.push(format!("{name}: {error}"));
+                }
+            }
+        }
+        _ => return Err("The file dialog returned an unexpected answer".into()),
+    }
+    if errors.is_empty() { Ok(serde_json::Value::Null) } else { Err(errors.join("\n")) }
+}
+
 pub(crate) fn layers_drop(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
     if app.ui.workspace != "3D" {
         app.uv_cache.library.fill_targets.clear();
@@ -36,14 +81,10 @@ pub(crate) fn layers_drop(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
     }
     let pointer = ui.input(|i| i.pointer.latest_pos());
     let over_panel = pointer.is_some_and(|p| rect.contains(p) && ui.ctx().layer_id_at(p).is_none_or(|top| top == ui.layer_id()));
-    let active_fill = app.session.active().and_then(|st| {
-        let layer = st.active_layer.and_then(|id| st.doc.layer(id))?;
-        let stack = layer.mask.as_ref()?.paint.as_ref()?;
-        matches!(&stack.layers.get(stack.active)?.kind, photocraft_doc::mask_paint::EffectKind::Fill { .. }).then_some((st.doc.id.0, layer.id.0, stack.active))
-    });
-    let fill_target = pointer
+    let fill_row = pointer
         .filter(|_| over_panel && egui::DragAndDrop::has_payload_of_type::<Drag>(ui.ctx()))
-        .and_then(|p| fill_targets.iter().rev().find(|(target, doc, layer, index)| target.contains(p) && active_fill == Some((*doc, *layer, *index))).copied());
+        .and_then(|p| fill_targets.iter().rev().find(|(target, _, _, _)| target.contains(p)).copied());
+    let fill_target = fill_row.filter(|target| fill_target_is_current(app, *target));
     let over = over_panel;
     if egui::DragAndDrop::has_payload_of_type::<Drag>(ui.ctx()) && over {
         let highlight = fill_target.map_or(rect, |(target, _, _, _)| target);
@@ -56,6 +97,8 @@ pub(crate) fn layers_drop(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
                 if let Err(error) = app.run("uv.maskPaint.fillSource", json!({"layer":layer,"index":index,"asset":payload.id})) {
                     app.ui.uv_workbench.status = error;
                 }
+            } else if fill_row.is_some() {
+                app.ui.uv_workbench.status = tl!("Fill target is no longer available").into();
             } else {
                 place(app, payload.id);
             }
@@ -85,18 +128,7 @@ pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 initial_dir: None,
                 extensions: Some(["png", "jpg", "jpeg", "tif", "tiff", "tga", "exr", "bmp", "dds", "pcraft"].into_iter().map(str::to_owned).collect()),
             },
-            |app, answer| {
-                let crate::file_dialog::FileDialogAnswer::Paths(paths) = answer else {
-                    return Err(tl!("A local file is required").into());
-                };
-                let mut errors = Vec::new();
-                for path in paths {
-                    if let Err(e) = app.run("uv.asset.import", json!({"path":path})) {
-                        errors.push(e);
-                    }
-                }
-                if errors.is_empty() { Ok(serde_json::Value::Null) } else { Err(errors.join("\n")) }
-            },
+            |app, answer| import_dialog_answer(app, answer),
         );
         if let Err(e) = r {
             app.ui.uv_workbench.status = e;
@@ -270,8 +302,14 @@ mod tests {
         assert!(matches!(st.doc.layer(st.active_layer.unwrap()).unwrap().content, photocraft_doc::LayerContent::Raster(_)));
         h.state_mut().run("layer.layerMask.revealAll", json!({})).unwrap();
         h.state_mut().run("uv.maskPaint.add", json!({"kind":"fill"})).unwrap();
+        h.state_mut().run("uv.maskPaint.add", json!({"kind":"paint"})).unwrap();
         h.state_mut().ui.mask_target = true;
         let state = h.state().session.active().unwrap();
+        assert_eq!(
+            state.doc.layer(state.active_layer.unwrap()).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().active,
+            1,
+            "the Paint row is active while the Fill row remains editable"
+        );
         crate::uv_mask_paint::expand_effects(&h.ctx, state.doc.id.0, state.active_layer.unwrap().0);
         h.run_steps(4);
         let fill_row = h.state().uv_cache.library.fill_targets.first().map(|(rect, _, _, _)| *rect).unwrap();
@@ -306,7 +344,7 @@ mod tests {
             .unwrap()
             .layers[0]
             .clone();
-        assert!(fill.fill_map.is_some(), "dropping on the Fill row assigns the image source");
+        assert!(fill.fill_map.is_some(), "dropping on an inactive Fill row assigns the image source");
         assert_eq!(h.state().session.active().unwrap().doc.layers.len(), before + 1, "Fill drop does not place another raster layer");
         assert!(h.state().ui.transform.is_none(), "Fill drop assigns directly without starting a layer transform");
         h.state_mut().ui.dock_tabs.properties = 0;
@@ -333,5 +371,23 @@ mod tests {
             .layers[0]
             .clone();
         assert!(restored_fill.fill_map.is_none(), "undo removes the dropped image source");
+    }
+
+    #[test]
+    fn add_images_imports_web_contents_and_multi_select_files() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/checker.png");
+        let bytes = std::fs::read(fixture).unwrap();
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+
+        import_dialog_answer(&mut app, crate::file_dialog::FileDialogAnswer::Contents("one.png".into(), bytes.clone())).unwrap();
+        import_dialog_answer(
+            &mut app,
+            crate::file_dialog::FileDialogAnswer::ContentsMany(vec![("two.png".into(), bytes.clone()), ("three.png".into(), bytes)]),
+        )
+        .unwrap();
+
+        let assets = &app.session.uv.assets;
+        assert_eq!(assets.len(), 3);
+        assert_eq!(assets.iter().map(|asset| asset.source.name.as_str()).collect::<Vec<_>>(), ["one.png", "two.png", "three.png"]);
     }
 }

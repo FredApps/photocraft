@@ -1883,7 +1883,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     let painted = if crop_camera { None } else { Some(paint_canvas(app, ui, &display_view, xf, &paint_input)) };
     let img_rect = xf.doc_rect(doc.bounds());
     #[cfg(feature = "uv-workbench")]
-    let uv_toolbar = crate::uv_ui::canvas_overlay(app, ui, &xf, idx, primary);
+    let (uv_toolbar, fill_owns_pointer) = crate::uv_ui::canvas_overlay(app, ui, &xf, idx, primary);
+    #[cfg(not(feature = "uv-workbench"))]
+    let (_uv_toolbar, fill_owns_pointer): (Option<Rect>, bool) = (None, false);
 
     // Under an open dialog the canvas widget is inert, but the image still pans and zooms.
     let under_dialog = !app.ui.dialogs.is_empty();
@@ -1936,8 +1938,6 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     };
     #[cfg(feature = "uv-workbench")]
     let fill_manipulator_active = crate::uv_ui::fill_manipulator_active(app, &ctx, idx);
-    #[cfg(not(feature = "uv-workbench"))]
-    let fill_manipulator_active = false;
     #[cfg(feature = "uv-workbench")]
     if fill_manipulator_active {
         crate::transform_tool::route_to_mask_fill(app, &ctx);
@@ -2004,7 +2004,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         view.center[1] -= d.y;
         // The tool cursors below are skipped while panning: the fist is set here (#2196).
         ctx.set_cursor_icon(crate::tool_cursor::hand(&ctx, true));
-    } else if primary && !stroke_dismissal && !middle && fill_manipulator_active {
+    } else if primary && !stroke_dismissal && !middle && fill_owns_pointer {
         // The mask Fill overlay owns this gesture; don't send it to the active canvas tool.
     } else if primary
         && !stroke_dismissal
@@ -2041,6 +2041,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
                     ctx.set_cursor_icon(pipette_cursor(&ctx, p));
                 }
             }
+            #[cfg(feature = "uv-workbench")]
             if response.is_pointer_button_down_on()
                 && ui.input(|i| i.pointer.primary_pressed())
                 && let Some(p) = ui.input(|i| i.pointer.interact_pos())

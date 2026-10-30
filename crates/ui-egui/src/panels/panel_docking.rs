@@ -1074,8 +1074,15 @@ pub(crate) fn rail_click(app: &mut PhotocraftApp, group: Group) {
     let floating = PANELS.iter().filter(|p| p.2 == group).any(|p| floats(layout, p.0));
     let existing = PANELS.iter().find(|p| p.2 == group && layout.contains(&p.0.to_owned())).map(|p| p.0);
     let panel = existing
-        .or_else(|| group.tabs(app.ui.theme.is_pro()).get(*group.tab_mut(&mut app.ui.dock_tabs)).and_then(|label| normalize(label)))
-        .filter(|panel| panel_visible_in_workspace(app, panel));
+        .filter(|panel| panel_visible_in_workspace(app, panel))
+        .or_else(|| {
+            group
+                .tabs(app.ui.theme.is_pro())
+                .get(*group.tab_mut(&mut app.ui.dock_tabs))
+                .and_then(|label| normalize(label))
+                .filter(|panel| panel_visible_in_workspace(app, panel))
+        })
+        .or_else(|| group.tabs(app.ui.theme.is_pro()).iter().filter_map(|label| normalize(label)).find(|panel| panel_visible_in_workspace(app, panel)));
     if let Some(panel) = panel {
         let result = if existing.is_some() && rail_on(app, group) {
             if floating {
@@ -1258,7 +1265,9 @@ pub(crate) fn prepare_legacy_update(
                 Group::Layers => tabs.layers,
                 Group::Brushes => tabs.brushes,
             };
-            let visible_tabs = if visibility == Some(true) {
+            let visible_tabs = if let Some(dock) = dock {
+                dock.visible_tabs(group, pro)
+            } else if visibility == Some(true) {
                 group.tabs(pro).iter().copied().enumerate().collect::<Vec<_>>()
             } else {
                 crate::dock::visible_tabs(app, group, pro)

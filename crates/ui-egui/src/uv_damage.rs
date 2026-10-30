@@ -20,7 +20,7 @@ pub(crate) fn regions(previous: &mut Option<Arc<Document>>, doc: &Arc<Document>,
             // ordinary layer pixels. In that case sparse() correctly finds no raster
             // delta, and the engine's command damage is the only useful invalidation.
             Some(regions) if regions.is_empty() => fallback.filter(|rect| !rect.is_empty()).into_iter().collect(),
-            Some(regions) => regions.into_iter().map(|r| fallback.map_or(r, |f| r.intersect(&f))).filter(|r| !r.is_empty()).collect(),
+            Some(regions) => regions.into_iter().map(|r| hinted.map_or(r, |f| r.intersect(&f))).filter(|r| !r.is_empty()).collect(),
             None => vec![fallback.filter(|rect| !rect.is_empty()).unwrap_or_else(|| doc.bounds())],
         }
     };
@@ -227,7 +227,8 @@ mod tests {
             .unwrap();
         }
         let current = s.active().unwrap().doc.clone();
-        let rects = regions(&mut previous, &current, None);
+        // An empty damage hint means "no useful bound"; sparse changes are still recoverable.
+        let rects = regions(&mut previous, &current, Some(Rect::EMPTY));
         assert_eq!(rects.len(), 2);
         assert_eq!(rects.iter().map(|r| u64::from(r.width()) * u64::from(r.height())).sum::<u64>(), 2);
         s.execute("edit.undo", serde_json::json!({})).unwrap();
