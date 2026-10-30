@@ -582,7 +582,7 @@ fn handle_modal_canvas_keys(app: &mut PhotocraftApp, ctx: &egui::Context, focus:
     }
     if crate::retouch_ui::source_pick_active(app) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
         crate::retouch_ui::source_pick_cancel(app);
-        return;
+        return true;
     }
     // Liquify / Puppet Warp / Perspective Warp: ↩ commits, Esc cancels.
     if crate::distort_ui::keys(app, ctx) {
