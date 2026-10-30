@@ -28,7 +28,8 @@ fn a_right_press_on_a_popup_over_the_canvas_is_no_canvas_click() {
             let id = if pen { egui::Id::unique("canvas-selection-menu") } else { crate::brush_picker::picker_id() };
             let popup = h.ctx.memory(|m| m.area_rect(id)).expect("the popup is shown");
             let canvas = h.state().last_canvas_rect;
-            let (on, off) = (popup.center(), canvas.left_top() + vec2(30.0, 30.0));
+            // Just inside the popup's left edge and just outside it: a move of a few pixels.
+            let (on, off) = (pos2(popup.left() + 4.0, popup.center().y), pos2(popup.left() - 6.0, popup.center().y));
             assert!(canvas.contains(on) && !popup.contains(off));
             right_click_in_one_frame(&mut h, on, off, split);
             for p in [on, off] {
@@ -126,9 +127,9 @@ fn letting_go_of_space_before_the_right_button_ends_the_pan_only() {
         h.event(egui::Event::PointerMoved(c));
         h.run_steps(1);
         button(&mut h, c, PointerButton::Secondary, true);
-        let p = move_by(&mut h, c, vec2(40.0, 0.0), 4);
+        let p = move_by(&mut h, c, vec2(10.0, 0.0), 4);
         space(&mut h, false);
-        let p = move_by(&mut h, p, vec2(20.0, 0.0), 2);
+        let p = move_by(&mut h, p, vec2(6.0, 0.0), 2);
         button(&mut h, p, PointerButton::Secondary, false);
         h.run_steps(2);
         assert!(strokes(&h).is_empty(), "{prefs:?}: the release erases nothing");
@@ -150,9 +151,9 @@ fn a_hand_pan_with_the_right_button_chorded_in_opens_no_menu() {
         h.run_steps(1);
         let (first, second) = if right_first { (PointerButton::Secondary, PointerButton::Primary) } else { (PointerButton::Primary, PointerButton::Secondary) };
         button(&mut h, c, first, true);
-        let p = move_by(&mut h, c, vec2(40.0, 0.0), 4);
+        let p = move_by(&mut h, c, vec2(8.0, 0.0), 4);
         button(&mut h, p, second, true);
-        let p = move_by(&mut h, p, vec2(40.0, 0.0), 4);
+        let p = move_by(&mut h, p, vec2(8.0, 0.0), 4);
         // The right button comes up first while the left still pans, or last.
         let order = if right_first { [PointerButton::Primary, PointerButton::Secondary] } else { [PointerButton::Secondary, PointerButton::Primary] };
         for b in order {
@@ -188,7 +189,7 @@ fn a_right_press_moved_during_a_left_stroke_opens_no_picker() {
         button(&mut h, c, PointerButton::Primary, true);
         let p = move_by(&mut h, c, vec2(40.0, 0.0), 4);
         button(&mut h, p, PointerButton::Secondary, true);
-        let q = if moved { move_by(&mut h, p, vec2(0.0, 40.0), 4) } else { p };
+        let q = if moved { move_by(&mut h, p, vec2(0.0, 12.0), 4) } else { p };
         button(&mut h, q, PointerButton::Secondary, false);
         h.run_steps(1);
         assert_eq!(h.state().ui.brush_picker.is_some(), !moved, "moved {moved}: the picker opens only for a still click");
@@ -225,17 +226,17 @@ fn escape_while_the_right_button_is_down_cancels_the_right_click() {
         h.run_steps(1);
         let hud = mods.alt;
         assert_eq!(crate::color_hud::is_open(&h.state().ui), hud, "{tool:?} {mods:?}: the HUD opens only for Shift+Alt");
-        let p = move_by(&mut h, c, vec2(20.0, 0.0), 2);
+        let p = move_by(&mut h, c, vec2(8.0, 0.0), 2);
         key(&mut h, egui::Key::Escape, mods);
         assert!(!crate::color_hud::is_open(&h.state().ui), "{tool:?} {mods:?}: Escape closes the HUD");
-        let p = move_by(&mut h, p, vec2(20.0, 8.0), 2);
+        let p = move_by(&mut h, p, vec2(6.0, 4.0), 2);
         button(&mut h, p, PointerButton::Secondary, false);
         h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
         h.run_steps(2);
         assert!(nothing_opened(&h), "{tool:?} {mods:?}: Escape cancelled the right-click");
         assert!(strokes(&h).is_empty(), "{tool:?} {mods:?}: and nothing paints");
         // The next right-click is one again.
-        right_click_in_one_frame(&mut h, c, c + vec2(30.0, 0.0), true);
+        right_click_in_one_frame(&mut h, c, c + vec2(14.0, 0.0), true);
         assert!(!nothing_opened(&h), "{tool:?} {mods:?}: the next right-click opens its menu");
     }
 }
@@ -254,7 +255,7 @@ fn space_and_a_right_drag_pan_with_the_hand_selected() {
     // A fresh view: the Space pan can glide on (flick panning).
     let mut h = zoomed(Tool::Hand, None);
     let center = h.state().ui.views[0].center;
-    right_drag_by(&mut h, vec2(60.0, 36.0), Modifiers::NONE);
+    right_drag_by(&mut h, vec2(14.0, 8.0), Modifiers::NONE);
     assert_eq!(h.state().ui.views[0].center, center, "without Space the right drag does not pan");
     assert_eq!(h.state().ui.canvas_tool_menu.as_ref().map(|m| m.tool), Some(Tool::Hand), "it opens the view menu");
 }
@@ -275,5 +276,62 @@ fn a_moved_right_click_on_a_guide_opens_the_guide_menu() {
         let menu = h.state().ui.canvas_tool_menu.as_ref().map(|m| (m.guide, m.pos));
         assert_eq!(menu, Some((true, [c.x, c.y])), "split {split}: the guide menu opens at the press");
         assert!(h.state().ui.layer_menu.is_none(), "split {split}: not the layers under the release");
+    }
+}
+
+/// A right drag is no right-click: once the pointer has gone farther than a few pixels from the
+/// press while the button is down, the release opens nothing, as before #10183. That holds over
+/// frames, out and back near the press, and with the whole drag in one slow frame. A Space+right
+/// flick with the Hand selected is a pan too short for egui to see, and opens no view menu either.
+#[test]
+fn a_right_drag_past_a_few_pixels_opens_nothing() {
+    for tool in [Tool::Brush, Tool::Pen, Tool::Hand] {
+        let mut h = harness(None);
+        h.state_mut().ui.tool = tool;
+        h.run_steps(2);
+        right_drag_by(&mut h, vec2(-400.0, -250.0), Modifiers::NONE);
+        assert!(nothing_opened(&h), "{tool:?}: a long right drag opens nothing");
+        // Out past the reach and back near the press, over frames.
+        let c = h.state().last_canvas_rect.center();
+        h.event(egui::Event::PointerMoved(c));
+        h.run_steps(1);
+        button(&mut h, c, PointerButton::Secondary, true);
+        let p = move_by(&mut h, c, vec2(60.0, 0.0), 3);
+        let p = move_by(&mut h, p, vec2(-55.0, 0.0), 3);
+        button(&mut h, p, PointerButton::Secondary, false);
+        h.run_steps(2);
+        assert!(nothing_opened(&h), "{tool:?}: a drag out and back opens nothing");
+        // The same within one frame, the press in it or in the frame before.
+        for split in [true, false] {
+            h.event(egui::Event::PointerMoved(c));
+            h.run_steps(1);
+            let back = c + vec2(5.0, 0.0);
+            let press = egui::Event::PointerButton { pos: c, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE };
+            let rest = [
+                egui::Event::PointerMoved(c + vec2(70.0, 40.0)),
+                egui::Event::PointerMoved(back),
+                egui::Event::PointerButton { pos: back, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE },
+            ];
+            if split {
+                h.input_mut().events.push(press);
+                h.run_steps(1);
+                h.input_mut().events.extend(rest);
+            } else {
+                h.input_mut().events.extend([press].into_iter().chain(rest));
+            }
+            h.run_steps(2);
+            assert!(nothing_opened(&h), "{tool:?}, split {split}: a drag out and back in one frame opens nothing");
+        }
+        // Within the reach it is still a right-click.
+        right_click_in_one_frame(&mut h, c, c + vec2(12.0, 8.0), true);
+        assert!(!nothing_opened(&h), "{tool:?}: a right-click that moved a few pixels opens its menu");
+    }
+    for split in [true, false] {
+        let mut h = zoomed(Tool::Hand, None);
+        let c = h.state().last_canvas_rect.center();
+        space(&mut h, true);
+        right_click_in_one_frame(&mut h, c, c + vec2(60.0, 36.0), split);
+        space(&mut h, false);
+        assert!(h.state().ui.canvas_tool_menu.is_none(), "split {split}: a Space+right flick opens no view menu");
     }
 }

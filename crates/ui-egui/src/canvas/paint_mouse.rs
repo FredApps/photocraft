@@ -111,11 +111,11 @@ pub fn right_erases(app: &PhotocraftApp, tool: Tool) -> bool {
 }
 
 /// A right-click on the canvas, as the system reads one: the right button pressed on the canvas
-/// and released over it, however far the pointer moved while it was down. egui reports
-/// `secondary_clicked` only within its click distance of the press, and a high-DPI mouse can move
-/// that far just from the button going down; egui then sees a drag (#10183). A right press that a
-/// gesture used (an Alt+right brush resize, a right-erase stroke, a pan, another button pressed
-/// with it), or that Escape cancelled, is no click.
+/// and released over it, the pointer having moved no more than a few pixels while it was down
+/// (`right_click_reach`). egui reports `secondary_clicked` only within its click distance of the
+/// press, and a high-DPI mouse can move that far just from the button going down; egui then sees
+/// a drag (#10183). A right press that a gesture used (an Alt+right brush resize, a right-erase
+/// stroke, a pan, another button pressed with it), or that Escape cancelled, is no click.
 pub fn right_clicked(response: &Response) -> bool {
     right_click_at(response).is_some()
 }
@@ -128,12 +128,15 @@ pub fn right_clicked(response: &Response) -> bool {
 /// (`track_right_press`) decides, and the release is a right-click when all of these hold:
 /// - the press went down on the canvas itself: inside it, under no popup or window, and on no
 ///   widget drawn over it (a scrollbar);
+/// - the pointer never went farther from the press than `right_click_reach` (three times egui's
+///   click distance, 18 points by default) while the button was down, at any point between the
+///   press and the release, also within one frame's moves: past it the press is a drag;
 /// - no other mouse button was down when it went down, and none was pressed while it was held;
 /// - no gesture used it: an Alt+right brush resize, a right-erase stroke, a pan (Space's too);
 /// - Escape was not pressed while it was held;
 /// - it came up on the canvas.
 ///
-/// Such a click points where the button went down, at what was right-clicked, not where a few
+/// Such a click points where the button went down, at what was right-clicked, not where those few
 /// pixels of movement took the pointer by the release. The record also covers a slow frame where
 /// the move and the release arrive together, which egui reports as neither a click nor a drag,
 /// and a still press held past egui's click time, which egui no longer calls a click: that counts
@@ -151,6 +154,15 @@ pub fn right_click_at(response: &Response) -> Option<Pos2> {
 /// The right press now down was used by a gesture, so its release is no right-click.
 pub fn right_press_used(response: &Response) {
     response.ctx.data_mut(|d| d.insert_temp::<Option<Pos2>>(right_pressed_id(response), None));
+}
+
+/// How far, in points, the pointer may stray from a right press while the button is down for its
+/// release to still be a right-click: three times egui's click distance (6 points by default, so
+/// 18). That is the "few pixels" a high-DPI mouse moves as its button goes down, or a slow frame's
+/// move, at any display scale (points follow it), and well short of a deliberate drag, which is
+/// no click: a long right drag opens nothing, as before #10183.
+fn right_click_reach(ctx: &egui::Context) -> f32 {
+    3.0 * ctx.options(|o| o.input_options.max_click_dist)
 }
 
 /// A screen point in the coordinates of `response`'s layer (its `rect`'s).
@@ -190,17 +202,41 @@ fn right_pressed_id(response: &Response) -> egui::Id {
 /// Keeps `right_pressed_id` for this frame: set on a right press (on the canvas or not), dropped
 /// once the button is up again. A right-click is the right button on its own: a press made while
 /// another button is down is none, and another button pressed while it is held uses it. Escape
-/// pressed while it is held cancels it. The canvas runs this every frame, panning or not, before
-/// the open brush mode menu skips the buttons, so a press made while the menu is open is not
-/// mistaken for an older one.
+/// pressed while it is held cancels it, and so does a move farther than `right_click_reach` from
+/// the press: every pointer position this frame's events had while the button was down counts,
+/// not just where the pointer ends up, so a drag out and back is no click either. The canvas runs
+/// this every frame, panning or not, before the open brush mode menu skips the buttons, so a
+/// press made while the menu is open is not mistaken for an older one.
 pub fn track_right_press(response: &Response) {
-    let (pressed, released, held, origin, others, escape) = response.ctx.input(|i| {
+    let id = right_pressed_id(response);
+    let reach = right_click_reach(&response.ctx);
+    let tracked = response.ctx.data(|d| d.get_temp::<Option<Pos2>>(id)).flatten();
+    let (pressed, released, held, origin, others, escape, far) = response.ctx.input(|i| {
+        let right_press = |e: &egui::Event| matches!(e, egui::Event::PointerButton { button: PointerButton::Secondary, pressed: true, .. });
         // Where the button went down. With the release in the same frame, the pointer is
         // already where it came up and egui has dropped the press origin: the event has it.
-        let pressed_at = i.events.iter().rev().find_map(|e| match e {
-            egui::Event::PointerButton { pos, button: PointerButton::Secondary, pressed: true, .. } => Some(*pos),
+        let last_press = i.events.iter().rposition(right_press);
+        let pressed_at = last_press.and_then(|k| i.events.get(k)).and_then(|e| match e {
+            egui::Event::PointerButton { pos, .. } => Some(*pos),
             _ => None,
         });
+        let pressed = i.pointer.button_pressed(PointerButton::Secondary);
+        let origin = pressed_at.or_else(|| i.pointer.press_origin());
+        // The pointer while the button was down this frame: after its press, up to its release.
+        let start = if pressed { last_press.map_or(0, |k| k.saturating_add(1)) } else { 0 };
+        let from = if pressed { origin } else { tracked };
+        let mut far = false;
+        for e in i.events.iter().skip(start) {
+            let (p, up) = match e {
+                egui::Event::PointerMoved(p) => (*p, false),
+                egui::Event::PointerButton { pos, button: PointerButton::Secondary, pressed: false, .. } => (*pos, true),
+                _ => continue,
+            };
+            far |= from.is_some_and(|o| o.distance(p) > reach);
+            if up {
+                break;
+            }
+        }
         let others = [PointerButton::Primary, PointerButton::Middle, PointerButton::Extra1, PointerButton::Extra2]
             .into_iter()
             .any(|b| i.pointer.button_down(b) || i.pointer.button_pressed(b));
@@ -208,15 +244,14 @@ pub fn track_right_press(response: &Response) {
         // consumed this Escape from `events`, and it still cancels the press.
         let escape = i.raw.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. }));
         let b = PointerButton::Secondary;
-        (i.pointer.button_pressed(b), i.pointer.button_released(b), i.pointer.secondary_down(), pressed_at.or_else(|| i.pointer.press_origin()), others, escape)
+        (pressed, i.pointer.button_released(b), i.pointer.secondary_down(), origin, others, escape, far)
     });
-    let id = right_pressed_id(response);
     if pressed {
-        let at = origin.filter(|&p| !others && !escape && on_canvas(response, p));
+        let at = origin.filter(|&p| !others && !escape && !far && on_canvas(response, p));
         response.ctx.data_mut(|d| d.insert_temp(id, at));
     } else if !released && !held {
         response.ctx.data_mut(|d| d.remove_temp::<Option<Pos2>>(id));
-    } else if others || escape {
+    } else if others || escape || far {
         right_press_used(response);
     }
 }

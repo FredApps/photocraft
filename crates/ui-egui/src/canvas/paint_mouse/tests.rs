@@ -880,7 +880,7 @@ fn right_drag_by(h: &mut Harness<'static, PhotocraftApp>, by: egui::Vec2, mods: 
 /// nothing.
 #[test]
 fn a_right_click_that_moved_still_opens_its_menu() {
-    for by in [vec2(7.0, 3.0), vec2(40.0, -25.0)] {
+    for by in [vec2(7.0, 3.0), vec2(14.0, -9.0)] {
         let mut h = harness(None);
         let at = right_drag_by(&mut h, by, Modifiers::NONE);
         assert_eq!(h.state().ui.brush_picker, Some([at.x, at.y]), "moved {by:?}: the picker opens where the button went down");
@@ -894,7 +894,7 @@ fn a_right_click_that_moved_still_opens_its_menu() {
     // Alt+right drag resizes the brush: no picker after it.
     let mut h = harness(None);
     let size = h.state().session.tools.brush.size;
-    right_drag_by(&mut h, vec2(60.0, 0.0), Modifiers::ALT);
+    right_drag_by(&mut h, vec2(14.0, 0.0), Modifiers::ALT);
     assert_ne!(h.state().session.tools.brush.size, size, "the drag resized the brush");
     assert_eq!(h.state().ui.brush_picker, None, "a resize is no right-click");
     // ... and the next plain right-click is one again.
@@ -902,7 +902,7 @@ fn a_right_click_that_moved_still_opens_its_menu() {
     assert!(h.state().ui.brush_picker.is_some());
     // With right-erase on, a right drag erases and opens nothing.
     let mut h = harness(Some("erase"));
-    right_drag_by(&mut h, vec2(60.0, 0.0), Modifiers::NONE);
+    right_drag_by(&mut h, vec2(14.0, 0.0), Modifiers::NONE);
     assert_eq!(h.state().ui.brush_picker, None);
     assert_eq!(h.state().ui.canvas_tool_menu, None);
     // Released off the canvas: no click.
@@ -921,7 +921,7 @@ fn a_right_drag_with_the_hand_opens_its_menu_without_panning() {
     h.state_mut().ui.views[0].zoom = 4.0;
     h.run_steps(2);
     let center = h.state().ui.views[0].center;
-    right_drag_by(&mut h, vec2(60.0, 30.0), Modifiers::NONE);
+    right_drag_by(&mut h, vec2(14.0, 7.0), Modifiers::NONE);
     assert_eq!(h.state().ui.views[0].center, center, "a right drag does not pan");
     let menu = h.state().ui.canvas_tool_menu.as_ref().map(|m| m.tool);
     assert_eq!(menu, Some(Tool::Hand), "it opens the Hand's view menu");
@@ -963,7 +963,7 @@ fn a_right_click_moved_and_released_in_one_frame_still_opens_its_menu() {
     for split in [true, false] {
         let mut h = harness(None);
         let c = h.state().last_canvas_rect.center();
-        let at = c + vec2(30.0, 12.0);
+        let at = c + vec2(14.0, 6.0);
         right_click_in_one_frame(&mut h, c, at, split);
         let picker = h.state().ui.brush_picker.map(|p| (p[0] - c.x).abs() < 0.5 && (p[1] - c.y).abs() < 0.5);
         assert_eq!(picker, Some(true), "split {split}: the picker opens where the button went down");
