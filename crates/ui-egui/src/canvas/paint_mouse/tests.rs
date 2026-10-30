@@ -5,6 +5,8 @@ use serde_json::json;
 use super::*;
 use crate::canvas::{ToolEvent, tool_event};
 
+mod right_click;
+
 fn harness(prefs: Option<&str>) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 400, "height": 300})).unwrap();

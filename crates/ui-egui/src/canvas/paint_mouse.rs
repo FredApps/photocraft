@@ -110,36 +110,35 @@ pub fn right_erases(app: &PhotocraftApp, tool: Tool) -> bool {
     matches!(tool, Tool::Brush | Tool::Eraser) && app.session.prefs().tools.right_click_with_painting_tools == RightClickPaint::Erase
 }
 
-/// A right-click on the canvas, as the system reads one: the right button released over the
-/// canvas, however far the pointer moved while it was down. egui reports `secondary_clicked` only
-/// within its click distance of the press, and a high-DPI mouse can move that far just from the
-/// button going down; egui then sees a drag (#10183). A right drag that a gesture used (an
-/// Alt+right brush resize or a right-erase stroke, `canvas_buttons`) is no click.
+/// A right-click on the canvas, as the system reads one: the right button pressed on the canvas
+/// and released over it, however far the pointer moved while it was down. egui reports
+/// `secondary_clicked` only within its click distance of the press, and a high-DPI mouse can move
+/// that far just from the button going down; egui then sees a drag (#10183). A right press that a
+/// gesture used (an Alt+right brush resize or a right-erase stroke, `canvas_buttons`) is no click.
 pub fn right_clicked(response: &Response) -> bool {
     right_click_at(response).is_some()
 }
 
 /// Where the right button came up for a `right_clicked` click, in the canvas's coordinates.
 ///
-/// When the move past the click distance and the release arrive in the same frame (a slow
-/// frame), egui reports neither a click nor a drag stop. A right press over the canvas
-/// (`right_pressed_id`) released over it that frame is the click then.
+/// Past egui's click distance, the canvas's own record of the press (`track_right_press`) decides:
+/// it went down on the canvas itself and no gesture used it. That also covers a slow frame where
+/// the move and the release arrive together, which egui reports as neither a click nor a drag.
 pub fn right_click_at(response: &Response) -> Option<Pos2> {
     if response.secondary_clicked() {
         return response.interact_pointer_pos();
     }
     let ctx = &response.ctx;
-    if ctx.data(|d| d.get_temp::<bool>(right_gesture_id())).unwrap_or(false) {
+    if !ctx.data(|d| d.get_temp::<bool>(right_pressed_id(response))).unwrap_or(false) {
         return None;
     }
-    let at = if response.drag_stopped_by(PointerButton::Secondary) {
-        response.interact_pointer_pos()
-    } else if ctx.data(|d| d.get_temp::<bool>(right_pressed_id(response))).unwrap_or(false) && response.contains_pointer() && !response.drag_stopped() {
-        ctx.input(|i| i.pointer.button_released(PointerButton::Secondary).then(|| i.pointer.latest_pos()).flatten()).map(|p| to_layer(response, p))
-    } else {
-        None
-    };
-    at.filter(|p| response.rect.contains(*p))
+    let up = ctx.input(|i| i.pointer.button_released(PointerButton::Secondary).then(|| i.pointer.latest_pos()).flatten())?;
+    on_canvas(response, up).then(|| to_layer(response, up))
+}
+
+/// The right press now down was used by a gesture, so its release is no right-click.
+fn right_press_used(response: &Response) {
+    response.ctx.data_mut(|d| d.insert_temp(right_pressed_id(response), false));
 }
 
 /// A screen point in the coordinates of `response`'s layer (its `rect`'s).
@@ -147,20 +146,37 @@ fn to_layer(response: &Response, p: Pos2) -> Pos2 {
     response.ctx.layer_transform_from_global(response.layer_id).map_or(p, |t| t * p)
 }
 
-/// Temp-data key: the right press now down (or last released) started a drag gesture.
-fn right_gesture_id() -> egui::Id {
-    egui::Id::unique("canvas-right-gesture")
+/// Is screen point `p` on the canvas itself, so that a press there is the canvas's: inside it,
+/// under no popup or window, and on no widget drawn over it (a scrollbar). egui only hit-tests
+/// where the pointer is at the end of the frame, which a slow frame can have moved away from the
+/// press; this asks the same of last frame's widgets at `p`.
+fn on_canvas(response: &Response, p: Pos2) -> bool {
+    let ctx = &response.ctx;
+    let q = to_layer(response, p);
+    if !response.rect.contains(q) || ctx.layer_id_at(p).is_some_and(|l| l != response.layer_id) {
+        return false;
+    }
+    // A layer's widgets are listed back to front: the last one there that senses the press is on top.
+    let top = ctx.viewport(|v| {
+        v.prev_pass
+            .widgets
+            .get_layer(response.layer_id)
+            .filter(|w| w.enabled && (w.sense.senses_click() || w.sense.senses_drag()) && w.interact_rect.contains(q))
+            .last()
+            .map(|w| w.id)
+    });
+    top.is_none_or(|id| id == response.id)
 }
 
 /// Temp-data key, one per canvas: the right press now down (or released this frame) went down
-/// over this canvas.
+/// on this canvas, and no gesture has used it.
 fn right_pressed_id(response: &Response) -> egui::Id {
     response.id.with("canvas-right-pressed")
 }
 
-/// Keeps `right_pressed_id` for this frame: set on a right press (over the canvas or not),
-/// dropped once the button is up again. It runs before the open brush mode menu skips the
-/// buttons, so a press made while the menu is open is not mistaken for an older one.
+/// Keeps `right_pressed_id` for this frame: set on a right press (on the canvas or not), dropped
+/// once the button is up again. It runs before the open brush mode menu skips the buttons, so a
+/// press made while the menu is open is not mistaken for an older one.
 fn track_right_press(response: &Response) {
     let (pressed, released, held, origin) = response.ctx.input(|i| {
         // Where the button went down. With the release in the same frame, the pointer is
@@ -174,8 +190,8 @@ fn track_right_press(response: &Response) {
     });
     let id = right_pressed_id(response);
     if pressed {
-        let over = origin.is_some_and(|p| response.rect.contains(to_layer(response, p))) && (response.contains_pointer() || released);
-        response.ctx.data_mut(|d| d.insert_temp(id, over));
+        let on = origin.is_some_and(|p| on_canvas(response, p));
+        response.ctx.data_mut(|d| d.insert_temp(id, on));
     } else if !released && !held {
         response.ctx.data_mut(|d| d.remove_temp::<bool>(id));
     }
@@ -189,9 +205,6 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
     if crate::brush_mode_menu::blocks_canvas(app, &response.ctx) {
         app.secondary_erase = false;
         return Buttons::default();
-    }
-    if response.ctx.input(|i| i.pointer.button_pressed(PointerButton::Secondary)) {
-        response.ctx.data_mut(|d| d.insert_temp(right_gesture_id(), false));
     }
     let physical_right = app.services.right_button_down.as_ref().is_some_and(|f| f());
     let (mods, mut right_down) = response.ctx.input(|i| (i.modifiers, i.pointer.secondary_down()));
@@ -245,7 +258,7 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
     let right_stroke = erase && app.drag.is_some();
     let right_start = erase && right_started;
     if right_start || resize_start || resizing {
-        response.ctx.data_mut(|d| d.insert_temp(right_gesture_id(), true));
+        right_press_used(response);
     }
     let right_at = right_click_at(response);
     let right_click = right_at.is_some();
