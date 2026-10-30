@@ -1,6 +1,6 @@
 # Contributor-supplied 3D / UV screenshots
 
-These four screenshots were supplied by `veteraros-ai` for the presentation in
+These five screenshots were supplied by `veteraros-ai` for the presentation in
 [PhotoCraft PR #8805](https://github.com/storytold/photocraft/pull/8805) and are
 reproduced at the contributor's explicit request, in the supplied order:
 
@@ -8,6 +8,7 @@ reproduced at the contributor's explicit request, in the supplied order:
 2. `mask-sublayers.png` - expanded mask Paint / Fill / Levels stack.
 3. `model-wireframe.png` - polygon wireframe display and color controls.
 4. `model-selection.png` - region and polygon selection on the model.
+5. `model-mirror.png` - configurable 3D mirror plane and symmetry controls.
 
 The PNG files are unmodified copies of the supplied screenshots. They are
 documentation images, not sample assets or test fixtures. No character mesh,

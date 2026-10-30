@@ -37,6 +37,13 @@ tools, so subsequent texture edits can respect that region and support Undo.
 
 ![Model selection: sleeve region and individual polygon band](images/uv-showcase/model-selection.png)
 
+## 5. 3D mirror
+
+Paint symmetrically across a configurable plane. Choose an axis, adjust its
+offset or snap it to a vertex; the translucent plane shows the active mirror.
+
+![3D mirror plane with axis, offset and vertex snapping controls](images/uv-showcase/model-mirror.png)
+
 ## Try the workspace
 
 ```sh
