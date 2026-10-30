@@ -1326,12 +1326,12 @@ fn automation_open_and_save_use_the_roots_and_reply_with_warnings() {
         })),
         export: Some(Box::new(|_d: &Document, _p: &str, _s: &crate::ExportSettings| Ok((b"out".to_vec(), vec!["Layers were flattened".to_string()])))),
         automation_read: Some(Box::new(|path: &str| {
-                Ok(crate::AutomationReadResult {
-                    name: path.rsplit('/').next().unwrap_or(path).to_string(),
-                    bytes: b"x".to_vec(),
-                    save_path: Some(path.to_string()),
-                })
-            })),
+            Ok(crate::AutomationReadResult {
+                name: path.rsplit('/').next().unwrap_or(path).to_string(),
+                bytes: b"x".to_vec(),
+                save_path: Some(path.to_string()),
+            })
+        })),
         automation_write: Some(Box::new(move |path: &str, _b: &[u8]| {
             w.borrow_mut().push(path.to_string());
             Ok(())

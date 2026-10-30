@@ -43,9 +43,7 @@ pub struct AutomationArgs {
 }
 
 fn root_path() -> impl TypedValueParser<Value = PathBuf> {
-    OsStringValueParser::new().try_map(|value: OsString| {
-        if value.is_empty() { Err("root needs a non-empty directory") } else { Ok(PathBuf::from(value)) }
-    })
+    OsStringValueParser::new().try_map(|value: OsString| if value.is_empty() { Err("root needs a non-empty directory") } else { Ok(PathBuf::from(value)) })
 }
 
 impl AutomationArgs {
@@ -162,5 +160,4 @@ mod tests {
         let parsed = RootCli::try_parse_from([OsString::from("test"), inline]).unwrap();
         assert_eq!(parsed.automation.automation_read_root, vec![PathBuf::from(value)]);
     }
-
 }
