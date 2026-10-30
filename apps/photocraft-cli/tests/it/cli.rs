@@ -169,7 +169,7 @@ fn server_modes_reject_ignored_or_conflicting_options() {
         }
         server_usage_error(&[sub, "--automation-write-root", ".", "--automation-write-root", "."], "cannot be used multiple times");
         for flag in ["--automation-read-root", "--automation-write-root"] {
-            server_usage_error(&[sub, &format!("{flag}=")], &format!("a value is required for '{flag} "));
+            server_usage_error(&[sub, &format!("{flag}=")], "root needs a non-empty directory");
             server_usage_error(&[sub, flag, "--automation-write-root", "."], &format!("a value is required for '{flag} "));
         }
         let transport = if sub == "mcp" { "--bridge" } else { "--port" };
