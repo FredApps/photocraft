@@ -737,13 +737,13 @@ fn multiple_roots_do_not_allow_link_escapes_or_alias_save_back() {
 fn same_root_leaf_link_save_replaces_the_link_without_writing_its_target() {
     let (inside, _, workspace) = roots("leaf-link");
     std::fs::write(inside.join("target.txt"), b"target").unwrap();
-    std::os::unix::fs::symlink("target.txt", inside.join("link.txt")).unwrap();
-    let (bytes, save_path) = workspace.read_with_save_path("link.txt").unwrap();
+    std::os::unix::fs::symlink("target.txt", inside.join("link.png")).unwrap();
+    let (bytes, save_path) = workspace.read_with_save_path("link.png").unwrap();
     assert_eq!(bytes, b"target");
     workspace.write(&save_path.unwrap(), b"replacement").unwrap();
     assert_eq!(std::fs::read(inside.join("target.txt")).unwrap(), b"target");
-    assert_eq!(std::fs::read(inside.join("link.txt")).unwrap(), b"replacement");
-    assert!(!std::fs::symlink_metadata(inside.join("link.txt")).unwrap().file_type().is_symlink());
+    assert_eq!(std::fs::read(inside.join("link.png")).unwrap(), b"replacement");
+    assert!(!std::fs::symlink_metadata(inside.join("link.png")).unwrap().file_type().is_symlink());
 }
 
 #[test]
