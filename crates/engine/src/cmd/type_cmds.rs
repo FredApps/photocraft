@@ -798,8 +798,14 @@ fn shown_style_params<'a>(t: &TextLayer, p: &'a Value) -> Result<std::borrow::Co
 pub(crate) fn is_auto_named(l: &Layer) -> bool {
     let LayerContent::Text(t) = &l.content else { return false };
     let auto = layer_name(&t.text);
-    let copy = l.name.strip_prefix(auto.as_str()).and_then(|rest| rest.strip_prefix(" copy"));
-    l.name == auto || copy.is_some_and(|n| n.is_empty() || n.strip_prefix(' ').is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit())))
+    // Duplicate Layer names a copy of "Title copy" "Title copy 2", not "Title copy copy".
+    l.name == auto || copy_root(&l.name).is_some_and(|root| root == copy_root(&auto).unwrap_or(&auto))
+}
+
+/// The name a Duplicate Layer copy was made from: "Title" for "Title copy" or "Title copy 2".
+fn copy_root(name: &str) -> Option<&str> {
+    let (root, rest) = name.rsplit_once(" copy")?;
+    (rest.is_empty() || rest.strip_prefix(' ').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))).then_some(root)
 }
 
 /// The name a type layer gets from its text: its first non-empty line, at most 40 characters.

@@ -189,8 +189,16 @@ fn a_duplicated_type_layer_follows_its_new_text() {
     s.execute("type.edit", json!({"layer": copies[1], "text": "Caption"})).unwrap();
     assert_eq!(layer_name_of(&s, copies[1]), "Caption");
     assert_eq!(layer_name_of(&s, id), "Title", "the original keeps its own");
+    // A layer whose text ends in " copy": its duplicate is "Draft copy 2", not "Draft copy copy".
+    let draft = s.execute("type.create", json!({"x": 0, "y": 80, "text": "Draft copy"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.select", json!({"layer": draft})).unwrap();
+    s.execute("layer.duplicate", json!({})).unwrap();
+    let draft_copy = s.active().unwrap().active_layer.unwrap().0;
+    assert_eq!(layer_name_of(&s, draft_copy), "Draft copy 2");
+    s.execute("type.edit", json!({"layer": draft_copy, "text": "Final"})).unwrap();
+    assert_eq!(layer_name_of(&s, draft_copy), "Final");
     // Names that only look like copies, or a copy renamed by hand, are kept.
-    for name in ["Title copy two", "Title copy 2b", "Title copyedit", "Title  copy", "My Title copy"] {
+    for name in ["Title copy two", "Title copy 2b", "Title copyedit", "Title  copy", "My Title copy", "Title copy -1", "Title copy ", "Tit"] {
         s.execute("type.edit", json!({"layer": id, "name": name})).unwrap();
         s.execute("type.edit", json!({"layer": id, "text": "Title"})).unwrap();
         assert_eq!(layer_name_of(&s, id), name, "{name}");
