@@ -9,12 +9,24 @@ use photocraft_uv::{
     prepared::Geometry,
     preview::{Camera, Image},
 };
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const STRIDE: u64 = 72;
 type Key = (u64, u64, u64, u64);
+fn gray_mask_map_key(generation: u64, size: [u32; 2]) -> Key {
+    (generation, u64::from(size[0]), u64::from(size[1]), 0x4752_4159_4d41_50)
+}
+fn gray_mask_source_identity(key: Key, owner: u64, shell: u64, configuration_key: u64) -> (Key, u64, u64, u64) {
+    (key, owner, shell, configuration_key)
+}
 struct GpuSurface {
     maps: Vec<Map>,
     gpu_spares: Vec<Option<Map>>,
@@ -137,6 +149,7 @@ struct Map {
 enum MapSource {
     Cpu,
     GpuComposite,
+    GpuMaskStack,
     CpuFallback,
 }
 struct Material {
@@ -150,24 +163,28 @@ struct Material {
 }
 enum MaterialColor {
     Owned(Box<Map>),
+    Shared(Arc<Map>),
     Surface { size: [u32; 2], key: Key, cutout: bool },
 }
 impl MaterialColor {
     fn size(&self) -> [u32; 2] {
         match self {
             Self::Owned(map) => map.size,
+            Self::Shared(map) => map.size,
             Self::Surface { size, .. } => *size,
         }
     }
     fn key(&self) -> Key {
         match self {
             Self::Owned(map) => map.key,
+            Self::Shared(map) => map.key,
             Self::Surface { key, .. } => *key,
         }
     }
     fn cutout(&self) -> bool {
         match self {
             Self::Owned(map) => map.cutout,
+            Self::Shared(map) => map.cutout,
             Self::Surface { cutout, .. } => *cutout,
         }
     }
@@ -202,7 +219,7 @@ struct Target {
     samples: u32,
 }
 
-type FrameKey = (u64, Camera, [u32; 2], bool, u64, bool, [u8; 4], u32);
+type FrameKey = (u64, Camera, [u32; 2], bool, u64, bool, [u8; 4], u32, Option<[u32; 12]>);
 
 pub(crate) struct Renderer {
     rs: RenderState,
@@ -214,11 +231,23 @@ pub(crate) struct Renderer {
     surfaces: Vec<GpuSurface>,
     background_pipelines: Vec<wgpu::RenderPipeline>,
     wireframe_pipelines: Vec<wgpu::RenderPipeline>,
+    symmetry_fill_pipelines: Vec<wgpu::RenderPipeline>,
+    symmetry_outline_pipelines: Vec<wgpu::RenderPipeline>,
     camera_layout: wgpu::BindGroupLayout,
     material_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    mask_sampler: wgpu::Sampler,
     mips: crate::uv_mips::Mips,
     compositor: Option<photocraft_gpu::Compositor>,
+    mask_stack_renderer: photocraft_gpu::MaskStackRenderer,
+    gray_mask_map: Option<Arc<Map>>,
+    gray_mask_source_key: Option<(Key, u64, u64, u64)>,
+    gray_mask_texture_generation: u64,
+    gray_mask_materials: BTreeSet<usize>,
+    gray_mask_rejected: Option<(u64, [u32; 2], u64, u64)>,
+    gray_mask_brush_identity: Option<(u64, u64, u64, u64, [u32; 2])>,
+    gray_mask_brush_signals: Option<(Arc<AtomicBool>, Arc<Mutex<Option<Result<Vec<photocraft_gpu::MaskBrushPatch>, String>>>>)>,
+    gray_mask_brush_readback_done: Option<u64>,
     compositor_error: Option<String>,
     last_map_stats: Option<photocraft_gpu::Stats>,
     #[cfg(test)]
@@ -256,9 +285,39 @@ pub(crate) struct Draw<'a> {
     pub keys: &'a [Key],
     pub normal_keys: &'a [(u64, u64, u64)],
     pub masked: &'a BTreeSet<usize>,
+    /// Four corners in prepared mesh coordinates. The GPU renders them depth-tested.
+    pub symmetry_plane: Option<[[f32; 3]; 4]>,
+}
+
+/// Source for a GPU-rendered native Gray mask map. A normal document Arc keeps the canonical
+/// stack surfaces alive while the renderer updates its own GPU-only display cache.
+pub(crate) struct GrayMaskGpuSource {
+    pub document: Arc<photocraft_doc::Document>,
+    pub layer: photocraft_doc::LayerId,
+    pub shell_ids: Arc<Vec<u32>>,
+    pub owner_key: u64,
+    pub shell_key: u64,
+    pub materials: BTreeSet<usize>,
+    pub key: Key,
+    pub brush_preview: Option<GrayMaskGpuBrushInput>,
+}
+
+/// Per-frame bridge from the authoritative engine Dab stream to a transient GPU preview.
+/// The queue is shared with the UI source builder so samples remain pending if the GPU renderer
+/// cannot consume them in the current frame.
+pub(crate) struct GrayMaskGpuBrushInput {
+    pub stroke_key: u64,
+    pub begin: Option<(photocraft_raster::Surface, photocraft_gpu::MaskBrushSettings)>,
+    pub pending_dabs: Arc<Mutex<VecDeque<photocraft_gpu::MaskRoundDab>>>,
+    pub release_requested: Arc<AtomicBool>,
+    pub failed: Arc<AtomicBool>,
+    pub patches: Arc<Mutex<Option<Result<Vec<photocraft_gpu::MaskBrushPatch>, String>>>>,
 }
 fn floats(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+fn valid_symmetry_plane(corners: &[[f32; 3]; 4]) -> bool {
+    corners.iter().flatten().all(|value| value.is_finite() && value.abs() <= 10_000.0)
 }
 fn extent(size: [u32; 2]) -> wgpu::Extent3d {
     wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 }
@@ -292,6 +351,330 @@ impl Renderer {
         }
         Ok(())
     }
+    /// Refresh the native Gray mask map only when its document/view key changes. The texture is
+    /// GPU-resident and shared by every UV material bound to that mask document.
+    pub(crate) fn set_gray_mask_source(&mut self, source: Option<&GrayMaskGpuSource>) {
+        let Some(source) = source else {
+            self.fail_gray_mask_brush_if_pending("Gray mask GPU source unavailable");
+            self.gray_mask_rejected = None;
+            self.gray_mask_materials.clear();
+            let map_changed = self.gray_mask_map.take().is_some();
+            let key_changed = self.gray_mask_source_key.take().is_some();
+            let changed = map_changed || key_changed;
+            self.mask_stack_renderer.clear_cache();
+            self.gray_mask_brush_identity = None;
+            self.gray_mask_brush_readback_done = None;
+            if changed {
+                self.last = None;
+                self.map_generation = self.map_generation.wrapping_add(1);
+            }
+            return;
+        };
+        let size = [source.document.size.width, source.document.size.height];
+        let scope_changed = self.gray_mask_materials != source.materials;
+        self.gray_mask_materials = source.materials.clone();
+        let Some(stack) = source.document.layer(source.layer).and_then(|layer| layer.mask.as_ref()).and_then(|mask| mask.paint.as_ref()) else {
+            self.set_gray_mask_source(None);
+            return;
+        };
+        let configuration_key = photocraft_gpu::MaskStackRenderer::configuration_key(stack);
+        let source_identity = gray_mask_source_identity(source.key, source.owner_key, source.shell_key, configuration_key);
+        let brush_identity = source.brush_preview.as_ref().map(|input| (input.stroke_key, source.owner_key, source.shell_key, configuration_key, size));
+        if self.gray_mask_brush_identity.is_some_and(|active| Some(active) == brush_identity) && self.gray_mask_map.as_ref().is_some_and(|map| map.size == size)
+        {
+            // `canvas::display_doc` advances its live key for every dab batch, while the
+            // canonical Paint surface remains unchanged on this GPU-only path. Re-rendering the
+            // canonical stack here would invalidate the brush owner's cache and make every move a
+            // full-frame recomposition before the dirty dab regions are applied.
+            self.gray_mask_source_key = Some(source_identity);
+            if scope_changed {
+                self.last = None;
+                self.map_generation = self.map_generation.wrapping_add(1);
+            }
+            self.sync_gray_mask_brush_preview(source);
+            return;
+        }
+        if self.gray_mask_source_key == Some(source_identity) && self.gray_mask_map.as_ref().is_some_and(|map| map.size == size) {
+            if scope_changed {
+                self.last = None;
+                self.map_generation = self.map_generation.wrapping_add(1);
+            }
+            self.sync_gray_mask_brush_preview(source);
+            return;
+        }
+        let rejection_key = (source.owner_key, size, source.shell_key, configuration_key);
+        if self.gray_mask_rejected == Some(rejection_key) {
+            if let Some(input) = source.brush_preview.as_ref() {
+                Self::fail_gray_mask_brush_input(input, "Gray mask GPU configuration is unsupported");
+            }
+            self.mask_stack_renderer.cancel_mask_brush_preview();
+            self.gray_mask_brush_identity = None;
+            return;
+        }
+        if let Err(error) = photocraft_gpu::MaskStackRenderer::validate(stack) {
+            log::warn!("GPU Gray mask preview fell back to its CPU cache: {error}");
+            if let Some(input) = source.brush_preview.as_ref() {
+                Self::fail_gray_mask_brush_input(input, error.clone());
+            }
+            self.mask_stack_renderer.clear_cache();
+            self.set_gray_mask_source(None);
+            self.gray_mask_rejected = Some(rejection_key);
+            return;
+        }
+        if let Some(map) = self.gray_mask_map.as_ref().filter(|map| map.size == size) {
+            if let Err(error) = self.mask_stack_renderer.render_cached(
+                &self.rs.device,
+                &self.rs.queue,
+                stack,
+                size,
+                &source.shell_ids,
+                source.owner_key,
+                source.shell_key,
+                &map.texture,
+            ) {
+                log::warn!("GPU Gray mask preview fell back to its CPU cache: {error}");
+                if let Some(input) = source.brush_preview.as_ref() {
+                    Self::fail_gray_mask_brush_input(input, error.clone());
+                }
+                self.mask_stack_renderer.clear_cache();
+                self.set_gray_mask_source(None);
+                self.gray_mask_rejected = Some(rejection_key);
+                return;
+            }
+            self.gray_mask_source_key = Some(source_identity);
+        } else {
+            let texture = self.rs.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("uv gpu gray mask stack"),
+                size: extent(size),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            if let Err(error) = self.mask_stack_renderer.render_cached(
+                &self.rs.device,
+                &self.rs.queue,
+                stack,
+                size,
+                &source.shell_ids,
+                source.owner_key,
+                source.shell_key,
+                &texture,
+            ) {
+                log::warn!("GPU Gray mask preview fell back to its CPU cache: {error}");
+                if let Some(input) = source.brush_preview.as_ref() {
+                    Self::fail_gray_mask_brush_input(input, error.clone());
+                }
+                self.mask_stack_renderer.clear_cache();
+                self.gray_mask_rejected = Some(rejection_key);
+                self.set_gray_mask_source(None);
+                self.gray_mask_rejected = Some(rejection_key);
+                return;
+            }
+            let view = texture.create_view(&Default::default());
+            let level = texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: 0, mip_level_count: Some(1), ..Default::default() });
+            self.gray_mask_texture_generation = self.gray_mask_texture_generation.wrapping_add(1);
+            let map_key = gray_mask_map_key(self.gray_mask_texture_generation, size);
+            self.gray_mask_map =
+                Some(Arc::new(Map { texture, view, size, key: map_key, data: None, source: MapSource::GpuMaskStack, cutout: false, levels: vec![level] }));
+            self.gray_mask_source_key = Some(source_identity);
+        }
+        self.gray_mask_rejected = None;
+        self.last = None;
+        self.map_generation = self.map_generation.wrapping_add(1);
+        self.sync_gray_mask_brush_preview(source);
+    }
+
+    /// Consume one UI-frame batch of authoritative dabs, then render the transient Paint
+    /// surface into the same stable Gray material map used by the regular stack preview.
+    fn sync_gray_mask_brush_preview(&mut self, source: &GrayMaskGpuSource) {
+        let Some(input) = source.brush_preview.as_ref() else {
+            self.fail_gray_mask_brush_if_pending("Gray mask brush preview disappeared");
+            self.mask_stack_renderer.cancel_mask_brush_preview();
+            self.gray_mask_brush_identity = None;
+            return;
+        };
+        if self.gray_mask_brush_readback_done == Some(input.stroke_key) {
+            return;
+        }
+        self.gray_mask_brush_signals = Some((Arc::clone(&input.failed), Arc::clone(&input.patches)));
+
+        let stack = source.document.layer(source.layer).and_then(|layer| layer.mask.as_ref()).and_then(|mask| mask.paint.as_ref());
+        let configuration_key = stack.map_or(0, photocraft_gpu::MaskStackRenderer::configuration_key);
+        let expected_identity =
+            (input.stroke_key, source.owner_key, source.shell_key, configuration_key, [source.document.size.width, source.document.size.height]);
+
+        // A completed readback is owned by the release mailbox. Do not re-render/re-read it while
+        // the UI waits for the engine to apply patches and finish the live stroke.
+        if self.gray_mask_brush_identity == Some(expected_identity)
+            && input.release_requested.load(Ordering::Acquire)
+            && input.patches.lock().is_ok_and(|mailbox| mailbox.is_some())
+        {
+            return;
+        }
+
+        let size = [source.document.size.width, source.document.size.height];
+        if let Some((base, settings)) = input.begin.as_ref() {
+            if let Err(error) =
+                self.mask_stack_renderer.begin_round_mask_brush_preview(&self.rs.device, &self.rs.queue, input.stroke_key, size, base, *settings)
+            {
+                log::warn!("Could not start GPU Gray mask brush preview; using CPU stroke path: {error}");
+                Self::fail_gray_mask_brush_input(input, error);
+                self.mask_stack_renderer.cancel_mask_brush_preview();
+                self.gray_mask_brush_identity = None;
+                return;
+            }
+            self.gray_mask_brush_identity = Some(expected_identity);
+            self.gray_mask_brush_readback_done = None;
+        } else if self.gray_mask_brush_identity != Some(expected_identity) {
+            log::warn!("GPU Gray mask brush preview lost its stroke state; using CPU stroke path");
+            Self::fail_gray_mask_brush_input(input, "GPU Gray mask brush preview state was lost");
+            self.mask_stack_renderer.cancel_mask_brush_preview();
+            self.gray_mask_brush_identity = None;
+            return;
+        }
+
+        let queued = match input.pending_dabs.lock() {
+            Ok(queue) => queue.iter().copied().collect::<Vec<_>>(),
+            Err(_) => {
+                log::warn!("GPU Gray mask brush Dab queue was poisoned; using CPU stroke path");
+                Self::fail_gray_mask_brush_input(input, "GPU Gray mask brush Dab queue was poisoned");
+                self.mask_stack_renderer.cancel_mask_brush_preview();
+                self.gray_mask_brush_identity = None;
+                return;
+            }
+        };
+        let dirty = match self.mask_stack_renderer.push_round_mask_brush_dabs(&self.rs.device, &self.rs.queue, &queued) {
+            Ok(dirty) => dirty,
+            Err(error) => {
+                log::warn!("GPU Gray mask brush rejected a Dab batch; using CPU stroke path: {error}");
+                Self::fail_gray_mask_brush_input(input, error);
+                self.mask_stack_renderer.cancel_mask_brush_preview();
+                self.gray_mask_brush_identity = None;
+                return;
+            }
+        };
+        if !queued.is_empty() {
+            match input.pending_dabs.lock() {
+                Ok(mut queue) => {
+                    for _ in 0..queued.len().min(queue.len()) {
+                        queue.pop_front();
+                    }
+                }
+                Err(_) => {
+                    log::warn!("GPU Gray mask Dab queue became unavailable after submission; falling back to CPU");
+                    Self::fail_gray_mask_brush_input(input, "GPU Gray mask Dab queue was poisoned after submission");
+                    self.mask_stack_renderer.cancel_mask_brush_preview();
+                    self.gray_mask_brush_identity = None;
+                    return;
+                }
+            }
+        }
+
+        if let Err(error) = self.render_gray_mask_brush_preview(
+            source,
+            source
+                .document
+                .layer(source.layer)
+                .and_then(|layer| layer.mask.as_ref())
+                .and_then(|mask| mask.paint.as_ref())
+                .map_or(usize::MAX, |stack| stack.active),
+            &dirty,
+        ) {
+            log::warn!("Could not render GPU Gray mask brush preview; using CPU stroke path: {error}");
+            Self::fail_gray_mask_brush_input(input, error);
+            self.mask_stack_renderer.cancel_mask_brush_preview();
+            self.gray_mask_brush_identity = None;
+            return;
+        }
+
+        if input.release_requested.load(Ordering::Acquire) {
+            match self.read_gray_mask_brush_patches() {
+                Ok(patches) => {
+                    if let Ok(mut mailbox) = input.patches.lock() {
+                        *mailbox = Some(Ok(patches));
+                        self.gray_mask_brush_readback_done = Some(input.stroke_key);
+                        self.gray_mask_brush_signals = None;
+                    } else {
+                        Self::fail_gray_mask_brush_input(input, "GPU Gray mask patch mailbox was poisoned");
+                        self.mask_stack_renderer.cancel_mask_brush_preview();
+                        self.gray_mask_brush_identity = None;
+                    }
+                }
+                Err(error) => {
+                    log::warn!("Could not read back GPU Gray mask brush result; replaying on CPU: {error}");
+                    Self::fail_gray_mask_brush_input(input, error);
+                    self.mask_stack_renderer.cancel_mask_brush_preview();
+                    self.gray_mask_brush_identity = None;
+                }
+            }
+        }
+    }
+
+    /// Recompose the current mask stack with the transient Paint map. `set_gray_mask_source` must
+    /// have prepared the stable output map for this document before this method is called.
+    pub(crate) fn render_gray_mask_brush_preview(
+        &mut self,
+        source: &GrayMaskGpuSource,
+        paint_layer_index: usize,
+        dirty_regions: &[photocraft_geom::Rect],
+    ) -> Result<(), String> {
+        let stack = source
+            .document
+            .layer(source.layer)
+            .and_then(|layer| layer.mask.as_ref())
+            .and_then(|mask| mask.paint.as_ref())
+            .ok_or("Gray mask Paint stack disappeared during GPU brush preview")?;
+        let size = [source.document.size.width, source.document.size.height];
+        let map = self.gray_mask_map.as_ref().filter(|map| map.size == size).ok_or("Gray mask GPU target is not ready")?;
+        self.mask_stack_renderer.render_cached_with_brush_preview(
+            &self.rs.device,
+            &self.rs.queue,
+            stack,
+            size,
+            &source.shell_ids,
+            source.shell_key,
+            paint_layer_index,
+            dirty_regions,
+            &map.texture,
+        )?;
+        self.last = None;
+        Ok(())
+    }
+
+    /// Read the final changed RGBA8 Paint patches once at stroke release for the engine's
+    /// canonical Surface/undoable commit path.
+    pub(crate) fn read_gray_mask_brush_patches(&self) -> Result<Vec<photocraft_gpu::MaskBrushPatch>, String> {
+        self.mask_stack_renderer.read_mask_brush_patches(&self.rs.device, &self.rs.queue)
+    }
+
+    fn fail_gray_mask_brush_if_pending(&mut self, reason: &str) {
+        if let Some((failed, patches)) = self.gray_mask_brush_signals.take() {
+            if let Ok(mut mailbox) = patches.lock() {
+                if mailbox.is_none() {
+                    failed.store(true, Ordering::Release);
+                    *mailbox = Some(Err(reason.to_owned()));
+                }
+            } else {
+                failed.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    fn fail_gray_mask_brush_input(input: &GrayMaskGpuBrushInput, reason: impl Into<String>) {
+        input.failed.store(true, Ordering::Release);
+        if let Ok(mut mailbox) = input.patches.lock()
+            && mailbox.is_none()
+        {
+            *mailbox = Some(Err(reason.into()));
+        }
+    }
+
     pub(crate) fn set_lighting(
         &mut self,
         settings: photocraft_uv::lighting::Settings,
@@ -459,6 +842,7 @@ impl Renderer {
                         let source = match map.source {
                             MapSource::Cpu => "cpu",
                             MapSource::GpuComposite => "gpu-composite",
+                            MapSource::GpuMaskStack => "gpu-mask-stack",
                             MapSource::CpuFallback => "cpu-fallback",
                         };
                         serde_json::json!({"channel": channel, "source": source, "size": map.size})
@@ -473,7 +857,7 @@ impl Renderer {
             "renderTargetSize": frame.map(|(size, _)| size),
             "samples": frame.map(|(_, samples)| samples),
             "pbrEnabled": self.lighting.pbr,
-            "pbrActive": self.last_pbr_active && self.last.as_ref().is_some_and(|(_, camera, _, _, _, _, _, _)| camera.channel == channel),
+            "pbrActive": self.last_pbr_active && self.last.as_ref().is_some_and(|(_, camera, _, _, _, _, _, _, _)| camera.channel == channel),
             "channel": channel.label(),
             "mapCompositorActive": self.compositor.is_some() && self.health.is_ok(),
             "mapCompositorError": self.compositor_error,
@@ -486,6 +870,13 @@ impl Renderer {
         self.mesh = None;
         self.materials.clear();
         self.surfaces.clear();
+        self.gray_mask_map = None;
+        self.gray_mask_source_key = None;
+        self.gray_mask_materials.clear();
+        self.gray_mask_rejected = None;
+        self.gray_mask_brush_identity = None;
+        self.gray_mask_brush_signals = None;
+        self.gray_mask_brush_readback_done = None;
         self.target = None;
         self.spare_target = None;
         self.last = None;
@@ -624,9 +1015,16 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let mips = crate::uv_mips::Mips::new(&rs);
+        let mask_stack_renderer = photocraft_gpu::MaskStackRenderer::new(device);
         let environment = GpuEnvironment::new(&rs, &mips, Arc::new(photocraft_uv::lighting::Environment::studio()), None)?;
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("uv"),
@@ -736,6 +1134,53 @@ impl Renderer {
                 })
             })
             .collect();
+        let symmetry_pipeline = |count, label, topology, fragment| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_symmetry_plane"),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: 12,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0=>Float32x3],
+                    })],
+                    compilation_options: Default::default(),
+                },
+                primitive: wgpu::PrimitiveState { topology, ..Default::default() },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: Default::default(),
+                    // The vertex shader applies a tiny clip-space depth offset; GPU depth
+                    // bias is only valid for triangle topologies, not the outline lines.
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState { count, ..Default::default() },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: FORMAT,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let symmetry_fill_pipelines = [1, aa_samples]
+            .into_iter()
+            .map(|count| symmetry_pipeline(count, "uv depth-tested symmetry plane fill", wgpu::PrimitiveTopology::TriangleList, "fs_symmetry_fill"))
+            .collect();
+        let symmetry_outline_pipelines = [1, aa_samples]
+            .into_iter()
+            .map(|count| symmetry_pipeline(count, "uv depth-tested symmetry plane outline", wgpu::PrimitiveTopology::LineList, "fs_symmetry_outline"))
+            .collect();
         let mut pipelines = Vec::new();
         for samples in [1, aa_samples] {
             for cull in [None, Some(wgpu::Face::Back), Some(wgpu::Face::Front)] {
@@ -754,6 +1199,16 @@ impl Renderer {
             label: Some("uv repeat bilinear"),
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: if rs.adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::ANISOTROPIC_FILTERING) { 4 } else { 1 },
+            ..Default::default()
+        });
+        let mask_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("uv mask edge-safe sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
@@ -838,11 +1293,23 @@ impl Renderer {
             surfaces: Vec::new(),
             background_pipelines,
             wireframe_pipelines,
+            symmetry_fill_pipelines,
+            symmetry_outline_pipelines,
             camera_layout,
             material_layout,
             sampler,
+            mask_sampler,
             mips,
             compositor,
+            mask_stack_renderer,
+            gray_mask_map: None,
+            gray_mask_source_key: None,
+            gray_mask_texture_generation: 0,
+            gray_mask_materials: BTreeSet::new(),
+            gray_mask_rejected: None,
+            gray_mask_brush_identity: None,
+            gray_mask_brush_signals: None,
+            gray_mask_brush_readback_done: None,
             compositor_error,
             last_map_stats: None,
             #[cfg(test)]
@@ -1218,6 +1685,7 @@ impl Renderer {
         if draw.scene.materials.len() > 4096 {
             return Err("Model exceeds GPU material budget (4096)".into());
         }
+        let gray_mask_map = self.gray_mask_map.clone();
         let keys: Vec<_> = draw
             .scene
             .materials
@@ -1234,13 +1702,19 @@ impl Renderer {
                             .and_then(|surface| surface.maps.first())
                     })
                     .flatten();
+                let gray_mask = (draw.masked.contains(&id) && self.gray_mask_materials.contains(&id)).then(|| gray_mask_map.as_deref()).flatten();
                 (
-                    gpu_color.map_or_else(
+                    gray_mask.map_or_else(
                         || {
-                            draw.colors
-                                .get(id)
-                                .and_then(Option::as_ref)
-                                .map_or((0, 0, 0, 0), |im| (c.0, c.1, c.2, c.3 ^ ((im.width as u64) << 32) ^ im.height as u64))
+                            gpu_color.map_or_else(
+                                || {
+                                    draw.colors
+                                        .get(id)
+                                        .and_then(Option::as_ref)
+                                        .map_or((0, 0, 0, 0), |im| (c.0, c.1, c.2, c.3 ^ ((im.width as u64) << 32) ^ im.height as u64))
+                                },
+                                |map| material_map_key(map.key, map.size),
+                            )
                         },
                         |map| material_map_key(map.key, map.size),
                     ),
@@ -1264,7 +1738,7 @@ impl Renderer {
                 (
                     match m.color {
                         MaterialColor::Owned(map) => Some(*map),
-                        MaterialColor::Surface { .. } => None,
+                        MaterialColor::Shared(_) | MaterialColor::Surface { .. } => None,
                     },
                     Some(m.normal),
                 )
@@ -1282,11 +1756,17 @@ impl Renderer {
                 .flatten();
             let color = if let Some(map) = surface_color {
                 MaterialColor::Surface { size: map.size, key: material_map_key(map.key, map.size), cutout: map.cutout }
+            } else if draw.masked.contains(&id)
+                && self.gray_mask_materials.contains(&id)
+                && let Some(map) = gray_mask_map.as_ref()
+            {
+                MaterialColor::Shared(map.clone())
             } else {
                 MaterialColor::Owned(Box::new(self.map_region(draw.colors.get(id).and_then(Option::as_ref), ck, false, pc, color_hint)?))
             };
             let color_view = match &color {
                 MaterialColor::Owned(map) => &map.view,
+                MaterialColor::Shared(map) => &map.view,
                 MaterialColor::Surface { .. } => &surface_color.ok_or("Missing GPU surface map")?.view,
             };
             let normal = self.map_region(draw.normals.get(id).and_then(Option::as_ref), nk, true, pn, normal_hint)?;
@@ -1318,6 +1798,7 @@ impl Renderer {
                     wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&surface.maps[2].view) },
                     wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&surface.maps[3].view) },
                     wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&surface.maps[4].view) },
+                    wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(&self.mask_sampler) },
                 ],
             });
             let value = Material {
@@ -1350,6 +1831,8 @@ impl Renderer {
             && draw.camera.channel == photocraft_uv::preview::Channel::Material
             && draw.scene.materials.iter().enumerate().any(|(id, _)| !draw.masked.contains(&id));
         let samples = if draw.antialias { self.aa_samples } else { 1 };
+        let symmetry_plane = draw.symmetry_plane.filter(valid_symmetry_plane);
+        let symmetry_key = symmetry_plane.map(|corners| std::array::from_fn(|index| corners[index / 3][index % 3].to_bits()));
         let key = (
             draw.generation,
             draw.camera,
@@ -1359,6 +1842,7 @@ impl Renderer {
             self.wireframe_enabled,
             self.wireframe_color,
             self.wireframe_opacity.to_bits(),
+            symmetry_key,
         );
         if self.last == Some(key) && self.mesh.as_ref().is_some_and(|mesh| &mesh.selected == draw.selected) {
             self.last_pbr_active = pbr_active;
@@ -1453,6 +1937,23 @@ impl Renderer {
         values.extend_from_slice(&[f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0, (f32::from(a) / 255.0) * self.wireframe_opacity]);
         values.extend_from_slice(&[f32::from(u8::from(draw.camera.cull_backfaces)), 0.0, 0.0, 0.0]);
         self.rs.queue.write_buffer(&self.camera, 0, &floats(&values));
+        let symmetry_buffers = symmetry_plane.map(|corners| {
+            let fill = [corners[0], corners[1], corners[2], corners[2], corners[1], corners[3]];
+            let outline = [corners[0], corners[1], corners[1], corners[3], corners[3], corners[2], corners[2], corners[0]];
+            let fill_values: Vec<f32> = fill.into_iter().flatten().collect();
+            let outline_values: Vec<f32> = outline.into_iter().flatten().collect();
+            let fill_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("uv symmetry plane fill vertices"),
+                contents: &floats(&fill_values),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let outline_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("uv symmetry plane outline vertices"),
+                contents: &floats(&outline_values),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            (fill_buffer, outline_buffer)
+        });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("uv model") });
         #[cfg(test)]
         if let Some(timer) = &mut self.timer {
@@ -1508,6 +2009,16 @@ impl Renderer {
                     pass.set_bind_group(1, &m.group, &[]);
                     pass.draw(batch.vertices.clone(), 0..1);
                 }
+            }
+            if let (Some((fill_buffer, outline_buffer)), Some(fill_pipeline), Some(outline_pipeline)) =
+                (&symmetry_buffers, self.symmetry_fill_pipelines.get(usize::from(samples > 1)), self.symmetry_outline_pipelines.get(usize::from(samples > 1)))
+            {
+                pass.set_pipeline(fill_pipeline);
+                pass.set_vertex_buffer(0, fill_buffer.slice(..));
+                pass.draw(0..6, 0..1);
+                pass.set_pipeline(outline_pipeline);
+                pass.set_vertex_buffer(0, outline_buffer.slice(..));
+                pass.draw(0..8, 0..1);
             }
             if self.wireframe_enabled
                 && let Some(pipeline) = self.wireframe_pipelines.get(usize::from(samples > 1))
@@ -1585,6 +2096,173 @@ mod tests {
         assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
         assert!(renderer.compositor.is_some(), "map compositor errors must not masquerade as a healthy renderer");
         renderer
+    }
+    #[test]
+    fn gray_mask_live_key_changes_keep_output_texture_identity_stable() {
+        let before = gray_mask_source_identity((56, 1, 0, 0), 12, 34, 78);
+        let during = gray_mask_source_identity((56, 2, 0, 0), 12, 34, 78);
+        assert_ne!(before, during);
+        assert_eq!(gray_mask_map_key(9, [64, 64]), gray_mask_map_key(9, [64, 64]));
+        assert_ne!(gray_mask_map_key(9, [64, 64]), gray_mask_map_key(10, [64, 64]));
+    }
+
+    #[test]
+    fn gray_mask_brush_override_matches_full_stack_render_after_live_key_changes() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut renderer = renderer();
+        let size = [32, 32];
+        let mut document = photocraft_doc::Document::with_background(
+            "Gray mask brush preview",
+            photocraft_geom::Size::new(size[0], size[1]),
+            photocraft_color::ColorMode::Rgb,
+            photocraft_color::SampleType::U8,
+            photocraft_color::Color::BLACK,
+        );
+        let base = photocraft_raster::Surface::with_default(photocraft_color::PixelFormat::GRAY8, &[0.0]);
+        let paint_surface = photocraft_raster::Surface::with_default(photocraft_color::PixelFormat::RGBA8, &[0.0; 4]);
+        let mut mask = photocraft_doc::LayerMask::hide_all();
+        mask.paint = Some(photocraft_doc::mask_paint::Stack {
+            base: base.clone(),
+            layers: vec![photocraft_doc::mask_paint::Paint {
+                name: "Paint".into(),
+                visible: true,
+                opacity: 1.0,
+                blend: photocraft_color::BlendMode::Normal,
+                surface: paint_surface,
+                fill_map: None,
+                fill_map_size: [0, 0],
+                fill_bounds: None,
+                kind: photocraft_doc::mask_paint::EffectKind::Paint,
+            }],
+            active: 0,
+        });
+        photocraft_compose::mask_paint::refresh_in_canvas(&mut mask, document.bounds());
+        let mut masked_layer = photocraft_doc::Layer::raster("Masked", photocraft_color::PixelFormat::RGBA8);
+        let layer_id = masked_layer.id;
+        masked_layer.mask = Some(mask);
+        document.layers.push(masked_layer);
+        let document = Arc::new(document);
+
+        let pending_dabs = Arc::new(Mutex::new(VecDeque::from([photocraft_gpu::MaskRoundDab { center: [16.0, 16.0], radius: 5.0, alpha: 1.0, opacity: 1.0 }])));
+        let failed = Arc::new(AtomicBool::new(false));
+        let patches = Arc::new(Mutex::new(None));
+        let release_requested = Arc::new(AtomicBool::new(false));
+        let source = |key, begin, document: Arc<photocraft_doc::Document>| GrayMaskGpuSource {
+            document,
+            layer: layer_id,
+            shell_ids: Arc::new(vec![1; (size[0] * size[1]) as usize]),
+            owner_key: 100,
+            shell_key: 200,
+            materials: BTreeSet::new(),
+            key: (1, key, 0, 0),
+            brush_preview: Some(GrayMaskGpuBrushInput {
+                stroke_key: 300,
+                begin,
+                pending_dabs: Arc::clone(&pending_dabs),
+                release_requested: Arc::clone(&release_requested),
+                failed: Arc::clone(&failed),
+                patches: Arc::clone(&patches),
+            }),
+        };
+        let settings = photocraft_gpu::MaskBrushSettings { hardness: 0.8, stroke_opacity: 1.0, color: [1.0; 4] };
+        renderer.set_gray_mask_source(Some(&source(
+            1,
+            Some((photocraft_raster::Surface::with_default(photocraft_color::PixelFormat::RGBA8, &[0.0; 4]), settings)),
+            Arc::clone(&document),
+        )));
+        assert!(!failed.load(Ordering::Acquire));
+        let stable_map = Arc::clone(renderer.gray_mask_map.as_ref().unwrap());
+
+        pending_dabs.lock().unwrap().push_back(photocraft_gpu::MaskRoundDab { center: [19.0, 16.0], radius: 4.0, alpha: 0.7, opacity: 0.8 });
+        renderer.set_gray_mask_source(Some(&source(2, None, Arc::clone(&document))));
+        assert!(!failed.load(Ordering::Acquire));
+        assert!(Arc::ptr_eq(&stable_map, renderer.gray_mask_map.as_ref().unwrap()), "live dabs should update the stable material texture");
+        assert!(pending_dabs.lock().unwrap().is_empty(), "only successfully submitted Dabs are drained");
+        let preview_pixels = read_rgba16f(&renderer, &stable_map.texture, 0);
+
+        let final_patches = renderer.read_gray_mask_brush_patches().unwrap();
+        assert!(!final_patches.is_empty());
+        let mut expected_stack = document.layer(layer_id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().clone();
+        for patch in final_patches {
+            let pixels: Vec<f32> = patch.pixels_rgba8.iter().map(|byte| f32::from(*byte) / 255.0).collect();
+            expected_stack.layers[0].surface.write_region(patch.rect, &pixels);
+        }
+        let expected_texture = texture(
+            &renderer.rs.device,
+            size,
+            wgpu::TextureFormat::Rgba16Float,
+            1,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            "gray mask fresh stack parity",
+        );
+        let mut fresh = photocraft_gpu::MaskStackRenderer::new(&renderer.rs.device);
+        fresh.render(&renderer.rs.device, &renderer.rs.queue, &expected_stack, size, &vec![1; (size[0] * size[1]) as usize], &expected_texture).unwrap();
+        let full_pixels = read_rgba16f(&renderer, &expected_texture, 0);
+        assert_eq!(preview_pixels.len(), full_pixels.len());
+        for (index, (preview, full)) in preview_pixels.iter().zip(&full_pixels).enumerate() {
+            for channel in 0..4 {
+                assert!(
+                    (preview[channel] - full[channel]).abs() < 0.002,
+                    "pixel {index}, channel {channel}: preview={} full={}",
+                    preview[channel],
+                    full[channel]
+                );
+            }
+        }
+    }
+    #[test]
+    fn symmetry_plane_rejects_nonfinite_and_extreme_prepared_coordinates() {
+        let valid = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [-1.0, 1.0, 0.0], [1.0, 1.0, 0.0]];
+        assert!(valid_symmetry_plane(&valid));
+
+        let mut nonfinite = valid;
+        nonfinite[2][1] = f32::INFINITY;
+        assert!(!valid_symmetry_plane(&nonfinite));
+
+        let mut excessive = valid;
+        excessive[3][2] = 10_001.0;
+        assert!(!valid_symmetry_plane(&excessive));
+    }
+    #[test]
+    fn symmetry_plane_gpu_pass_renders_and_invalidates_frame_cache() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut renderer = renderer();
+        let (scene, geometry) = scene();
+        let axis_bounds = geometry.bounds[0];
+        let settings = crate::uv_symmetry::Settings {
+            enabled: true,
+            axis: crate::uv_symmetry::Axis::X,
+            offset: (axis_bounds[0] + axis_bounds[1]) * 0.5,
+            ..Default::default()
+        };
+        let plane = crate::uv_symmetry::plane_corners(&geometry, settings).expect("midpoint plane intersects model bounds");
+        let empty = BTreeSet::new();
+        let colors = vec![None; scene.materials.len()];
+        let draw = |symmetry_plane| Draw {
+            scene: &scene,
+            geometry: geometry.clone(),
+            camera: Camera::default(),
+            size: [32, 32],
+            antialias: false,
+            selected: &empty,
+            hidden: &empty,
+            generation: 1,
+            colors: &colors,
+            normals: &[],
+            keys: &[],
+            normal_keys: &[],
+            masked: &empty,
+            symmetry_plane,
+        };
+
+        renderer.draw(draw(Some(plane))).unwrap();
+        renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+        assert!(renderer.last.is_some_and(|key| key.8.is_some()));
+
+        renderer.draw(draw(None)).unwrap();
+        renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+        assert!(renderer.last.is_some_and(|key| key.8.is_none()));
+        assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
     }
     #[cfg(target_os = "windows")]
     fn dx12_fxc_render_state() -> Result<RenderState, String> {
@@ -1674,6 +2352,7 @@ mod tests {
                 keys: &[],
                 normal_keys: &[],
                 masked: &empty,
+                symmetry_plane: None,
             })
             .unwrap();
         renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
@@ -1738,6 +2417,7 @@ mod tests {
                 keys: &[],
                 normal_keys: &[],
                 masked: &empty,
+                symmetry_plane: None,
             })
             .unwrap();
         renderer.rs.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
@@ -2036,6 +2716,7 @@ mod tests {
                 keys: &[],
                 normal_keys: &[],
                 masked: &empty,
+                symmetry_plane: None,
             })
             .unwrap();
         assert!(matches!(renderer.materials[0].as_ref().unwrap().color, MaterialColor::Surface { .. }));
@@ -2055,6 +2736,7 @@ mod tests {
                 keys: &[],
                 normal_keys: &[],
                 masked: &empty,
+                symmetry_plane: None,
             })
             .unwrap();
         assert_eq!(renderer.map_generation, generation, "camera motion must reuse the GPU-backed material binding");
@@ -2075,6 +2757,7 @@ mod tests {
                 keys: &[],
                 normal_keys: &[],
                 masked: &empty,
+                symmetry_plane: None,
             })
             .unwrap();
         assert!(matches!(renderer.materials[0].as_ref().unwrap().color, MaterialColor::Owned(_)), "opacity must not be dropped from the PBR map");
@@ -2095,6 +2778,7 @@ mod tests {
                 keys: &[],
                 normal_keys: &[],
                 masked: &masked,
+                symmetry_plane: None,
             })
             .unwrap();
         assert!(matches!(renderer.materials[0].as_ref().unwrap().color, MaterialColor::Owned(_)), "mask display must use its own display map");
@@ -2124,6 +2808,7 @@ mod tests {
                 keys: &[(1, 1, 0, 0)],
                 normal_keys: &[],
                 masked: &masked,
+                symmetry_plane: None,
             })
             .unwrap();
             let px = read(&r);
@@ -2147,10 +2832,241 @@ mod tests {
             keys: &[(1, 1, 0, 0)],
             normal_keys: &[],
             masked: &empty,
+            symmetry_plane: None,
         })
         .unwrap();
         assert!(!r.materials[0].as_ref().unwrap().masked);
         assert!(r.health.is_ok());
+    }
+
+    #[test]
+    fn mask_display_clamps_non_tiled_uv_edge_instead_of_sampling_opposite_border() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let (scene, mut geometry) = scene();
+        for triangle in &mut Arc::get_mut(&mut geometry).unwrap().triangles {
+            // A constant UV on the left edge isolates address-mode behavior from mip LOD.
+            triangle.uv = [[0.0, 0.5]; 3];
+        }
+        let mut renderer = renderer();
+        let mut edge_map = Image { width: 4, height: 4, rgba: vec![[1.0, 1.0, 1.0, 1.0]; 16] };
+        for y in 0..4 {
+            edge_map.rgba[y * 4] = [0.0, 0.0, 0.0, 1.0];
+        }
+        let colors = vec![Some(edge_map); scene.materials.len()];
+        let keys = vec![(1, 1, 0, 0); scene.materials.len()];
+        let masked: BTreeSet<_> = (0..scene.materials.len()).collect();
+        let empty = BTreeSet::new();
+        let repeat_sampler = renderer.rs.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("uv test repeat mask sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let edge_sampler = std::mem::replace(&mut renderer.mask_sampler, repeat_sampler);
+        renderer
+            .draw(Draw {
+                scene: &scene,
+                geometry: geometry.clone(),
+                camera: Camera::default(),
+                size: [256, 256],
+                antialias: false,
+                selected: &empty,
+                hidden: &empty,
+                generation: 1,
+                colors: &colors,
+                normals: &[],
+                keys: &keys,
+                normal_keys: &[],
+                masked: &masked,
+                symmetry_plane: None,
+            })
+            .unwrap();
+        let wrapped = read(&renderer);
+        let gray = wrapped.iter().filter(|pixel| (126..=129).contains(&pixel[0]) && (126..=129).contains(&pixel[1]) && (126..=129).contains(&pixel[2])).count();
+        assert!(gray > 10, "Repeat+Linear blends the black opposite border into an edge sample");
+
+        renderer.mask_sampler = edge_sampler;
+        renderer.materials.clear();
+        renderer
+            .draw(Draw {
+                scene: &scene,
+                geometry,
+                camera: Camera::default(),
+                size: [256, 256],
+                antialias: false,
+                selected: &empty,
+                hidden: &empty,
+                generation: 2,
+                colors: &colors,
+                normals: &[],
+                keys: &keys,
+                normal_keys: &[],
+                masked: &masked,
+                symmetry_plane: None,
+            })
+            .unwrap();
+        let clamped = read(&renderer);
+        let black = clamped.iter().filter(|pixel| pixel[0] < 8 && pixel[1] < 8 && pixel[2] < 8).count();
+        assert!(black > 10, "ClampToEdge keeps the mask's dark edge texel dark without changing its value");
+        assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
+    }
+
+    #[test]
+    fn mask_display_has_no_background_bright_seams_at_internal_triangle_edges() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let (scene, geometry) = scene();
+        let mut renderer = renderer();
+        let size = [256, 256];
+        let camera = Camera::default();
+        let colors = vec![Some(Image { width: 1, height: 1, rgba: vec![[0.0, 0.0, 0.0, 1.0]] }); scene.materials.len()];
+        let masked: BTreeSet<_> = (0..scene.materials.len()).collect();
+        let empty = BTreeSet::new();
+        renderer
+            .draw(Draw {
+                scene: &scene,
+                geometry: geometry.clone(),
+                camera,
+                size,
+                antialias: false,
+                selected: &empty,
+                hidden: &empty,
+                generation: 1,
+                colors: &colors,
+                normals: &[],
+                keys: &vec![(1, 1, 0, 0); scene.materials.len()],
+                normal_keys: &[],
+                masked: &masked,
+                symmetry_plane: None,
+            })
+            .unwrap();
+        let actual = read(&renderer);
+        let expected = preview::render_materials(
+            &scene,
+            camera,
+            &Materials { colors: &colors, hidden: empty.clone(), normals: &[] },
+            &vec![false; geometry.triangles.len()],
+            size[0] as usize,
+            size[1] as usize,
+        )
+        .unwrap();
+
+        let mut checked = 0usize;
+        let mut bright_seams = Vec::new();
+        for y in 1..size[1] as usize - 1 {
+            for x in 1..size[0] as usize - 1 {
+                let index = y * size[0] as usize + x;
+                let Some(triangle) = expected.triangles[index] else { continue };
+                let neighbors = [index - 1, index + 1, index - size[0] as usize, index + size[0] as usize];
+                let covered_neighbors = neighbors.iter().filter(|neighbor| expected.triangles[**neighbor].is_some()).count();
+                let crosses_triangle_edge = neighbors.iter().any(|neighbor| expected.triangles[*neighbor] != Some(triangle));
+                if covered_neighbors >= 2 && crosses_triangle_edge {
+                    checked += 1;
+                    if actual[index][0] > 2 || actual[index][1] > 2 || actual[index][2] > 2 {
+                        bright_seams.push((x, y, actual[index]));
+                    }
+                }
+            }
+        }
+        assert!(checked > 20, "fixture must expose internal triangle boundaries");
+        assert!(bright_seams.is_empty(), "uniform black mask must not reveal the cleared viewport along internal triangle seams: {bright_seams:?}");
+        assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
+    }
+
+    #[test]
+    fn wireframe_depth_overlay_renders_consistently_over_coplanar_mask_faces() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let (scene, geometry) = scene();
+        let mut renderer = renderer();
+        let size = [256, 256];
+        let camera = Camera { cull_backfaces: false, ..Default::default() };
+        let colors = vec![Some(Image { width: 1, height: 1, rgba: vec![[0.0, 0.0, 0.0, 1.0]] }); scene.materials.len()];
+        let keys = vec![(1, 1, 0, 0); scene.materials.len()];
+        let masked: BTreeSet<_> = (0..scene.materials.len()).collect();
+        let empty = BTreeSet::new();
+        let draw = |generation| Draw {
+            scene: &scene,
+            geometry: geometry.clone(),
+            camera,
+            size,
+            antialias: false,
+            selected: &empty,
+            hidden: &empty,
+            generation,
+            colors: &colors,
+            normals: &[],
+            keys: &keys,
+            normal_keys: &[],
+            masked: &masked,
+            symmetry_plane: None,
+        };
+
+        renderer.set_wireframe(false, [255; 4], 1.0);
+        renderer.draw(draw(1)).unwrap();
+        let base = read(&renderer);
+        let expected = preview::render_materials(
+            &scene,
+            camera,
+            &Materials { colors: &colors, hidden: empty.clone(), normals: &[] },
+            &vec![false; geometry.triangles.len()],
+            size[0] as usize,
+            size[1] as usize,
+        )
+        .unwrap();
+
+        renderer.set_wireframe(true, [255; 4], 1.0);
+        renderer.draw(draw(2)).unwrap();
+        let with_wireframe = read(&renderer);
+        let mut best_edge = Vec::new();
+        for (triangle_id, triangle) in geometry.triangles.iter().enumerate() {
+            for [a, b] in [[0, 1], [1, 2], [2, 0]] {
+                let Some(from) = geometry.project_normalized(camera, triangle.positions[a].map(f64::from), size) else { continue };
+                let Some(to) = geometry.project_normalized(camera, triangle.positions[b].map(f64::from), size) else { continue };
+                if from.iter().chain(to.iter()).any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
+                    continue;
+                }
+                let length = ((to[0] - from[0]).powi(2) * f64::from(size[0]).powi(2) + (to[1] - from[1]).powi(2) * f64::from(size[1]).powi(2)).sqrt();
+                let steps = (length.ceil() as usize).max(2);
+                let mut candidates = Vec::new();
+                for step in 1..steps {
+                    let t = step as f64 / steps as f64;
+                    let x = ((from[0] * (1.0 - t) + to[0] * t) * f64::from(size[0])).round() as usize;
+                    let y = ((from[1] * (1.0 - t) + to[1] * t) * f64::from(size[1])).round() as usize;
+                    if x < 1 || y < 1 || x + 1 >= size[0] as usize || y + 1 >= size[1] as usize {
+                        continue;
+                    }
+                    let index = y * size[0] as usize + x;
+                    if expected.triangles[index] == Some(triangle_id) {
+                        candidates.push((x, y));
+                    }
+                }
+                if candidates.len() > best_edge.len() {
+                    best_edge = candidates;
+                }
+            }
+        }
+        assert!(best_edge.len() >= 12, "fixture must expose a visible projected triangle edge");
+        let covered = best_edge
+            .iter()
+            .filter(|(x, y)| {
+                let edge_pixel = (*y - 1..=*y + 1).any(|py| {
+                    (*x - 1..=*x + 1).any(|px| {
+                        let pixel = with_wireframe[py * size[0] as usize + px];
+                        pixel[0] > 180 && pixel[1] > 180 && pixel[2] > 180
+                    })
+                });
+                let base_is_dark = base[y * size[0] as usize + x][0] < 8;
+                edge_pixel && base_is_dark
+            })
+            .count();
+        assert!(
+            covered * 100 >= best_edge.len() * 75,
+            "depth-tested wireframe should remain continuous on a coplanar visible edge: {covered}/{} samples",
+            best_edge.len()
+        );
+        assert!(renderer.health.is_ok(), "{:?}", renderer.health.fault());
     }
 
     #[test]
@@ -2385,6 +3301,7 @@ mod tests {
         let render = |r: &mut Renderer, camera: Camera, hidden: &BTreeSet<usize>| {
             r.draw(Draw {
                 masked: &BTreeSet::new(),
+                symmetry_plane: None,
                 scene: &scene,
                 geometry: geometry.clone(),
                 camera,
@@ -2553,6 +3470,7 @@ mod tests {
             let nkeys = vec![(2, 1, 0); normals.len()];
             let draw = Draw {
                 masked: &BTreeSet::new(),
+                symmetry_plane: None,
                 scene: &scene,
                 geometry: geometry.clone(),
                 camera,
@@ -2599,6 +3517,7 @@ mod tests {
         renderer
             .draw(Draw {
                 masked: &BTreeSet::new(),
+                symmetry_plane: None,
                 scene: &scene,
                 geometry,
                 camera: Camera::default(),
@@ -2624,6 +3543,7 @@ mod tests {
         renderer
             .draw(Draw {
                 masked: &BTreeSet::new(),
+                symmetry_plane: None,
                 scene: &scene,
                 geometry: geometry.clone(),
                 camera: Camera::default(),
@@ -2643,6 +3563,7 @@ mod tests {
         renderer
             .draw(Draw {
                 masked: &BTreeSet::new(),
+                symmetry_plane: None,
                 scene: &scene,
                 geometry,
                 camera: Camera::default(),
@@ -2664,6 +3585,7 @@ mod tests {
             renderer
                 .draw(Draw {
                     masked: &BTreeSet::new(),
+                    symmetry_plane: None,
                     scene: &scene,
                     geometry: geometry.clone(),
                     camera: Camera::default(),
@@ -2688,6 +3610,7 @@ mod tests {
         renderer
             .draw(Draw {
                 masked: &BTreeSet::new(),
+                symmetry_plane: None,
                 scene: &scene,
                 geometry: geometry.clone(),
                 camera: Camera::default(),
@@ -2728,6 +3651,7 @@ mod tests {
                     renderer
                         .draw(Draw {
                             masked: &BTreeSet::new(),
+                            symmetry_plane: None,
                             scene: &scene,
                             geometry: geometry.clone(),
                             camera,
@@ -2903,6 +3827,7 @@ mod tests {
                 renderer
                     .draw(Draw {
                         masked: &BTreeSet::new(),
+                        symmetry_plane: None,
                         scene: &scene,
                         geometry: geometry.clone(),
                         camera,

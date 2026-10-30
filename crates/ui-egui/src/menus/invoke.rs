@@ -796,7 +796,9 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
         _ => (false, true, true, false, true),
     };
     p.navigator = nav;
-    p.color = color;
+    // Keep the base 3D workspace focused on model and UV panels. The Color panel remains
+    // available through Window › Color and in the other built-in workspaces.
+    p.color = color && app.ui.workspace != "3D";
     p.layers = layers;
     p.history = history;
     p.properties = props;

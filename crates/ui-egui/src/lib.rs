@@ -67,6 +67,8 @@ mod uv_paint;
 #[cfg(feature = "uv-workbench")]
 mod uv_project;
 #[cfg(feature = "uv-workbench")]
+mod uv_symmetry;
+#[cfg(feature = "uv-workbench")]
 pub mod uv_ui;
 #[cfg(feature = "uv-workbench")]
 mod uv_workspace;
@@ -419,6 +421,10 @@ pub struct PhotocraftApp {
     /// True only while the native UV surface path feeds 3D pointer samples to a live stroke.
     #[cfg(feature = "uv-workbench")]
     pub(crate) native_uv_surface_input: bool,
+    /// Keep 3D UV symmetry strokes on the asynchronous CPU preview path until native GPU
+    /// accumulation preserves the CPU renderer's mirrored-pass coverage semantics.
+    #[cfg(feature = "uv-workbench")]
+    pub(crate) native_uv_mask_gpu_disabled: bool,
     /// A live painting stroke started on the press (`canvas_view`): the drag egui recognises later,
     /// or the click, continues or ends it rather than starting another.
     press_stroke: bool,

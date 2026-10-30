@@ -208,9 +208,17 @@ pub(crate) fn show_active_effect_properties(app: &mut PhotocraftApp, ctx: &egui:
     app.ui.vector_mask_target = false;
     app.ui.filter_mask_target = None;
     app.sync_mask_targets();
-    app.ui.panels.properties = true;
     app.ui.dock_tabs.properties = 0;
-    app.ui.dock.collapsed.retain(|group| *group != crate::dock::Group::Properties);
+    if app.ui.docking.is_some() {
+        if let Some(Err(error)) = crate::panel_docking::command(app, "window.panel.activate", &json!({"panel":"properties"})) {
+            app.ui.status = error;
+            app.ui.status_error = true;
+        }
+    } else {
+        // The legacy dock needs its tab enabled as well as the panel group shown. `reveal`
+        // handles both and expands a collapsed group; custom docks use the activate command above.
+        crate::dock::reveal(app, crate::dock::Group::Properties);
+    }
     true
 }
 
@@ -350,7 +358,7 @@ pub(crate) fn rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer, ac
                             ui.ctx().request_repaint_after(std::time::Duration::from_millis(310));
                         }
                         name.context_menu(|ui| {
-                            add_menu(ui, layer.id.0, actions);
+                            add_menu(app, ui, layer.id.0, actions);
                             ui.separator();
                             for (label, to, enabled) in [
                                 (tl!("Move Up"), index.saturating_add(1), index + 1 < stack.layers.len()),
@@ -949,7 +957,71 @@ fn edit_parameter_speed(
     }
 }
 
-pub(crate) fn add_menu(ui: &mut egui::Ui, layer: u64, actions: &mut Vec<(String, Value)>) {
+fn polygon_selection_action(app: &PhotocraftApp, layer: u64) -> Option<(String, Value)> {
+    let state = &app.ui.uv_workbench;
+    if app.ui.workspace != "3D" || !state.select_shells || state.selection_target != crate::uv_ui::SelectionTarget::Polygons {
+        return None;
+    }
+    let owner = state.polygon_document?;
+    let active = app.session.active()?;
+    if active.doc.id != owner || active.doc.layer(photocraft_doc::LayerId(layer)).is_none() {
+        return None;
+    }
+    let scene = app.session.uv.scene.as_ref()?;
+    let polygons: Vec<_> = state
+        .selected_polygons
+        .iter()
+        .filter_map(|&id| {
+            let triangle = scene.triangles.get(id)?;
+            Some(triangle.corners.map(|corner| [corner.uv[0] * f64::from(active.doc.size.width), (1.0 - corner.uv[1]) * f64::from(active.doc.size.height)]))
+        })
+        .collect();
+    (!polygons.is_empty()).then(|| ("select.uvPolygons".into(), json!({"document":owner.0,"polygons":polygons})))
+}
+
+fn fill_selection_preparation(app: &PhotocraftApp, layer: u64) -> Option<(String, Value)> {
+    polygon_selection_action(app, layer).or_else(|| shell_selection_needs_apply(app, layer).then(|| ("uv.mask.apply".into(), json!({}))))
+}
+
+fn has_fill_selection(app: &PhotocraftApp, layer: u64) -> bool {
+    if has_active_uv_selection(app) {
+        fill_selection_preparation(app, layer).is_some()
+    } else {
+        app.session.active().is_some_and(|active| active.doc.selection.is_some())
+    }
+}
+
+fn has_active_uv_selection(app: &PhotocraftApp) -> bool {
+    let state = &app.ui.uv_workbench;
+    app.ui.workspace == "3D"
+        && state.select_shells
+        && match state.selection_target {
+            crate::uv_ui::SelectionTarget::Polygons => !state.selected_polygons.is_empty(),
+            crate::uv_ui::SelectionTarget::UvShells => !app.session.uv.selected.is_empty(),
+        }
+}
+
+fn fill_selection_add_params(layer: u64) -> Value {
+    json!({"layer":layer,"kind":"fill","from_selection":true,"repeat_u":false,"repeat_v":false,"name":"Selection Fill"})
+}
+
+fn shell_selection_needs_apply(app: &PhotocraftApp, layer: u64) -> bool {
+    let state = &app.ui.uv_workbench;
+    if app.ui.workspace != "3D"
+        || !state.select_shells
+        || state.selection_target != crate::uv_ui::SelectionTarget::UvShells
+        || app.session.uv.selected.is_empty()
+    {
+        return false;
+    }
+    let Some(active) = app.session.active() else { return false };
+    if active.doc.layer(photocraft_doc::LayerId(layer)).is_none() {
+        return false;
+    }
+    app.session.uv.map_bindings(app.session.uv.current_channel()).get(app.session.uv.material).copied().flatten() == Some(active.doc.id)
+}
+
+pub(crate) fn add_menu(app: &PhotocraftApp, ui: &mut egui::Ui, layer: u64, actions: &mut Vec<(String, Value)>) {
     for (label, kind, icon) in [
         (tl!("Add Paint layer"), "paint", "brush"),
         (tl!("Add Fill layer"), "fill", "paint-bucket"),
@@ -962,18 +1034,25 @@ pub(crate) fn add_menu(ui: &mut egui::Ui, layer: u64, actions: &mut Vec<(String,
             ui.close();
         }
     }
-    if menu_item(ui, "quick-selection", tl!("Fill from selection")) {
+    if menu_item_enabled(ui, "quick-selection", tl!("Fill from selection"), has_fill_selection(app, layer)) {
         actions.push(("layer.select".into(), json!({"layer":layer})));
-        actions.push(("uv.maskPaint.add".into(), json!({"layer":layer,"kind":"fill","from_selection":true,"name":"Selection Fill"})));
+        if let Some(action) = fill_selection_preparation(app, layer) {
+            actions.push(action);
+        }
+        actions.push(("uv.maskPaint.add".into(), fill_selection_add_params(layer)));
         ui.close();
     }
 }
 
 fn menu_item(ui: &mut egui::Ui, icon: &str, label: &str) -> bool {
+    menu_item_enabled(ui, icon, label, true)
+}
+
+fn menu_item_enabled(ui: &mut egui::Ui, icon: &str, label: &str, enabled: bool) -> bool {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 20.0), egui::Sense::hover());
-        crate::icons::paint(ui, rect, icon, 15.0, Tokens::get(ui.ctx()).icon);
-        ui.button(label).clicked()
+        crate::icons::paint(ui, rect, icon, 15.0, if enabled { Tokens::get(ui.ctx()).icon } else { Tokens::get(ui.ctx()).text_faint });
+        ui.add_enabled(enabled, egui::Button::new(label)).clicked()
     })
     .inner
 }
@@ -1187,7 +1266,7 @@ mod tests {
         let mut h = Harness::builder().with_size(egui::vec2(520.0, 400.0)).with_step_dt(1.0 / 60.0).build_ui_state(
             |ui, app: &mut PhotocraftApp| {
                 let mut actions = Vec::new();
-                add_menu(ui, layer_id.0, &mut actions);
+                add_menu(app, ui, layer_id.0, &mut actions);
                 for (command, params) in actions {
                     if command == "layer.select" {
                         let _ = app.run(&command, params);
@@ -1252,6 +1331,11 @@ mod tests {
             assert!(app.ui.mask_target, "the new effect remains the active brush target");
             assert!(app.ui.panels.properties, "Properties opens for the new effect");
             assert_eq!(app.ui.dock_tabs.properties, 0);
+            assert!(
+                crate::dock::visible_tabs(&app, crate::dock::Group::Properties, app.ui.theme.is_pro()).contains(&(0, "Properties")),
+                "the native dock exposes the Properties tab"
+            );
+            assert!(!app.ui.dock.is_collapsed(crate::dock::Group::Properties), "the native Properties group is expanded");
             assert_eq!(app.session.active().unwrap().doc.layer(layer_id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().active, 0);
             if gray_view {
                 assert_eq!(after, Some(MaskViewMode::Gray));
@@ -1259,6 +1343,27 @@ mod tests {
                 assert_eq!(after, None);
             }
         }
+    }
+
+    #[test]
+    fn selecting_mask_effect_reopens_and_activates_properties_in_custom_dock() {
+        let (mut app, layer_id) = app_with_paint_and_fill_rows();
+        app.run("window.panel.activate", json!({"panel":"layers"})).unwrap();
+        assert!(app.ui.docking.is_some(), "the fixture now uses the custom docking model");
+        app.run("window.panel.close", json!({"panel":"properties"})).unwrap();
+        assert!(!app.ui.docking.as_ref().unwrap().layout.contains(&"properties".to_owned()), "Properties begins hidden");
+        app.run("uv.maskPaint.select", json!({"layer":layer_id.0,"index":1})).unwrap();
+
+        let ctx = egui::Context::default();
+        assert!(show_active_effect_properties(&mut app, &ctx));
+
+        let workspace = app.ui.docking.as_ref().unwrap();
+        assert!(workspace.layout.contains(&"properties".to_owned()), "activation restores a closed Properties panel");
+        assert_eq!(workspace.layout.panel_state(&"properties".to_owned()), craft_ui::docking::PanelState::Front);
+        assert_eq!(app.ui.docking_reveal.as_deref(), Some("properties"), "the docking renderer raises the Properties panel");
+        assert!(app.ui.panels.properties);
+        assert_eq!(app.ui.dock_tabs.properties, 0);
+        assert_eq!(selected_effect(&ctx, doc_id(&app), layer_id.0), Some(1));
     }
 
     #[test]
@@ -1275,10 +1380,14 @@ mod tests {
             }
             let mut app = PhotocraftApp::new(session, crate::Services::default());
             app.ui.workspace = "3D".into();
+            if gray_view {
+                app.run("window.panel.activate", json!({"panel":"layers"})).unwrap();
+                app.run("window.panel.close", json!({"panel":"properties"})).unwrap();
+            }
             let mut h = Harness::builder().with_size(egui::vec2(520.0, 280.0)).with_step_dt(1.0 / 60.0).build_ui_state(
                 |ui, app: &mut PhotocraftApp| {
                     let mut actions = Vec::new();
-                    add_menu(ui, layer_id.0, &mut actions);
+                    add_menu(app, ui, layer_id.0, &mut actions);
                     for (command, params) in actions {
                         let _ = app.run(&command, params);
                         if command == "uv.maskPaint.add" {
@@ -1299,7 +1408,69 @@ mod tests {
             assert!(h.state().ui.panels.properties);
             assert_eq!(h.state().ui.dock_tabs.properties, 0);
             assert!(selected_effect(&h.ctx, state.doc.id.0, layer_id.0).is_some());
+            if gray_view {
+                let dock = h.state().ui.docking.as_ref().unwrap();
+                assert_eq!(dock.layout.panel_state(&"properties".to_owned()), craft_ui::docking::PanelState::Front);
+                assert_eq!(h.state().ui.docking_reveal.as_deref(), Some("properties"));
+            }
         }
+    }
+
+    #[test]
+    fn fill_from_selection_uses_active_uv_polygon_or_shell_selection_without_repeat() {
+        let make_app = || {
+            let mut session = photocraft_engine::Session::new();
+            session.execute("uv.workspace.activate", json!({"active":true})).unwrap();
+            let mesh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
+            session.execute("uv.model.import", json!({"path":mesh})).unwrap();
+            session.execute("uv.texture.create", json!({"width":32,"height":32})).unwrap();
+            session.execute("layer.layerMask.revealAll", json!({})).unwrap();
+            let mut app = PhotocraftApp::new(session, crate::Services::default());
+            app.ui.workspace = "3D".into();
+            app.ui.uv_workbench.select_shells = true;
+            app
+        };
+
+        let mut shell_app = make_app();
+        let layer = shell_app.session.active().unwrap().active_layer.unwrap();
+        let owner = shell_app.session.active().unwrap().doc.id;
+        let stale_triangle =
+            shell_app.session.uv.topology.as_ref().and_then(|topology| topology.shells.get(1)).and_then(|shell| shell.triangles.first()).copied().unwrap();
+        let stale_polygon = shell_app.session.uv.scene.as_ref().and_then(|scene| scene.triangles.get(stale_triangle)).unwrap().corners.map(|corner| {
+            let doc = &shell_app.session.active().unwrap().doc;
+            [corner.uv[0] * f64::from(doc.size.width), (1.0 - corner.uv[1]) * f64::from(doc.size.height)]
+        });
+        shell_app.run("select.uvPolygons", json!({"document":owner.0,"polygons":[stale_polygon]})).unwrap();
+        let stale_selection = shell_app.session.active().unwrap().doc.selection.clone().unwrap();
+        shell_app.ui.uv_workbench.selection_target = crate::uv_ui::SelectionTarget::UvShells;
+        shell_app.session.uv.selected.insert(0);
+        let (command, params) = fill_selection_preparation(&shell_app, layer.0).unwrap();
+        assert_eq!(command, "uv.mask.apply", "the active UV shell selection replaces a stale document selection before creating its Fill");
+        shell_app.run(&command, params).unwrap();
+        let current_selection = shell_app.session.active().unwrap().doc.selection.as_ref().unwrap();
+        assert_ne!(
+            current_selection.read_region(shell_app.session.active().unwrap().doc.bounds()),
+            stale_selection.read_region(shell_app.session.active().unwrap().doc.bounds())
+        );
+        shell_app.run("uv.maskPaint.add", fill_selection_add_params(layer.0)).unwrap();
+        let fill = &shell_app.session.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0];
+        assert!(matches!(&fill.kind, EffectKind::Fill { repeat_u: false, repeat_v: false, .. }));
+        assert!(fill.fill_map.is_some(), "the fill is baked from the selected shell coverage");
+
+        let mut polygon_app = make_app();
+        let layer = polygon_app.session.active().unwrap().active_layer.unwrap();
+        let document = polygon_app.session.active().unwrap().doc.id;
+        polygon_app.ui.uv_workbench.selection_target = crate::uv_ui::SelectionTarget::Polygons;
+        polygon_app.ui.uv_workbench.polygon_document = Some(document);
+        polygon_app.ui.uv_workbench.selected_polygons.insert(0);
+        let (command, params) = fill_selection_preparation(&polygon_app, layer.0).unwrap();
+        assert_eq!(command, "select.uvPolygons", "the current polygon highlight is committed before Fill reads document selection");
+        polygon_app.run(&command, params).unwrap();
+        assert!(polygon_app.session.active().unwrap().doc.selection.is_some());
+        polygon_app.run("uv.maskPaint.add", fill_selection_add_params(layer.0)).unwrap();
+        let fill = &polygon_app.session.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0];
+        assert!(matches!(&fill.kind, EffectKind::Fill { repeat_u: false, repeat_v: false, .. }));
+        assert!(fill.fill_map.is_some(), "the fill is baked from the selected polygon coverage");
     }
 
     #[test]
@@ -1478,6 +1649,9 @@ mod tests {
         app.ui.workspace = "3D".into();
         app.ui.mask_target = true;
         app.run("view.layerMask", json!({"mode":"gray"})).unwrap();
+        app.run("window.panel.activate", json!({"panel":"layers"})).unwrap();
+        app.run("window.panel.close", json!({"panel":"properties"})).unwrap();
+        assert!(!app.ui.docking.as_ref().unwrap().layout.contains(&"properties".to_owned()));
         let observed_actions = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let observed_for_ui = observed_actions.clone();
         let mut h = Harness::builder().with_size(egui::vec2(440.0, 180.0)).with_step_dt(1.0 / 60.0).build_ui_state(
@@ -1530,6 +1704,10 @@ mod tests {
         );
         let view = photocraft_engine::mask_view_cmds::current(state).unwrap();
         assert_eq!(view.mode, photocraft_engine::mask_view_cmds::MaskViewMode::Gray);
+        let dock = h.state().ui.docking.as_ref().unwrap();
+        assert_eq!(dock.layout.panel_state(&"properties".to_owned()), craft_ui::docking::PanelState::Front);
+        assert_eq!(h.state().ui.docking_reveal.as_deref(), Some("properties"));
+        assert!(h.state().ui.panels.properties);
     }
 
     fn doc_id(app: &PhotocraftApp) -> u64 {

@@ -97,6 +97,8 @@ pub use selection::{SelCursor, selection_cursor};
 pub(crate) use selection::{floating_outline, selection_drag_delta};
 #[cfg(test)]
 use start_screen::start_screen_drop_hint;
+#[cfg(feature = "uv-workbench")]
+pub(crate) use strokes::break_live_stroke_path;
 pub(crate) use strokes::break_native_uv_mask_segment;
 #[cfg(feature = "uv-workbench")]
 pub(crate) use strokes::clone_preview_texture;
@@ -106,6 +108,10 @@ pub(crate) use strokes::{ClonePreviewCache, CommittedStroke, LiveStroke, cancel_
 use strokes::{HOLD_REPEAT_MS, draw_clone_preview, pointer_button_modifiers, pointer_moves, stroke_wants_time, tap_at_peak_pressure};
 #[cfg(test)]
 pub(crate) use strokes::{SPOT_HEALING_TRAIL, live_retouch_points};
+#[cfg(feature = "uv-workbench")]
+pub(crate) use strokes::{
+    complete_native_mask_gpu_release, fail_native_mask_gpu_brush, native_mask_gpu_brush_active, native_mask_gpu_input, request_native_mask_gpu_release,
+};
 pub(crate) use tabs::arranged_cells;
 #[cfg(feature = "uv-workbench")]
 pub(crate) use tabs::uv_documents;

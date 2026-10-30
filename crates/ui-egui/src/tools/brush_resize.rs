@@ -138,14 +138,15 @@ fn update(app: &mut PhotocraftApp, r: Resize, x: f64, y: f64) {
     let (dx, dy, zoom) = if r.screen {
         (x - r.anchor[0], y - r.anchor[1], 1.0)
     } else {
-    match ViewXform::active(app) {
-        Some(xf) if xf.zoom.is_finite() && xf.zoom > 0.0 => {
-            let d = xf.to_screen(x as f32, y as f32) - xf.to_screen(r.anchor[0] as f32, r.anchor[1] as f32);
-            (f64::from(d.x / xf.zoom), f64::from(d.y / xf.zoom), xf.zoom)
+        match ViewXform::active(app) {
+            Some(xf) if xf.zoom.is_finite() && xf.zoom > 0.0 => {
+                let d = xf.to_screen(x as f32, y as f32) - xf.to_screen(r.anchor[0] as f32, r.anchor[1] as f32);
+                (f64::from(d.x / xf.zoom), f64::from(d.y / xf.zoom), xf.zoom)
+            }
+            // No view: document axes, mirrored by View › Flip Horizontal.
+            _ => ((x - r.anchor[0]) * if app.ui.view.flip_horizontal { -1.0 } else { 1.0 }, y - r.anchor[1], app.point_zoom()),
         }
-        // No view: document axes, mirrored by View › Flip Horizontal.
-        _ => ((x - r.anchor[0]) * if app.ui.view.flip_horizontal { -1.0 } else { 1.0 }, y - r.anchor[1], app.point_zoom()),
-    }};
+    };
     let (size, v) = resized(r.start, dx, if r.size_only { 0.0 } else { dy }, zoom);
     // "Vary Round Brush Hardness on HUD" (Preferences ▸ Tools, on by default): off, the vertical
     // movement takes the opacity instead of the hardness, as in Photoshop.
@@ -154,7 +155,13 @@ fn update(app: &mut PhotocraftApp, r: Resize, x: f64, y: f64) {
     if b.size == size && (r.size_only || if vary { b.hardness == v } else { b.opacity == v }) {
         return;
     }
-    let brush = if r.size_only { json!({"size":size}) } else if vary { json!({ "size": size, "hardness": v }) } else { json!({ "size": size, "opacity": v }) };
+    let brush = if r.size_only {
+        json!({"size":size})
+    } else if vary {
+        json!({ "size": size, "hardness": v })
+    } else {
+        json!({ "size": size, "opacity": v })
+    };
     let p = json!({ "brush": brush, "coalesce": format!("brush-resize:{}", r.key) });
     if let Err(e) = app.run("tools.setBrush", p) {
         app.ui.status = e;

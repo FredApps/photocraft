@@ -268,7 +268,8 @@ fn commit(app: &mut PhotocraftApp, workspace: Workspace, mut returns: Returns) {
     sync_visibility(app);
     #[cfg(feature = "uv-workbench")]
     {
-        app.ui.uv_workbench.open = app.ui.workspace == "3D" && app.ui.docking.as_ref().is_some_and(|workspace| workspace.layout.contains(&"uvWorkbench".to_owned()));
+        app.ui.uv_workbench.open =
+            app.ui.workspace == "3D" && app.ui.docking.as_ref().is_some_and(|workspace| workspace.layout.contains(&"uvWorkbench".to_owned()));
     }
 }
 
@@ -1072,7 +1073,9 @@ pub(crate) fn rail_click(app: &mut PhotocraftApp, group: Group) {
     let layout = &projected;
     let floating = PANELS.iter().filter(|p| p.2 == group).any(|p| floats(layout, p.0));
     let existing = PANELS.iter().find(|p| p.2 == group && layout.contains(&p.0.to_owned())).map(|p| p.0);
-    let panel = existing.or_else(|| group.tabs(app.ui.theme.is_pro()).get(*group.tab_mut(&mut app.ui.dock_tabs)).and_then(|label| normalize(label))).filter(|panel| panel_visible_in_workspace(app, panel));
+    let panel = existing
+        .or_else(|| group.tabs(app.ui.theme.is_pro()).get(*group.tab_mut(&mut app.ui.dock_tabs)).and_then(|label| normalize(label)))
+        .filter(|panel| panel_visible_in_workspace(app, panel));
     if let Some(panel) = panel {
         let result = if existing.is_some() && rail_on(app, group) {
             if floating {
@@ -1260,7 +1263,11 @@ pub(crate) fn prepare_legacy_update(
             } else {
                 crate::dock::visible_tabs(app, group, pro)
             };
-            let id = visible_tabs.iter().find(|(tab, _)| *tab == index).and_then(|(_, label)| normalize(label)).ok_or("dockTabs index is outside the visible panel group")?;
+            let id = visible_tabs
+                .iter()
+                .find(|(tab, _)| *tab == index)
+                .and_then(|(_, label)| normalize(label))
+                .ok_or("dockTabs index is outside the visible panel group")?;
             if !panel_visible_in_workspace(app, id) {
                 return Err("dockTabs selected a panel outside the current workspace".into());
             }

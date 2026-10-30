@@ -20,8 +20,28 @@ struct Sample {
     shell: u32,
     point: [f64; 2],
 }
+#[derive(Clone, Copy)]
+struct SurfaceStrokeAnchor {
+    position: [f64; 3],
+    pressure: Option<PenSample>,
+    doc: photocraft_doc::DocId,
+    scene_generation: u64,
+}
+#[derive(Clone, Copy)]
+struct MirrorSample {
+    sample: Sample,
+    pressure: f32,
+    pen: Option<PenSample>,
+    time_ms: f64,
+}
+#[derive(Clone, Copy)]
+enum MirrorPathPoint {
+    Break,
+    Sample(MirrorSample),
+}
 const SURFACE_SAMPLE_SPACING_PX: f32 = 1.5;
 const SURFACE_SAMPLES_PER_FRAME: usize = 128;
+const SURFACE_PATH_BUDGET: std::time::Duration = std::time::Duration::from_millis(3);
 const WRAP_STAMPS_PER_BATCH: usize = 256;
 const WRAP_PREVIEW_INTERVAL_MS: f64 = 33.0;
 
@@ -30,6 +50,68 @@ struct PathPoint {
     screen: Pos2,
     pen: Option<PenSample>,
     time_ms: f64,
+}
+
+impl From<Pos2> for PathPoint {
+    fn from(screen: Pos2) -> Self {
+        Self { screen, pen: None, time_ms: 0.0 }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PointerEvent {
+    Down { point: PathPoint, modifiers: Modifiers, tool: Tool, symmetry_enabled: bool },
+    Move { point: PathPoint, modifiers: Modifiers },
+    Up { point: PathPoint, modifiers: Modifiers },
+    Gone,
+}
+
+fn collect_pointer_events(
+    app: &mut PhotocraftApp,
+    ui: &egui::Ui,
+    response: &Response,
+    events: &[egui::Event],
+    tool: Tool,
+    now_ms: f64,
+    frame_time_base: f64,
+) -> VecDeque<PointerEvent> {
+    let move_count = events.iter().filter(|event| matches!(event, egui::Event::PointerMoved(_))).count();
+    let mut move_index = 0usize;
+    let mut queued = VecDeque::new();
+    for event in events {
+        match event {
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers }
+                if !modifiers.alt && response.contains_pointer() =>
+            {
+                queued.push_back(PointerEvent::Down {
+                    point: PathPoint { screen: *pos, pen: app.stylus.raw_selection(), time_ms: now_ms },
+                    modifiers: *modifiers,
+                    tool,
+                    symmetry_enabled: crate::uv_symmetry::get(ui.ctx()).enabled,
+                });
+            }
+            egui::Event::PointerMoved(pos) => {
+                let index = move_index;
+                move_index += 1;
+                app.stylus.select(index, move_count);
+                let pen = app.stylus.raw_selection();
+                app.stylus.clear_selection();
+                let fraction = (index + 1) as f64 / move_count.max(1) as f64;
+                queued.push_back(PointerEvent::Move {
+                    point: PathPoint { screen: *pos, pen, time_ms: frame_time_base + (now_ms - frame_time_base).max(0.0) * fraction },
+                    modifiers: ui.input(|input| input.modifiers),
+                });
+            }
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers } => {
+                queued
+                    .push_back(PointerEvent::Up { point: PathPoint { screen: *pos, pen: app.stylus.raw_selection(), time_ms: now_ms }, modifiers: *modifiers });
+            }
+            egui::Event::PointerGone => queued.push_back(PointerEvent::Gone),
+            _ => {}
+        }
+    }
+    app.stylus.clear_selection();
+    queued
 }
 
 #[derive(Default)]
@@ -46,8 +128,10 @@ pub(crate) struct State {
     doc: Option<photocraft_doc::DocId>,
     tool: Option<Tool>,
     last: Option<Sample>,
+    output_last: Option<Sample>,
     path_last: Option<PathPoint>,
     path_pending: VecDeque<PathPoint>,
+    deferred_pointer_events: VecDeque<PointerEvent>,
     path_release_pending: bool,
     wrap_pending: Vec<serde_json::Value>,
     wrap_options: Option<serde_json::Value>,
@@ -55,6 +139,77 @@ pub(crate) struct State {
     /// A native mask Brush gesture stays active across disconnected UV island renderers.
     mask_segmented_live: bool,
     mask_segment_start_pending: bool,
+    /// A GPU-backed mask stroke waits one render turn for its single release readback before Up.
+    native_gpu_release_waiting: bool,
+    symmetry_snap_consumed: bool,
+    /// Suppress the texture document's independent 2D symmetry for this 3D gesture.
+    suppress_document_symmetry: bool,
+    mirror_path_failed: bool,
+    mirror_path: Vec<MirrorPathPoint>,
+    live_mirrored_path: bool,
+    /// Last committed surface endpoint for Shift-click connected strokes.
+    line_anchor: Option<SurfaceStrokeAnchor>,
+    /// Latest visible surface point acquired by the current painting stroke.
+    stroke_end: Option<SurfaceStrokeAnchor>,
+    surface_line_active: bool,
+}
+
+fn defer_pointer_event(state: &mut State, event: PointerEvent) {
+    state.deferred_pointer_events.push_back(event);
+}
+
+fn defer_new_gesture_behind_path(state: &mut State, event: PointerEvent) -> bool {
+    if state.path_pending.is_empty() {
+        return false;
+    }
+    state.held = false;
+    state.path_release_pending = true;
+    defer_pointer_event(state, event);
+    true
+}
+
+fn push_mirror_break(app: &mut PhotocraftApp, state: &mut State) {
+    if state.mirror_path_failed || matches!(state.mirror_path.last(), Some(MirrorPathPoint::Break)) {
+        return;
+    }
+    if state.mirror_path.try_reserve(1).is_err() {
+        state.mirror_path.clear();
+        state.mirror_path_failed = true;
+        app.ui.status = tl!("Could not buffer the mirrored brush path").into();
+        app.ui.status_error = true;
+        return;
+    }
+    state.mirror_path.push(MirrorPathPoint::Break);
+}
+
+fn push_mirror_sample(state: &mut State, sample: MirrorSample) -> bool {
+    if state.mirror_path_failed || state.mirror_path.try_reserve(1).is_err() {
+        state.mirror_path.clear();
+        state.mirror_path_failed = true;
+        return false;
+    }
+    state.mirror_path.push(MirrorPathPoint::Sample(sample));
+    true
+}
+
+/// A UV 3D symmetry gesture has already built its mirrored surface path. Temporarily remove the
+/// document's 2D symmetry while creating, previewing and committing these mapped texture points.
+/// Otherwise the engine would reflect them again in unrelated texture space.
+fn tool_event(app: &mut PhotocraftApp, state: &State, event: ToolEvent, modifiers: Modifiers) {
+    let modifiers = if state.surface_line_active { Modifiers { shift: false, ..modifiers } } else { modifiers };
+    let native_uv_mask_gpu_disabled = std::mem::replace(&mut app.native_uv_mask_gpu_disabled, state.suppress_document_symmetry);
+    let saved = if state.suppress_document_symmetry {
+        app.session.active_mut().and_then(|document| document.symmetry.take().map(|symmetry| (document.doc.id, symmetry)))
+    } else {
+        None
+    };
+    canvas::tool_event(app, event, modifiers);
+    if let Some((id, symmetry)) = saved
+        && let Some(document) = app.session.active_mut().filter(|document| document.doc.id == id)
+    {
+        document.symmetry = Some(symmetry);
+    }
+    app.native_uv_mask_gpu_disabled = native_uv_mask_gpu_disabled;
 }
 
 fn flush_wrap_samples(app: &mut PhotocraftApp, state: &mut State) {
@@ -158,10 +313,15 @@ fn close_selection_contour(app: &mut PhotocraftApp, state: &mut State) {
 }
 
 fn end_segment(app: &mut PhotocraftApp, state: &mut State, close_contour: bool, finish_gesture: bool) {
-    let last = state.last.take();
-    let had_last = last.is_some();
+    let source_last = state.last.take();
+    let had_last = source_last.is_some();
     if had_last || finish_gesture && state.mask_segmented_live {
-        let last = last.map(|last| last.point).or_else(|| app.drag.as_ref().and_then(|drag| drag.points.last().map(|point| [point[0], point[1]])));
+        let last = state
+            .output_last
+            .take()
+            .or(source_last)
+            .map(|last| last.point)
+            .or_else(|| app.drag.as_ref().and_then(|drag| drag.points.last().map(|point| [point[0], point[1]])));
         if app.drag.is_some() {
             let deferred = std::mem::replace(&mut app.defer_live_stroke, false);
             canvas::feed_live_stroke(app);
@@ -189,7 +349,7 @@ fn end_segment(app: &mut PhotocraftApp, state: &mut State, close_contour: bool, 
             return;
         }
         if let Some([x, y]) = last {
-            canvas::tool_event(app, ToolEvent::Up { x, y }, state.modifiers);
+            tool_event(app, state, ToolEvent::Up { x, y }, state.modifiers);
         }
         state.mask_segmented_live = false;
     }
@@ -210,6 +370,7 @@ fn finish_contour(app: &mut PhotocraftApp, state: &mut State) {
 }
 fn finish_inner(app: &mut PhotocraftApp, state: &mut State, preserve_contour: bool) {
     flush_wrap_samples(app, state);
+    replay_mirror_path(app, state);
     end_segment(app, state, false, true);
     if state.wrapped {
         let _ = app.run("paint.uvWrap", json!({"end":true}));
@@ -218,16 +379,69 @@ fn finish_inner(app: &mut PhotocraftApp, state: &mut State, preserve_contour: bo
         && state.action == Action::Paint
         && matches!(state.tool, Some(Tool::PolygonLasso | Tool::MagneticLasso))
         && state.contour_sample.is_some();
+    let line_anchor = state.stroke_end.or(state.line_anchor);
     if keep {
         let contour_sample = state.contour_sample;
         let contour_tool = state.tool;
         let contour_doc = state.doc;
         let selection_split_pending = state.selection_split_pending;
-        *state = State { contour_sample, contour_tool, contour_doc, selection_split_pending, ..Default::default() };
+        *state = State { contour_sample, contour_tool, contour_doc, selection_split_pending, line_anchor, ..Default::default() };
     } else {
-        *state = State::default();
+        *state = State { line_anchor, ..Default::default() };
     }
     app.uv_paint_key = None;
+}
+fn replay_mirror_path(app: &mut PhotocraftApp, state: &mut State) {
+    let points = std::mem::take(&mut state.mirror_path);
+    if points.iter().all(|point| matches!(point, MirrorPathPoint::Break)) {
+        return;
+    }
+    let Some(scene) = app.session.uv.scene.clone() else { return };
+    let previous_override = app.tool_override;
+    if let Some(tool) = state.tool {
+        app.tool_override = Some(tool);
+    }
+    if app.drag.is_some() {
+        mark_path_break(app);
+    }
+    // The primary source path has ended for this rendered batch. Keep its own continuity state,
+    // but split the live renderer path before appending the corresponding mirrored batch.
+    let doc_size = app.session.active().filter(|st| Some(st.doc.id) == state.doc).map(|st| st.doc.size);
+    if let Some(doc_size) = doc_size {
+        let mut prior: Option<Sample> = None;
+        let mut pending_break = false;
+        for point in points {
+            let MirrorPathPoint::Sample(mirrored) = point else {
+                pending_break |= prior.take().is_some();
+                continue;
+            };
+            let discontinuous = prior.is_some_and(|last| {
+                last.shell != mirrored.sample.shell
+                    || (!adjacent(&scene, last.triangle, mirrored.sample.triangle)
+                        && (last.point[0] - mirrored.sample.point[0]).hypot(last.point[1] - mirrored.sample.point[1])
+                            > f64::from(doc_size.width.max(doc_size.height)) * 0.02)
+            });
+            if pending_break || discontinuous {
+                mark_path_break(app);
+            }
+            pending_break = false;
+            let event = if app.drag.is_some() {
+                ToolEvent::Move { x: mirrored.sample.point[0], y: mirrored.sample.point[1], pressure: mirrored.pressure }
+            } else {
+                ToolEvent::Down { x: mirrored.sample.point[0], y: mirrored.sample.point[1], pressure: mirrored.pressure }
+            };
+            app.stylus.clock_ms = mirrored.time_ms;
+            app.stylus.select_raw_sample(mirrored.pen);
+            tool_event(app, state, event, state.modifiers);
+            app.stylus.clear_selection();
+            state.output_last = Some(mirrored.sample);
+            prior = Some(mirrored.sample);
+        }
+        if prior.is_some() {
+            state.live_mirrored_path = true;
+        }
+    }
+    app.tool_override = previous_override;
 }
 fn adjacent(scene: &Scene, a: usize, b: usize) -> bool {
     if a == b {
@@ -236,6 +450,52 @@ fn adjacent(scene: &Scene, a: usize, b: usize) -> bool {
     let (Some(a), Some(b)) = (scene.triangles.get(a), scene.triangles.get(b)) else { return false };
     a.corners.iter().filter(|a| b.corners.iter().any(|b| a.vertex == b.vertex && a.uv.iter().zip(b.uv).all(|(a, b)| (a - b).abs() < 1e-6))).count() >= 2
 }
+
+fn symmetry_hit(ctx: &egui::Context, view: &View<'_>, hit: &photocraft_uv::prepared::Hit, tool: Tool) -> Option<photocraft_uv::prepared::Hit> {
+    if !matches!(tool, Tool::Brush | Tool::Pencil | Tool::Eraser) {
+        return None;
+    }
+    let settings = crate::uv_symmetry::get(ctx);
+    if !settings.enabled {
+        return None;
+    }
+    let axis = settings.axis.index();
+    let plane = view.geometry.center[axis] + settings.offset * view.geometry.diameter;
+    let source_distance = hit.position[axis] - plane;
+    if !source_distance.is_finite() || source_distance.abs() <= view.geometry.diameter * 1e-7 {
+        return None;
+    }
+    let mirrored = view.geometry.mirror_hit(view.scene, view.camera, view.maps, hit, axis, plane, view.size, view.geometry.diameter * 0.02)?;
+    let target_distance = mirrored.position[axis] - plane;
+    (target_distance.is_finite() && source_distance * target_distance < 0.0 && mirrored.uv.iter().all(|value| (0.0..=1.0).contains(value))).then_some(mirrored)
+}
+
+fn symmetry_document_matches(app: &PhotocraftApp, state: &State, target_material: usize) -> bool {
+    let Some(document) = state.doc else { return false };
+    let channel = app.session.uv.current_channel();
+    app.session.uv.map_bindings(channel).get(target_material).copied().flatten() == Some(document)
+        && (!app.ui.mask_target || crate::uv_mask::has_mask_binding(app, target_material, document))
+}
+
+fn mark_path_break(app: &mut PhotocraftApp) {
+    if let Some(drag) = app.drag.as_mut() {
+        let index = drag.points.len();
+        if index > 0 && drag.breaks.last() != Some(&index) {
+            drag.breaks.push(index);
+        }
+    }
+    let _ = canvas::break_live_stroke_path(app);
+}
+
+fn begin_source_path(app: &mut PhotocraftApp, state: &mut State) {
+    if state.live_mirrored_path {
+        // Source and reflected passes share one drag for Undo, but each renderer path needs an
+        // explicit boundary when the next ordered source batch follows a mirrored batch.
+        mark_path_break(app);
+        state.live_mirrored_path = false;
+    }
+}
+
 struct View<'a> {
     wrap: bool,
     geometry: &'a Geometry,
@@ -245,15 +505,89 @@ struct View<'a> {
     size: [u32; 2],
     rect: egui::Rect,
 }
-fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view: &View<'_>, p: Pos2, action: Action) {
+
+fn document_at_surface_point(app: &PhotocraftApp, view: &View<'_>, point: PathPoint) -> Option<photocraft_doc::DocId> {
+    let at = (point.screen - view.rect.min) / view.rect.size();
+    if !view.rect.contains(point.screen) {
+        return None;
+    }
+    let hit = view.geometry.hit(view.scene, view.camera, view.maps, [f64::from(at.x), f64::from(at.y)], view.size)?;
+    app.session.uv.map_bindings(app.session.uv.current_channel()).get(view.geometry.triangles.get(hit.triangle)?.material).copied().flatten()
+}
+
+/// Reproject a prior stroke endpoint into this camera and ensure the same bound document is
+/// visible there. This lets Shift-click remain attached to the model if the camera moved between
+/// strokes, while refusing to start a line from an occluded or newly rebound surface point.
+fn surface_line_start(app: &PhotocraftApp, state: &State, view: &View<'_>, endpoint: PathPoint, tool: Tool) -> Option<PathPoint> {
+    let anchor = state.line_anchor?;
+    if anchor.scene_generation != app.session.uv.generation || !crate::stroke_constraint::connects(tool) {
+        return None;
+    }
+    if document_at_surface_point(app, view, endpoint) != Some(anchor.doc) {
+        return None;
+    }
+    let normalized = view.geometry.project_normalized(view.camera, anchor.position, view.size)?;
+    let screen = view.rect.min + egui::vec2(normalized[0] as f32 * view.rect.width(), normalized[1] as f32 * view.rect.height());
+    let start = PathPoint { screen, pen: anchor.pressure, time_ms: endpoint.time_ms };
+    let at = (screen - view.rect.min) / view.rect.size();
+    let hit = view.geometry.hit(view.scene, view.camera, view.maps, [f64::from(at.x), f64::from(at.y)], view.size)?;
+    let position = std::array::from_fn::<_, 3, _>(|index| (hit.position[index] - view.geometry.center[index]) / view.geometry.diameter);
+    let distance = position.iter().zip(anchor.position).map(|(a, b)| (a - b) * (a - b)).sum::<f64>().sqrt();
+    (distance <= 0.01 && document_at_surface_point(app, view, start) == Some(anchor.doc)).then_some(start)
+}
+
+fn draw_surface_line_preview(app: &PhotocraftApp, ui: &egui::Ui, state: &State, view: &View<'_>, tool: Tool) {
+    if !ui.input(|input| input.modifiers.shift) || state.held || !crate::stroke_constraint::connects(tool) {
+        return;
+    }
+    let Some(pointer) = ui.input(|input| input.pointer.hover_pos()) else { return };
+    let endpoint = PathPoint { screen: pointer, pen: None, time_ms: ui.input(|input| input.time * 1000.0) };
+    let Some(start) = surface_line_start(app, state, view, endpoint, tool) else { return };
+    let tokens = crate::theme::Tokens::get(ui.ctx());
+    let painter = ui.painter_at(view.rect);
+    painter.line_segment([start.screen, pointer], egui::Stroke::new(2.5, tokens.canvas));
+    painter.line_segment([start.screen, pointer], egui::Stroke::new(1.0, tokens.accent));
+}
+
+fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view: &View<'_>, path_point: impl Into<PathPoint>, action: Action) {
+    let path_point = path_point.into();
+    if state.symmetry_snap_consumed {
+        return;
+    }
+    let p = path_point.screen;
+    if action == Action::Paint && state.suppress_document_symmetry {
+        begin_source_path(app, state);
+    }
     let at = (p - view.rect.min) / view.rect.size();
     let hit = view.rect.contains(p).then(|| view.geometry.hit(view.scene, view.camera, view.maps, [f64::from(at.x), f64::from(at.y)], view.size)).flatten();
+    if crate::uv_symmetry::get(ctx).snap_pending {
+        if let Some(hit) = hit {
+            state.symmetry_snap_consumed = true;
+            crate::uv_symmetry::snap_hit(
+                ctx,
+                view.scene,
+                view.geometry,
+                view.camera,
+                view.size,
+                hit,
+                [f64::from(at.x), f64::from(at.y)],
+                [f64::from(view.rect.width()), f64::from(view.rect.height())],
+            );
+        }
+        return;
+    }
     let Some(hit) = hit else {
+        if state.suppress_document_symmetry {
+            push_mirror_break(app, state);
+        }
         end_segment(app, state, true, false);
         return;
     };
     let Some(triangle) = view.geometry.triangles.get(hit.triangle) else { return };
     if hit.uv.iter().any(|v| !(0.0..=1.0).contains(v)) {
+        if state.suppress_document_symmetry {
+            push_mirror_break(app, state);
+        }
         end_segment(app, state, true, false);
         return;
     }
@@ -271,17 +605,26 @@ fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view:
         && (!crate::uv_mask::has_mask_binding(app, material, mask_doc)
             || app.session.uv.map_bindings(app.session.uv.current_channel()).get(material).copied().flatten() != Some(mask_doc))
     {
+        if state.suppress_document_symmetry {
+            push_mirror_break(app, state);
+        }
         end_segment(app, state, true, false);
         return;
     }
     // One physical gesture targets one material/document, so it has one predictable Undo.
     if state.material.is_some_and(|m| m != material) {
+        if state.suppress_document_symmetry {
+            push_mirror_break(app, state);
+        }
         end_segment(app, state, true, false);
         return;
     }
     let bindings = app.session.uv.map_bindings(app.session.uv.current_channel());
     let Some(id) = bindings.get(material).copied().flatten() else {
         app.ui.status = tl!("Assign a texture to this material before painting").into();
+        if state.suppress_document_symmetry {
+            push_mirror_break(app, state);
+        }
         end_segment(app, state, true, false);
         return;
     };
@@ -300,6 +643,9 @@ fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view:
         state.doc = Some(id);
     }
     if app.session.active().is_none_or(|st| Some(st.doc.id) != state.doc) {
+        if state.suppress_document_symmetry {
+            push_mirror_break(app, state);
+        }
         finish(app, state);
         return;
     }
@@ -311,6 +657,11 @@ fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view:
         ];
         (st.doc.id, st.doc.size, point)
     };
+    let tool = app.active_tool();
+    let mirrored_hit = (action == Action::Paint && state.suppress_document_symmetry)
+        .then(|| symmetry_hit(ctx, view, &hit, tool))
+        .flatten()
+        .filter(|mirrored| view.geometry.triangles.get(mirrored.triangle).is_some_and(|target| symmetry_document_matches(app, state, target.material)));
     let contour_tool = state.tool.unwrap_or_else(|| app.active_tool());
     if state.last.is_none()
         && matches!(contour_tool, Tool::PolygonLasso | Tool::MagneticLasso)
@@ -329,7 +680,7 @@ fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view:
         state.contour_doc = None;
         state.selection_split_pending = false;
     }
-    if view.wrap && matches!(app.active_tool(), Tool::Brush | Tool::Pencil | Tool::Eraser) && action == Action::Paint {
+    if view.wrap && matches!(tool, Tool::Brush | Tool::Pencil | Tool::Eraser) && action == Action::Paint {
         end_segment(app, state, false, false);
         let tool = app.active_tool();
         let target = canvas::paint_target(app);
@@ -347,6 +698,9 @@ fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view:
         }
         state.wrap_options.get_or_insert(options);
         state.wrap_pending.push(json!({"triangle":hit.triangle,"position":hit.position,"pressure":app.stylus.pressure()}));
+        if let Some(mirrored) = mirrored_hit {
+            state.wrap_pending.push(json!({"triangle":mirrored.triangle,"position":mirrored.position,"pressure":app.stylus.pressure()}));
+        }
         return;
     }
     if state.last.is_some_and(|last| {
@@ -355,6 +709,9 @@ fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view:
                 && (last.point[0] - point[0]).hypot(last.point[1] - point[1]) > f64::from(doc_size.width.max(doc_size.height)) * 0.02)
     }) {
         let shell_changed = state.last.is_some_and(|last| last.shell != triangle.shell);
+        if state.suppress_document_symmetry {
+            push_mirror_break(app, state);
+        }
         end_segment(app, state, shell_changed, false);
     }
     let pressure = app.stylus.pressure();
@@ -380,8 +737,44 @@ fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view:
         state.selection_split_pending = false;
         ToolEvent::Down { x: point[0], y: point[1], pressure }
     };
+    let source_sample = Sample { triangle: hit.triangle, shell: triangle.shell, point };
+    if action == Action::Paint && state.tool.is_some_and(crate::stroke_constraint::connects) {
+        state.stroke_end = Some(SurfaceStrokeAnchor {
+            position: std::array::from_fn(|index| (hit.position[index] - view.geometry.center[index]) / view.geometry.diameter),
+            pressure: path_point.pen,
+            doc: doc_id,
+            scene_generation: app.session.uv.generation,
+        });
+    }
     let segment_start = state.mask_segment_start_pending.then(|| app.drag.as_ref().map_or(0, |drag| drag.points.len()));
-    canvas::tool_event(app, event, state.modifiers);
+    tool_event(app, state, event, state.modifiers);
+    state.output_last = Some(source_sample);
+    if let Some(mirrored) = mirrored_hit
+        && let Some(mirror_triangle) = view.geometry.triangles.get(mirrored.triangle)
+    {
+        let mirror_point = [
+            (mirrored.uv[0] * f64::from(doc_size.width)).min(f64::from(doc_size.width) - 1e-6),
+            ((1.0 - mirrored.uv[1]) * f64::from(doc_size.height)).min(f64::from(doc_size.height) - 1e-6),
+        ];
+        if !push_mirror_sample(
+            state,
+            MirrorSample {
+                sample: Sample { triangle: mirrored.triangle, shell: mirror_triangle.shell, point: mirror_point },
+                pressure,
+                pen: path_point.pen,
+                time_ms: path_point.time_ms,
+            },
+        ) {
+            app.ui.status = tl!("Could not buffer the mirrored brush path").into();
+            app.ui.status_error = true;
+        }
+    } else if state.suppress_document_symmetry {
+        push_mirror_break(app, state);
+    }
+    if state.mirror_path_failed {
+        app.ui.status = tl!("Could not buffer the mirrored brush path").into();
+        app.ui.status_error = true;
+    }
     if let Some(start) = segment_start
         && let Some(drag) = app.drag.as_mut()
         && drag.points.len() > start
@@ -389,8 +782,7 @@ fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view:
         drag.breaks.push(start);
         state.mask_segment_start_pending = false;
     }
-    let sample = Sample { triangle: hit.triangle, shell: triangle.shell, point };
-    state.last = Some(sample);
+    state.last = Some(source_sample);
     if state.tool == Some(Tool::PolygonLasso) && app.ui.polygon.is_empty() || state.tool == Some(Tool::MagneticLasso) && !app.ui.magnetic.active() {
         // The user explicitly closed the contour in the viewport. Do not carry its UV island
         // into the next independent lasso selection.
@@ -399,21 +791,26 @@ fn sample(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view:
         state.contour_doc = None;
         state.selection_split_pending = false;
     } else if matches!(state.tool, Some(Tool::PolygonLasso | Tool::MagneticLasso)) && action == Action::Paint {
-        state.contour_sample = Some(sample);
+        state.contour_sample = Some(source_sample);
         state.contour_tool = state.tool;
         state.contour_doc = Some(doc_id);
     }
 }
 
+fn path_batch_exhausted(processed: usize, limit: usize, elapsed: std::time::Duration) -> bool {
+    processed >= limit || elapsed >= SURFACE_PATH_BUDGET
+}
+
 fn process_path(app: &mut PhotocraftApp, ctx: &egui::Context, state: &mut State, view: &View<'_>, limit: usize) -> usize {
     let Some(mut last) = state.path_last else { return 0 };
+    let started = std::time::Instant::now();
     let mut processed = 0;
-    while processed < limit {
+    while !path_batch_exhausted(processed, limit, started.elapsed()) {
         let Some(point) = next_path_point(&mut last, &mut state.path_pending) else { break };
         app.stylus.clock_ms = point.time_ms;
         app.stylus.select_raw_sample(point.pen);
         let action = state.action;
-        sample(app, ctx, state, view, point.screen, action);
+        sample(app, ctx, state, view, point, action);
         app.stylus.clear_selection();
         state.path_last = Some(last);
         processed += 1;
@@ -431,11 +828,34 @@ fn finish_after_pending_path(app: &mut PhotocraftApp, ctx: &egui::Context, state
     }
     let deferred = std::mem::replace(&mut app.defer_live_stroke, true);
     if !state.path_pending.is_empty() {
-        process_path(app, ctx, state, view, usize::MAX);
+        process_path(app, ctx, state, view, SURFACE_SAMPLES_PER_FRAME);
     }
+    if state.suppress_document_symmetry {
+        replay_mirror_path(app, state);
+    }
+    let more = !state.path_pending.is_empty();
     app.defer_live_stroke = deferred;
-    finish(app, state);
-    app.tool_override = previous_override;
+    if more {
+        app.tool_override = previous_override;
+        if !deferred {
+            canvas::feed_live_stroke(app);
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    } else {
+        if canvas::request_native_mask_gpu_release(app) {
+            state.native_gpu_release_waiting = true;
+            app.tool_override = previous_override;
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            return;
+        }
+        let deferred_pointer_events = std::mem::take(&mut state.deferred_pointer_events);
+        finish(app, state);
+        state.deferred_pointer_events = deferred_pointer_events;
+        app.tool_override = previous_override;
+        if !state.deferred_pointer_events.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+    }
 }
 
 fn defer_native_mask_path(app: &PhotocraftApp, tool: Tool) -> bool {
@@ -450,6 +870,10 @@ fn defer_native_mask_path(app: &PhotocraftApp, tool: Tool) -> bool {
 
 fn use_bounded_mask_input(native_surface_input: bool, workspace_3d: bool, brush: bool, mask_target: bool, gpu: bool) -> bool {
     native_surface_input && workspace_3d && brush && mask_target && gpu
+}
+
+fn defer_symmetry_path(native_surface_3d: bool, symmetry_active: bool, tool: Tool) -> bool {
+    native_surface_3d && symmetry_active && matches!(tool, Tool::Brush | Tool::Pencil | Tool::Eraser)
 }
 
 fn surface_tool(tool: Tool) -> bool {
@@ -545,11 +969,38 @@ pub(crate) fn input(
     crate::stylus::Stylus::sync_eraser_tool(app);
     crate::uv_mask_paint::prune_levels_picker(app, ui.ctx());
     let tool = if ui.input(|i| i.modifiers.ctrl) && matches!(app.ui.tool, Tool::CloneStamp | Tool::Healing) { app.ui.tool } else { app.active_tool() };
-    let native_mask_brush = app.native_uv_surface_input && app.ui.workspace == "3D" && tool == Tool::Brush && canvas::paint_target(app) == json!("mask");
+    let native_surface_3d = app.native_uv_surface_input && app.ui.workspace == "3D";
+    let native_mask_brush = native_surface_3d && state.tool.unwrap_or(tool) == Tool::Brush && canvas::paint_target(app) == json!("mask");
     let levels_picker = crate::uv_mask_paint::levels_picker_active(app, ui.ctx());
     let view = View { wrap, geometry, scene, camera, maps, size, rect: response.rect };
+    if response.hovered() {
+        draw_surface_line_preview(app, ui, state, &view, tool);
+    }
+    let events = ui.input(|input| input.events.clone());
+    let now_ms = ui.input(|input| input.time) * 1000.0;
+    let frame_time_base = state.path_pending.back().or(state.path_last.as_ref()).map_or(now_ms, |point| point.time_ms).min(now_ms);
+    let mut incoming_pointer_events = collect_pointer_events(app, ui, response, &events, tool, now_ms, frame_time_base);
+    if state.native_gpu_release_waiting {
+        if canvas::complete_native_mask_gpu_release(app) {
+            state.native_gpu_release_waiting = false;
+            let deferred_pointer_events = std::mem::take(&mut state.deferred_pointer_events);
+            finish_contour(app, state);
+            state.deferred_pointer_events = deferred_pointer_events;
+        } else {
+            state.deferred_pointer_events.append(&mut incoming_pointer_events);
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+            return;
+        }
+    }
+    let has_queued_gesture = state.path_release_pending || !state.path_pending.is_empty() || !state.deferred_pointer_events.is_empty();
     if app.brush_resize.is_some_and(|r| r.screen) {
         let finish_mask_stroke = native_mask_brush && (state.held || state.path_release_pending || !state.path_pending.is_empty());
+        if response.hovered() && !state.path_pending.is_empty() && canvas::strokes_live(state.tool.unwrap_or(tool)) {
+            cursor(app, ui, &view);
+        }
+        if state.path_release_pending || !state.path_pending.is_empty() || !state.deferred_pointer_events.is_empty() {
+            state.deferred_pointer_events.append(&mut incoming_pointer_events);
+        }
         finish_after_pending_path(app, ui.ctx(), state, &view);
         if finish_mask_stroke {
             ui.ctx().request_repaint();
@@ -560,15 +1011,22 @@ pub(crate) fn input(
         }
         return;
     }
-    if !enabled
+    if (!enabled
         || app.ui.brush_picker.is_some()
         || !crate::menus::modal_allows(app, "paint.stroke")
         || app.ui.transform.is_some()
         || (!surface_tool(tool) && !levels_picker)
         || state.tool.is_some_and(|old| old != tool)
-        || ui.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused)
+        || ui.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused))
+        && !has_queued_gesture
     {
         let finish_mask_stroke = native_mask_brush && (state.held || state.path_release_pending || !state.path_pending.is_empty());
+        if response.hovered() && !state.path_pending.is_empty() && canvas::strokes_live(state.tool.unwrap_or(tool)) {
+            cursor(app, ui, &view);
+        }
+        if state.path_release_pending || !state.path_pending.is_empty() || !state.deferred_pointer_events.is_empty() {
+            state.deferred_pointer_events.append(&mut incoming_pointer_events);
+        }
         finish_after_pending_path(app, ui.ctx(), state, &view);
         if finish_mask_stroke {
             ui.ctx().request_repaint();
@@ -576,112 +1034,161 @@ pub(crate) fn input(
         return;
     }
     crate::paint_mouse::sync_tool_brush(app);
-    let events = ui.input(|i| i.events.clone());
-    let now_ms = ui.input(|i| i.time) * 1000.0;
-    let move_count = events.iter().filter(|e| matches!(e, egui::Event::PointerMoved(_))).count();
-    let mut move_index = 0usize;
+    let bounded_mask_path = defer_native_mask_path(app, state.tool.unwrap_or(tool));
+    let draw_brush_cursor_before_path = response.hovered()
+        && (state.suppress_document_symmetry || bounded_mask_path)
+        && (canvas::strokes_live(tool) || tool == Tool::QuickSelection)
+        && !(tool == Tool::Brush && ui.input(|i| i.modifiers.ctrl));
+    if draw_brush_cursor_before_path {
+        cursor(app, ui, &view);
+    }
+    let mut pointer_events = std::mem::take(&mut state.deferred_pointer_events);
+    pointer_events.append(&mut incoming_pointer_events);
     let mut mask_stroke_finished = false;
-    let frame_time_base = state.path_pending.back().or(state.path_last.as_ref()).map_or(now_ms, |p| p.time_ms).min(now_ms);
-    let bounded_mask_path = defer_native_mask_path(app, tool);
     if bounded_mask_path {
         app.stylus.clock_ms = now_ms;
     }
     let deferred = app.defer_live_stroke;
+    let previous_override = app.tool_override;
     app.defer_live_stroke = true;
-    for event in events {
+    let mut defer_remaining_pointer_events = false;
+    while let Some(event) = pointer_events.pop_front() {
+        if defer_remaining_pointer_events {
+            defer_pointer_event(state, event);
+            continue;
+        }
         match event {
-            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers }
-                if !modifiers.alt && response.contains_pointer() =>
-            {
-                if state.path_release_pending || !state.path_pending.is_empty() {
-                    process_path(app, ui.ctx(), state, &view, usize::MAX);
+            PointerEvent::Down { point, modifiers, tool: down_tool, symmetry_enabled } => {
+                if defer_new_gesture_behind_path(state, event) {
+                    defer_remaining_pointer_events = true;
+                    continue;
+                }
+                if state.path_release_pending || state.held {
+                    if let Some(previous_tool) = state.tool {
+                        app.tool_override = Some(previous_tool);
+                    }
+                    flush_wrap_samples_at(app, state, now_ms);
                 }
                 finish_contour(app, state);
                 static GESTURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                 app.uv_paint_key = Some(format!("uv3d-{}", GESTURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-                state.held = true;
-                state.path_release_pending = false;
-                state.path_pending.clear();
-                state.tool = Some(tool);
-                let pen = app.stylus.raw_selection();
-                state.path_last = Some(PathPoint { screen: pos, pen, time_ms: now_ms });
-                state.modifiers = modifiers;
-                let action = if (modifiers.shift || modifiers.ctrl) && matches!(tool, Tool::CloneStamp | Tool::Healing) {
+                app.tool_override = Some(down_tool);
+                let action = if (modifiers.shift || modifiers.ctrl) && matches!(down_tool, Tool::CloneStamp | Tool::Healing) {
                     Action::CloneSource
-                } else if modifiers.shift && tool == Tool::Brush {
+                } else if modifiers.ctrl && down_tool == Tool::Brush {
                     Action::Eyedropper
                 } else {
                     Action::Paint
                 };
+                let line_start = (action == Action::Paint && modifiers.shift).then(|| surface_line_start(app, state, &view, point, down_tool)).flatten();
+                state.held = true;
+                state.path_release_pending = false;
+                state.path_pending.clear();
+                state.tool = Some(down_tool);
+                state.path_last = Some(line_start.unwrap_or(point));
+                state.modifiers = modifiers;
                 state.action = action;
-                app.stylus.select_raw_sample(pen);
-                sample(app, ui.ctx(), state, &view, pos, action);
+                state.stroke_end = None;
+                state.surface_line_active = line_start.is_some();
+                state.suppress_document_symmetry =
+                    action == Action::Paint && symmetry_enabled && matches!(down_tool, Tool::Brush | Tool::Pencil | Tool::Eraser);
+                app.stylus.select_raw_sample(point.pen);
+                if let Some(start) = line_start {
+                    app.stylus.select_raw_sample(start.pen);
+                    sample(app, ui.ctx(), state, &view, start, action);
+                    app.stylus.select_raw_sample(point.pen);
+                    state.path_pending.push_back(point);
+                } else {
+                    sample(app, ui.ctx(), state, &view, point, action);
+                }
                 app.stylus.clear_selection();
-                if action != Action::Paint || tool == Tool::MagicWand {
+                if action != Action::Paint || down_tool == Tool::MagicWand {
                     finish(app, state);
                 }
             }
-            egui::Event::PointerMoved(pos) => {
-                let index = move_index;
-                move_index += 1;
+            PointerEvent::Move { point, modifiers } => {
                 if state.held && state.tool != Some(Tool::MagicWand) {
-                    state.modifiers = ui.input(|i| i.modifiers);
-                    if bounded_mask_path {
-                        app.stylus.select(index, move_count);
-                        let pen = app.stylus.raw_selection();
-                        app.stylus.clear_selection();
-                        let fraction = (index + 1) as f64 / move_count.max(1) as f64;
-                        state.path_pending.push_back(PathPoint { screen: pos, pen, time_ms: frame_time_base + (now_ms - frame_time_base).max(0.0) * fraction });
+                    state.modifiers = modifiers;
+                    app.tool_override = state.tool;
+                    let gesture_tool = state.tool.unwrap_or(tool);
+                    if bounded_mask_path || state.surface_line_active || defer_symmetry_path(native_surface_3d, state.suppress_document_symmetry, gesture_tool)
+                    {
+                        state.path_pending.push_back(point);
                     } else {
-                        let previous = state.path_last.map_or(pos, |point| point.screen);
-                        let steps = ((pos - previous).length() / SURFACE_SAMPLE_SPACING_PX).ceil().clamp(1.0, 128.0) as usize;
+                        let previous = state.path_last.unwrap_or(point);
+                        let steps = ((point.screen - previous.screen).length() / SURFACE_SAMPLE_SPACING_PX).ceil().clamp(1.0, 128.0) as usize;
                         for i in 1..=steps {
-                            sample(app, ui.ctx(), state, &view, previous.lerp(pos, i as f32 / steps as f32), state.action);
+                            let t = i as f32 / steps as f32;
+                            let sample_point = PathPoint {
+                                screen: previous.screen.lerp(point.screen, t),
+                                pen: interpolate_pen(previous.pen, point.pen, t),
+                                time_ms: previous.time_ms + (point.time_ms - previous.time_ms) * f64::from(t),
+                            };
+                            app.stylus.select_raw_sample(sample_point.pen);
+                            sample(app, ui.ctx(), state, &view, sample_point, state.action);
+                            app.stylus.clear_selection();
                         }
-                        state.path_last = Some(PathPoint { screen: pos, pen: None, time_ms: now_ms });
+                        state.path_last = Some(point);
                     }
                 }
             }
-            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers } => {
+            PointerEvent::Up { point, modifiers } => {
                 state.modifiers = modifiers;
+                app.tool_override = state.tool;
                 mask_stroke_finished |= native_mask_brush && state.held;
-                if bounded_mask_path
+                let bounded_path = bounded_mask_path
+                    || state.surface_line_active
+                    || defer_symmetry_path(native_surface_3d, state.suppress_document_symmetry, state.tool.unwrap_or(tool));
+                if bounded_path
                     && state.held
                     && state.tool != Some(Tool::MagicWand)
-                    && state.path_last.is_some_and(|last| last.screen.distance(pos) > f32::EPSILON)
+                    && state.path_last.is_some_and(|last| last.screen.distance(point.screen) > f32::EPSILON)
                 {
-                    let pen = app.stylus.raw_selection();
-                    state.path_pending.push_back(PathPoint { screen: pos, pen, time_ms: now_ms });
+                    state.path_pending.push_back(point);
                 }
                 state.held = false;
-                if bounded_mask_path {
+                if bounded_path {
                     state.path_release_pending = true;
                 } else {
                     finish_contour(app, state);
                 }
             }
-            egui::Event::PointerGone => {
+            PointerEvent::Gone => {
+                app.tool_override = state.tool;
                 mask_stroke_finished |= native_mask_brush && state.held;
                 state.held = false;
-                if bounded_mask_path {
+                if bounded_mask_path
+                    || state.surface_line_active
+                    || defer_symmetry_path(native_surface_3d, state.suppress_document_symmetry, state.tool.unwrap_or(tool))
+                {
                     state.path_release_pending = true;
                 } else {
                     finish_contour(app, state);
                 }
             }
-            _ => {}
         }
     }
     if state.held && !ui.input(|i| i.pointer.primary_down()) {
         mask_stroke_finished |= native_mask_brush;
         state.held = false;
-        if bounded_mask_path {
+        if bounded_mask_path
+            || state.surface_line_active
+            || defer_symmetry_path(native_surface_3d, state.suppress_document_symmetry, state.tool.unwrap_or(tool))
+        {
             state.path_release_pending = true;
         } else {
             finish_contour(app, state);
         }
     }
-    let processed = if bounded_mask_path { process_path(app, ui.ctx(), state, &view, SURFACE_SAMPLES_PER_FRAME) } else { 0 };
+    if let Some(active_tool) = state.tool {
+        app.tool_override = Some(active_tool);
+    }
+    let bounded_path =
+        bounded_mask_path || state.surface_line_active || defer_symmetry_path(native_surface_3d, state.suppress_document_symmetry, state.tool.unwrap_or(tool));
+    let processed = if bounded_path { process_path(app, ui.ctx(), state, &view, SURFACE_SAMPLES_PER_FRAME) } else { 0 };
+    if state.suppress_document_symmetry {
+        replay_mirror_path(app, state);
+    }
     // Mask preview is throttled to the same 30 Hz cadence as native live strokes. The cursor
     // still follows the latest pointer every frame; ordered stamps wait in this bounded queue.
     let wrap_preview_due = wrap_preview_due(canvas::paint_target(app) == json!("mask"), state.wrap_last_flush_ms, now_ms);
@@ -693,36 +1200,53 @@ pub(crate) fn input(
     }
     if state.path_release_pending && state.path_pending.is_empty() {
         flush_wrap_samples_at(app, state, now_ms);
-        finish_contour(app, state);
+        if canvas::request_native_mask_gpu_release(app) {
+            state.native_gpu_release_waiting = true;
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+        } else {
+            let deferred_pointer_events = std::mem::take(&mut state.deferred_pointer_events);
+            finish_contour(app, state);
+            state.deferred_pointer_events = deferred_pointer_events;
+        }
     }
     if state.held
         && processed == 0
         && state.path_pending.is_empty()
         && !state.wrapped
+        && !state.suppress_document_symmetry
         && let Some(last) = state.last
     {
-        canvas::tool_event(app, ToolEvent::Move { x: last.point[0], y: last.point[1], pressure: app.stylus.pressure() }, state.modifiers);
+        tool_event(app, state, ToolEvent::Move { x: last.point[0], y: last.point[1], pressure: app.stylus.pressure() }, state.modifiers);
     }
     app.defer_live_stroke = deferred;
     let worker_needs_repaint = if !deferred { canvas::feed_live_stroke(app) } else { false };
     if worker_needs_repaint {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
     }
+    if bounded_path && !state.path_pending.is_empty() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+    }
+    if !state.deferred_pointer_events.is_empty() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+    }
     if mask_stroke_finished {
         ui.ctx().request_repaint();
     }
+    app.tool_override = previous_override;
     if response.hovered() {
         if levels_picker {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         } else if tool.is_type() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
-        } else if tool == Tool::Brush && ui.input(|i| i.modifiers.shift) {
+        } else if tool == Tool::Brush && ui.input(|i| i.modifiers.ctrl) {
             if let Some(point) = ui.input(|i| i.pointer.hover_pos()) {
                 ui.ctx().set_cursor_icon(crate::canvas::pipette_cursor(ui.ctx(), point));
             }
         } else if canvas::strokes_live(tool) || tool == Tool::QuickSelection {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-            cursor(app, ui, &view);
+            if !draw_brush_cursor_before_path {
+                cursor(app, ui, &view);
+            }
             if tool == Tool::CloneStamp {
                 crate::uv_clone::preview(app, ui, geometry, scene, camera, maps, size, response.rect);
             }
@@ -854,6 +1378,30 @@ mod tests {
     }
 
     #[test]
+    fn shift_line_anchor_reprojects_only_to_its_visible_bound_surface() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let (app, scene, geometry) = setup(Tool::Brush);
+        let maps = Materials::default();
+        let view = make_view(&scene, &geometry, &maps);
+        let endpoint = screen(&view, 0);
+        let at = (endpoint - view.rect.min) / view.rect.size();
+        let hit = geometry.hit(&scene, view.camera, &maps, [f64::from(at.x), f64::from(at.y)], view.size).unwrap();
+        let material = geometry.triangles[hit.triangle].material;
+        let doc = app.session.uv.map_bindings(app.session.uv.current_channel())[material].unwrap();
+        let position = std::array::from_fn(|index| (hit.position[index] - geometry.center[index]) / geometry.diameter);
+        let anchor = SurfaceStrokeAnchor { position, pressure: None, doc, scene_generation: app.session.uv.generation };
+        let state = State { tool: Some(Tool::Brush), line_anchor: Some(anchor), ..Default::default() };
+        let line_start = surface_line_start(&app, &state, &view, PathPoint::from(endpoint), Tool::Brush).unwrap();
+        assert!(line_start.screen.distance(endpoint) < 1.0);
+
+        let stale = State { line_anchor: Some(SurfaceStrokeAnchor { scene_generation: app.session.uv.generation.wrapping_add(1), ..anchor }), ..state };
+        assert!(
+            surface_line_start(&app, &stale, &view, PathPoint::from(endpoint), Tool::Brush).is_none(),
+            "a replaced model cannot reuse the old surface point"
+        );
+    }
+
+    #[test]
     fn long_pointer_segments_are_consumed_without_a_sampling_gap() {
         let mut last = PathPoint { screen: Pos2::ZERO, pen: Some(PenSample { pressure: 0.2, ..Default::default() }), time_ms: 0.0 };
         let mut pending = VecDeque::from([
@@ -881,6 +1429,16 @@ mod tests {
     }
 
     #[test]
+    fn surface_path_batch_yields_on_sample_or_time_budget() {
+        assert!(SURFACE_SAMPLES_PER_FRAME > 0);
+        assert!(SURFACE_PATH_BUDGET >= std::time::Duration::from_millis(2));
+        assert!(SURFACE_PATH_BUDGET <= std::time::Duration::from_millis(4));
+        assert!(!path_batch_exhausted(127, 128, std::time::Duration::from_millis(2)));
+        assert!(path_batch_exhausted(128, 128, std::time::Duration::ZERO));
+        assert!(path_batch_exhausted(1, 128, SURFACE_PATH_BUDGET));
+    }
+
+    #[test]
     fn bounded_input_is_opt_in_only_for_native_3d_gpu_mask_brush() {
         assert!(use_bounded_mask_input(true, true, true, true, true));
         assert!(!use_bounded_mask_input(false, true, true, true, true), "split-view 2D input stays eager");
@@ -888,6 +1446,55 @@ mod tests {
         assert!(!use_bounded_mask_input(true, true, true, false, true), "pixel strokes stay immediate");
         assert!(!use_bounded_mask_input(true, true, false, true, true), "non-Brush tools stay immediate");
         assert!(!use_bounded_mask_input(true, true, true, true, false), "CPU fallback stays eager");
+    }
+
+    #[test]
+    fn bounded_symmetry_input_is_limited_to_native_3d_brush_family() {
+        assert!(defer_symmetry_path(true, true, Tool::Brush));
+        assert!(defer_symmetry_path(true, true, Tool::Pencil));
+        assert!(defer_symmetry_path(true, true, Tool::Eraser));
+        assert!(!defer_symmetry_path(false, true, Tool::Brush), "non-native surface input stays eager");
+        assert!(!defer_symmetry_path(true, false, Tool::Brush), "ordinary strokes stay eager");
+        assert!(!defer_symmetry_path(true, true, Tool::CloneStamp), "the feature does not broaden to other tools");
+    }
+
+    #[test]
+    fn new_pointer_gesture_waits_behind_backlog_without_losing_pen_samples() {
+        let old_point = PathPoint { screen: egui::pos2(10.0, 10.0), pen: None, time_ms: 1.0 };
+        let mut state = State { held: true, path_pending: VecDeque::from([old_point]), ..Default::default() };
+        let down = PointerEvent::Down {
+            point: PathPoint { screen: egui::pos2(20.0, 20.0), pen: Some(PenSample { pressure: 0.4, ..Default::default() }), time_ms: 2.0 },
+            modifiers: Modifiers::NONE,
+            tool: Tool::Brush,
+            symmetry_enabled: true,
+        };
+        assert!(defer_new_gesture_behind_path(&mut state, down));
+        defer_pointer_event(
+            &mut state,
+            PointerEvent::Move {
+                point: PathPoint { screen: egui::pos2(25.0, 24.0), pen: Some(PenSample { pressure: 0.75, ..Default::default() }), time_ms: 3.0 },
+                modifiers: Modifiers { shift: true, ..Modifiers::NONE },
+            },
+        );
+        defer_pointer_event(
+            &mut state,
+            PointerEvent::Up {
+                point: PathPoint { screen: egui::pos2(30.0, 28.0), pen: Some(PenSample { pressure: 0.2, ..Default::default() }), time_ms: 4.0 },
+                modifiers: Modifiers::NONE,
+            },
+        );
+
+        assert!(!state.held && state.path_release_pending);
+        assert_eq!(state.path_pending.len(), 1, "the previous ordered stroke backlog remains untouched");
+        assert_eq!(state.deferred_pointer_events.len(), 3);
+        let mut events = state.deferred_pointer_events.iter();
+        let PointerEvent::Down { point, tool, symmetry_enabled, .. } = events.next().unwrap() else { panic!("new press stays first") };
+        assert_eq!((*tool, *symmetry_enabled), (Tool::Brush, true));
+        assert_eq!((point.pen.unwrap().pressure, point.time_ms), (0.4, 2.0));
+        let PointerEvent::Move { point, modifiers } = events.next().unwrap() else { panic!("move follows the press") };
+        assert_eq!((point.pen.unwrap().pressure, point.time_ms, *modifiers), (0.75, 3.0, Modifiers { shift: true, ..Modifiers::NONE }));
+        let PointerEvent::Up { point, .. } = events.next().unwrap() else { panic!("release follows all moves") };
+        assert_eq!((point.pen.unwrap().pressure, point.time_ms), (0.2, 4.0));
     }
 
     #[test]
@@ -938,8 +1545,14 @@ mod tests {
             }
             if finish_on_guard {
                 app.tool_override = Some(Tool::Move);
-                finish_after_pending_path(&mut app, &egui::Context::default(), &mut state, &view);
+                let mut guard_frames = 0;
+                while !state.path_pending.is_empty() {
+                    finish_after_pending_path(&mut app, &egui::Context::default(), &mut state, &view);
+                    guard_frames += 1;
+                    assert!(guard_frames < 32, "guard drains the complete ordered backlog over bounded frames");
+                }
                 assert_eq!(app.tool_override, Some(Tool::Move), "guard drain restores the newly selected tool");
+                assert!(guard_frames > 0);
             } else {
                 app.defer_live_stroke = false;
                 if state.path_release_pending && state.path_pending.is_empty() {
@@ -1217,6 +1830,108 @@ mod tests {
         assert_eq!(app.session.active().unwrap().doc.layers[0].surface().unwrap(), before.layers[0].surface().unwrap());
         app.run("edit.redo", json!({})).unwrap();
         assert_eq!(app.session.active().unwrap().doc.layers[0].surface().unwrap(), after.layers[0].surface().unwrap());
+    }
+
+    #[test]
+    fn mirrored_surface_paths_keep_missed_hit_breaks_and_one_undo_without_2d_symmetry() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let (mut app, scene, geometry) = setup(Tool::Brush);
+        app.run("paint.setSymmetry", json!({"mode":"horizontal","center":[64.0,64.0]})).unwrap();
+        let doc = app.session.active().unwrap().doc.id;
+        let before = app.session.active().unwrap().doc.layers[0].surface().unwrap().clone();
+        let history = app.session.active().unwrap().history.past_len();
+        let mut state =
+            State { tool: Some(Tool::Brush), material: Some(app.session.uv.material), doc: Some(doc), suppress_document_symmetry: true, ..Default::default() };
+        app.uv_paint_key = Some("uv3d-symmetry-test".into());
+        let maps = Materials::default();
+        let view = make_view(&scene, &geometry, &maps);
+
+        tool_event(&mut app, &state, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, Modifiers::NONE);
+        tool_event(&mut app, &state, ToolEvent::Move { x: 30.0, y: 20.0, pressure: 1.0 }, Modifiers::NONE);
+        state.mirror_path.extend([
+            MirrorPathPoint::Sample(MirrorSample { sample: Sample { triangle: 0, shell: 0, point: [100.0, 20.0] }, pressure: 1.0, pen: None, time_ms: 1.0 }),
+            MirrorPathPoint::Sample(MirrorSample { sample: Sample { triangle: 0, shell: 0, point: [100.0, 30.0] }, pressure: 1.0, pen: None, time_ms: 2.0 }),
+        ]);
+        sample(
+            &mut app,
+            &egui::Context::default(),
+            &mut state,
+            &view,
+            PathPoint { screen: view.rect.max + egui::vec2(2.0, 2.0), pen: None, time_ms: 2.5 },
+            Action::Paint,
+        );
+        state.mirror_path.extend([
+            MirrorPathPoint::Sample(MirrorSample { sample: Sample { triangle: 1, shell: 1, point: [100.0, 70.0] }, pressure: 1.0, pen: None, time_ms: 3.0 }),
+            MirrorPathPoint::Sample(MirrorSample { sample: Sample { triangle: 1, shell: 1, point: [100.0, 80.0] }, pressure: 1.0, pen: None, time_ms: 4.0 }),
+        ]);
+
+        replay_mirror_path(&mut app, &mut state);
+        assert_eq!(app.drag.as_ref().unwrap().breaks, [2, 4], "the gap becomes an identical preview/commit path break");
+        let active_index = app.session.active_index().unwrap();
+        let (preview, _) = canvas::display_doc(&mut app, active_index);
+        let preview_surface = preview.layers[0].surface().unwrap().clone();
+        assert_ne!(preview_surface.rgba(100, 25), [1.0; 4], "the first mirrored segment is previewed");
+        assert_ne!(preview_surface.rgba(100, 75), [1.0; 4], "the second mirrored segment is previewed");
+        assert_eq!(preview_surface.rgba(100, 55), [1.0; 4], "a skipped-hit gap is not connected in live preview");
+        assert_eq!(preview_surface.rgba(25, 108), [1.0; 4], "document-space 2D symmetry is suppressed during a 3D symmetric stroke");
+
+        finish(&mut app, &mut state);
+        let active = app.session.active().unwrap();
+        let committed = active.doc.layers[0].surface().unwrap();
+        assert_eq!(active.history.past_len(), history + 1, "source and mirror paths share one Undo");
+        assert_eq!(committed, &preview_surface, "the committed result matches the broken live preview");
+        assert_eq!(active.symmetry.as_ref().and_then(|symmetry| symmetry.preset()).unwrap().mode, photocraft_paint::symmetry::SymmetryMode::Horizontal);
+        assert_ne!(committed.rgba(25, 20), [1.0; 4], "the source side is painted");
+        assert_ne!(committed.rgba(100, 25), [1.0; 4], "the mirrored side is painted");
+        assert_eq!(committed.rgba(100, 55), [1.0; 4], "the skipped-hit gap remains untouched after commit");
+        assert_eq!(committed.rgba(25, 108), [1.0; 4], "the retained 2D symmetry setting was not also applied");
+        app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(app.session.active().unwrap().doc.layers[0].surface().unwrap(), &before, "one Undo restores both sides");
+    }
+
+    #[test]
+    fn batched_mirror_preview_keeps_source_order_pressure_breaks_and_one_undo() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let (mut app, _, _) = setup(Tool::Brush);
+        app.run("paint.setSymmetry", json!({"mode":"horizontal","center":[64.0,64.0]})).unwrap();
+        let history = app.session.active().unwrap().history.past_len();
+        let mut state = State {
+            tool: Some(Tool::Brush),
+            material: Some(app.session.uv.material),
+            doc: app.session.active().map(|document| document.doc.id),
+            suppress_document_symmetry: true,
+            ..Default::default()
+        };
+        app.uv_paint_key = Some("uv3d-symmetry-batches-test".into());
+
+        tool_event(&mut app, &state, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, Modifiers::NONE);
+        tool_event(&mut app, &state, ToolEvent::Move { x: 30.0, y: 20.0, pressure: 1.0 }, Modifiers::NONE);
+        state.last = Some(Sample { triangle: 0, shell: 0, point: [30.0, 20.0] });
+        state.output_last = state.last;
+        state.mirror_path.extend([
+            MirrorPathPoint::Sample(MirrorSample { sample: Sample { triangle: 0, shell: 0, point: [100.0, 20.0] }, pressure: 0.25, pen: None, time_ms: 1.0 }),
+            MirrorPathPoint::Sample(MirrorSample { sample: Sample { triangle: 0, shell: 0, point: [100.0, 30.0] }, pressure: 0.5, pen: None, time_ms: 2.0 }),
+        ]);
+        replay_mirror_path(&mut app, &mut state);
+        assert_eq!(app.drag.as_ref().unwrap().breaks, [2], "the first rendered batch starts a separate mirrored path");
+        assert_eq!(app.drag.as_ref().unwrap().points[2..4].iter().map(|point| point[2]).collect::<Vec<_>>(), [0.25, 0.5]);
+
+        begin_source_path(&mut app, &mut state);
+        tool_event(&mut app, &state, ToolEvent::Move { x: 40.0, y: 20.0, pressure: 0.75 }, Modifiers::NONE);
+        state.last = Some(Sample { triangle: 0, shell: 0, point: [40.0, 20.0] });
+        state.output_last = state.last;
+        state.mirror_path.extend([
+            MirrorPathPoint::Break,
+            MirrorPathPoint::Sample(MirrorSample { sample: Sample { triangle: 1, shell: 1, point: [100.0, 70.0] }, pressure: 0.75, pen: None, time_ms: 3.0 }),
+            MirrorPathPoint::Sample(MirrorSample { sample: Sample { triangle: 1, shell: 1, point: [100.0, 80.0] }, pressure: 1.0, pen: None, time_ms: 4.0 }),
+        ]);
+        replay_mirror_path(&mut app, &mut state);
+        let drag = app.drag.as_ref().unwrap();
+        assert_eq!(drag.breaks, [2, 4, 5], "each bounded render batch remains separated from the other ordered path");
+        assert_eq!(drag.points[5..7].iter().map(|point| point[2]).collect::<Vec<_>>(), [0.75, 1.0], "recorded pen pressure order is preserved");
+
+        finish(&mut app, &mut state);
+        assert_eq!(app.session.active().unwrap().history.past_len(), history + 1, "all source and mirrored batches share one Undo");
     }
 
     #[test]

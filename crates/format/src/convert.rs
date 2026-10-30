@@ -476,8 +476,7 @@ impl Loader<'_> {
                 photocraft_doc::mask_paint::EffectKind::Paint
                     | photocraft_doc::mask_paint::EffectKind::Fill { .. }
                     | photocraft_doc::mask_paint::EffectKind::Blur { .. }
-            )
-                && p.blend != photocraft_color::BlendMode::Normal
+            ) && p.blend != photocraft_color::BlendMode::Normal
             {
                 return Err(FormatError::corrupt("mask blend mode does not apply to Levels effects"));
             }

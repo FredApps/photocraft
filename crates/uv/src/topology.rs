@@ -7,6 +7,7 @@ use std::{
 };
 
 const MAX_OCCUPANCY_PIXELS: usize = 16_384 * 16_384;
+const MAX_SHELL_ID_PIXELS: usize = 64 * 1024 * 1024;
 const MAX_PADDING_CANDIDATES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
@@ -245,6 +246,58 @@ impl Topology {
         Ok(occupancy)
     }
 
+    /// Rasterize shell ownership into a row-major per-pixel ID grid. Zero means off-shell;
+    /// occupied pixels contain `shell_id + 1`. UVs use the same four subpixel samples and
+    /// bottom-left to top-left conversion as [`Self::occupancy_mask`]. If shells overlap in UV
+    /// space, the smallest assigned shell ID wins, independent of raster iteration order.
+    pub fn shell_id_map(&self, scene: &Scene, width: u32, height: u32, material: usize, tile: [i32; 2]) -> Result<Vec<u32>> {
+        self.shell_id_map_for_materials(scene, width, height, &[material], tile)
+    }
+
+    /// Rasterize shell ownership for several materials bound to one texture document. IDs stay
+    /// global to this topology, so blur samples from separate material shells remain isolated.
+    pub fn shell_id_map_for_materials(&self, scene: &Scene, width: u32, height: u32, materials: &[usize], tile: [i32; 2]) -> Result<Vec<u32>> {
+        scene.validate()?;
+        if materials.is_empty() || materials.iter().any(|material| *material >= scene.materials.len()) {
+            return Err(Error("Material is out of range".into()));
+        }
+        let (w, h) = (width as usize, height as usize);
+        let n = w
+            .checked_mul(h)
+            .filter(|n| *n > 0 && *n <= MAX_SHELL_ID_PIXELS && width <= 16_384 && height <= 16_384)
+            .ok_or_else(|| Error("UV shell map exceeds its 64M-pixel allocation limit".into()))?;
+        if self.triangle_shell.len() != scene.triangles.len() {
+            return Err(Error("UV topology does not match the scene".into()));
+        }
+        let mut ids = filled(n, 0u32)?;
+        let point = |uv: [f64; 2]| [(uv[0] - f64::from(tile[0])) * w as f64, (1.0 - (uv[1] - f64::from(tile[1]))) * h as f64];
+        for (triangle_id, triangle) in scene.triangles.iter().enumerate().filter(|(_, triangle)| materials.contains(&triangle.material)) {
+            let shell_id = self.triangle_shell.get(triangle_id).copied().ok_or_else(|| Error("UV topology does not match the scene".into()))?;
+            if self.shells.get(shell_id).is_none_or(|shell| shell.material != triangle.material) {
+                return Err(Error("UV topology does not match the scene material".into()));
+            }
+            let shell = u32::try_from(shell_id).ok().and_then(|id| id.checked_add(1)).ok_or_else(|| Error("UV shell ID exceeds the raster format".into()))?;
+            let pts = triangle.corners.map(|corner| point(corner.uv));
+            let (x0, y0, x1, y1) = bounds(&pts, 0.0, w, h);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let covered = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
+                        .iter()
+                        .any(|(dx, dy)| barycentric([x as f64 + dx, y as f64 + dy], pts).is_some());
+                    if covered {
+                        let index = y * w + x;
+                        if let Some(current) = ids.get_mut(index)
+                            && (*current == 0 || shell < *current)
+                        {
+                            *current = shell;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(ids)
+    }
+
     /// Build a sparse exterior apron for a single shell. The apron follows only true shell
     /// boundaries (never internal triangulation edges), stays inside the atlas, and excludes
     /// every texel covered by another shell of the same material.
@@ -447,4 +500,48 @@ fn segment_delta(p: [f64; 2], [a, b]: [[f64; 2]; 2]) -> [f64; 2] {
     let len = d[0] * d[0] + d[1] * d[1];
     let t = if len > 1e-15 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len).clamp(0.0, 1.0) } else { 0.0 };
     [p[0] - a[0] - t * d[0], p[1] - a[1] - t * d[1]]
+}
+
+#[cfg(test)]
+mod shell_id_map_tests {
+    use super::*;
+    use crate::{Corner, Material, Scene, Triangle};
+
+    fn overlapping_scene(reverse: bool) -> Scene {
+        let points = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]];
+        let triangle = |offset| Triangle {
+            material: 0,
+            corners: [
+                Corner { vertex: offset, uv: [0.0, 0.0], normal: None },
+                Corner { vertex: offset + 1, uv: [1.0, 0.0], normal: None },
+                Corner { vertex: offset + 2, uv: [0.0, 1.0], normal: None },
+            ],
+        };
+        Scene {
+            positions: points,
+            triangles: if reverse { vec![triangle(3), triangle(0)] } else { vec![triangle(0), triangle(3)] },
+            materials: vec![Material::default()],
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn shell_id_grid_matches_occupancy_convention_and_resolves_overlaps_by_lowest_id() {
+        let scene = overlapping_scene(false);
+        let topology = Topology::build(&scene).unwrap();
+        let ids = topology.shell_id_map(&scene, 8, 8, 0, [0, 0]).unwrap();
+        let occupancy = topology.occupancy_mask(&scene, 8, 8, 0, [0, 0]).unwrap();
+        assert_eq!(ids.len(), 64);
+        for y in 0..8 {
+            for x in 0..8 {
+                assert_eq!(ids[y * 8 + x] != 0, occupancy.contains(x as i32, y as i32), "({x}, {y})");
+                if occupancy.contains(x as i32, y as i32) {
+                    assert_eq!(ids[y * 8 + x], 1, "overlap deterministically chooses shell zero");
+                }
+            }
+        }
+        let reversed = overlapping_scene(true);
+        let reversed_topology = Topology::build(&reversed).unwrap();
+        assert_eq!(reversed_topology.shell_id_map(&reversed, 8, 8, 0, [0, 0]).unwrap(), ids);
+    }
 }

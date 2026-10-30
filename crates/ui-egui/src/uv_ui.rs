@@ -22,6 +22,20 @@ pub enum SelectionTarget {
     Polygons,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SelectionDepth {
+    #[default]
+    VisibleOnly,
+    ThroughMesh,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SelectionGesture {
+    #[default]
+    Rectangle,
+    Lasso,
+}
+
 #[derive(Clone, Copy)]
 struct FillDragState {
     start: [f64; 2],
@@ -52,6 +66,13 @@ pub struct State {
     pub select_shells: bool,
     #[serde(skip)]
     pub selection_target: SelectionTarget,
+    /// Temporary wireframe request for the current polygon-selection interaction.
+    #[serde(skip)]
+    pub temporary_polygon_wireframe: bool,
+    #[serde(skip)]
+    pub selection_depth: SelectionDepth,
+    #[serde(skip)]
+    pub selection_gesture: SelectionGesture,
     #[serde(skip)]
     pub selected_polygons: std::collections::BTreeSet<usize>,
     /// Texture document whose UV space owns the transient polygon selection.
@@ -112,6 +133,9 @@ impl Default for State {
             wireframe_picker_open: false,
             select_shells: false,
             selection_target: SelectionTarget::UvShells,
+            temporary_polygon_wireframe: false,
+            selection_depth: SelectionDepth::VisibleOnly,
+            selection_gesture: SelectionGesture::Rectangle,
             selected_polygons: std::collections::BTreeSet::new(),
             polygon_document: None,
             paint_wrap: false,
@@ -155,6 +179,41 @@ impl Default for State {
             status: String::new(),
             overlap: Vec::new(),
         }
+    }
+}
+
+fn polygon_selection_wireframe_active(state: &State) -> bool {
+    state.select_shells && state.selection_target == SelectionTarget::Polygons && state.temporary_polygon_wireframe
+}
+
+fn wireframe_visible(state: &State, snap_pending: bool) -> bool {
+    state.show_wireframe || snap_pending || polygon_selection_wireframe_active(state)
+}
+
+fn update_polygon_wireframe_for_mode(state: &mut State, previous_target: SelectionTarget) {
+    if !state.select_shells || state.selection_target != SelectionTarget::Polygons {
+        state.temporary_polygon_wireframe = false;
+    } else if previous_target != SelectionTarget::Polygons {
+        state.temporary_polygon_wireframe = true;
+    }
+}
+
+pub(crate) fn begin_polygon_selection_wireframe(state: &mut State) {
+    if state.select_shells && state.selection_target == SelectionTarget::Polygons {
+        state.temporary_polygon_wireframe = true;
+    }
+}
+
+fn finish_polygon_selection_wireframe(state: &mut State) {
+    state.temporary_polygon_wireframe = false;
+}
+
+fn cancel_temporary_wireframes_for_gray_mask(state: &mut State, ctx: &egui::Context, gray_mask_view: bool, polygon_gesture_active: bool) {
+    if gray_mask_view {
+        if !polygon_gesture_active {
+            finish_polygon_selection_wireframe(state);
+        }
+        crate::uv_symmetry::cancel_pending_snap(ctx);
     }
 }
 
@@ -205,6 +264,7 @@ pub(crate) struct Cache {
     refreshed: Option<Instant>,
     gpu_mask_preview_was_active: bool,
     gpu_mask_preview_flush_pending: bool,
+    gray_mask_shells: Option<(u64, [u32; 2], Vec<usize>, std::sync::Arc<Vec<u32>>)>,
     texture_side: usize,
     navigation: Option<Navigation>,
     wheel_active: Option<Instant>,
@@ -371,6 +431,71 @@ fn showing_gray_layer_mask(app: &PhotocraftApp) -> bool {
 fn gray_mask_hides_all_materials(app: &PhotocraftApp, cache: &Cache) -> bool {
     showing_gray_layer_mask(app)
         && app.session.uv.scene.as_ref().is_some_and(|scene| scene.materials.iter().enumerate().all(|(material, _)| cache.masked.contains(&material)))
+}
+fn gray_mask_gpu_source(app: &mut PhotocraftApp, cache: &mut Cache, scene: &photocraft_uv::Scene) -> Option<crate::uv_gpu::GrayMaskGpuSource> {
+    let gpu_brush_active = crate::canvas::native_mask_gpu_brush_active(app);
+    let source = gray_mask_gpu_source_inner(app, cache, scene);
+    if gpu_brush_active && source.is_none() {
+        crate::canvas::fail_native_mask_gpu_brush(app);
+    }
+    source
+}
+
+fn gray_mask_gpu_source_inner(app: &mut PhotocraftApp, cache: &mut Cache, scene: &photocraft_uv::Scene) -> Option<crate::uv_gpu::GrayMaskGpuSource> {
+    let index = app.session.active_index()?;
+    let (view, revision, doc_id) = {
+        let state = app.session.documents().get(index)?;
+        (photocraft_engine::mask_view_cmds::current(state)?, state.revision, state.doc.id)
+    };
+    if view.mode != photocraft_engine::mask_view_cmds::MaskViewMode::Gray || view.filter {
+        return None;
+    }
+    // Use the same layered display snapshot as the canvas. `gpu_display_doc` only covers
+    // temporary effect previews; an in-progress native brush stroke is exposed by
+    // `canvas::display_doc` and must advance this key before the stroke is committed.
+    let (document, live_key) = crate::canvas::display_doc(app, index);
+    let mask = document.layer(view.layer)?.mask.as_ref()?;
+    if mask.feather > 0.0 {
+        return None;
+    }
+    mask.paint.as_ref()?;
+    let size = [document.size.width, document.size.height];
+    let materials: Vec<_> = cache.masked.iter().copied().filter(|material| crate::uv_mask::source(app, *material) == Some(index)).collect();
+    if materials.is_empty() {
+        return None;
+    }
+    let topology = app.session.uv.topology.clone()?;
+    let topology_key = app.session.uv.generation;
+    let map =
+        cache.gray_mask_shells.as_ref().filter(|(key, map_size, map_materials, _)| *key == topology_key && *map_size == size && *map_materials == materials);
+    let shell_ids = if let Some((_, _, _, ids)) = map {
+        ids.clone()
+    } else {
+        let ids = topology.shell_id_map_for_materials(scene, size[0], size[1], &materials, [0, 0]).ok()?;
+        let ids = std::sync::Arc::new(ids);
+        cache.gray_mask_shells = Some((topology_key, size, materials.clone(), ids.clone()));
+        ids
+    };
+    let view_key = crate::uv_mask::key(app, index);
+    let mut owner_hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&doc_id.0, &mut owner_hasher);
+    std::hash::Hash::hash(&view.layer.0, &mut owner_hasher);
+    let owner_key = std::hash::Hasher::finish(&owner_hasher);
+    let mut shell_hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&(topology_key, size, &materials), &mut shell_hasher);
+    let shell_key = std::hash::Hasher::finish(&shell_hasher);
+    let materials = materials.into_iter().collect();
+    let brush_preview = crate::canvas::native_mask_gpu_input(app);
+    Some(crate::uv_gpu::GrayMaskGpuSource {
+        document,
+        layer: view.layer,
+        shell_ids,
+        owner_key,
+        shell_key,
+        materials,
+        key: (doc_id.0, revision, live_key, view_key ^ topology_key),
+        brush_preview,
+    })
 }
 fn should_refresh_surface_maps(app: &PhotocraftApp, cache: &Cache) -> bool {
     !gray_mask_hides_all_materials(app, cache)
@@ -950,6 +1075,19 @@ pub(crate) fn shell_settings(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui.selectable_value(&mut state.selection_target, SelectionTarget::UvShells, tl!("UV shells"));
         ui.selectable_value(&mut state.selection_target, SelectionTarget::Polygons, tl!("Polygons"));
     });
+    ui.horizontal(|ui| {
+        ui.label(tl!("Selection depth:"));
+        ui.selectable_value(&mut state.selection_depth, SelectionDepth::VisibleOnly, tl!("Visible only"));
+        ui.selectable_value(&mut state.selection_depth, SelectionDepth::ThroughMesh, tl!("Through mesh"));
+    });
+    if state.selection_target == SelectionTarget::Polygons {
+        ui.horizontal(|ui| {
+            ui.label(tl!("Gesture:"));
+            ui.selectable_value(&mut state.selection_gesture, SelectionGesture::Rectangle, tl!("Rectangle"));
+            ui.selectable_value(&mut state.selection_gesture, SelectionGesture::Lasso, tl!("Lasso"));
+        });
+    }
+    update_polygon_wireframe_for_mode(&mut state, previous_target);
     if previous_target == SelectionTarget::Polygons && state.selection_target != SelectionTarget::Polygons {
         let next_target = state.selection_target;
         state.selection_target = previous_target;
@@ -966,23 +1104,25 @@ pub(crate) fn shell_settings(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui.selectable_value(&mut state.shell_enclosed, false, tl!("Intersecting"));
         ui.selectable_value(&mut state.shell_enclosed, true, tl!("Fully enclosed"));
     });
-    let previous = (state.guard, state.horizontal, state.vertical, state.feather, state.padding);
-    for (label, value) in [
-        (tl!("General margin, px"), &mut state.guard),
-        (tl!("U margin, px"), &mut state.horizontal),
-        (tl!("V margin, px"), &mut state.vertical),
-        (tl!("Inward feather, px"), &mut state.feather),
-        (tl!("Outward padding, px"), &mut state.padding),
-    ] {
-        ui.horizontal(|ui| {
-            ui.label(label);
-            ui.add(egui::DragValue::new(value).range(0.0..=1024.0));
-        });
-    }
-    if previous != (state.guard, state.horizontal, state.vertical, state.feather, state.padding) && app.session.uv.scene.is_some() {
-        let p = mask_params(&state);
-        if command(app, &mut state, "uv.settings", p) {
-            app.uv_cache.mask_settings_pending = true;
+    if state.selection_target != SelectionTarget::Polygons {
+        let previous = (state.guard, state.horizontal, state.vertical, state.feather, state.padding);
+        for (label, value) in [
+            (tl!("General margin, px"), &mut state.guard),
+            (tl!("U margin, px"), &mut state.horizontal),
+            (tl!("V margin, px"), &mut state.vertical),
+            (tl!("Inward feather, px"), &mut state.feather),
+            (tl!("Outward padding, px"), &mut state.padding),
+        ] {
+            ui.horizontal(|ui| {
+                ui.label(label);
+                ui.add(egui::DragValue::new(value).range(0.0..=1024.0));
+            });
+        }
+        if previous != (state.guard, state.horizontal, state.vertical, state.feather, state.padding) && app.session.uv.scene.is_some() {
+            let p = mask_params(&state);
+            if command(app, &mut state, "uv.settings", p) {
+                app.uv_cache.mask_settings_pending = true;
+            }
         }
     }
     app.ui.uv_workbench = state;
@@ -1318,7 +1458,7 @@ fn scene_extent(scene: &photocraft_uv::Scene) -> f64 {
     });
     ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt().max(1e-12)
 }
-/// A gesture belongs to navigation from Alt+press until mouse release, even if Alt is released first.
+/// A gesture belongs to navigation from Ctrl+press until mouse release, even if Ctrl is released first.
 struct NavigationResult {
     gesture: bool,
     orbit_started: bool,
@@ -1351,11 +1491,11 @@ fn wheel_delta(ui: &egui::Ui) -> f32 {
 fn navigate(ui: &egui::Ui, response: &egui::Response, state: &mut State, nav: &mut Option<Navigation>, extent: f64) -> NavigationResult {
     let previous = nav.is_some();
     let scroll = wheel_delta(ui);
-    let (alt, pressed, left, middle, right, delta, scroll) = ui.input(|i| {
+    let (ctrl, pressed, left, middle, right, delta, scroll) = ui.input(|i| {
         (i.modifiers.alt, i.pointer.any_pressed(), i.pointer.primary_down(), i.pointer.middle_down(), i.pointer.secondary_down(), i.pointer.delta(), scroll)
     });
     let mut started = false;
-    if alt && pressed && response.contains_pointer() {
+    if ctrl && pressed && response.contains_pointer() {
         *nav = if right || (left && middle) {
             Some(Navigation::Dolly)
         } else if middle {
@@ -1524,7 +1664,7 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         });
     }
     let extent = cache.geometry.as_ref().map_or_else(|| scene_extent(&scene), |(_, g)| g.diameter);
-    let resizing = crate::uv_paint::resize_brush(app, ui, &response, !state.select_shells);
+    let resizing = crate::uv_paint::resize_brush(app, ui, &response, !state.select_shells && !ui.input(|i| i.modifiers.alt));
     let navigation =
         if resizing { NavigationResult { gesture: true, orbit_started: false } } else { navigate(ui, &response, &mut state, &mut cache.navigation, extent) };
     let wheel = if response.hovered() { wheel_delta(ui) } else { 0.0 };
@@ -1537,6 +1677,14 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // The quality settle interval owns no input: a click immediately after zoom
     // must still begin a stroke or select a shell.
     let gesture = navigation.gesture || wheel != 0.0;
+    let polygon_selection_started = state.select_shells
+        && state.selection_target == SelectionTarget::Polygons
+        && !gesture
+        && response.contains_pointer()
+        && ui.input(|i| i.pointer.primary_pressed() && !i.modifiers.alt);
+    if polygon_selection_started {
+        begin_polygon_selection_wireframe(&mut state);
+    }
     let opacity_preview = crate::uv_mask_paint_preview::active_document(app);
     let active_preview = opacity_preview.or_else(|| crate::uv_paint::active_document(&cache.paint));
     let active_preview_gpu = active_preview.is_some_and(|id| {
@@ -1597,6 +1745,12 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     }
     let limit = navigation_limit(state.fast_navigation, moving, ui.input(|i| i.max_texture_side));
     let [w, h] = preview_size(size, ui.ctx().pixels_per_point(), cache.gpu.is_none() && state.antialias && !moving, limit);
+    let gray_mask_view = app
+        .session
+        .active()
+        .and_then(photocraft_engine::mask_view_cmds::current)
+        .is_some_and(|view| view.mode == photocraft_engine::mask_view_cmds::MaskViewMode::Gray);
+    let gray_mask_source = gray_mask_view.then(|| gray_mask_gpu_source(app, &mut cache, &scene)).flatten();
     let maps = preview::Materials { colors: &cache.textures, normals: &cache.normals, hidden: app.session.uv.hidden_materials.clone() };
     if navigation.orbit_started
         && let Some((_, geometry)) = &cache.geometry
@@ -1608,6 +1762,13 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         surface_pivot(&mut state, geometry, &scene, &maps, cursor, [w as u32, h as u32]);
     }
     let camera = state.camera();
+    let polygon_gesture_active = state.select_shells
+        && state.selection_target == SelectionTarget::Polygons
+        && ui.input(|input| input.focused && (polygon_selection_started || (cache.shell_box_3d.is_some() && input.pointer.primary_down())));
+    cancel_temporary_wireframes_for_gray_mask(&mut state, ui.ctx(), gray_mask_view, polygon_gesture_active);
+    // This single visibility decision feeds both the GPU renderer and CPU line overlay.
+    // Temporary requests never write the user's persisted show_wireframe setting.
+    let draw_wireframe = wireframe_visible(&state, crate::uv_symmetry::get(ui.ctx()).snap_pending);
     let key = (app.session.uv.generation, camera, w, h, state.select_shells);
     let mut gpu_image = None;
     let no_highlight = std::collections::BTreeSet::new();
@@ -1624,7 +1785,8 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         &no_highlight
     };
     if let (Some(renderer), Some((_, geometry))) = (&mut cache.gpu, &cache.geometry) {
-        renderer.set_wireframe(state.show_wireframe, state.wireframe_color, state.wireframe_opacity);
+        renderer.set_wireframe(draw_wireframe, state.wireframe_color, state.wireframe_opacity);
+        renderer.set_gray_mask_source(gray_mask_source.as_ref());
         let draw = crate::uv_gpu::Draw {
             scene: &scene,
             geometry: geometry.clone(),
@@ -1639,6 +1801,7 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             keys: &cache.keys,
             normal_keys: &cache.normal_keys,
             masked: &cache.masked,
+            symmetry_plane: if state.view_3d { crate::uv_symmetry::plane_corners(geometry, crate::uv_symmetry::get(ui.ctx())) } else { None },
         };
         let environment = crate::uv_lighting::ensure(&mut cache.lighting);
         let map_started = crate::gpu_canvas::now_ms();
@@ -1690,7 +1853,7 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     } else if let Some(handle) = &cache.frame_handle {
         ui.painter().image(handle.id(), rect, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
     }
-    if state.show_wireframe
+    if draw_wireframe
         && gpu_image.is_none()
         && let Some((_, geometry)) = &cache.geometry
     {
@@ -1702,29 +1865,65 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             painter.line_segment(edge, stroke);
         }
     }
+    if state.view_3d
+        && gpu_image.is_none()
+        && let Some((_, geometry)) = &cache.geometry
+    {
+        crate::uv_symmetry::paint_plane(ui, geometry, camera, [w as u32, h as u32], rect);
+    }
     if state.select_shells && !gesture {
-        if let Some((area, mods)) = crate::uv_box::input(ui, &response, &mut cache.shell_box_3d)
+        let lasso = state.selection_target == SelectionTarget::Polygons && state.selection_gesture == SelectionGesture::Lasso;
+        let selection_drag_was_active = cache.shell_box_3d.is_some();
+        let selection = crate::uv_box::input(ui, &response, &mut cache.shell_box_3d, lasso);
+        let polygon_selection_cancelled = state.selection_target == SelectionTarget::Polygons
+            && state.temporary_polygon_wireframe
+            && ui.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused);
+        let polygon_selection_finished = state.selection_target == SelectionTarget::Polygons
+            && ((selection_drag_was_active || polygon_selection_started)
+                && cache.shell_box_3d.is_none()
+                && ui.input(|i| i.pointer.primary_released() || !i.pointer.primary_down() || !i.focused)
+                || polygon_selection_cancelled);
+        if polygon_selection_finished {
+            finish_polygon_selection_wireframe(&mut state);
+            ui.ctx().request_repaint();
+        }
+        if let Some((area, mods)) = selection
             && let Some((_, g)) = &cache.geometry
         {
             if state.selection_target == SelectionTarget::UvShells {
-                let material = app.session.uv.material;
-                crate::uv_box::select(app, &mut state, area, mods, material, |id| {
-                    let tri = g.triangles.get(id)?;
-                    projected_face(g, tri.positions, camera, [w as u32, h as u32], rect)
-                });
+                if let crate::uv_box::SelectionArea::Rect(area) = area {
+                    let material = app.session.uv.material;
+                    let visible_only = state.selection_depth == SelectionDepth::VisibleOnly;
+                    crate::uv_box::select(
+                        app,
+                        &mut state,
+                        area,
+                        mods,
+                        material,
+                        visible_only,
+                        |id| {
+                            let tri = g.triangles.get(id)?;
+                            projected_face(g, tri.positions, camera, [w as u32, h as u32], rect)
+                        },
+                        |id, points, selection| face_is_visible(g, &scene, &maps, (camera, [w as u32, h as u32], rect), id, points, selection),
+                    );
+                }
             } else {
                 let mut selected = Vec::new();
                 let active_materials = app.session.active_index().map(|index| canvas_materials(app, index)).unwrap_or_default();
                 for (id, tri) in g.triangles.iter().enumerate() {
                     if !active_materials.contains(&tri.material)
                         || app.session.uv.hidden_materials.contains(&tri.material)
-                        || (camera.cull_backfaces && !wireframe_front_facing(tri.face, camera))
+                        || (state.selection_depth == SelectionDepth::VisibleOnly && camera.cull_backfaces && !wireframe_front_facing(tri.face, camera))
                     {
                         continue;
                     }
                     let Some(points) = projected_face(g, tri.positions, camera, [w as u32, h as u32], rect) else { continue };
-                    let touches = if state.shell_enclosed { points.iter().all(|p| area.contains(*p)) } else { triangle_touches_rect(area, points) };
-                    if touches && face_is_visible(g, &scene, &maps, (camera, [w as u32, h as u32], rect), id, points, area) {
+                    let touches =
+                        if state.shell_enclosed { selection_area_contains_triangle(&area, points) } else { selection_area_touches_triangle(&area, points) };
+                    let visible = state.selection_depth == SelectionDepth::ThroughMesh
+                        || face_is_visible_in_area(g, &scene, &maps, (camera, [w as u32, h as u32], rect), id, points, &area);
+                    if touches && visible {
                         selected.push(id);
                     }
                 }
@@ -1757,16 +1956,68 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if state.selection_target == SelectionTarget::Polygons {
                 let modifiers = ui.input(|i| i.modifiers);
                 let active_materials = app.session.active_index().map(|index| canvas_materials(app, index)).unwrap_or_default();
-                if scene.triangles.get(triangle).is_some_and(|tri| active_materials.contains(&tri.material))
+                let through_faces: Vec<usize> = if state.selection_depth == SelectionDepth::ThroughMesh {
+                    cache.geometry.as_ref().map_or_else(Vec::new, |(_, g)| {
+                        g.triangles
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(id, tri)| {
+                                if !active_materials.contains(&tri.material)
+                                    || app.session.uv.hidden_materials.contains(&tri.material)
+                                    || (camera.cull_backfaces
+                                        && state.selection_depth == SelectionDepth::VisibleOnly
+                                        && !wireframe_front_facing(tri.face, camera))
+                                {
+                                    return None;
+                                }
+                                let points = projected_face(g, tri.positions, camera, [w as u32, h as u32], rect)?;
+                                point_in_triangle(p, points).then_some(id)
+                            })
+                            .collect()
+                    })
+                } else {
+                    vec![triangle]
+                };
+                if !through_faces.is_empty()
+                    && through_faces.iter().all(|&id| {
+                        scene
+                            .triangles
+                            .get(id)
+                            .is_some_and(|tri| active_materials.contains(&tri.material) && !app.session.uv.hidden_materials.contains(&tri.material))
+                    })
                     && let Some(owner) = app.session.active().map(|st| st.doc.id)
                 {
-                    update_polygon_selection(&mut state, &[triangle], modifiers, owner);
+                    update_polygon_selection(&mut state, &through_faces, modifiers, owner);
                     cache.rendered = None;
                 }
             } else if let Some(&shell) = topology.triangle_shell.get(triangle)
                 && let Some(sh) = topology.shells.get(shell)
             {
-                choose(app, &mut state, ui, sh.material, shell);
+                if state.selection_depth == SelectionDepth::ThroughMesh {
+                    let pointer = p;
+                    let mut shells = std::collections::BTreeSet::new();
+                    if let Some((_, g)) = &cache.geometry {
+                        for (id, tri) in g.triangles.iter().enumerate() {
+                            if tri.material != app.session.uv.material
+                                || app.session.uv.hidden_materials.contains(&tri.material)
+                                || (camera.cull_backfaces && state.selection_depth == SelectionDepth::VisibleOnly && !wireframe_front_facing(tri.face, camera))
+                            {
+                                continue;
+                            }
+                            if projected_face(g, tri.positions, camera, [w as u32, h as u32], rect).is_some_and(|points| point_in_triangle(pointer, points))
+                                && let Some(shell) = topology.triangle_shell.get(id)
+                            {
+                                shells.insert(*shell);
+                            }
+                        }
+                    }
+                    let modifiers = ui.input(|i| i.modifiers);
+                    if !shells.is_empty() {
+                        crate::uv_box::select_ids(app, &mut state, sh.material, &shells.into_iter().collect::<Vec<_>>(), modifiers);
+                    }
+                } else {
+                    choose(app, &mut state, ui, sh.material, shell);
+                }
             }
         }
     }
@@ -1801,11 +2052,8 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if cache.navigation.is_some() {
         ui.ctx().request_repaint();
     }
-    let picker = response.secondary_clicked()
-        && !gesture
-        && !state.select_shells
-        && !ui.input(|i| i.modifiers.alt || i.modifiers.ctrl)
-        && crate::paint_mouse::has_brush_picker(app.ui.tool);
+    let picker =
+        response.secondary_clicked() && !gesture && !state.select_shells && !ui.input(|i| i.modifiers.alt) && crate::paint_mouse::has_brush_picker(app.ui.tool);
     app.ui.uv_workbench = state;
     app.uv_cache = cache;
     if picker && let Some(p) = response.interact_pointer_pos() {
@@ -2255,6 +2503,94 @@ fn triangle_touches_rect(rect: Rect, triangle: [Pos2; 3]) -> bool {
     !clip_triangle_to_rect(rect, triangle).is_empty()
 }
 
+fn point_on_segment(point: Pos2, start: Pos2, end: Pos2) -> bool {
+    let edge = end - start;
+    let offset = point - start;
+    edge.x * offset.y - edge.y * offset.x <= 0.25
+        && edge.x * offset.y - edge.y * offset.x >= -0.25
+        && offset.dot(edge) >= -0.25
+        && offset.dot(edge) <= edge.length_sq() + 0.25
+}
+
+fn point_in_polygon(point: Pos2, polygon: &[Pos2]) -> bool {
+    if polygon.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    for (a, b) in polygon.iter().zip(polygon.iter().cycle().skip(1)).take(polygon.len()) {
+        if point_on_segment(point, *a, *b) {
+            return true;
+        }
+        if (a.y > point.y) != (b.y > point.y) {
+            let crossing_x = (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x;
+            if point.x < crossing_x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+fn point_in_triangle(point: Pos2, triangle: [Pos2; 3]) -> bool {
+    let cross = |a: Pos2, b: Pos2, p: Pos2| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    let a = cross(triangle[0], triangle[1], point);
+    let b = cross(triangle[1], triangle[2], point);
+    let c = cross(triangle[2], triangle[0], point);
+    (a >= -0.01 && b >= -0.01 && c >= -0.01) || (a <= 0.01 && b <= 0.01 && c <= 0.01)
+}
+
+fn segment_intersection(a: Pos2, b: Pos2, c: Pos2, d: Pos2) -> Option<Pos2> {
+    let ab = b - a;
+    let cd = d - c;
+    let cross = |u: egui::Vec2, v: egui::Vec2| u.x * v.y - u.y * v.x;
+    let denominator = cross(ab, cd);
+    if denominator.abs() < 1e-5 {
+        return [a, b, c, d].into_iter().find(|p| point_on_segment(*p, a, b) && point_on_segment(*p, c, d));
+    }
+    let ac = c - a;
+    let t = cross(ac, cd) / denominator;
+    let u = cross(ac, ab) / denominator;
+    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some(a + ab * t)
+}
+
+fn triangle_lasso_intersection_points(polygon: &[Pos2], triangle: [Pos2; 3]) -> Vec<Pos2> {
+    if polygon.len() < 3 {
+        return Vec::new();
+    }
+    let mut points: Vec<_> = triangle.iter().copied().filter(|point| point_in_polygon(*point, polygon)).collect();
+    points.extend(polygon.iter().copied().filter(|point| point_in_triangle(*point, triangle)));
+    for (ta, tb) in triangle.iter().copied().zip(triangle.iter().copied().cycle().skip(1)).take(3) {
+        for (la, lb) in polygon.iter().copied().zip(polygon.iter().copied().cycle().skip(1)).take(polygon.len()) {
+            if let Some(point) = segment_intersection(ta, tb, la, lb) {
+                points.push(point);
+            }
+        }
+    }
+    points.dedup_by(|a, b| a.distance_sq(*b) < 0.25);
+    points
+}
+
+fn selection_area_touches_triangle(area: &crate::uv_box::SelectionArea, triangle: [Pos2; 3]) -> bool {
+    match area {
+        crate::uv_box::SelectionArea::Rect(rect) => triangle_touches_rect(*rect, triangle),
+        crate::uv_box::SelectionArea::Lasso(polygon) => !triangle_lasso_intersection_points(polygon, triangle).is_empty(),
+    }
+}
+
+fn selection_area_contains_triangle(area: &crate::uv_box::SelectionArea, triangle: [Pos2; 3]) -> bool {
+    match area {
+        crate::uv_box::SelectionArea::Rect(rect) => triangle.iter().all(|point| rect.contains(*point)),
+        crate::uv_box::SelectionArea::Lasso(polygon) => triangle.iter().all(|point| point_in_polygon(*point, polygon)),
+    }
+}
+
+fn selection_area_intersection_points(area: &crate::uv_box::SelectionArea, triangle: [Pos2; 3]) -> Vec<Pos2> {
+    match area {
+        crate::uv_box::SelectionArea::Rect(rect) => clip_triangle_to_rect(*rect, triangle),
+        crate::uv_box::SelectionArea::Lasso(polygon) => triangle_lasso_intersection_points(polygon, triangle),
+    }
+}
+
 fn face_is_visible(
     geometry: &photocraft_uv::prepared::Geometry,
     scene: &photocraft_uv::Scene,
@@ -2264,14 +2600,38 @@ fn face_is_visible(
     triangle: [Pos2; 3],
     area: Rect,
 ) -> bool {
-    let (camera, size, viewport) = frame;
     let clipped = clip_triangle_to_rect(area, triangle);
-    if clipped.is_empty() {
+    face_visible_at_samples(geometry, scene, maps, frame, face_id, &clipped)
+}
+
+fn face_is_visible_in_area(
+    geometry: &photocraft_uv::prepared::Geometry,
+    scene: &photocraft_uv::Scene,
+    maps: &preview::Materials<'_>,
+    frame: (Camera, [u32; 2], Rect),
+    face_id: usize,
+    triangle: [Pos2; 3],
+    area: &crate::uv_box::SelectionArea,
+) -> bool {
+    let samples = selection_area_intersection_points(area, triangle);
+    face_visible_at_samples(geometry, scene, maps, frame, face_id, &samples)
+}
+
+fn face_visible_at_samples(
+    geometry: &photocraft_uv::prepared::Geometry,
+    scene: &photocraft_uv::Scene,
+    maps: &preview::Materials<'_>,
+    frame: (Camera, [u32; 2], Rect),
+    face_id: usize,
+    samples: &[Pos2],
+) -> bool {
+    let (camera, size, viewport) = frame;
+    if samples.is_empty() || viewport.width() <= 0.0 || viewport.height() <= 0.0 {
         return false;
     }
-    let sum = clipped.iter().fold(Pos2::ZERO, |sum, point| pos2(sum.x + point.x, sum.y + point.y));
-    let center = pos2(sum.x / clipped.len() as f32, sum.y / clipped.len() as f32);
-    clipped.iter().any(|point| {
+    let sum = samples.iter().fold(Pos2::ZERO, |sum, point| pos2(sum.x + point.x, sum.y + point.y));
+    let center = pos2(sum.x / samples.len() as f32, sum.y / samples.len() as f32);
+    samples.iter().any(|point| {
         let sample = point.lerp(center, 0.08);
         let at = [f64::from((sample.x - viewport.left()) / viewport.width()), f64::from((sample.y - viewport.top()) / viewport.height())];
         geometry.pick(scene, camera, maps, at, size) == Some(face_id)
@@ -2282,7 +2642,7 @@ fn update_polygon_selection(state: &mut State, faces: &[usize], modifiers: egui:
     if state.polygon_document.is_some_and(|previous| previous != owner) {
         state.selected_polygons.clear();
     }
-    if modifiers.ctrl || modifiers.alt {
+    if modifiers.ctrl {
         for face in faces {
             state.selected_polygons.remove(face);
         }
@@ -2374,7 +2734,26 @@ pub(crate) fn canvas_input(
     if !selection_mode(app, index) {
         return false;
     }
-    if let Some((area, mods)) = crate::uv_box::input(ui, response, &mut app.uv_cache.shell_box_2d) {
+    let lasso = app.ui.uv_workbench.selection_target == SelectionTarget::Polygons && app.ui.uv_workbench.selection_gesture == SelectionGesture::Lasso;
+    let polygon_selection = app.ui.uv_workbench.selection_target == SelectionTarget::Polygons;
+    let polygon_selection_started = polygon_selection && response.contains_pointer() && ui.input(|i| i.pointer.primary_pressed() && !i.modifiers.alt);
+    if polygon_selection_started {
+        begin_polygon_selection_wireframe(&mut app.ui.uv_workbench);
+    }
+    let selection_drag_was_active = app.uv_cache.shell_box_2d.is_some();
+    let selection = crate::uv_box::input(ui, response, &mut app.uv_cache.shell_box_2d, lasso);
+    let polygon_selection_cancelled =
+        polygon_selection && app.ui.uv_workbench.temporary_polygon_wireframe && ui.input(|i| i.key_pressed(egui::Key::Escape) || !i.focused);
+    if polygon_selection
+        && ((selection_drag_was_active || polygon_selection_started)
+            && app.uv_cache.shell_box_2d.is_none()
+            && ui.input(|i| i.pointer.primary_released() || !i.pointer.primary_down() || !i.focused)
+            || polygon_selection_cancelled)
+    {
+        finish_polygon_selection_wireframe(&mut app.ui.uv_workbench);
+        ui.ctx().request_repaint();
+    }
+    if let Some((area, mods)) = selection {
         let scene = app.session.uv.scene.clone();
         let doc = app.session.documents().get(index).map(|st| st.doc.clone());
         if let (Some(scene), Some(doc)) = (scene, doc) {
@@ -2384,29 +2763,41 @@ pub(crate) fn canvas_input(
                     .triangles
                     .iter()
                     .enumerate()
-                    .filter(|(_, tri)| materials.contains(&tri.material))
+                    .filter(|(_, tri)| materials.contains(&tri.material) && !app.session.uv.hidden_materials.contains(&tri.material))
                     .filter_map(|(id, tri)| {
                         let points = tri
                             .corners
                             .map(|c| xf.to_screen((c.uv[0] * f64::from(doc.size.width)) as f32, ((1.0 - c.uv[1]) * f64::from(doc.size.height)) as f32));
                         let selected = if app.ui.uv_workbench.shell_enclosed {
-                            points.iter().all(|point| area.contains(*point))
+                            selection_area_contains_triangle(&area, points)
                         } else {
-                            triangle_touches_rect(area, points)
+                            selection_area_touches_triangle(&area, points)
                         };
                         selected.then_some(id)
                     })
                     .collect();
                 update_polygon_selection(&mut app.ui.uv_workbench, &faces, mods, doc.id);
                 app.uv_cache.rendered = None;
-            } else {
+            } else if let crate::uv_box::SelectionArea::Rect(area) = area {
                 let materials = canvas_materials(app, index);
                 let material = if materials.contains(&app.session.uv.material) { app.session.uv.material } else { materials.first().copied().unwrap_or(0) };
                 let mut state = std::mem::take(&mut app.ui.uv_workbench);
-                crate::uv_box::select(app, &mut state, area, mods, material, |id| {
-                    let t = scene.triangles.get(id)?;
-                    Some(t.corners.map(|c| xf.to_screen((c.uv[0] * f64::from(doc.size.width)) as f32, ((1.0 - c.uv[1]) * f64::from(doc.size.height)) as f32)))
-                });
+                crate::uv_box::select(
+                    app,
+                    &mut state,
+                    area,
+                    mods,
+                    material,
+                    false,
+                    |id| {
+                        let t = scene.triangles.get(id)?;
+                        Some(
+                            t.corners
+                                .map(|c| xf.to_screen((c.uv[0] * f64::from(doc.size.width)) as f32, ((1.0 - c.uv[1]) * f64::from(doc.size.height)) as f32)),
+                        )
+                    },
+                    |_, _, _| true,
+                );
                 app.ui.uv_workbench = state;
             }
         }
@@ -2433,15 +2824,16 @@ fn select_polygon_at_canvas(app: &mut PhotocraftApp, index: usize, point: [f64; 
         return;
     }
     let materials = canvas_materials(app, index);
+    let through = app.ui.uv_workbench.selection_depth == SelectionDepth::ThroughMesh;
     let mut candidates: Vec<_> = scene
         .triangles
         .iter()
         .enumerate()
-        .filter(|(_, triangle)| materials.contains(&triangle.material))
+        .filter(|(_, triangle)| materials.contains(&triangle.material) && !app.session.uv.hidden_materials.contains(&triangle.material))
         .filter_map(|(id, triangle)| photocraft_uv::topology::barycentric(uv, triangle.corners.map(|corner| corner.uv)).map(|_| (id, triangle.material)))
         .collect();
     candidates.sort_by_key(|(_, material)| (*material != app.session.uv.material, *material));
-    let faces: Vec<_> = candidates.first().map(|(id, _)| vec![*id]).unwrap_or_default();
+    let faces: Vec<_> = if through { candidates.iter().map(|(id, _)| *id).collect() } else { candidates.first().map(|(id, _)| vec![*id]).unwrap_or_default() };
     update_polygon_selection(&mut app.ui.uv_workbench, &faces, modifiers, document.doc.id);
     app.uv_cache.rendered = None;
 }
@@ -2457,7 +2849,11 @@ fn pick_canvas(app: &mut PhotocraftApp, ui: &egui::Ui, index: usize, point: [f64
         return;
     }
     let mut state = std::mem::take(&mut app.ui.uv_workbench);
-    state.overlap = canvas_materials(app, index).into_iter().flat_map(|m| topology.pick_uv(&scene, uv, m)).collect();
+    state.overlap = canvas_materials(app, index)
+        .into_iter()
+        .filter(|material| !app.session.uv.hidden_materials.contains(material))
+        .flat_map(|m| topology.pick_uv(&scene, uv, m))
+        .collect();
     // Prefer the current material for stacked shells sharing a texture document.
     let shell =
         state.overlap.iter().find(|&&s| topology.shells.get(s).is_some_and(|s| s.material == app.session.uv.material)).or(state.overlap.first()).copied();
@@ -2470,7 +2866,14 @@ fn pick_canvas(app: &mut PhotocraftApp, ui: &egui::Ui, index: usize, point: [f64
             .find(|kind| app.session.uv.map_bindings(*kind).get(s.material).copied().flatten() == Some(document_id))
             .unwrap_or(Channel::Color);
         command(app, &mut state, "uv.material.select", json!({"material":s.material,"channel":kind.key()}));
-        choose(app, &mut state, ui, s.material, shell);
+        if state.selection_depth == SelectionDepth::ThroughMesh {
+            let shells: Vec<_> =
+                state.overlap.iter().copied().filter(|id| topology.shells.get(*id).is_some_and(|shell| shell.material == s.material)).collect();
+            let modifiers = ui.input(|i| i.modifiers);
+            choose_many(app, &mut state, ui, s.material, &shells, modifiers);
+        } else {
+            choose(app, &mut state, ui, s.material, shell);
+        }
     }
     app.ui.uv_workbench = state;
 }
@@ -2498,16 +2901,18 @@ fn clip_tile(segment: [[f64; 2]; 2]) -> Option<[[f64; 2]; 2]> {
 }
 
 fn choose(app: &mut PhotocraftApp, state: &mut State, ui: &egui::Ui, material: usize, shell: usize) {
-    let mode = ui.input(|i| {
-        if i.modifiers.alt || (state.view_3d && i.modifiers.ctrl) {
-            "subtract"
-        } else if i.modifiers.shift {
-            "add"
-        } else {
-            "replace"
-        }
-    });
-    if command(app, state, "uv.shell.select", json!({"material":material,"shells":[shell],"mode":mode})) {
+    choose_many(app, state, ui, material, &[shell], ui.input(|i| i.modifiers));
+}
+
+fn choose_many(app: &mut PhotocraftApp, state: &mut State, ui: &egui::Ui, material: usize, shells: &[usize], modifiers: egui::Modifiers) {
+    let mode = if modifiers.ctrl {
+        "subtract"
+    } else if modifiers.shift {
+        "add"
+    } else {
+        "replace"
+    };
+    if command(app, state, "uv.shell.select", json!({"material":material,"shells":shells,"mode":mode})) {
         let p = mask_params(state);
         command(app, state, "uv.mask.apply", p);
     }
@@ -2516,6 +2921,56 @@ fn choose(app: &mut PhotocraftApp, state: &mut State, ui: &egui::Ui, material: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polygon_lasso_selects_intersection_and_supports_full_enclosure() {
+        let triangle = [pos2(0.0, 0.0), pos2(12.0, 0.0), pos2(0.0, 12.0)];
+        let tiny_lasso = vec![pos2(1.0, 1.0), pos2(4.0, 1.0), pos2(1.0, 4.0)];
+        let crossing_lasso = vec![pos2(8.0, -2.0), pos2(14.0, -2.0), pos2(14.0, 3.0), pos2(8.0, 3.0)];
+        let enclosing_lasso = vec![pos2(-2.0, -2.0), pos2(14.0, -2.0), pos2(14.0, 14.0), pos2(-2.0, 14.0)];
+        let separate_lasso = vec![pos2(8.0, 8.0), pos2(12.0, 8.0), pos2(12.0, 12.0), pos2(8.0, 12.0)];
+        assert!(selection_area_touches_triangle(&crate::uv_box::SelectionArea::Lasso(tiny_lasso.clone()), triangle));
+        assert!(selection_area_touches_triangle(&crate::uv_box::SelectionArea::Lasso(crossing_lasso), triangle), "lasso edges crossing a face select it");
+        assert!(
+            !selection_area_touches_triangle(&crate::uv_box::SelectionArea::Lasso(separate_lasso), triangle),
+            "bounding-box overlap alone does not select a face"
+        );
+        assert!(!selection_area_contains_triangle(&crate::uv_box::SelectionArea::Lasso(tiny_lasso), triangle));
+        assert!(selection_area_contains_triangle(&crate::uv_box::SelectionArea::Lasso(enclosing_lasso), triangle));
+    }
+
+    #[test]
+    fn polygon_selection_keeps_replace_add_and_subtract_modifier_semantics() {
+        let owner = photocraft_doc::DocId(7);
+        let mut state = State::default();
+        update_polygon_selection(&mut state, &[1, 2], egui::Modifiers::NONE, owner);
+        update_polygon_selection(&mut state, &[3], egui::Modifiers { shift: true, ..Default::default() }, owner);
+        assert_eq!(state.selected_polygons, std::collections::BTreeSet::from([1, 2, 3]));
+        update_polygon_selection(&mut state, &[2], egui::Modifiers { ctrl: true, ..Default::default() }, owner);
+        assert_eq!(state.selected_polygons, std::collections::BTreeSet::from([1, 3]));
+        update_polygon_selection(&mut state, &[4], egui::Modifiers::NONE, owner);
+        assert_eq!(state.selected_polygons, std::collections::BTreeSet::from([4]));
+    }
+
+    #[test]
+    fn polygon_settings_offer_lasso_and_depth_modes_without_mask_margins() {
+        use egui_kittest::kittest::Queryable as _;
+
+        let session = photocraft_engine::Session::new();
+        let mut app = PhotocraftApp::new(session, Default::default());
+        app.ui.uv_workbench.selection_target = SelectionTarget::Polygons;
+        let mut harness =
+            egui_kittest::Harness::builder().with_size(vec2(700.0, 500.0)).build_ui_state(|ui, app: &mut PhotocraftApp| shell_settings(app, ui), app);
+        harness.run_steps(3);
+        assert!(harness.query_all_by_label("Rectangle").next().is_some());
+        assert!(harness.query_all_by_label("Lasso").next().is_some());
+        assert!(harness.query_all_by_label("Visible only").next().is_some());
+        assert!(harness.query_all_by_label("Through mesh").next().is_some());
+        for label in ["General margin, px", "U margin, px", "V margin, px", "Inward feather, px", "Outward padding, px"] {
+            assert!(harness.query_all_by_label(label).next().is_none(), "{label} is hidden for polygon selection");
+        }
+    }
+
     #[test]
     fn mask_surface_preview_is_throttled_but_pixels_and_final_flush_are_not() {
         let now = Instant::now();
@@ -2624,6 +3079,62 @@ mod tests {
         assert_eq!(state.guard, 0.0);
         assert!(!state.show_wireframe);
     }
+
+    #[test]
+    fn temporary_wireframe_covers_snap_and_polygon_selection_without_mutating_manual_setting() {
+        let mut state = State::default();
+        assert!(!wireframe_visible(&state, false));
+
+        assert!(wireframe_visible(&state, true), "pending symmetry snap reveals the polygon grid");
+        assert!(!state.show_wireframe, "snap visibility does not change the persisted manual setting");
+        assert!(!wireframe_visible(&state, false), "the grid hides when snap is completed or cancelled");
+
+        state.select_shells = true;
+        state.selection_target = SelectionTarget::Polygons;
+        update_polygon_wireframe_for_mode(&mut state, SelectionTarget::UvShells);
+        assert!(wireframe_visible(&state, false), "entering polygon selection reveals the grid");
+        finish_polygon_selection_wireframe(&mut state);
+        assert!(!wireframe_visible(&state, false), "finishing or cancelling the polygon gesture hides the temporary grid");
+        begin_polygon_selection_wireframe(&mut state);
+        assert!(wireframe_visible(&state, false), "a later polygon gesture temporarily reveals the grid again");
+        finish_polygon_selection_wireframe(&mut state);
+
+        state.show_wireframe = true;
+        assert!(wireframe_visible(&state, false), "manual wireframe remains visible after temporary modes end");
+        assert!(state.show_wireframe, "temporary modes never mutate the manual preference");
+
+        state.show_wireframe = false;
+        state.temporary_polygon_wireframe = true;
+        state.selection_target = SelectionTarget::UvShells;
+        update_polygon_wireframe_for_mode(&mut state, SelectionTarget::Polygons);
+        assert!(!wireframe_visible(&state, false), "leaving polygon selection clears its temporary request");
+    }
+
+    #[test]
+    fn gray_mask_view_clears_idle_overlays_but_preserves_active_polygon_gesture() {
+        let ctx = egui::Context::default();
+        let mut state = State { select_shells: true, selection_target: SelectionTarget::Polygons, temporary_polygon_wireframe: true, ..Default::default() };
+        crate::uv_symmetry::put(&ctx, crate::uv_symmetry::Settings { enabled: true, snap_pending: true, ..Default::default() });
+
+        cancel_temporary_wireframes_for_gray_mask(&mut state, &ctx, false, false);
+        assert!(state.temporary_polygon_wireframe, "non-mask views leave the polygon-selection request intact");
+        assert!(crate::uv_symmetry::get(&ctx).snap_pending, "non-mask views leave vertex snapping armed");
+
+        cancel_temporary_wireframes_for_gray_mask(&mut state, &ctx, true, true);
+        assert!(state.temporary_polygon_wireframe, "an active polygon gesture keeps its grid in Gray view");
+        assert!(!crate::uv_symmetry::get(&ctx).snap_pending, "Gray view cancels pending vertex snapping");
+        assert!(wireframe_visible(&state, false));
+
+        cancel_temporary_wireframes_for_gray_mask(&mut state, &ctx, true, false);
+
+        assert!(!state.temporary_polygon_wireframe);
+        assert!(!crate::uv_symmetry::get(&ctx).snap_pending);
+        assert!(!wireframe_visible(&state, crate::uv_symmetry::get(&ctx).snap_pending));
+
+        state.show_wireframe = true;
+        assert!(wireframe_visible(&state, false), "explicit manual wireframe remains available in Gray view");
+    }
+
     #[test]
     fn rotated_fill_manipulator_uses_the_transformed_quad_for_outline_and_hit_testing() {
         let corners = fill_corners([0, 0, 8, 4], 45.0).map(|[x, y]| pos2(x, y));
@@ -3546,6 +4057,37 @@ mod tests {
     }
 
     #[test]
+    fn gray_gpu_source_tracks_live_mask_paint_before_commit() {
+        let mut app = fixture_app();
+        app.run("uv.shell.select", json!({"shells":[0]})).unwrap();
+        app.run("uv.texture.create", json!({"channel":"baseColor","width":512,"height":512,"depth":8})).unwrap();
+        app.run("uv.layer.create", json!({"guard":8})).unwrap();
+        app.run("channel.target.layerMask", json!({})).unwrap();
+        app.run("view.layerMask", json!({"mode":"gray"})).unwrap();
+        let layer = app.session.active().unwrap().active_layer.unwrap();
+        app.run("uv.maskPaint.add", json!({"layer":layer.0,"kind":"paint"})).unwrap();
+        app.run("tools.setColors", json!({"foreground":"#ff0000"})).unwrap();
+        app.run("tools.setBrush", json!({"brush":{"size":32.0,"hardness":1.0}})).unwrap();
+        app.ui.tool = crate::state::Tool::Brush;
+        app.ui.mask_target = true;
+        let scene = app.session.uv.scene.clone().unwrap();
+        let mut cache = Cache { display_channel: Channel::Material, ..Default::default() };
+        refresh(&mut app, &egui::Context::default(), &mut cache).unwrap();
+        let before = gray_mask_gpu_source(&mut app, &mut cache, &scene).unwrap();
+
+        crate::canvas::tool_event(&mut app, crate::canvas::ToolEvent::Down { x: 200.0, y: 200.0, pressure: 1.0 }, egui::Modifiers::NONE);
+        crate::canvas::tool_event(&mut app, crate::canvas::ToolEvent::Move { x: 210.0, y: 205.0, pressure: 1.0 }, egui::Modifiers::NONE);
+        assert!(app.live_stroke.is_some(), "native brush preview must remain live before mouse release");
+        let during = gray_mask_gpu_source(&mut app, &mut cache, &scene).expect("Gray view must expose live Paint data");
+        assert_ne!(during.key, before.key, "live stroke key must invalidate the GPU stack before document revision changes");
+        assert_ne!(
+            during.document.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].surface,
+            before.document.layer(layer).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].surface,
+            "GPU source must use the in-progress stroke snapshot, not the committed document"
+        );
+    }
+
+    #[test]
     fn gray_uv_preview_has_no_blur_seams_after_mask_effect_changes() {
         let _gpu = photocraft_testkit::gpu_lock();
         let mut app = fixture_app();
@@ -3585,6 +4127,24 @@ mod tests {
         };
 
         refresh(&mut app, &ctx, &mut cache).unwrap();
+        let scene = app.session.uv.scene.clone().unwrap();
+        let state = app.session.active().unwrap();
+        let view = photocraft_engine::mask_view_cmds::current(state).unwrap();
+        assert!(!view.filter);
+        let viewed_mask = state.doc.layer(view.layer).unwrap().mask.as_ref().unwrap();
+        assert!(viewed_mask.paint.is_some());
+        assert_eq!(viewed_mask.feather, 0.0);
+        assert!(cache.masked.contains(&material));
+        assert_eq!(crate::uv_mask::source(&app, material), app.session.active_index());
+        assert!(app.session.uv.topology.as_ref().unwrap().shell_id_map_for_materials(&scene, 512, 512, &[material], [0, 0]).is_ok());
+        let gpu_source = gray_mask_gpu_source(&mut app, &mut cache, &scene).expect("native Gray view should expose its Paint stack to the GPU renderer");
+        assert_eq!(gpu_source.layer, layer);
+        assert_eq!(gpu_source.materials, [material].into_iter().collect(), "GPU mask map is scoped to materials bound to this document");
+        assert_eq!(gpu_source.shell_ids.len(), 512 * 512);
+        assert!(gpu_source.shell_ids.iter().any(|id| *id > 0), "UV ownership map covers the selected model shell");
+        let shell_cache = gpu_source.shell_ids.clone();
+        let cached_source = gray_mask_gpu_source(&mut app, &mut cache, &scene).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&shell_cache, &cached_source.shell_ids), "shell IDs are cached across preview frames");
         app.run("uv.maskPaint.add", json!({"layer":layer.0,"kind":"blur","radius":8})).unwrap();
         assert_eq!(app.session.active().unwrap().last_damage, Some(app.session.active().unwrap().doc.bounds()));
         refresh(&mut app, &ctx, &mut cache).unwrap();
@@ -3999,7 +4559,7 @@ mod tests {
         let index = app.session.active_index().unwrap();
         let ctx = egui::Context::default();
         for (point, modifiers, expected) in
-            [([32.0, 64.0], egui::Modifiers::NONE, vec![0]), ([96.0, 64.0], egui::Modifiers::SHIFT, vec![0, 1]), ([32.0, 64.0], egui::Modifiers::ALT, vec![1])]
+            [([32.0, 64.0], egui::Modifiers::NONE, vec![0]), ([96.0, 64.0], egui::Modifiers::SHIFT, vec![0, 1]), ([32.0, 64.0], egui::Modifiers::CTRL, vec![1])]
         {
             let xf = crate::canvas::ViewXform {
                 rect: Rect::from_min_size(pos2(35.0, 80.0), vec2(800.0, 600.0)),
@@ -4251,6 +4811,8 @@ mod navigation_tests {
             assert!(!pump(&mut state, vec![egui::Event::PointerMoved(end)], egui::Modifiers::NONE));
             assert_eq!(state, before);
             pump(&mut state, vec![event(false, end, egui::Modifiers::NONE), egui::Event::PointerMoved(at)], egui::Modifiers::NONE);
+            assert!(!pump(&mut state, vec![event(true, at, egui::Modifiers::CTRL)], egui::Modifiers::CTRL), "Ctrl must remain available to tools");
+            pump(&mut state, vec![event(false, at, egui::Modifiers::NONE)], egui::Modifiers::NONE);
             assert!(pump(&mut state, vec![event(true, at, egui::Modifiers::ALT)], egui::Modifiers::ALT));
             assert!(pump(&mut state, vec![egui::Event::PointerMoved(end)], egui::Modifiers::ALT));
             match button {

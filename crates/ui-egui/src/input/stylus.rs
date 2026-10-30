@@ -268,7 +268,10 @@ impl Stylus {
         if !self.use_pressure || (self.forced_current && self.current.is_none()) {
             return None;
         }
-        let s = self.current.or_else(|| (!self.forced_current).then(|| self.latest()).flatten()).or(self.touch.map(|pressure| PenSample { pressure, ..Default::default() }))?;
+        let s = self
+            .current
+            .or_else(|| (!self.forced_current).then(|| self.latest()).flatten())
+            .or(self.touch.map(|pressure| PenSample { pressure, ..Default::default() }))?;
         // The pen's pressure through Preferences › Tools › Pressure Curve, before any brush sees it.
         Some(match &self.pressure_curve {
             Some(c) => PenSample { pressure: c.eval(s.pressure), ..s },
@@ -324,7 +327,9 @@ impl Stylus {
 
     /// Raw sample selected for a pointer event, before the pressure curve is applied.
     pub(crate) fn raw_selection(&self) -> Option<PenSample> {
-        if !self.use_pressure { return None; }
+        if !self.use_pressure {
+            return None;
+        }
         if self.forced_current {
             self.current
         } else {

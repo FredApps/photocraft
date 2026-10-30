@@ -150,7 +150,7 @@ pub fn show(app: &crate::PhotocraftApp, ui: &mut egui::Ui, l: &Layer, on_set: bo
         #[cfg(feature = "uv-workbench")]
         if app.ui.workspace == "3D" && app.session.uv.scene.is_some() && l.mask.is_some() {
             ui.push_id(("mask-effect-add", l.id.0), |ui| {
-                crate::uv_mask_paint::add_menu(ui, l.id.0, actions);
+                crate::uv_mask_paint::add_menu(app, ui, l.id.0, actions);
             });
             ui.separator();
         }
@@ -173,7 +173,7 @@ pub fn show_mask(app: &crate::PhotocraftApp, ui: &mut egui::Ui, l: &Layer, actio
     #[cfg(feature = "uv-workbench")]
     if app.ui.workspace == "3D" && app.session.uv.scene.is_some() {
         ui.push_id(("mask-effect-add", l.id.0), |ui| {
-            crate::uv_mask_paint::add_menu(ui, l.id.0, actions);
+            crate::uv_mask_paint::add_menu(app, ui, l.id.0, actions);
         });
         ui.separator();
     }

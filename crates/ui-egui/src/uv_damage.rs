@@ -1,17 +1,28 @@
 //! Retained COW snapshots recover sparse changes across multiple commits in one frame.
-use photocraft_doc::{Document, LayerContent};
+use photocraft_doc::{Document, Layer, LayerContent, LayerMask, mask_paint::Stack};
 use photocraft_geom::Rect;
 use std::sync::Arc;
 
 pub(crate) fn regions(previous: &mut Option<Arc<Document>>, doc: &Arc<Document>, fallback: Option<Rect>) -> Vec<Rect> {
     let old = previous.replace(doc.clone());
-    let regions = match sparse(old.as_deref(), doc) {
-        // Mask Paint stack edits can change the Gray UV display without changing
-        // ordinary layer pixels. In that case sparse() correctly finds no raster
-        // delta, and the engine's command damage is the only useful invalidation.
-        Some(regions) if regions.is_empty() => fallback.filter(|rect| !rect.is_empty()).into_iter().collect(),
-        Some(regions) => regions.into_iter().map(|r| fallback.map_or(r, |f| r.intersect(&f))).filter(|r| !r.is_empty()).collect(),
-        None => vec![fallback.filter(|rect| !rect.is_empty()).unwrap_or_else(|| doc.bounds())],
+    let unchanged_document = old.as_ref().is_some_and(|old| Arc::ptr_eq(old, doc));
+    // `damage_since` is the authoritative one-step damage journal for Session edits and live
+    // strokes. Trust its conservative nonempty region directly: scanning every sparse mask tile
+    // to rediscover the same rectangle costs O(all stack tiles) on every 3D pointer refresh.
+    let hinted = fallback.filter(|rect| !rect.is_empty());
+    let regions = if unchanged_document {
+        hinted.into_iter().collect()
+    } else if let Some(rect) = hinted {
+        vec![rect]
+    } else {
+        match sparse(old.as_deref(), doc) {
+            // Mask Paint stack edits can change the Gray UV display without changing
+            // ordinary layer pixels. In that case sparse() correctly finds no raster
+            // delta, and the engine's command damage is the only useful invalidation.
+            Some(regions) if regions.is_empty() => fallback.filter(|rect| !rect.is_empty()).into_iter().collect(),
+            Some(regions) => regions.into_iter().map(|r| fallback.map_or(r, |f| r.intersect(&f))).filter(|r| !r.is_empty()).collect(),
+            None => vec![fallback.filter(|rect| !rect.is_empty()).unwrap_or_else(|| doc.bounds())],
+        }
     };
     coalesce(regions.into_iter().map(|rect| rect.intersect(&doc.bounds())).filter(|rect| !rect.is_empty()).collect(), doc.bounds())
 }
@@ -78,19 +89,89 @@ fn changed_bounds(a: Option<&[u8]>, b: Option<&[u8]>, default: &[u8], bpp: usize
     }
     (!bounds.is_empty()).then_some(bounds)
 }
+
+/// Compare the mask inputs that can affect rendering without invoking `LayerMask`/`Stack`
+/// `PartialEq`, which walks every byte in every sparse tile. Surface tiles are copy-on-write, so
+/// shared Arcs prove that their pixels are unchanged; a changed Arc is conservatively a change.
+fn same_surface_storage(a: &photocraft_raster::Surface, b: &photocraft_raster::Surface) -> bool {
+    if a.format() != b.format() || a.default_bytes() != b.default_bytes() {
+        return false;
+    }
+    let mut a_tiles = a.tiles();
+    let mut b_tiles = b.tiles();
+    loop {
+        match (a_tiles.next(), b_tiles.next()) {
+            (None, None) => return true,
+            (Some((a_coord, a_tile)), Some((b_coord, b_tile))) => {
+                if a_coord != b_coord || !Arc::ptr_eq(a_tile, b_tile) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+fn same_mask_stack_inputs(a: &Stack, b: &Stack) -> bool {
+    a.layers.len() == b.layers.len()
+        && same_surface_storage(&a.base, &b.base)
+        && a.layers.iter().zip(&b.layers).all(|(a, b)| {
+            a.visible == b.visible
+                && a.opacity == b.opacity
+                && a.blend == b.blend
+                && a.kind == b.kind
+                && a.fill_map_size == b.fill_map_size
+                && a.fill_bounds == b.fill_bounds
+                && same_surface_storage(&a.surface, &b.surface)
+                && match (a.fill_map.as_ref(), b.fill_map.as_ref()) {
+                    (Some(a), Some(b)) => same_surface_storage(a, b),
+                    (None, None) => true,
+                    _ => false,
+                }
+        })
+}
+
+fn same_mask_pixel_inputs(a: Option<&LayerMask>, b: Option<&LayerMask>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.enabled == b.enabled
+                && a.linked == b.linked
+                && a.density == b.density
+                && a.feather == b.feather
+                && same_surface_storage(&a.surface, &b.surface)
+                && match (a.paint.as_ref(), b.paint.as_ref()) {
+                    (Some(a), Some(b)) => same_mask_stack_inputs(a, b),
+                    (None, None) => true,
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
+}
+
+fn layer_masks_unchanged(old: &[Layer], new: &[Layer], depth: usize) -> bool {
+    depth < 256
+        && old.len() == new.len()
+        && old.iter().zip(new).all(|(old, new)| {
+            same_mask_pixel_inputs(old.mask.as_ref(), new.mask.as_ref())
+                && match (old.children(), new.children()) {
+                    (Some(old), Some(new)) => layer_masks_unchanged(old, new, depth + 1),
+                    (None, None) => true,
+                    _ => false,
+                }
+        })
+}
+
 fn sparse(old: Option<&Document>, doc: &Document) -> Option<Vec<Rect>> {
     let old = old.filter(|old| old.id == doc.id && old.size == doc.size && old.layers.len() == doc.layers.len())?;
+    if !layer_masks_unchanged(&old.layers, &doc.layers, 0) {
+        return None;
+    }
     let mut probe = doc.clone();
     let mut regions = Vec::new();
     // Group/effect/adjustment changes use the compositor's conservative damage path.
     for (a, b) in old.layers.iter().zip(&mut probe.layers) {
-        // The sparse byte diff below only examines ordinary raster content. Mask
-        // Paint stacks have their own flattened surface and can drive the Gray UV
-        // view without changing those bytes, so defer to the engine command's
-        // reported damage whenever a layer mask changed.
-        if a.mask != b.mask {
-            return None;
-        }
         match (&a.content, &mut b.content) {
             (LayerContent::Raster(x), LayerContent::Raster(y)) => {
                 if x.format() != y.format() || x.default_bytes() != y.default_bytes() {
@@ -112,7 +193,7 @@ fn sparse(old: Option<&Document>, doc: &Document) -> Option<Vec<Rect>> {
             _ => return None,
         }
     }
-    if !photocraft_engine::layer_multi_cmds::same_pixels(old, &probe) {
+    if !photocraft_engine::layer_multi_cmds::same_pixels_ignoring_masks(old, &probe) {
         return None;
     }
     let reach = crate::canvas::effect_reach(&doc.layers);
@@ -164,5 +245,85 @@ mod tests {
 
         let mut unchanged_snapshot = Some(doc.clone());
         assert!(regions(&mut unchanged_snapshot, &doc, Some(Rect::EMPTY)).is_empty());
+    }
+
+    #[test]
+    fn mask_change_detection_uses_cow_storage_and_ignores_stack_selection_metadata() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", serde_json::json!({"width":64,"height":48})).unwrap();
+        session.execute("layer.layerMask.revealAll", serde_json::json!({})).unwrap();
+        let doc = session.active().unwrap().doc.clone();
+        let layer_id = session.active().unwrap().active_layer.unwrap();
+        let mut first = doc.layer(layer_id).unwrap().mask.clone().unwrap();
+        first.paint = Some(Stack {
+            base: first.surface.clone(),
+            layers: vec![
+                photocraft_doc::mask_paint::Paint {
+                    name: "source".into(),
+                    visible: true,
+                    opacity: 1.0,
+                    blend: photocraft_color::BlendMode::Normal,
+                    surface: photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8),
+                    fill_map: None,
+                    fill_map_size: [0, 0],
+                    fill_bounds: None,
+                    kind: photocraft_doc::mask_paint::EffectKind::Paint,
+                },
+                photocraft_doc::mask_paint::Paint {
+                    name: "blur".into(),
+                    visible: true,
+                    opacity: 1.0,
+                    blend: photocraft_color::BlendMode::Normal,
+                    surface: photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8),
+                    fill_map: None,
+                    fill_map_size: [0, 0],
+                    fill_bounds: None,
+                    kind: photocraft_doc::mask_paint::EffectKind::Blur { radius: 4 },
+                },
+            ],
+            active: 0,
+        });
+        let mut metadata = first.clone();
+        metadata.paint.as_mut().unwrap().active = 1;
+        metadata.paint.as_mut().unwrap().layers[0].name = "renamed".into();
+        assert!(same_mask_pixel_inputs(Some(&first), Some(&metadata)));
+
+        let mut changed_tile = first.clone();
+        changed_tile.paint.as_mut().unwrap().layers[0].surface.write_pixel(8, 8, &[1.0, 1.0, 1.0, 1.0]);
+        assert!(!same_mask_pixel_inputs(Some(&first), Some(&changed_tile)), "a COW tile replacement invalidates mask damage");
+
+        let mut changed = first.clone();
+        changed.paint.as_mut().unwrap().layers[1].opacity = 0.5;
+        assert!(!same_mask_pixel_inputs(Some(&first), Some(&changed)), "effect opacity changes mask pixels");
+
+        let mut mask_doc = (*doc).clone();
+        mask_doc.layer_mut(layer_id).unwrap().mask = Some(first.clone());
+        let mut changed_mask_doc = mask_doc.clone();
+        let changed_mask_surface = &mut changed_mask_doc.layer_mut(layer_id).unwrap().mask.as_mut().unwrap().surface;
+        changed_mask_surface.write_pixel(8, 8, &[0.0]);
+        assert!(photocraft_engine::layer_multi_cmds::same_pixels_ignoring_masks(&mask_doc, &changed_mask_doc));
+        assert!(
+            !photocraft_engine::layer_multi_cmds::same_pixels(&mask_doc, &changed_mask_doc),
+            "regular pixel comparison still detects flattened mask cache changes"
+        );
+        let hinted_damage = Rect::new(4, 4, 16, 16);
+        let mut hinted_snapshot = Some(Arc::new(mask_doc.clone()));
+        assert_eq!(
+            regions(&mut hinted_snapshot, &Arc::new(changed_mask_doc.clone()), Some(hinted_damage)),
+            vec![hinted_damage],
+            "a trusted live/Session hint avoids rescanning unchanged COW tile maps"
+        );
+
+        let mut previous = Some(doc.clone());
+        session
+            .edit("change mask effect", |doc, _| {
+                let mask = doc.layer_mut(layer_id).unwrap().mask.as_mut().unwrap();
+                mask.paint = Some(changed.paint.take().unwrap());
+                Ok(())
+            })
+            .unwrap();
+        let after = session.active().unwrap().doc.clone();
+        assert_eq!(regions(&mut previous, &after, Some(Rect::EMPTY)), vec![after.bounds()], "a stack-only change falls back to canvas damage");
     }
 }

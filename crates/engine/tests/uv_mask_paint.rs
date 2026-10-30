@@ -281,12 +281,143 @@ fn adding_mask_effect_invalidates_gray_preview_even_when_layer_pixels_are_empty(
     assert_eq!(s.active().unwrap().last_damage, Some(canvas));
 }
 
+#[test]
+fn unrelated_document_edits_do_not_rebuild_a_bound_blur_mask_cache() {
+    let mut s = fixture(8);
+    s.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.4})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":4})).unwrap();
+    let layer = s.active().unwrap().active_layer.unwrap();
+    let before = s.active().unwrap().doc.clone();
+
+    // This ordinary pixel edit leaves the non-destructive stack untouched. The bound mask's
+    // cached result must stay stable and the edit must not demand a new topology shell map.
+    s.execute("edit.fill", json!({"color":"#ff0000"})).unwrap();
+
+    let after = s.active().unwrap().doc.layer(layer).unwrap().mask.as_ref().unwrap();
+    let previous = before.layer(layer).unwrap().mask.as_ref().unwrap();
+    assert_eq!(after.surface.read_region(before.bounds()), previous.surface.read_region(before.bounds()));
+    assert_eq!(after.paint, previous.paint);
+}
+
+#[test]
+fn rebinding_a_masked_document_rebuilds_blur_cache_for_new_shell_ownership() {
+    let mut s = fixture(8);
+    s.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.2})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":4})).unwrap();
+    let layer = s.active().unwrap().active_layer.unwrap();
+    let doc_id = s.active().unwrap().doc.id;
+
+    // Bind the same texture to the second material. Shell ownership changes even though the
+    // document and its stack do not, so the materialized Blur result must be refreshed.
+    s.execute("uv.texture.bind", json!({"material":1,"channel":"baseColor"})).unwrap();
+    let state = s.uv_documents().iter().find(|state| state.doc.id == doc_id).unwrap();
+    let mask = state.doc.layer(layer).unwrap().mask.as_ref().unwrap();
+    let scene = s.uv.scene.as_deref().unwrap();
+    let topology = s.uv.topology.as_deref().unwrap();
+    let shell_ids = topology.shell_id_map_for_materials(scene, state.doc.size.width, state.doc.size.height, &[0, 1], [0, 0]).unwrap();
+    let shell_map = photocraft_compose::mask_paint::ShellIdMap::new(state.doc.bounds(), &shell_ids).unwrap();
+    let mut expected = mask.clone();
+    assert!(photocraft_compose::mask_paint::refresh_in_canvas_with_shell_ids(&mut expected, state.doc.bounds(), shell_map));
+    assert_eq!(mask.surface.read_region(state.doc.bounds()), expected.surface.read_region(state.doc.bounds()));
+}
+
+#[test]
+fn undo_redo_and_history_jumps_reuse_valid_4k_blur_cache_snapshots() {
+    let mut s = Session::new();
+    s.execute("uv.workspace.activate", json!({"active":true})).unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
+    s.execute("uv.model.import", json!({"path":source})).unwrap();
+    s.execute("uv.texture.create", json!({"material":0,"width":4096,"height":4096,"depth":8})).unwrap();
+    s.execute("layer.layerMask.revealAll", json!({})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.35})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":4})).unwrap();
+    let layer = s.active().unwrap().active_layer.unwrap();
+    let before = std::sync::Arc::clone(&s.active().unwrap().doc);
+    let before_state = s.active().unwrap().history.past_len();
+
+    s.execute("layer.renameLayer", json!({"layer":layer.0,"name":"Renamed mask target"})).unwrap();
+    let renamed = std::sync::Arc::clone(&s.active().unwrap().doc);
+    let started = std::time::Instant::now();
+    s.execute("edit.undo", json!({})).unwrap();
+    let undo_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert!(
+        std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc),
+        "valid history snapshot should be restored without cloning/recompositing its mask surface"
+    );
+
+    let started = std::time::Instant::now();
+    s.execute("edit.redo", json!({})).unwrap();
+    let redo_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert!(std::sync::Arc::ptr_eq(&renamed, &s.active().unwrap().doc), "redo should reuse the same valid snapshot");
+
+    let started = std::time::Instant::now();
+    s.execute("history.selectState", json!({"state":before_state})).unwrap();
+    let undo_jump_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert!(std::sync::Arc::ptr_eq(&before, &s.active().unwrap().doc), "history panel jump should reuse the valid snapshot");
+    let started = std::time::Instant::now();
+    s.execute("history.selectState", json!({"state":before_state + 1})).unwrap();
+    let redo_jump_ms = started.elapsed().as_secs_f64() * 1000.0;
+    assert!(std::sync::Arc::ptr_eq(&renamed, &s.active().unwrap().doc), "redo history jump should reuse the valid snapshot");
+    println!("4K bound Blur history transition ms: undo={undo_ms:.2} redo={redo_ms:.2} select-undo={undo_jump_ms:.2} select-redo={redo_jump_ms:.2}");
+}
+
+#[test]
+fn undo_recomposes_old_mask_snapshot_after_uv_topology_reimport() {
+    let mut s = fixture(8);
+    s.execute("uv.maskPaint.add", json!({"kind":"fill","value":0.25})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":4})).unwrap();
+    let layer = s.active().unwrap().active_layer.unwrap();
+    s.execute("layer.renameLayer", json!({"layer":layer.0,"name":"After cached Blur"})).unwrap();
+
+    // Reimport publishes a new topology and refreshes the current document only. Earlier
+    // history snapshots must miss the cache validity key and be recomposed when restored.
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
+    s.execute("uv.model.reimport", json!({"path":source})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+
+    let state = s.active().unwrap();
+    let layer = state.doc.layer(state.active_layer.unwrap()).unwrap();
+    let mask = layer.mask.as_ref().unwrap();
+    let materials: Vec<_> = photocraft_uv::preview::Channel::MAPS
+        .into_iter()
+        .flat_map(|channel| s.uv.map_bindings(channel).iter().enumerate().filter_map(move |(material, id)| (*id == Some(state.doc.id)).then_some(material)))
+        .collect();
+    let shell_ids =
+        s.uv.topology
+            .as_ref()
+            .unwrap()
+            .shell_id_map_for_materials(s.uv.scene.as_ref().unwrap(), state.doc.size.width, state.doc.size.height, &materials, [0, 0])
+            .unwrap();
+    let shell_map = photocraft_compose::mask_paint::ShellIdMap::new(state.doc.bounds(), &shell_ids).unwrap();
+    let mut expected = mask.clone();
+    assert!(photocraft_compose::mask_paint::refresh_in_canvas_with_shell_ids(&mut expected, state.doc.bounds(), shell_map));
+    assert_eq!(mask.surface.read_region(state.doc.bounds()), expected.surface.read_region(state.doc.bounds()));
+}
+
 fn assert_mask_cache_matches_full(s: &Session) {
     let state = s.active().unwrap();
     let layer = state.doc.layer(state.active_layer.unwrap()).unwrap();
     let mask = layer.mask.as_ref().unwrap();
     let mut full = mask.clone();
-    photocraft_compose::mask_paint::refresh_in_canvas(&mut full, state.doc.bounds());
+    let materials: Vec<_> = photocraft_uv::preview::Channel::MAPS
+        .into_iter()
+        .flat_map(|channel| s.uv.map_bindings(channel).iter().enumerate().filter_map(move |(material, id)| (*id == Some(state.doc.id)).then_some(material)))
+        .collect();
+    let has_blur = mask.paint.as_ref().is_some_and(|stack| {
+        stack.layers.iter().any(|effect| effect.visible && effect.opacity > 0.0 && matches!(effect.kind, photocraft_doc::mask_paint::EffectKind::Blur { .. }))
+    });
+    if !materials.is_empty() && has_blur {
+        let shell_ids =
+            s.uv.topology
+                .as_ref()
+                .unwrap()
+                .shell_id_map_for_materials(s.uv.scene.as_ref().unwrap(), state.doc.size.width, state.doc.size.height, &materials, [0, 0])
+                .unwrap();
+        let shell_map = photocraft_compose::mask_paint::ShellIdMap::new(state.doc.bounds(), &shell_ids).unwrap();
+        assert!(photocraft_compose::mask_paint::refresh_in_canvas_with_shell_ids(&mut full, state.doc.bounds(), shell_map));
+    } else {
+        photocraft_compose::mask_paint::refresh_in_canvas(&mut full, state.doc.bounds());
+    }
     assert_eq!(mask.surface.read_region(state.doc.bounds()), full.surface.read_region(state.doc.bounds()));
 }
 

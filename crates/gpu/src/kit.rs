@@ -143,7 +143,10 @@ pub(crate) enum BoundMask {
 
 impl BoundMask {
     pub(crate) fn rect(self) -> Option<[i32; 4]> {
-        match self { Self::Resident((_, rect)) => Some(rect), Self::Slot(_) => None }
+        match self {
+            Self::Resident((_, rect)) => Some(rect),
+            Self::Slot(_) => None,
+        }
     }
 }
 

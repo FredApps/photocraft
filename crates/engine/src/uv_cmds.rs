@@ -29,6 +29,12 @@ pub struct UvState {
     pub(crate) saved_generation: u64,
     pub scene: Option<Arc<Scene>>,
     pub topology: Option<Arc<Topology>>,
+    /// Single-entry cache for the full-resolution shell ownership map used by live mask Blur.
+    /// Retaining the scene/topology Arcs makes pointer-identity keys immune to allocator reuse.
+    pub(crate) mask_shell_ids_cache: std::sync::Mutex<Option<MaskShellIdsCache>>,
+    /// Documents whose flattened editable-mask surfaces are known to match the current UV
+    /// topology. Weak document identities keep this metadata bounded without retaining history.
+    pub(crate) mask_cache_validity: Arc<std::sync::Mutex<std::collections::VecDeque<MaskCacheValidity>>>,
     pub(crate) wrap_mesh: Option<Arc<photocraft_uv::wrap::Mesh>>,
     pub(crate) wrapped_stroke: Option<crate::uv_wrap_cmds::WrappedStroke>,
     pub source: String,
@@ -53,6 +59,171 @@ pub struct UvState {
     occupancy_cache: std::collections::HashMap<(usize, u32, u32, i32, i32), Arc<OccupancyMask>>,
     padding_cache: std::collections::HashMap<PaddingCacheKey, Arc<PaddingMask>>,
     pub generation: u64,
+}
+
+pub(crate) struct MaskShellIdsCache {
+    scene: Arc<Scene>,
+    topology: Arc<Topology>,
+    width: u32,
+    height: u32,
+    materials: Vec<usize>,
+    tile: [i32; 2],
+    ids: Arc<Vec<u32>>,
+}
+
+pub(crate) struct MaskCacheValidity {
+    doc_id: DocId,
+    document: std::sync::Weak<Document>,
+    scene: Arc<Scene>,
+    topology: Arc<Topology>,
+    width: u32,
+    height: u32,
+    materials: Vec<usize>,
+}
+
+#[derive(Clone)]
+pub(crate) struct MaskCacheContext {
+    pub(crate) doc_id: DocId,
+    pub(crate) scene: Arc<Scene>,
+    pub(crate) topology: Arc<Topology>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) materials: Vec<usize>,
+    pub(crate) validity: Arc<std::sync::Mutex<std::collections::VecDeque<MaskCacheValidity>>>,
+}
+
+impl MaskCacheContext {
+    const MAX_VALID_DOCUMENTS: usize = 512;
+
+    pub(crate) fn for_document(&self, document: &Document) -> Self {
+        let mut context = self.clone();
+        context.doc_id = document.id;
+        context.width = document.size.width;
+        context.height = document.size.height;
+        context
+    }
+
+    pub(crate) fn is_current(&self, document: &Arc<Document>) -> bool {
+        if document.id != self.doc_id {
+            return false;
+        }
+        let mut entries = match self.validity.lock() {
+            Ok(entries) => entries,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        entries.retain(|entry| entry.document.strong_count() > 0);
+        entries.iter().any(|entry| {
+            entry.doc_id == self.doc_id
+                && entry.width == self.width
+                && entry.height == self.height
+                && entry.materials == self.materials
+                && Arc::ptr_eq(&entry.scene, &self.scene)
+                && Arc::ptr_eq(&entry.topology, &self.topology)
+                && entry.document.upgrade().is_some_and(|known| Arc::ptr_eq(&known, document))
+        })
+    }
+
+    pub(crate) fn remember(&self, document: &Arc<Document>) {
+        if document.id != self.doc_id {
+            return;
+        }
+        let mut entries = match self.validity.lock() {
+            Ok(entries) => entries,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        entries.retain(|entry| {
+            entry.document.strong_count() > 0 && !(entry.doc_id == self.doc_id && entry.document.upgrade().is_some_and(|known| Arc::ptr_eq(&known, document)))
+        });
+        entries.push_back(MaskCacheValidity {
+            doc_id: self.doc_id,
+            document: Arc::downgrade(document),
+            scene: Arc::clone(&self.scene),
+            topology: Arc::clone(&self.topology),
+            width: self.width,
+            height: self.height,
+            materials: self.materials.clone(),
+        });
+        while entries.len() > Self::MAX_VALID_DOCUMENTS {
+            entries.pop_front();
+        }
+    }
+}
+
+impl UvState {
+    const MAX_CACHED_MASK_SHELL_PIXELS: usize = 32 * 1024 * 1024;
+
+    pub(crate) fn mask_shell_ids(&self, width: u32, height: u32, materials: &[usize], tile: [i32; 2]) -> Option<Arc<Vec<u32>>> {
+        if materials.is_empty() || width == 0 || height == 0 {
+            return None;
+        }
+        let scene = self.scene.as_ref()?.clone();
+        let topology = self.topology.as_ref()?.clone();
+        let pixel_count = (width as usize).checked_mul(height as usize)?;
+        let mut material_key = materials.to_vec();
+        material_key.sort_unstable();
+        material_key.dedup();
+
+        // Lock through a miss/build so concurrent live-stroke starts cannot rasterize the same
+        // very large map in parallel. If the mutex was poisoned, recover its inner value; cache
+        // failure must not disable the exact shell-aware path.
+        let mut cache = match self.mask_shell_ids_cache.lock() {
+            Ok(cache) => cache,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(entry) = cache.as_ref()
+            && Arc::ptr_eq(&entry.scene, &scene)
+            && Arc::ptr_eq(&entry.topology, &topology)
+            && entry.width == width
+            && entry.height == height
+            && entry.materials == material_key
+            && entry.tile == tile
+        {
+            return Some(Arc::clone(&entry.ids));
+        }
+
+        // The single-entry budget caps retained shell-ID storage at 128 MiB. Larger maps still
+        // use the exact uncached path; replacing an entry releases its retained allocation.
+        *cache = None;
+        let ids = Arc::new(topology.shell_id_map_for_materials(&scene, width, height, &material_key, tile).ok()?);
+        if pixel_count <= Self::MAX_CACHED_MASK_SHELL_PIXELS {
+            *cache = Some(MaskShellIdsCache { scene, topology, width, height, materials: material_key, tile, ids: Arc::clone(&ids) });
+        }
+        Some(ids)
+    }
+
+    pub(crate) fn clear_mask_shell_ids_cache(&self) {
+        match self.mask_shell_ids_cache.lock() {
+            Ok(mut cache) => *cache = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
+        match self.mask_cache_validity.lock() {
+            Ok(mut entries) => entries.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+    }
+
+    pub(crate) fn mask_cache_context(&self, document: &Document) -> Option<MaskCacheContext> {
+        let mut materials = std::collections::BTreeSet::new();
+        for channel in Channel::MAPS {
+            for (material, binding) in self.map_bindings(channel).iter().enumerate() {
+                if *binding == Some(document.id) {
+                    materials.insert(material);
+                }
+            }
+        }
+        if materials.is_empty() {
+            return None;
+        }
+        Some(MaskCacheContext {
+            doc_id: document.id,
+            scene: self.scene.as_ref()?.clone(),
+            topology: self.topology.as_ref()?.clone(),
+            width: document.size.width,
+            height: document.size.height,
+            materials: materials.into_iter().collect(),
+            validity: Arc::clone(&self.mask_cache_validity),
+        })
+    }
 }
 
 impl UvState {
@@ -369,6 +540,7 @@ fn bindings(s: &Session) -> &[Option<DocId>] {
     s.uv.map_bindings(s.uv.current_channel())
 }
 fn bind(s: &mut Session, material: usize, id: DocId, kind: Channel) {
+    s.uv.clear_mask_shell_ids_cache();
     s.uv.blocked_exports.remove(&id);
     let count = s.uv.bindings.len();
     let target = match kind {
@@ -488,7 +660,32 @@ fn texture_bind(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(err("Normal maps must use RGB mode"));
     }
     let id = s.active().ok_or(EngineError::NoDocument)?.doc.id;
+    let mut proposed_bindings = s.uv.bindings.clone();
+    let mut proposed_normal_bindings = s.uv.normal_bindings.clone();
+    let mut proposed_map_bindings = s.uv.map_bindings.clone();
+    let slots = match normal {
+        Channel::Normal => &mut proposed_normal_bindings,
+        Channel::Material | Channel::Color => &mut proposed_bindings,
+        _ => proposed_map_bindings.entry(normal).or_insert_with(|| vec![None; proposed_bindings.len()]),
+    };
+    if let Some(slot) = slots.get_mut(material) {
+        *slot = Some(id);
+    }
+    // Compute any bound Blur cache changes before publishing the binding. A failed or
+    // over-budget shell-aware refresh must leave both the binding and document cache unchanged.
+    let mask_updates = match (s.uv.scene.as_deref(), s.uv.topology.as_deref()) {
+        (Some(scene), Some(topology)) => crate::uv_reload_cmds::prepare_bound_mask_cache_updates(
+            scene,
+            topology,
+            &proposed_bindings,
+            &proposed_normal_bindings,
+            &proposed_map_bindings,
+            s.uv_documents(),
+        )?,
+        _ => Vec::new(),
+    };
     bind(s, material, id, normal);
+    crate::uv_reload_cmds::apply_bound_mask_cache_updates(s, mask_updates);
     s.uv.material = material;
     s.uv.selected.clear();
     s.uv.generation = s.uv.generation.wrapping_add(1);
@@ -1141,9 +1338,11 @@ fn project_load(s: &mut Session, p: &Value) -> Result<Value> {
         uv_set: project.uv_set,
         source_stamp: project.source_stamp,
         normal_bindings,
+        mask_cache_validity: Default::default(),
         hidden_materials: project.hidden_materials,
         normal_channel: project.normal_channel,
         extra_channel: project.extra_channel,
+        mask_shell_ids_cache: Default::default(),
         map_bindings,
         selected: project.selected,
         selection_masks: Default::default(),

@@ -3,6 +3,23 @@ use super::drag::Drag;
 use super::textures::{canvas_texture_options, shown_as_document};
 use super::view_xform::ViewXform;
 use super::{Color32, DRect, PhotocraftApp, Pos2, Stroke, Tool, json, pos2};
+use std::collections::VecDeque;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
+/// UI-side mailbox for the GPU-owned transient preview. It carries only renderer state and the
+/// release readback; canonical surface changes are still applied by EngineStroke::Brush.
+pub(crate) struct NativeMaskGpuBridge {
+    pub(crate) stroke_key: u64,
+    pub(crate) begin: Option<(photocraft_raster::Surface, photocraft_gpu::MaskBrushSettings)>,
+    pub(crate) pending_dabs: Arc<Mutex<VecDeque<photocraft_gpu::MaskRoundDab>>>,
+    pub(crate) release_requested: Arc<AtomicBool>,
+    pub(crate) failed: Arc<AtomicBool>,
+    pub(crate) patches: Arc<Mutex<Option<Result<Vec<photocraft_gpu::MaskBrushPatch>, String>>>>,
+    fallback_applied: bool,
+}
 
 pub(crate) struct ClonePreviewCache {
     pub(super) key: String,
@@ -207,6 +224,7 @@ pub(crate) struct LiveStroke {
     pub(super) key: u64,
     /// Damage of each step (step 0 = the document before the stroke).
     pub(super) damage: Vec<DRect>,
+    pub(super) native_mask_gpu: Option<NativeMaskGpuBridge>,
     /// Drag points rendered so far.
     fed: usize,
 }
@@ -221,6 +239,147 @@ impl LiveStroke {
         let seen = if key == 0 { 0 } else { usize::try_from(key.checked_sub(self.key)?).ok()? };
         Some(self.damage.get(seen..)?.iter().fold(DRect::EMPTY, |a, r| a.union(r)))
     }
+}
+
+fn append_native_mask_gpu_dabs(bridge: &NativeMaskGpuBridge, dabs: Vec<photocraft_engine::brush_cmds::NativeMaskGpuDab>) {
+    if dabs.is_empty() {
+        return;
+    }
+    if let Ok(mut queue) = bridge.pending_dabs.lock() {
+        queue.extend(dabs.into_iter().map(|dab| photocraft_gpu::MaskRoundDab {
+            center: dab.center,
+            radius: dab.radius,
+            alpha: dab.alpha,
+            opacity: dab.opacity,
+        }));
+    } else {
+        bridge.failed.store(true, Ordering::Release);
+    }
+}
+
+pub(crate) fn native_mask_gpu_brush_active(app: &PhotocraftApp) -> bool {
+    app.live_stroke
+        .as_ref()
+        .is_some_and(|live| live.native_mask_gpu.is_some() && matches!(&live.stroke, EngineStroke::Brush(stroke) if stroke.native_mask_gpu_brush_active()))
+}
+
+pub(crate) fn fail_native_mask_gpu_brush(app: &mut PhotocraftApp) {
+    if let Some(bridge) = app.live_stroke.as_ref().and_then(|live| live.native_mask_gpu.as_ref()) {
+        bridge.failed.store(true, Ordering::Release);
+    }
+}
+
+/// Take the pending bridge payload when the UV GPU source is built for this frame.
+pub(crate) fn native_mask_gpu_input(app: &mut PhotocraftApp) -> Option<crate::uv_gpu::GrayMaskGpuBrushInput> {
+    let live = app.live_stroke.as_mut()?;
+    let bridge = live.native_mask_gpu.as_mut()?;
+    let EngineStroke::Brush(stroke) = &mut live.stroke else { return None };
+    if !stroke.native_mask_gpu_brush_active() {
+        bridge.failed.store(true, Ordering::Release);
+        return None;
+    }
+    if bridge.failed.load(Ordering::Acquire) {
+        return None;
+    }
+    append_native_mask_gpu_dabs(bridge, stroke.take_native_mask_gpu_dabs());
+    Some(crate::uv_gpu::GrayMaskGpuBrushInput {
+        stroke_key: bridge.stroke_key,
+        begin: bridge.begin.take(),
+        pending_dabs: Arc::clone(&bridge.pending_dabs),
+        release_requested: Arc::clone(&bridge.release_requested),
+        failed: Arc::clone(&bridge.failed),
+        patches: Arc::clone(&bridge.patches),
+    })
+}
+
+/// Queue any just-generated engine dabs for UV rendering and fall back atomically if a GPU frame
+/// reported an error. The engine replay uses the complete retained point list, never a mixture of
+/// GPU and CPU patches.
+fn queue_native_mask_gpu_dabs_and_fallback(app: &mut PhotocraftApp) -> bool {
+    let Some(live) = app.live_stroke.as_mut() else { return false };
+    let Some(bridge) = live.native_mask_gpu.as_mut() else { return false };
+    let failed = bridge.failed.load(Ordering::Acquire);
+    let EngineStroke::Brush(stroke) = &mut live.stroke else { return false };
+    if failed && !bridge.fallback_applied {
+        let damage = stroke.fallback_native_mask_gpu_to_cpu().unwrap_or(DRect::EMPTY);
+        live.damage.push(damage);
+        bridge.fallback_applied = true;
+        if let Ok(mut queue) = bridge.pending_dabs.lock() {
+            queue.clear();
+        }
+        return true;
+    }
+    if stroke.native_mask_gpu_brush_active() {
+        append_native_mask_gpu_dabs(bridge, stroke.take_native_mask_gpu_dabs());
+        return true;
+    }
+    false
+}
+
+/// Mark release, enqueue smoothing's final authoritative dabs, and wait for the UV renderer's one
+/// readback before delivering the Up event to the existing command/history path.
+pub(crate) fn request_native_mask_gpu_release(app: &mut PhotocraftApp) -> bool {
+    let Some(live) = app.live_stroke.as_mut() else { return false };
+    let Some(bridge) = live.native_mask_gpu.as_mut() else { return false };
+    let EngineStroke::Brush(stroke) = &mut live.stroke else { return false };
+    if !stroke.native_mask_gpu_brush_active() || bridge.failed.load(Ordering::Acquire) {
+        return false;
+    }
+    if !bridge.release_requested.swap(true, Ordering::AcqRel) {
+        append_native_mask_gpu_dabs(bridge, stroke.finish_native_mask_gpu_dabs());
+        if !stroke.native_mask_gpu_brush_active() {
+            bridge.failed.store(true, Ordering::Release);
+            return false;
+        }
+    }
+    true
+}
+
+/// Apply release patches or switch to a complete CPU replay. False means the renderer has not
+/// completed its single readback yet.
+pub(crate) fn complete_native_mask_gpu_release(app: &mut PhotocraftApp) -> bool {
+    let Some(live) = app.live_stroke.as_mut() else { return true };
+    let Some(bridge) = live.native_mask_gpu.as_mut() else { return true };
+    let EngineStroke::Brush(stroke) = &mut live.stroke else { return true };
+    if bridge.failed.load(Ordering::Acquire) {
+        if !bridge.fallback_applied {
+            let damage = stroke.fallback_native_mask_gpu_to_cpu().unwrap_or(DRect::EMPTY);
+            live.damage.push(damage);
+            bridge.fallback_applied = true;
+            if let Ok(mut queue) = bridge.pending_dabs.lock() {
+                queue.clear();
+            }
+        }
+        return true;
+    }
+    let result = bridge.patches.lock().ok().and_then(|mut mailbox| mailbox.take());
+    let Some(result) = result else { return false };
+    match result {
+        Ok(patches) => {
+            let patches: Vec<_> = patches
+                .into_iter()
+                .map(|patch| photocraft_engine::brush_cmds::NativeMaskGpuPatch { rect: patch.rect, pixels_rgba8: patch.pixels_rgba8 })
+                .collect();
+            match stroke.apply_native_mask_gpu_patches(&patches) {
+                Ok(damage) => live.damage.push(damage),
+                Err(error) => {
+                    app.ui.status = error.to_string();
+                    app.ui.status_error = true;
+                    let damage = stroke.fallback_native_mask_gpu_to_cpu().unwrap_or(DRect::EMPTY);
+                    live.damage.push(damage);
+                    bridge.fallback_applied = true;
+                }
+            }
+        }
+        Err(error) => {
+            app.ui.status = error;
+            app.ui.status_error = true;
+            let damage = stroke.fallback_native_mask_gpu_to_cpu().unwrap_or(DRect::EMPTY);
+            live.damage.push(damage);
+            bridge.fallback_applied = true;
+        }
+    }
+    true
 }
 
 /// A live stroke whose pixels its commit took over (`"fromLive"`): document `doc` at `revision`
@@ -327,8 +486,15 @@ fn use_native_uv_mask_preview_worker(native_surface_input: bool, workspace_3d: b
     native_surface_input && workspace_3d && brush_tool && mask_target
 }
 
+#[cfg(feature = "uv-workbench")]
+fn use_native_uv_mask_gpu_brush(worker: bool, symmetry_active: bool, gpu_active: bool, gray_mask: bool) -> bool {
+    worker && !symmetry_active && gpu_active && gray_mask
+}
+
 pub(super) fn begin_live_stroke(app: &PhotocraftApp) -> Option<LiveStroke> {
     static STROKES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = STROKES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0xff_ffff;
+    let key = (1 << 44) | (n << 20);
     let st = app.session.active()?;
     let d = app.drag.as_ref()?;
     #[cfg(feature = "uv-workbench")]
@@ -336,6 +502,15 @@ pub(super) fn begin_live_stroke(app: &PhotocraftApp) -> Option<LiveStroke> {
         use_native_uv_mask_preview_worker(app.native_uv_surface_input, app.ui.workspace == "3D", d.tool == Tool::Brush, paint_target(app) == json!("mask"));
     #[cfg(not(feature = "uv-workbench"))]
     let native_mask_preview_worker = false;
+    #[cfg(feature = "uv-workbench")]
+    let native_mask_gpu_brush = {
+        let gray_mask = photocraft_engine::mask_view_cmds::current(st)
+            .is_some_and(|view| view.mode == photocraft_engine::mask_view_cmds::MaskViewMode::Gray && !view.filter);
+        use_native_uv_mask_gpu_brush(native_mask_preview_worker, app.native_uv_mask_gpu_disabled, app.uv_gpu_active(), gray_mask)
+    };
+    #[cfg(not(feature = "uv-workbench"))]
+    let native_mask_gpu_brush = false;
+    let mut native_mask_gpu = None;
     let stroke = if d.tool == Tool::MixerBrush {
         let points = app.stylus.stroke_points(&d.points);
         let p = stroke_params(app, d, points.get(..1)?);
@@ -373,23 +548,50 @@ pub(super) fn begin_live_stroke(app: &PhotocraftApp) -> Option<LiveStroke> {
     } else {
         let p = stroke_params(app, d, &app.stylus.stroke_points(&d.points));
         let cmd = stroke_command(app, d.tool);
-        let live = if native_mask_preview_worker {
-            photocraft_engine::brush_cmds::LiveStroke::begin_with_mask_preview_worker(&app.session, cmd, &p, std::time::Duration::from_millis(33)).ok()?
-        } else {
-            photocraft_engine::brush_cmds::LiveStroke::begin_with(&app.session, cmd, &p).ok()?
+        let can_gpu = native_mask_gpu_brush && photocraft_engine::brush_cmds::LiveStroke::can_use_native_mask_gpu_brush(&app.session, cmd, &p);
+        let live_gpu = can_gpu.then(|| photocraft_engine::brush_cmds::LiveStroke::begin_with_native_mask_gpu_brush(&app.session, cmd, &p));
+        let mut live = match live_gpu {
+            Some(Ok(live)) => Some(live),
+            Some(Err(_)) | None => None,
         };
+        if live.is_none() {
+            live = if native_mask_preview_worker {
+                photocraft_engine::brush_cmds::LiveStroke::begin_with_mask_preview_worker(&app.session, cmd, &p, std::time::Duration::from_millis(33)).ok()
+            } else {
+                photocraft_engine::brush_cmds::LiveStroke::begin_with(&app.session, cmd, &p).ok()
+            };
+        }
+        let mut live = live?;
+        if live.native_mask_gpu_brush_active() {
+            if let (Some(base), Some((hardness, stroke_opacity, color))) = (live.native_mask_gpu_base_surface().cloned(), live.native_mask_gpu_brush_settings())
+            {
+                let bridge = NativeMaskGpuBridge {
+                    stroke_key: key,
+                    begin: Some((base, photocraft_gpu::MaskBrushSettings { hardness, stroke_opacity, color })),
+                    pending_dabs: Arc::new(Mutex::new(VecDeque::new())),
+                    release_requested: Arc::new(AtomicBool::new(false)),
+                    failed: Arc::new(AtomicBool::new(false)),
+                    patches: Arc::new(Mutex::new(None)),
+                    fallback_applied: false,
+                };
+                append_native_mask_gpu_dabs(&bridge, live.take_native_mask_gpu_dabs());
+                native_mask_gpu = Some(bridge);
+            } else {
+                let _ = live.fallback_native_mask_gpu_to_cpu();
+            }
+        }
         EngineStroke::Brush(Box::new(live))
     };
-    let n = STROKES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0xff_ffff;
     let damage = vec![stroke.bounds()];
     Some(LiveStroke {
         stroke,
         doc: st.doc.id,
         revision: st.revision,
-        key: (1 << 44) | (n << 20),
+        key,
         damage,
         fed: if d.tool == Tool::MixerBrush { 1 } else { d.points.len() },
         preview_failed: false,
+        native_mask_gpu,
     })
 }
 
@@ -453,7 +655,8 @@ pub(crate) fn feed_live_stroke(app: &mut PhotocraftApp) -> bool {
         }
     }
     app.perf.stage.stroke_ms += crate::gpu_canvas::now_ms() - started;
-    poll_mask_preview_worker(app)
+    let gpu_needs_repaint = queue_native_mask_gpu_dabs_and_fallback(app);
+    poll_mask_preview_worker(app) || gpu_needs_repaint
 }
 
 /// Finish the current renderer path at a UV island boundary while keeping the gesture, worker,
@@ -470,18 +673,40 @@ pub(crate) fn break_native_uv_mask_segment(app: &mut PhotocraftApp) -> bool {
     true
 }
 
+/// Split a live Brush path without ending its gesture. The final commit remains a single Undo
+/// step, while the renderer never connects spatially separate 3D UV samples.
+pub(crate) fn break_live_stroke_path(app: &mut PhotocraftApp) -> bool {
+    let Some(live) = app.live_stroke.as_mut() else { return false };
+    let EngineStroke::Brush(stroke) = &mut live.stroke else { return false };
+    let Ok(damage) = stroke.break_path() else { return false };
+    live.damage.push(damage);
+    true
+}
+
 /// Apply one completed native mask-preview worker result and report whether the display needs
 /// another frame. The returned damage expands through downstream mask effects such as Blur.
 fn poll_mask_preview_worker(app: &mut PhotocraftApp) -> bool {
-    let Some(live) = app.live_stroke.as_mut() else { return false };
-    let EngineStroke::Brush(stroke) = &mut live.stroke else { return false };
-    let applied = if let Some(damage) = stroke.poll_mask_preview() {
-        live.damage.push(damage);
-        true
-    } else {
-        false
+    let (applied, pending, metrics) = {
+        let Some(live) = app.live_stroke.as_mut() else { return false };
+        let EngineStroke::Brush(stroke) = &mut live.stroke else { return false };
+        let applied = if let Some(damage) = stroke.poll_mask_preview() {
+            live.damage.push(damage);
+            true
+        } else {
+            false
+        };
+        (applied, stroke.mask_preview_pending(), stroke.take_mask_preview_metrics())
     };
-    applied || stroke.mask_preview_pending()
+    if let Some(metrics) = metrics {
+        app.perf.span("mask.preview.snapshot", metrics.snapshot_ms);
+        app.perf.span("mask.preview.patch_collect", metrics.patch_collect_ms);
+        app.perf.span("mask.preview.patch_apply", metrics.patch_apply_ms);
+        app.perf.span("mask.preview.compose", metrics.compose_ms);
+        app.perf.span("mask.preview.patch_tiles", metrics.patch_tiles as f64);
+        app.perf.span("mask.preview.regions", metrics.composed_regions as f64);
+        app.perf.span("mask.preview.pixels", metrics.composed_pixels as f64);
+    }
+    applied || pending
 }
 
 /// The points the live retouching stroke has rendered.
@@ -672,10 +897,8 @@ pub(super) fn commit_brush_stroke(app: &mut PhotocraftApp, d: &Drag) {
             }
         }
     }
-    if let EngineStroke::Brush(stroke) = &mut l.stroke
-        && let Some(damage) = stroke.flush_mask_preview()
-    {
-        l.damage.push(damage);
+    if let EngineStroke::Brush(stroke) = &mut l.stroke {
+        l.damage.extend(stroke.defer_mask_preview_to_commit());
     }
     let LiveStroke { stroke, doc, key, damage, .. } = l;
     let before = app.session.documents().iter().find(|st| st.doc.id == doc).map(|st| st.doc.clone());
@@ -716,7 +939,7 @@ pub(super) fn snap_aliased_tip(app: &PhotocraftApp, tool: Tool, x: f64, y: f64) 
 
 #[cfg(all(test, feature = "uv-workbench"))]
 mod mask_preview_worker_tests {
-    use super::use_native_uv_mask_preview_worker;
+    use super::{use_native_uv_mask_gpu_brush, use_native_uv_mask_preview_worker};
 
     #[test]
     fn worker_is_opt_in_only_for_native_3d_mask_brushes() {
@@ -725,6 +948,8 @@ mod mask_preview_worker_tests {
         assert!(!use_native_uv_mask_preview_worker(true, true, true, false), "pixel strokes remain eager");
         assert!(!use_native_uv_mask_preview_worker(true, false, true, true), "non-3D workspaces remain eager");
         assert!(!use_native_uv_mask_preview_worker(true, true, false, true), "non-Brush tools remain eager");
+        assert!(!use_native_uv_mask_gpu_brush(true, true, true, true), "3D symmetry uses the asynchronous worker and CPU union renderer");
+        assert!(use_native_uv_mask_gpu_brush(true, false, true, true), "ordinary Gray mask strokes use native GPU dab accumulation");
     }
 }
 

@@ -49,7 +49,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     crate::uv_ui::shell_settings(app, ui);
                 });
                 ui.separator();
-                ui.weak(tl!("Click to select · Shift to add · Alt in 2D / Ctrl in 3D to subtract"));
+                ui.weak(tl!("Click to select · Shift to add · Ctrl to subtract"));
             });
         });
         return;

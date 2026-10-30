@@ -589,7 +589,7 @@ cameraRaw	Yellow	पीला
 	Orbit pivot	Orbit pivot
 	Reset camera	Reset camera
 	Alt+LMB — orbit · Alt+MMB — pan	Alt+LMB — orbit · Alt+MMB — pan
-	Alt+RMB — dolly · F / A — frame	Alt+RMB — dolly · F / A — frame
+	Alt+RMB — dolly · Ctrl+LMB — pipette · F / A — frame	Alt+RMB — dolly · Ctrl+LMB — pipette · F / A — frame
 	Display channel	Display channel
 	Material shows the shaded material. Map channels show unlit texture colors.	Material shows the shaded material. Map channels show unlit texture colors.
 	2D map	2D map
@@ -656,7 +656,7 @@ cameraRaw	Yellow	पीला
 
 	Brush tip in UV space	Brush tip in UV space
 	Wraps neighboring faces and UV seams. Brush, Pencil and Eraser; retouching uses Paint UV.	Wraps neighboring faces and UV seams. Brush, Pencil and Eraser; retouching uses Paint UV.
-	Click to select · Shift to add · Alt in 2D / Ctrl in 3D to subtract	Click to select · Shift to add · Alt in 2D / Ctrl in 3D to subtract
+	Click to select · Shift to add · Ctrl to subtract	Click to select · Shift to add · Ctrl to subtract
 
 	Paint UV	Paint UV
 	Paint Wrap	Paint Wrap

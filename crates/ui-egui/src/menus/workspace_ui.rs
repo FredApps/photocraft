@@ -793,6 +793,23 @@ mod tests {
         assert!(!app.session.prefs().workspaces.contains_key("3D"));
     }
 
+    #[cfg(feature = "uv-workbench")]
+    #[test]
+    fn base_three_d_layout_hides_color_but_keeps_it_available() {
+        let (mut app, ctx) = app();
+        app.ui.workspace = "3D".into();
+        crate::menus::apply_workspace(&mut app);
+
+        assert!(!app.ui.panels.color, "the base 3D layout keeps the Color picker panel closed");
+        assert!(crate::dock::Group::Color.tabs(app.ui.theme.is_pro()).contains(&"Color"), "the Color tab remains available");
+        crate::menus::invoke(&mut app, &ctx, "window.toggle.color", json!({})).unwrap();
+        assert!(app.ui.panels.color, "the Color panel can still be opened explicitly in 3D");
+
+        app.ui.workspace = "Painting".into();
+        crate::menus::apply_workspace(&mut app);
+        assert!(app.ui.panels.color, "other built-in layouts retain their Color panel");
+    }
+
     #[test]
     fn lock_workspace_toggles_and_persists() {
         let (mut app, ctx) = app();

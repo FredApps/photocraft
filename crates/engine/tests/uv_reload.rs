@@ -74,6 +74,62 @@ fn reimport_retains_documents_layers_history_and_maps_reordered_materials_by_nam
     assert_ne!(s.active().unwrap().doc.layers[0].surface().unwrap().rgba(8, 8), before.layers[0].surface().unwrap().rgba(8, 8));
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn reimport_rebuilds_bound_blur_cache_for_new_topology_without_adding_history() {
+    let path = file();
+    let mut s = Session::new();
+    s.execute("uv.model.import", json!({"path":path})).unwrap();
+    let material = s.uv.scene.as_ref().unwrap().materials.iter().position(|m| m.name == "A").unwrap();
+    s.execute("uv.texture.create", json!({"material":material,"width":16,"height":16,"depth":8})).unwrap();
+    s.execute("layer.layerMask.revealAll", json!({})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"name":"Source"})).unwrap();
+    s.execute(
+        "paint.stroke",
+        json!({"target":"mask","points":[[2.5,2.5,1.0]],"size":3,"color":"#000000","brush":{"hardness":1.0,"opacity":1.0,"flow":1.0},"seed":42}),
+    )
+    .unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":4})).unwrap();
+    let document_id = s.active().unwrap().doc.id;
+    let history_len = s.active().unwrap().history.past_len();
+
+    // Shift the UV island while keeping material names stable so reimport retains the document
+    // binding but must rebuild its derived shell-aware mask surface against the new topology.
+    std::fs::write(&path, "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nvt 0.5 0.5\nvt 1 0.5\nvt 0.5 1\nvt 1 1\nusemtl A\nf 1/1 2/2 3/3\nusemtl B\nf 2/2 4/4 3/3\n")
+        .unwrap();
+    s.execute("uv.model.reimport", json!({})).unwrap();
+
+    let state = s.uv_documents().iter().find(|state| state.doc.id == document_id).unwrap();
+    let layer = state.doc.top_layer().unwrap();
+    let mask = state.doc.layer(layer).unwrap().mask.as_ref().unwrap();
+    let scene = s.uv.scene.as_ref().unwrap();
+    let topology = s.uv.topology.as_ref().unwrap();
+    let shell_ids = topology.shell_id_map_for_materials(scene, state.doc.size.width, state.doc.size.height, &[material], [0, 0]).unwrap();
+    let shell_map = photocraft_compose::mask_paint::ShellIdMap::new(state.doc.bounds(), &shell_ids).unwrap();
+    let mut expected = mask.clone();
+    assert!(photocraft_compose::mask_paint::refresh_in_canvas_with_shell_ids(&mut expected, state.doc.bounds(), shell_map));
+    assert_eq!(mask.surface.read_region(state.doc.bounds()), expected.surface.read_region(state.doc.bounds()));
+    assert_eq!(state.history.past_len(), history_len, "cache refresh is derived state, not an edit/history step");
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.redo", json!({})).unwrap();
+    let state = s.uv_documents().iter().find(|state| state.doc.id == document_id).unwrap();
+    let mask = state.doc.layer(layer).unwrap().mask.as_ref().unwrap();
+    let shell_ids =
+        s.uv.topology
+            .as_ref()
+            .unwrap()
+            .shell_id_map_for_materials(s.uv.scene.as_ref().unwrap(), state.doc.size.width, state.doc.size.height, &[material], [0, 0])
+            .unwrap();
+    let shell_map = photocraft_compose::mask_paint::ShellIdMap::new(state.doc.bounds(), &shell_ids).unwrap();
+    let mut expected = mask.clone();
+    assert!(photocraft_compose::mask_paint::refresh_in_canvas_with_shell_ids(&mut expected, state.doc.bounds(), shell_map));
+    assert_eq!(
+        mask.surface.read_region(state.doc.bounds()),
+        expected.surface.read_region(state.doc.bounds()),
+        "redo refreshes the derived cache against current topology"
+    );
+    std::fs::remove_file(path).unwrap();
+}
 #[test]
 fn project_retains_source_stamp_and_legacy_projects_can_establish_a_baseline() {
     let path = file();

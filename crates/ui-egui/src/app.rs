@@ -78,6 +78,8 @@ impl PhotocraftApp {
             defer_live_stroke: false,
             #[cfg(feature = "uv-workbench")]
             native_uv_surface_input: false,
+            #[cfg(feature = "uv-workbench")]
+            native_uv_mask_gpu_disabled: false,
             press_stroke: false,
             last_stroke_end: None,
             brush_resize: None,

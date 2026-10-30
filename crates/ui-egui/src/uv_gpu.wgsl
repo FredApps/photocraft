@@ -12,6 +12,7 @@ struct Material { color:vec4<f32>, flags:vec4<f32> }
 @group(1) @binding(6) var roughness_map:texture_2d<f32>;
 @group(1) @binding(7) var ao_map:texture_2d<f32>;
 @group(1) @binding(8) var emissive_map:texture_2d<f32>;
+@group(1) @binding(9) var mask_sampler:sampler;
 @group(2) @binding(0) var sky_specular:texture_2d<f32>;
 @group(2) @binding(1) var sky_diffuse:texture_2d<f32>;
 @group(2) @binding(2) var sky_sampler:sampler;
@@ -78,6 +79,31 @@ struct WireFragment { @builtin(position) position:vec4<f32>, @location(0) @inter
     if camera.reserved1.x>0.5 && rotate(v.face).z*camera.options.z<=0.0 { discard; }
     return camera.reserved0;
 }
+struct SymmetryVertex { @location(0) position:vec3<f32> }
+struct SymmetryFragment { @builtin(position) position:vec4<f32> }
+@vertex fn vs_symmetry_plane(v:SymmetryVertex)->SymmetryFragment {
+    let r=rotate(v.position);
+    let xy=(r.xy+camera.projection.zw)*camera.projection.xy;
+    var out:SymmetryFragment;
+    if camera.normal.z>0.0 {
+        let d=camera.normal.z+camera.normal.w-r.z;
+        let near=max(camera.normal.z*0.001,1e-8);
+        let far=camera.normal.z+2.0;
+        out.position=vec4<f32>(xy,far/(far-near)*d-near*far/(far-near),d);
+    } else {
+        out.position=vec4<f32>(xy,0.5-r.z*0.9,1.0);
+    }
+    // Tiny clip-space bias avoids z-fighting with coplanar model geometry and works
+    // for both the triangle fill and line outline pipelines.
+    out.position.z-=out.position.w*1e-5;
+    return out;
+}
+@fragment fn fs_symmetry_fill()->@location(0) vec4<f32> {
+    return vec4<f32>(0.24,0.58,0.96,0.10);
+}
+@fragment fn fs_symmetry_outline()->@location(0) vec4<f32> {
+    return vec4<f32>(0.32,0.68,1.0,0.85);
+}
 fn shade(v:Fragment,texel:vec4<f32>,dx:vec2<f32>,dy:vec2<f32>)->vec4<f32> {
     if material.flags.z>0.5 {
         var rgb=texel.rgb;
@@ -137,13 +163,23 @@ fn shade(v:Fragment,texel:vec4<f32>,dx:vec2<f32>,dy:vec2<f32>)->vec4<f32> {
 }
 // Opaque geometry has no discard/storage access in the fragment stage: early depth can reject it.
 @fragment fn fs_opaque(v:Fragment)->@location(0) vec4<f32> {
-    return shade(v,textureSample(color_map,map_sampler,v.uv),dpdx(v.uv),dpdy(v.uv));
+    let dx=dpdx(v.uv); let dy=dpdy(v.uv);
+    return shade(v,sample_color(v.uv,dx,dy),dx,dy);
 }
 @fragment fn fs_cutout(v:Fragment)->@location(0) vec4<f32> {
     let dx=dpdx(v.uv); let dy=dpdy(v.uv);
-    let texel=textureSample(color_map,map_sampler,v.uv);
+    let texel=sample_color(v.uv,dx,dy);
     if texel.a*material.color.a<0.5 {discard;}
     return shade(v,texel,dx,dy);
+}
+fn sample_color(uv:vec2<f32>,dx:vec2<f32>,dy:vec2<f32>)->vec4<f32> {
+    // A mask UV exactly on the non-tiled canvas edge belongs to its edge texel;
+    // wrapping the opposite atlas edge into linear filtering creates a bright/dark seam.
+    let in_canvas=all(uv>=vec2<f32>(0.0)) && all(uv<=vec2<f32>(1.0));
+    if material.flags.z>0.5 && in_canvas {
+        return textureSampleGrad(color_map,mask_sampler,uv,dx,dy);
+    }
+    return textureSampleGrad(color_map,map_sampler,uv,dx,dy);
 }
 
 fn inverse_rotate(p:vec3<f32>)->vec3<f32>{

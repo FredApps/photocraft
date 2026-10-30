@@ -130,8 +130,7 @@ pub(crate) fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             let area = Rect::from_center_size(rect.left_center() + vec2(30.6, 0.0), size * s);
             ui.painter().image(image.id(), area, Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
         }
-        response
-            .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::i18n::fmt(tl!("Image: {name}"), &[("name", &asset.source.name)])));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::i18n::fmt(tl!("Image: {name}"), &[("name", &asset.source.name)])));
         response.dnd_set_drag_payload(Drag { id: asset.id });
         if response.double_clicked() && app.session.active().is_some() {
             place(app, asset.id);

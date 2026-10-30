@@ -4725,7 +4725,7 @@ shape	Appearance	Оформление
 	Orbit pivot	Центр вращения
 	Reset camera	Сбросить камеру
 	Alt+LMB — orbit · Alt+MMB — pan	Alt+ЛКМ — вращать · Alt+СКМ — сдвиг
-	Alt+RMB — dolly · F / A — frame	Alt+ПКМ — приблизить · F / A — фокус
+	Alt+RMB — dolly · Ctrl+LMB — pipette · F / A — frame	Alt+ПКМ — приблизить · Ctrl+ЛКМ — пипетка · F / A — фокус
 	Display channel	Канал просмотра
 	Material shows the shaded material. Map channels show unlit texture colors.	Material — материал с освещением. Карты — цвет без освещения.
 	2D map	Карта 2D
@@ -4784,7 +4784,7 @@ shape	Appearance	Оформление
 	ReImport	ReImport
 	Brush tip in UV space	Отпечаток в пространстве UV
 	Wraps neighboring faces and UV seams. Brush, Pencil and Eraser; retouching uses Paint UV.	Кисть огибает соседние грани и UV-швы. Кисть, карандаш и ластик; ретушь использует Paint UV.
-	Click to select · Shift to add · Alt in 2D / Ctrl in 3D to subtract	Щелчок — выбрать · Shift — добавить · Alt в 2D / Ctrl в 3D — вычесть
+	Click to select · Shift to add · Ctrl to subtract	Щелчок — выбрать · Shift — добавить · Ctrl — вычесть
 	Paint UV	Рисование UV
 	Paint Wrap	Рисование с обёртыванием
 	PBR · Roughness / Metallic	PBR · Шероховатость / Металличность

@@ -7,15 +7,49 @@ use photocraft_doc::{
 use photocraft_geom::Rect;
 
 const MAX_MASK_REGION_PIXELS: usize = 16 * 1024 * 1024;
+const MAX_SHELL_BLUR_REGION_PIXELS: usize = 4 * 1024 * 1024;
+const MAX_SHELL_ID_PIXELS: usize = 64 * 1024 * 1024;
 
 /// `refresh(None)` has no canvas rectangle to clip a persisted Fill to. Keep its fallback work
 /// bounded and let document callers use `refresh_in_canvas` for larger valid canvases.
 const MAX_UNBOUNDED_FILL_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_UNBOUNDED_FILL_TILES: u64 = 256;
 
+/// Borrowed row-major shell ownership raster. Zero is off-shell; nonzero values identify UV
+/// shells. Coordinates outside `bounds` are treated as off-shell. Construct with [`Self::new`]
+/// to validate the pixel count before passing it to a compositor entry point.
+#[derive(Clone, Copy, Debug)]
+pub struct ShellIdMap<'a> {
+    bounds: Rect,
+    ids: &'a [u32],
+}
+
+impl<'a> ShellIdMap<'a> {
+    pub fn new(bounds: Rect, ids: &'a [u32]) -> Option<Self> {
+        if bounds.is_empty() {
+            return None;
+        }
+        let width = usize::try_from(bounds.width()).ok()?;
+        let height = usize::try_from(bounds.height()).ok()?;
+        let count = width.checked_mul(height)?;
+        (count == ids.len() && count <= MAX_SHELL_ID_PIXELS).then_some(Self { bounds, ids })
+    }
+
+    fn id_at(self, x: i32, y: i32) -> u32 {
+        if x < self.bounds.x0 || y < self.bounds.y0 || x >= self.bounds.x1 || y >= self.bounds.y1 {
+            return 0;
+        }
+        let width = usize::try_from(self.bounds.width()).unwrap_or(0);
+        let row = usize::try_from(i64::from(y) - i64::from(self.bounds.y0)).ok();
+        let column = usize::try_from(i64::from(x) - i64::from(self.bounds.x0)).ok();
+        let offset = row.and_then(|row| row.checked_mul(width)).and_then(|row| column.and_then(|column| row.checked_add(column)));
+        offset.and_then(|index| self.ids.get(index).copied()).unwrap_or(0)
+    }
+}
+
 /// Refresh changed tiles after an edit; property/order changes rebuild the stack.
 pub fn refresh_changes(mask: &mut LayerMask, old: Option<&Stack>) {
-    refresh_changes_bounded(mask, old, None);
+    let _ = refresh_changes_bounded(mask, old, None, None);
 }
 
 /// Keep procedural Fill cache work inside the document even when its transform extends far
@@ -27,18 +61,25 @@ pub fn refresh_changes_in_canvas(mask: &mut LayerMask, old: Option<&Stack>, canv
         .chain(old)
         .flat_map(|stack| &stack.layers)
         .any(|layer| (layer.fill_bounds.is_some() && matches!(&layer.kind, EffectKind::Fill { .. })) || matches!(layer.kind, EffectKind::Blur { .. }));
-    refresh_changes_bounded(mask, old, needs_canvas.then_some(canvas));
+    let _ = refresh_changes_bounded(mask, old, needs_canvas.then_some(canvas), None);
 }
 
-fn refresh_changes_bounded(mask: &mut LayerMask, old: Option<&Stack>, canvas: Option<Rect>) {
-    let Some(stack) = &mask.paint else { return };
+/// Incrementally refresh mask changes with UV-shell-aware Blur. When stack properties require a
+/// full rebuild, the supplied map is used for that rebuild as well as any sparse damage regions.
+pub fn refresh_changes_in_canvas_with_shell_ids(mask: &mut LayerMask, old: Option<&Stack>, canvas: Rect, shell_ids: ShellIdMap<'_>) -> bool {
+    if canvas.is_empty() {
+        return false;
+    }
+    refresh_changes_bounded(mask, old, Some(canvas), Some(shell_ids))
+}
+
+fn refresh_changes_bounded(mask: &mut LayerMask, old: Option<&Stack>, canvas: Option<Rect>, shell_ids: Option<ShellIdMap<'_>>) -> bool {
+    let Some(stack) = &mask.paint else { return false };
     let Some(old) = old else {
-        refresh(mask, canvas);
-        return;
+        return refresh_with_shell_ids(mask, canvas, shell_ids);
     };
     if stack.base != old.base || stack.layers.len() != old.layers.len() {
-        refresh(mask, canvas);
-        return;
+        return refresh_with_shell_ids(mask, canvas, shell_ids);
     }
     if stack
         .layers
@@ -46,20 +87,17 @@ fn refresh_changes_bounded(mask: &mut LayerMask, old: Option<&Stack>, canvas: Op
         .chain(&old.layers)
         .any(|layer| matches!(&layer.kind, EffectKind::Paint) && layer.surface.default_pixel().get(3).is_some_and(|alpha| *alpha != 0.0))
     {
-        refresh(mask, canvas);
-        return;
+        return refresh_with_shell_ids(mask, canvas, shell_ids);
     }
     let mut changed = std::collections::BTreeSet::new();
     for (index, (now, before)) in stack.layers.iter().zip(&old.layers).enumerate() {
         let mut layer_changed = std::collections::BTreeSet::new();
         if now.fill_map != before.fill_map || now.fill_map_size != before.fill_map_size || now.fill_bounds != before.fill_bounds {
-            refresh(mask, canvas);
-            return;
+            return refresh_with_shell_ids(mask, canvas, shell_ids);
         }
         if now.surface.default_pixel() != before.surface.default_pixel() {
             if !matches!(&now.kind, EffectKind::Paint) || !matches!(&before.kind, EffectKind::Paint) {
-                refresh(mask, canvas);
-                return;
+                return refresh_with_shell_ids(mask, canvas, shell_ids);
             }
             layer_changed.extend(now.surface.tiles().map(|(coord, _)| *coord));
             layer_changed.extend(before.surface.tiles().map(|(coord, _)| *coord));
@@ -67,8 +105,7 @@ fn refresh_changes_bounded(mask: &mut LayerMask, old: Option<&Stack>, canvas: Op
         if now.visible != before.visible || now.opacity != before.opacity || now.kind != before.kind || now.blend != before.blend {
             // Fill and Levels can affect every pixel in the accumulated mask.
             if !matches!(&now.kind, EffectKind::Paint) || !matches!(&before.kind, EffectKind::Paint) {
-                refresh(mask, canvas);
-                return;
+                return refresh_with_shell_ids(mask, canvas, shell_ids);
             }
             layer_changed.extend(now.surface.tiles().map(|(coord, _)| *coord));
             layer_changed.extend(before.surface.tiles().map(|(coord, _)| *coord));
@@ -105,12 +142,32 @@ fn refresh_changes_bounded(mask: &mut LayerMask, old: Option<&Stack>, canvas: Op
             changed.extend(layer_changed);
         }
     }
+    if changed.is_empty() {
+        return true;
+    }
     if changed.len() <= 1 {
         for coord in changed {
-            refresh_region(mask, coord.rect());
+            if !refresh_region_with_shell_ids(mask, coord.rect(), shell_ids) {
+                return false;
+            }
         }
+        true
     } else {
-        refresh_tiles(mask, changed.into_iter().collect());
+        refresh_tiles_with_shell_ids(mask, changed.into_iter().collect(), shell_ids)
+    }
+}
+
+fn refresh_with_shell_ids(mask: &mut LayerMask, canvas: Option<Rect>, shell_ids: Option<ShellIdMap<'_>>) -> bool {
+    match (canvas, shell_ids) {
+        (Some(canvas), Some(shell_ids)) => refresh_in_canvas_with_shell_ids(mask, canvas, shell_ids),
+        (Some(canvas), None) => {
+            refresh(mask, Some(canvas));
+            true
+        }
+        (None, _) => {
+            refresh(mask, None);
+            true
+        }
     }
 }
 
@@ -205,6 +262,25 @@ pub fn refresh_damage_in_canvas(mask: &mut LayerMask, damage: Rect, canvas: Rect
     refresh_region(mask, bounds);
 }
 
+/// Rebuild a mask cache with UV-shell-aware Blur. Existing [`refresh_in_canvas`] retains ordinary
+/// image-wide Blur semantics when shell ownership is unavailable.
+pub fn refresh_in_canvas_with_shell_ids(mask: &mut LayerMask, canvas: Rect, shell_ids: ShellIdMap<'_>) -> bool {
+    if canvas.is_empty() {
+        return false;
+    }
+    refresh_region_with_shell_ids(mask, canvas, Some(shell_ids))
+}
+
+/// Refresh live damage with UV-shell-aware Blur while preserving the normal bounded damage halo.
+pub fn refresh_damage_in_canvas_with_shell_ids(mask: &mut LayerMask, damage: Rect, canvas: Rect, shell_ids: ShellIdMap<'_>) -> bool {
+    if damage.is_empty() || canvas.is_empty() {
+        return false;
+    }
+    let Some(stack) = &mask.paint else { return false };
+    let bounds = damage.inflate(downstream_blur_reach(stack, stack.active)).intersect(&canvas);
+    refresh_region_with_shell_ids(mask, bounds, Some(shell_ids))
+}
+
 /// Compose an immutable mask-stack snapshot only over changed output pixels, including the
 /// spatial reach of visible Blur effects below the active Paint layer. The returned tuple is
 /// `(default_value, output_bounds, row_major_pixels)` and can be applied to a transient cache.
@@ -218,6 +294,19 @@ pub fn compose_damage(stack: &Stack, damage: Rect, canvas: Rect) -> Option<(f32,
         return None;
     }
     let pixels = compose_stack_region(stack, stack.layers.len(), output)?;
+    Some((composite_default(stack), output, pixels))
+}
+
+/// Compose bounded live mask damage while constraining Blur to UV shell ownership.
+pub fn compose_damage_with_shell_ids(stack: &Stack, damage: Rect, canvas: Rect, shell_ids: ShellIdMap<'_>) -> Option<(f32, Rect, Vec<f32>)> {
+    if damage.is_empty() || canvas.is_empty() {
+        return None;
+    }
+    let output = damage.inflate(downstream_blur_reach(stack, stack.active)).intersect(&canvas);
+    if output.is_empty() {
+        return None;
+    }
+    let pixels = compose_stack_region_with_shell_ids(stack, stack.layers.len(), output, shell_ids)?;
     Some((composite_default(stack), output, pixels))
 }
 
@@ -236,14 +325,76 @@ pub fn downstream_blur_reach(stack: &Stack, index: usize) -> i32 {
 }
 
 fn refresh_region(mask: &mut LayerMask, bounds: Rect) {
-    let Some(stack) = &mask.paint else { return };
+    let _ = refresh_region_with_shell_ids(mask, bounds, None);
+}
+
+fn refresh_region_with_shell_ids(mask: &mut LayerMask, bounds: Rect, shell_ids: Option<ShellIdMap<'_>>) -> bool {
+    let Some(stack) = &mask.paint else { return false };
     if bounds.is_empty() {
-        return;
+        return true;
     }
-    mask.surface.set_default_pixel(&[composite_default(stack)]);
     // Keep Blur regions narrow enough to expose parallel work even when one brush dab spans
     // the full 4K canvas width. Non-Blur stacks retain the wider bands to avoid extra writes.
     let bands = refresh_bands(bounds, if refresh_halo(stack) > 0 { 512 } else { 8_192 });
+    if let Some(shell_ids) = shell_ids {
+        // A failed shell-aware compose must not leave a partially refreshed surface. Clone the
+        // sparse Surface (tile storage is copy-on-write), prepare bounded bands in parallel, then
+        // swap it in only after all bands have completed successfully. A shell-aware Blur band is
+        // independent because its full sequential halo is composed from the immutable stack.
+        let mut updated = mask.surface.clone();
+        updated.set_default_pixel(&[composite_default(stack)]);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use rayon::prelude::*;
+
+            let worker_count = rayon::current_num_threads().max(1);
+            if worker_count > 1 && bands.len() > 1 {
+                // Each band keeps several padded float buffers for sequential Gaussian stages.
+                // Bound parallel scratch/output memory to 64 MiB; large halos reduce the batch
+                // size automatically, down to one band at a time.
+                const WORKING_SET_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+                let halo = refresh_halo(stack);
+                let largest_region_bytes = bands
+                    .iter()
+                    .map(|band| {
+                        let padded = band.inflate(halo);
+                        usize::try_from(padded.width())
+                            .ok()
+                            .and_then(|width| usize::try_from(padded.height()).ok().and_then(|height| width.checked_mul(height)))
+                            .and_then(|pixels| pixels.checked_mul(8 * std::mem::size_of::<f32>()))
+                            .unwrap_or(usize::MAX)
+                    })
+                    .max()
+                    .unwrap_or(0);
+                let memory_workers = if largest_region_bytes == 0 { worker_count } else { (WORKING_SET_BUDGET_BYTES / largest_region_bytes).max(1) };
+                let batch_size = worker_count.min(memory_workers).max(1);
+                for batch in bands.chunks(batch_size) {
+                    let composed =
+                        batch.par_iter().map(|band| compose_stack_region_with_shell_ids(stack, stack.layers.len(), *band, shell_ids)).collect::<Vec<_>>();
+                    if composed.iter().any(Option::is_none) {
+                        return false;
+                    }
+                    for (band, pixels) in batch.iter().zip(composed) {
+                        let Some(pixels) = pixels else { return false };
+                        updated.write_region(*band, &pixels);
+                    }
+                }
+            } else {
+                for band in bands {
+                    let Some(pixels) = compose_stack_region_with_shell_ids(stack, stack.layers.len(), band, shell_ids) else { return false };
+                    updated.write_region(band, &pixels);
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        for band in bands {
+            let Some(pixels) = compose_stack_region_with_shell_ids(stack, stack.layers.len(), band, shell_ids) else { return false };
+            updated.write_region(band, &pixels);
+        }
+        mask.surface = updated;
+        return true;
+    }
+    mask.surface.set_default_pixel(&[composite_default(stack)]);
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
@@ -270,7 +421,7 @@ fn refresh_region(mask: &mut LayerMask, bounds: Rect) {
             let memory_workers = if largest_region_bytes == 0 { worker_count } else { (WORKING_SET_BUDGET_BYTES / largest_region_bytes).max(1) };
             let batch_size = worker_count.min(memory_workers).max(1);
             for batch in bands.chunks(batch_size) {
-                let composed = batch.par_iter().map(|band| compose_stack_region(stack, stack.layers.len(), *band)).collect::<Vec<_>>();
+                let composed = batch.par_iter().map(|band| compose_stack_region_impl(stack, stack.layers.len(), *band, shell_ids)).collect::<Vec<_>>();
                 // Keep all Surface writes on this thread. Bands do not overlap, and
                 // indexed Rayon collection preserves input order for deterministic writes.
                 for (band, pixels) in batch.iter().zip(composed) {
@@ -279,15 +430,16 @@ fn refresh_region(mask: &mut LayerMask, bounds: Rect) {
                     }
                 }
             }
-            return;
+            return true;
         }
     }
 
     for band in bands {
-        if let Some(pixels) = compose_stack_region(stack, stack.layers.len(), band) {
+        if let Some(pixels) = compose_stack_region_impl(stack, stack.layers.len(), band, shell_ids) {
             mask.surface.write_region(band, &pixels);
         }
     }
+    true
 }
 
 fn refresh_bands(bounds: Rect, max_width: i32) -> Vec<Rect> {
@@ -410,6 +562,16 @@ pub fn compose_prefix(stack: &Stack, end_layer: usize, region: Rect) -> Option<V
     compose_stack_region(stack, end_layer, region)
 }
 
+/// Compose a stack prefix while preserving UV-shell-aware semantics for Blur stages.
+/// `shell_ids` must cover the document canvas that contains `region`; regions outside it
+/// continue to use the shell map's off-shell behavior, matching ordinary padded composition.
+pub fn compose_prefix_with_shell_ids(stack: &Stack, end_layer: usize, region: Rect, shell_ids: ShellIdMap<'_>) -> Option<Vec<f32>> {
+    if end_layer > stack.layers.len() || region.is_empty() {
+        return None;
+    }
+    compose_stack_region_with_shell_ids(stack, end_layer, region, shell_ids)
+}
+
 /// Apply stack layers from `start_layer` onward to a cached prefix buffer and write one region.
 /// `initial` must be an unquantized, row-major grayscale buffer matching `region` exactly.
 pub fn refresh_from_prefix(mask: &mut LayerMask, region: Rect, start_layer: usize, initial: &[f32]) -> bool {
@@ -489,9 +651,32 @@ fn composite_paint_region(dst: &mut [f32], surface: &photocraft_raster::Surface,
 }
 
 fn refresh_tiles(mask: &mut LayerMask, coords: Vec<photocraft_geom::TileCoord>) {
-    let Some(stack) = mask.paint.as_ref() else { return };
+    let _ = refresh_tiles_with_shell_ids(mask, coords, None);
+}
+
+fn refresh_tiles_with_shell_ids(mask: &mut LayerMask, coords: Vec<photocraft_geom::TileCoord>, shell_ids: Option<ShellIdMap<'_>>) -> bool {
+    let Some(stack) = mask.paint.as_ref() else { return false };
     if coords.is_empty() {
-        return;
+        return true;
+    }
+    if let Some(shell_ids) = shell_ids {
+        let default = [composite_default(stack)];
+        let regions = merge_adjacent_tiles(&coords);
+        let mut updated = mask.surface.clone();
+        updated.set_default_pixel(&default);
+        for (region, tiles) in regions {
+            if let Some(pixels) = compose_stack_region_with_shell_ids(stack, stack.layers.len(), region, shell_ids) {
+                updated.write_region(region, &pixels);
+                continue;
+            }
+            for coord in tiles {
+                let tile_region = coord.rect();
+                let Some(pixels) = compose_stack_region_with_shell_ids(stack, stack.layers.len(), tile_region, shell_ids) else { return false };
+                updated.write_region(tile_region, &pixels);
+            }
+        }
+        mask.surface = updated;
+        return true;
     }
     let default = [composite_default(stack)];
     mask.surface.set_default_pixel(&default);
@@ -500,7 +685,7 @@ fn refresh_tiles(mask: &mut LayerMask, coords: Vec<photocraft_geom::TileCoord>) 
     let shared_default_tile = mask.surface.solid_tile(&default);
     let compose_tile = |coord: &photocraft_geom::TileCoord| {
         let region = coord.rect();
-        let pixels = compose_stack_region(stack, stack.layers.len(), region).unwrap_or_default();
+        let pixels = compose_stack_region_impl(stack, stack.layers.len(), region, shell_ids).unwrap_or_default();
         let mut output = photocraft_raster::Surface::with_default(format, &default);
         output.write_region(region, &pixels);
         let tile = output.tile(*coord).cloned().unwrap_or_else(|| shared_default_tile.clone());
@@ -508,7 +693,7 @@ fn refresh_tiles(mask: &mut LayerMask, coords: Vec<photocraft_geom::TileCoord>) 
     };
     let regions = merge_adjacent_tiles(&coords);
     let compose_region = |(region, tiles): &(Rect, Vec<photocraft_geom::TileCoord>)| {
-        compose_stack_region(stack, stack.layers.len(), *region).map(|pixels| {
+        compose_stack_region_impl(stack, stack.layers.len(), *region, shell_ids).map(|pixels| {
             let mut output = photocraft_raster::Surface::with_default(format, &default);
             output.write_region(*region, &pixels);
             tiles.iter().map(|coord| (*coord, output.tile(*coord).cloned().unwrap_or_else(|| shared_default_tile.clone()))).collect::<Vec<_>>()
@@ -548,6 +733,7 @@ fn refresh_tiles(mask: &mut LayerMask, coords: Vec<photocraft_geom::TileCoord>) 
     #[cfg(target_arch = "wasm32")]
     output.extend(fallback.iter().map(compose_tile));
     mask.surface.put_tiles(output);
+    true
 }
 
 /// Merge changed tiles only when they form a complete rectangle. Any sparse gaps stay
@@ -603,6 +789,91 @@ fn blend_coverage(mode: BlendMode, below: f32, source: f32, coverage: f32) -> f3
 /// Compose a stack prefix while carrying only the halo required by Blur layers.
 /// The halo is bounded to 64 pixels per effect by command and format validation.
 fn compose_stack_region(stack: &Stack, end_layer: usize, requested: Rect) -> Option<Vec<f32>> {
+    compose_stack_region_impl(stack, end_layer, requested, None)
+}
+
+/// Compose a bounded mask-stack region using UV shell IDs for every Blur stage. The ID map is a
+/// row-major grid in document coordinates; IDs use zero for off-shell and nonzero shell labels.
+/// Off-shell values can receive outward Blur from occupied pixels, but cannot feed pixels inside
+/// a shell. Existing callers can keep using the ordinary image-wide composition path.
+pub fn compose_stack_region_with_shell_ids(stack: &Stack, end_layer: usize, requested: Rect, shell_ids: ShellIdMap<'_>) -> Option<Vec<f32>> {
+    let output_width = usize::try_from(requested.width()).ok()?;
+    let output_height = usize::try_from(requested.height()).ok()?;
+    let count = output_width.checked_mul(output_height)?;
+    if requested.is_empty() || count > MAX_MASK_REGION_PIXELS {
+        return None;
+    }
+    let mut output = Vec::new();
+    output.try_reserve_exact(count).ok()?;
+    output.resize(count, 0.0f32);
+    let mut split_budget = 4096usize;
+    compose_shell_region_into(stack, end_layer, requested, requested, shell_ids, &mut output, &mut split_budget).then_some(output)
+}
+
+fn compose_shell_region_into(
+    stack: &Stack,
+    end_layer: usize,
+    region: Rect,
+    output_bounds: Rect,
+    shell_ids: ShellIdMap<'_>,
+    output: &mut [f32],
+    split_budget: &mut usize,
+) -> bool {
+    if let Some(pixels) = compose_stack_region_impl(stack, end_layer, region, Some(shell_ids)) {
+        let region_width = match usize::try_from(region.width()) {
+            Ok(width) => width,
+            Err(_) => return false,
+        };
+        let output_width = match usize::try_from(output_bounds.width()) {
+            Ok(width) => width,
+            Err(_) => return false,
+        };
+        let x_offset = match usize::try_from(i64::from(region.x0) - i64::from(output_bounds.x0)) {
+            Ok(offset) => offset,
+            Err(_) => return false,
+        };
+        let y_offset = match usize::try_from(i64::from(region.y0) - i64::from(output_bounds.y0)) {
+            Ok(offset) => offset,
+            Err(_) => return false,
+        };
+        let height = match usize::try_from(region.height()) {
+            Ok(height) => height,
+            Err(_) => return false,
+        };
+        for row in 0..height {
+            let Some(source_start) = row.checked_mul(region_width) else { return false };
+            let Some(target_start) =
+                y_offset.checked_add(row).and_then(|target_row| target_row.checked_mul(output_width)).and_then(|target_row| target_row.checked_add(x_offset))
+            else {
+                return false;
+            };
+            let Some(source) = pixels.get(source_start..source_start.saturating_add(region_width)) else { return false };
+            let Some(target) = output.get_mut(target_start..target_start.saturating_add(region_width)) else { return false };
+            target.copy_from_slice(source);
+        }
+        return true;
+    }
+
+    if *split_budget == 0 || region.width() <= 1 && region.height() <= 1 {
+        return false;
+    }
+    *split_budget -= 1;
+    let width = i64::from(region.x1) - i64::from(region.x0);
+    let height = i64::from(region.y1) - i64::from(region.y0);
+    let (first, second) = if width >= height && width > 1 {
+        let middle = (i64::from(region.x0) + width / 2) as i32;
+        (Rect::new(region.x0, region.y0, middle, region.y1), Rect::new(middle, region.y0, region.x1, region.y1))
+    } else if height > 1 {
+        let middle = (i64::from(region.y0) + height / 2) as i32;
+        (Rect::new(region.x0, region.y0, region.x1, middle), Rect::new(region.x0, middle, region.x1, region.y1))
+    } else {
+        return false;
+    };
+    compose_shell_region_into(stack, end_layer, first, output_bounds, shell_ids, output, split_budget)
+        && compose_shell_region_into(stack, end_layer, second, output_bounds, shell_ids, output, split_budget)
+}
+
+fn compose_stack_region_impl(stack: &Stack, end_layer: usize, requested: Rect, shell_ids: Option<ShellIdMap<'_>>) -> Option<Vec<f32>> {
     if end_layer > stack.layers.len() || requested.is_empty() {
         return None;
     }
@@ -621,6 +892,11 @@ fn compose_stack_region(stack: &Stack, end_layer: usize, requested: Rect) -> Opt
     let height = usize::try_from(region.height()).ok()?;
     let count = width.checked_mul(height)?;
     if count > MAX_MASK_REGION_PIXELS {
+        return None;
+    }
+    let shell_aware_blur = shell_ids.is_some()
+        && stack.layers.iter().take(end_layer).any(|layer| layer.visible && layer.opacity > 0.0 && matches!(layer.kind, EffectKind::Blur { .. }));
+    if shell_aware_blur && count > MAX_SHELL_BLUR_REGION_PIXELS {
         return None;
     }
     let mut pixels = stack.base.read_region(region);
@@ -649,7 +925,10 @@ fn compose_stack_region(stack: &Stack, end_layer: usize, requested: Rect) -> Opt
                 }
             }
             EffectKind::Blur { radius } => {
-                let (blurred, next_region) = gaussian_blur_region(&pixels, current, *radius)?;
+                let (blurred, next_region) = match shell_ids {
+                    Some(shell_ids) => gaussian_blur_region_with_shell_ids(&pixels, current, *radius, shell_ids)?,
+                    None => gaussian_blur_region(&pixels, current, *radius)?,
+                };
                 let r = usize::from(*radius);
                 let old_width = usize::try_from(current.width()).ok()?;
                 let new_width = usize::try_from(next_region.width()).ok()?;
@@ -727,6 +1006,114 @@ fn gaussian_blur_region(input: &[f32], region: Rect, radius: u8) -> Option<(Vec<
                 value += temp[sy * ow + x] * weight;
             }
             output_pixels[y * ow + x] = value;
+        }
+    }
+    Some((output_pixels, output))
+}
+
+/// Separable shell-aware Gaussian. For an inside-shell output, each pass keeps samples with the
+/// same shell ID and divides by the accumulated support weight, so constants stay constant up to
+/// the shell boundary. For an off-shell output, the source pass keeps only occupied shell pixels
+/// and does not renormalize; this allows Blur to fade outward without allowing off-shell values
+/// to flow back into shells.
+fn gaussian_blur_region_with_shell_ids(input: &[f32], region: Rect, radius: u8, shell_ids: ShellIdMap<'_>) -> Option<(Vec<f32>, Rect)> {
+    let r = i32::from(radius);
+    let output = if r == 0 {
+        region
+    } else {
+        Rect::new(region.x0.saturating_add(r), region.y0.saturating_add(r), region.x1.saturating_sub(r), region.y1.saturating_sub(r))
+    };
+    if output.is_empty() {
+        return None;
+    }
+    let width = usize::try_from(region.width()).ok()?;
+    let height = usize::try_from(region.height()).ok()?;
+    if width.checked_mul(height)? != input.len() || input.len() > MAX_SHELL_BLUR_REGION_PIXELS {
+        return None;
+    }
+    if r == 0 {
+        return Some((input.to_vec(), output));
+    }
+    let mut kernel = Vec::new();
+    kernel.try_reserve_exact(usize::from(radius).checked_mul(2)?.checked_add(1)?).ok()?;
+    let sigma = (f32::from(radius) / 3.0).max(0.5);
+    let mut total = 0.0f32;
+    for delta in -r..=r {
+        let weight = (-0.5 * (delta as f32 / sigma).powi(2)).exp();
+        kernel.push(weight);
+        total += weight;
+    }
+    if !total.is_finite() || total <= 0.0 {
+        return None;
+    }
+    for weight in &mut kernel {
+        *weight /= total;
+    }
+
+    let output_width = usize::try_from(output.width()).ok()?;
+    let output_height = usize::try_from(output.height()).ok()?;
+    let horizontal_len = output_width.checked_mul(height)?;
+    let mut shell_values = Vec::new();
+    shell_values.try_reserve_exact(horizontal_len).ok()?;
+    shell_values.resize(horizontal_len, 0.0f32);
+    let mut shell_weights = Vec::new();
+    shell_weights.try_reserve_exact(horizontal_len).ok()?;
+    shell_weights.resize(horizontal_len, 0.0f32);
+    let mut outward_values = Vec::new();
+    outward_values.try_reserve_exact(horizontal_len).ok()?;
+    outward_values.resize(horizontal_len, 0.0f32);
+
+    for y in 0..height {
+        let absolute_y = region.y0.saturating_add(i32::try_from(y).ok()?);
+        for x in 0..output_width {
+            let qx = region.x0.saturating_add(r).saturating_add(i32::try_from(x).ok()?);
+            let q_shell = shell_ids.id_at(qx, absolute_y);
+            let output_index = y.checked_mul(output_width)?.checked_add(x)?;
+            for (kernel_index, weight) in kernel.iter().copied().enumerate() {
+                let sx = x.checked_add(kernel_index)?;
+                let source_x = region.x0.saturating_add(i32::try_from(sx).ok()?);
+                let source_shell = shell_ids.id_at(source_x, absolute_y);
+                let value = *input.get(y.checked_mul(width)?.checked_add(sx)?)?;
+                if source_shell > 0 {
+                    outward_values[output_index] += value * weight;
+                }
+                if q_shell > 0 && source_shell == q_shell {
+                    shell_values[output_index] += value * weight;
+                    shell_weights[output_index] += weight;
+                }
+            }
+        }
+    }
+
+    let mut output_pixels = Vec::new();
+    output_pixels.try_reserve_exact(output_width.checked_mul(output_height)?).ok()?;
+    output_pixels.resize(output_width.checked_mul(output_height)?, 0.0f32);
+    for y in 0..output_height {
+        let py = region.y0.saturating_add(r).saturating_add(i32::try_from(y).ok()?);
+        for x in 0..output_width {
+            let px = region.x0.saturating_add(r).saturating_add(i32::try_from(x).ok()?);
+            let p_shell = shell_ids.id_at(px, py);
+            let mut value = 0.0f32;
+            let mut support = 0.0f32;
+            for (kernel_index, weight) in kernel.iter().copied().enumerate() {
+                let sy = y.checked_add(kernel_index)?;
+                let qy = region.y0.saturating_add(i32::try_from(sy).ok()?);
+                let index = sy.checked_mul(output_width)?.checked_add(x)?;
+                if p_shell == 0 {
+                    value += *outward_values.get(index)? * weight;
+                } else if shell_ids.id_at(px, qy) == p_shell {
+                    value += *shell_values.get(index)? * weight;
+                    support += *shell_weights.get(index)? * weight;
+                }
+            }
+            let output_index = y.checked_mul(output_width)?.checked_add(x)?;
+            output_pixels[output_index] = if p_shell == 0 {
+                value
+            } else if support > 0.0 {
+                value / support
+            } else {
+                0.0
+            };
         }
     }
     Some((output_pixels, output))
@@ -1428,6 +1815,157 @@ mod tests {
         }
         refresh_changes_in_canvas(&mut mask, old.as_ref(), Rect::new(0, 0, 512, 16));
         assert!(mask.surface.sample_channel(256, 8, 0) < 0.01, "changing source Paint invalidates downstream Blur halo");
+    }
+
+    #[test]
+    fn shell_aware_blur_blocks_off_shell_input_but_bleeds_outward_and_isolates_shells() {
+        let canvas = Rect::new(0, 0, 9, 3);
+        let mut ids = vec![0u32; 9 * 3];
+        for y in 0..3usize {
+            ids[y * 9 + 1..=y * 9 + 3].fill(1);
+            ids[y * 9 + 5..=y * 9 + 7].fill(2);
+        }
+        let shell_ids = ShellIdMap::new(canvas, &ids).unwrap();
+
+        let make_stack = |source_x: i32| {
+            let mut source = Surface::with_default(PixelFormat::RGBA8, &[0.0; 4]);
+            source.write_region(Rect::new(source_x, 1, source_x + 1, 2), &[1.0, 1.0, 1.0, 1.0]);
+            let mut paint = layer(EffectKind::Paint, 1.0);
+            paint.surface = source;
+            Stack { base: Surface::with_default(PixelFormat::GRAY8, &[0.0]), layers: vec![paint, layer(EffectKind::Blur { radius: 2 }, 1.0)], active: 0 }
+        };
+        let at = |pixels: &[f32], x: usize, y: usize| pixels[y * 9 + x];
+
+        let outside_source = compose_stack_region_with_shell_ids(&make_stack(0), 2, canvas, shell_ids).unwrap();
+        assert_eq!(at(&outside_source, 1, 1), 0.0, "off-shell source pixels cannot bleed into shell 1");
+        assert_eq!(at(&outside_source, 5, 1), 0.0, "off-shell source pixels cannot bleed into shell 2");
+
+        let shell_source = compose_stack_region_with_shell_ids(&make_stack(3), 2, canvas, shell_ids).unwrap();
+        assert!(at(&shell_source, 4, 1) > 0.0, "occupied shell values can blur outward to off-shell pixels");
+        assert_eq!(at(&shell_source, 5, 1), 0.0, "shell 1 values cannot bleed into adjacent shell 2");
+    }
+
+    #[test]
+    fn shell_aware_blur_matches_normal_gaussian_inside_one_unbounded_shell() {
+        let mut source = Surface::with_default(PixelFormat::RGBA8, &[0.0; 4]);
+        source.write_region(Rect::new(2, 2, 3, 3), &[1.0, 1.0, 1.0, 1.0]);
+        let mut paint = layer(EffectKind::Paint, 1.0);
+        paint.surface = source;
+        let stack =
+            Stack { base: Surface::with_default(PixelFormat::GRAY8, &[0.0]), layers: vec![paint, layer(EffectKind::Blur { radius: 1 }, 1.0)], active: 0 };
+        let output = Rect::new(1, 1, 4, 4);
+        let padded = Rect::new(0, 0, 5, 5);
+        let ids = vec![1u32; 25];
+        let shell_ids = ShellIdMap::new(padded, &ids).unwrap();
+        let expected = compose_stack_region(&stack, 2, output).unwrap();
+        let actual = compose_stack_region_with_shell_ids(&stack, 2, output, shell_ids).unwrap();
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert!((actual - expected).abs() < 1e-6, "shell blur differs at output index {index}: {actual} vs {expected}");
+        }
+    }
+
+    #[test]
+    fn shell_aware_incremental_blur_parameter_change_matches_full_rebuild() {
+        let canvas = Rect::new(0, 0, 16, 8);
+        let mut ids = vec![0u32; 16 * 8];
+        for y in 0..8usize {
+            ids[y * 16..y * 16 + 8].fill(1);
+            ids[y * 16 + 8..(y + 1) * 16].fill(2);
+        }
+        let shell_ids = ShellIdMap::new(canvas, &ids).unwrap();
+        let mut source = Surface::with_default(PixelFormat::RGBA8, &[0.0; 4]);
+        source.write_region(Rect::new(7, 4, 8, 5), &[1.0, 1.0, 1.0, 1.0]);
+        let mut paint = layer(EffectKind::Paint, 1.0);
+        paint.surface = source;
+        let base = Surface::with_default(PixelFormat::GRAY8, &[0.0]);
+        let mut cached = LayerMask::hide_all();
+        cached.surface = base.clone();
+        cached.paint = Some(Stack { base, layers: vec![paint, layer(EffectKind::Blur { radius: 2 }, 1.0)], active: 0 });
+        refresh_in_canvas_with_shell_ids(&mut cached, canvas, shell_ids);
+
+        let old = cached.paint.clone();
+        cached.paint.as_mut().unwrap().layers[1].kind = EffectKind::Blur { radius: 4 };
+        refresh_changes_in_canvas_with_shell_ids(&mut cached, old.as_ref(), canvas, shell_ids);
+
+        let mut full = cached.clone();
+        refresh_in_canvas_with_shell_ids(&mut full, canvas, shell_ids);
+        assert_eq!(cached.surface.read_region(canvas), full.surface.read_region(canvas), "property edits use the shell-aware full stack result");
+        assert_eq!(cached.surface.sample_channel(8, 4, 0), 0.0, "changed radius still isolates the adjacent UV shell");
+    }
+
+    #[test]
+    fn shell_aware_large_regions_split_into_bounded_blur_compositions() {
+        let canvas = Rect::new(0, 0, 2100, 2000);
+        let pixels = usize::try_from(canvas.width()).unwrap() * usize::try_from(canvas.height()).unwrap();
+        let ids = vec![1u32; pixels];
+        let shell_ids = ShellIdMap::new(canvas, &ids).unwrap();
+        let stack = Stack {
+            base: Surface::with_default(PixelFormat::GRAY8, &[0.0]),
+            layers: vec![
+                layer(EffectKind::Fill { value: 0.4, rotation: 0.0, repeat_u: false, repeat_v: false, mirror_u: false, mirror_v: false }, 1.0),
+                layer(EffectKind::Blur { radius: 1 }, 1.0),
+            ],
+            active: 0,
+        };
+        let output = compose_stack_region_with_shell_ids(&stack, stack.layers.len(), canvas, shell_ids).unwrap();
+        assert_eq!(output.len(), pixels);
+        assert!(output.iter().all(|value| (*value - 0.4).abs() < 1e-6), "bounded subregions retain exact constant coverage");
+
+        let mut mask = LayerMask::hide_all();
+        mask.paint = Some(stack);
+        assert!(refresh_in_canvas_with_shell_ids(&mut mask, canvas, shell_ids), "large refresh should succeed via bounded bands");
+        for (x, y) in [(0, 0), (511, 31), (512, 32), (2099, 1999)] {
+            assert!((mask.surface.sample_channel(x, y, 0) - 0.4).abs() < 0.01, "refresh missed ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn shell_aware_parallel_refresh_bands_match_full_composition_across_uv_seams() {
+        let canvas = Rect::new(0, 0, 1024, 512);
+        let width = canvas.width() as usize;
+        let height = canvas.height() as usize;
+        let mut ids = vec![0u32; width * height];
+        for row in ids.chunks_exact_mut(width) {
+            row[..width / 2 - 8].fill(1);
+            row[width / 2 + 8..].fill(2);
+        }
+        let shell_ids = ShellIdMap::new(canvas, &ids).unwrap();
+        let mut source = Surface::with_default(PixelFormat::RGBA8, &[0.0; 4]);
+        source.write_region(Rect::new(503, 255, 504, 256), &[1.0, 1.0, 1.0, 1.0]);
+        let mut paint = layer(EffectKind::Paint, 1.0);
+        paint.surface = source;
+        let stack = Stack {
+            base: Surface::with_default(PixelFormat::GRAY8, &[0.0]),
+            layers: vec![paint, layer(EffectKind::Blur { radius: 8 }, 1.0), layer(EffectKind::Blur { radius: 3 }, 0.75)],
+            active: 0,
+        };
+        let expected = compose_stack_region_with_shell_ids(&stack, stack.layers.len(), canvas, shell_ids).unwrap();
+        let mut mask = LayerMask::hide_all();
+        mask.paint = Some(stack);
+        assert!(refresh_in_canvas_with_shell_ids(&mut mask, canvas, shell_ids));
+        let actual = mask.surface.read_region(canvas);
+        let mut expected_surface = Surface::with_default(PixelFormat::GRAY8, &[0.0]);
+        expected_surface.write_region(canvas, &expected);
+        assert_eq!(actual, expected_surface.read_region(canvas), "parallel bounded bands preserve quantized full-composition output");
+        assert_eq!(mask.surface.sample_channel(520, 255, 0), 0.0, "shell 1's Blur never flows into shell 2");
+        assert!(mask.surface.sample_channel(504, 255, 0) > 0.0, "shell values still bleed outward to off-shell pixels");
+    }
+
+    #[test]
+    fn unsupported_shell_blur_refuses_without_mutating_cached_mask() {
+        let canvas = Rect::new(0, 0, 1, 1);
+        let shell_ids = ShellIdMap::new(canvas, &[1]).unwrap();
+        let stack = Stack {
+            base: Surface::with_default(PixelFormat::GRAY8, &[0.25]),
+            layers: (0..21).map(|_| layer(EffectKind::Blur { radius: 64 }, 1.0)).collect(),
+            active: 0,
+        };
+        let mut mask = LayerMask::hide_all();
+        mask.surface.write_region(canvas, &[0.75]);
+        mask.paint = Some(stack);
+        let prior = mask.surface.clone();
+        assert!(!refresh_in_canvas_with_shell_ids(&mut mask, canvas, shell_ids), "an unsplittable support halo must be reported");
+        assert_eq!(mask.surface, prior, "failed shell recomposition must not write a default or partial result");
     }
 
     #[test]

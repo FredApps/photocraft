@@ -46,7 +46,8 @@ pub(crate) fn overlay(
     if view.target == photocraft_engine::channel_cmds::ChannelTarget::LayerMask
         && let Some(layer) = st.active_layer.filter(|id| doc.layer(*id).is_some_and(|layer| layer.mask.is_some()))
     {
-        view.layer_mask = Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, filter: false, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
+        view.layer_mask =
+            Some(photocraft_engine::mask_view_cmds::LayerMaskView { layer, filter: false, mode: photocraft_engine::mask_view_cmds::MaskViewMode::Gray });
     }
     let look = crate::channel_view::Look::of(&app.session);
     let live_fill = crate::uv_mask_paint_preview::sampled_fill_proxy(app, index)

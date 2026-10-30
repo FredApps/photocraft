@@ -6,6 +6,172 @@ fn session(w: u32, h: u32) -> Session {
     s
 }
 
+fn native_mask_gpu_session() -> (Session, photocraft_doc::LayerId) {
+    use photocraft_color::PixelFormat;
+    use photocraft_doc::{
+        LayerMask,
+        mask_paint::{EffectKind, Paint, Stack},
+    };
+
+    let mut s = session(64, 64);
+    let id = s.active().unwrap().active_layer.unwrap();
+    let base = Surface::with_default(PixelFormat::GRAY8, &[1.0]);
+    let paint = Paint {
+        name: "GPU source".into(),
+        visible: true,
+        opacity: 1.0,
+        blend: photocraft_color::BlendMode::Normal,
+        surface: Surface::new(PixelFormat::RGBA8),
+        fill_map: None,
+        fill_map_size: [0, 0],
+        fill_bounds: None,
+        kind: EffectKind::Paint,
+    };
+    s.edit("GPU mask fixture", |doc, _| {
+        doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.mask = Some(LayerMask {
+            surface: base.clone(),
+            enabled: true,
+            linked: true,
+            density: 1.0,
+            feather: 0.0,
+            paint: Some(Stack { base: base.clone(), layers: vec![paint], active: 0 }),
+        });
+        Ok(())
+    })
+    .unwrap();
+    (s, id)
+}
+
+#[test]
+fn native_mask_gpu_preflight_keeps_unsupported_strokes_on_cpu_from_the_start() {
+    use photocraft_doc::mask_paint::{EffectKind, Paint};
+
+    let (mut s, id) = native_mask_gpu_session();
+    let params = json!({
+        "target":"mask",
+        "points":[[8.5,8.5,1.0]],
+        "brush":{"size":8,"pressureSize":false,"hardness":0.5,"opacity":0.8,"flow":0.4},
+        "smoothing":0.0
+    });
+    assert!(LiveStroke::can_use_native_mask_gpu_brush(&s, "paint.stroke", &params));
+
+    let mut pressure_size = params.clone();
+    pressure_size["brush"]["pressureSize"] = json!(true);
+    assert!(!LiveStroke::can_use_native_mask_gpu_brush(&s, "paint.stroke", &pressure_size));
+    assert!(!LiveStroke::can_use_native_mask_gpu_brush(&s, "paint.pencil", &params));
+
+    s.active_mut().unwrap().symmetry = Some(
+        photocraft_paint::symmetry::PresetSymmetry::new(photocraft_paint::symmetry::SymmetryMode::Horizontal, [32.0, 32.0], 0.0)
+            .map(crate::symmetry_cmds::PaintingSymmetry::Preset)
+            .unwrap(),
+    );
+    assert!(!LiveStroke::can_use_native_mask_gpu_brush(&s, "paint.stroke", &params), "symmetry remains on the complete CPU path");
+    s.active_mut().unwrap().symmetry = None;
+
+    s.edit("add unsupported downstream Blur", |doc, _| {
+        let stack = doc.layer_mut(id).and_then(|layer| layer.mask.as_mut()).and_then(|mask| mask.paint.as_mut()).ok_or(EngineError::NoLayer(id))?;
+        stack.layers.push(Paint {
+            name: "Blur".into(),
+            visible: true,
+            opacity: 1.0,
+            blend: photocraft_color::BlendMode::Normal,
+            surface: Surface::new(photocraft_color::PixelFormat::RGBA8),
+            fill_map: None,
+            fill_map_size: [0, 0],
+            fill_bounds: None,
+            kind: EffectKind::Blur { radius: 4 },
+        });
+        Ok(())
+    })
+    .unwrap();
+    assert!(
+        LiveStroke::can_use_native_mask_gpu_brush(&s, "paint.stroke", &params),
+        "the native GPU stack renderer recomposes downstream Blur from dirty, halo-expanded regions"
+    );
+    let mut segmented = LiveStroke::begin_with_native_mask_gpu_brush(&s, "paint.stroke", &params).unwrap();
+    segmented.break_segment().unwrap();
+    assert!(!segmented.take_native_mask_gpu_dabs().is_empty(), "breaking the initial path flushes its stationary dab");
+    segmented.push(&[StrokePoint::new(56.5, 8.5, 1.0)]).unwrap();
+    segmented.break_segment().unwrap();
+    let after_seam = segmented.take_native_mask_gpu_dabs();
+    assert!(!after_seam.is_empty());
+    assert!(after_seam.iter().all(|dab| dab.center[0] > 40.0), "GPU dab generation must restart after a UV island break: {after_seam:?}");
+}
+
+#[test]
+fn native_mask_gpu_path_emits_authoritative_round_dabs_and_cpu_replay_matches() {
+    let (s, id) = native_mask_gpu_session();
+    let params = json!({
+        "target":"mask",
+        "points":[[8.5,8.5,1.0]],
+        "brush":{"size":8,"pressureSize":false,"hardness":0.35,"opacity":0.8,"flow":0.45},
+        "smoothing":0.4,
+        "color":"#ffffff"
+    });
+    assert!(LiveStroke::can_use_native_mask_gpu_brush(&s, "paint.stroke", &params));
+    let mut gpu = LiveStroke::begin_with_native_mask_gpu_brush(&s, "paint.stroke", &params).unwrap();
+    assert!(gpu.native_mask_gpu_brush_active());
+    assert_eq!(gpu.native_mask_gpu_base_surface().unwrap().format(), photocraft_color::PixelFormat::RGBA8);
+
+    let mut cpu_dabs = StrokeRenderer::new(&gpu.brush, Some(photocraft_color::PixelFormat::RGBA8), gpu.zoom).record_dabs();
+    let first = [StrokePoint::new(8.5, 8.5, 1.0)];
+    cpu_dabs.push(&first);
+    let first_gpu = gpu.take_native_mask_gpu_dabs();
+    assert_eq!(first_gpu, cpu_dabs.dabs().iter().copied().map(native_mask_gpu_dab).collect::<Option<Vec<_>>>().unwrap());
+
+    let second = [StrokePoint::new(19.5, 13.5, 0.6), StrokePoint::new(32.5, 30.5, 0.9)];
+    gpu.push(&second).unwrap();
+    cpu_dabs.push(&second);
+    let second_gpu = gpu.take_native_mask_gpu_dabs();
+    assert_eq!(second_gpu, cpu_dabs.dabs()[first_gpu.len()..].iter().copied().map(native_mask_gpu_dab).collect::<Option<Vec<_>>>().unwrap());
+    cpu_dabs.finish();
+    assert_eq!(
+        gpu.finish_native_mask_gpu_dabs(),
+        cpu_dabs.dabs()[first_gpu.len() + second_gpu.len()..].iter().copied().map(native_mask_gpu_dab).collect::<Option<Vec<_>>>().unwrap()
+    );
+
+    let mut cpu_params = params;
+    cpu_params["points"] = json!([[8.5, 8.5, 1.0], [19.5, 13.5, 0.6], [32.5, 30.5, 0.9]]);
+    let cpu = LiveStroke::begin_with(&s, "paint.stroke", &cpu_params).unwrap();
+    gpu.fallback_native_mask_gpu_to_cpu().unwrap();
+    let actual = gpu.doc.layer(id).unwrap().mask.as_ref().unwrap().active_paint_surface().unwrap();
+    let expected = cpu.doc.layer(id).unwrap().mask.as_ref().unwrap().active_paint_surface().unwrap();
+    assert!(same_pixels(actual, expected, Rect::new(0, 0, 64, 64)), "GPU failure replay must reproduce the ordinary CPU path");
+}
+
+#[test]
+fn native_mask_gpu_readback_patch_commits_through_one_existing_undo_step() {
+    let (mut s, id) = native_mask_gpu_session();
+    let params = json!({
+        "target":"mask",
+        "points":[[8.5,8.5,1.0]],
+        "brush":{"size":8,"pressureSize":false,"hardness":1.0,"opacity":1.0,"flow":1.0},
+        "smoothing":0.0,
+        "color":"#ffffff"
+    });
+    let history_before = s.active().unwrap().history.past_len();
+    let mut live = LiveStroke::begin_with_native_mask_gpu_brush(&s, "paint.stroke", &params).unwrap();
+    let seed = live.seed;
+    let _ = live.take_native_mask_gpu_dabs();
+    live.push(&[StrokePoint::new(20.5, 8.5, 1.0)]).unwrap();
+    assert!(!live.take_native_mask_gpu_dabs().is_empty());
+    let _ = live.finish_native_mask_gpu_dabs();
+    let patch = NativeMaskGpuPatch { rect: Rect::new(8, 8, 9, 9), pixels_rgba8: vec![255, 255, 255, 255] };
+    assert_eq!(live.apply_native_mask_gpu_patches(&[patch]).unwrap(), Rect::new(8, 8, 9, 9));
+    s.offer_live_stroke(live).unwrap();
+    let mut commit = params;
+    commit["points"] = json!([[8.5, 8.5, 1.0], [20.5, 8.5, 1.0]]);
+    commit["seed"] = json!(seed);
+    let result = s.execute("paint.stroke", commit).unwrap();
+    assert_eq!(result["fromLive"], true);
+    assert_eq!(s.active().unwrap().history.past_len(), history_before + 1);
+    let surface = s.active().unwrap().doc.layer(id).unwrap().mask.as_ref().unwrap().active_paint_surface().unwrap();
+    assert_eq!(surface.pixel(8, 8), [1.0, 1.0, 1.0, 1.0]);
+    s.undo();
+    let restored = s.active().unwrap().doc.layer(id).unwrap().mask.as_ref().unwrap().active_paint_surface().unwrap();
+    assert_eq!(restored.pixel(8, 8), [0.0, 0.0, 0.0, 0.0]);
+}
+
 fn surface(s: &Session) -> Surface {
     let d = s.active().unwrap();
     d.doc.layer(d.active_layer.unwrap()).unwrap().surface().unwrap().clone()
@@ -17,6 +183,127 @@ fn rgba(s: &Session, x: i32, y: i32) -> [f32; 4] {
 
 fn same_pixels(a: &Surface, b: &Surface, r: Rect) -> bool {
     (r.y0..r.y1).all(|y| (r.x0..r.x1).all(|x| a.pixel(x, y) == b.pixel(x, y)))
+}
+
+#[test]
+fn mask_preview_damage_keeps_separate_dabs_sparse_and_caps_region_count() {
+    let canvas = Rect::new(0, 0, 1024, 1024);
+    let mut regions = Vec::new();
+    accumulate_mask_preview_damage_with_reach(&mut regions, Rect::new(8, 8, 20, 20), canvas, 0);
+    accumulate_mask_preview_damage_with_reach(&mut regions, Rect::new(900, 900, 912, 912), canvas, 0);
+    assert_eq!(regions.len(), 2, "distant UV hits remain separate CPU compose jobs");
+    assert_eq!(mask_preview_damage_bounds(&regions), Rect::new(8, 8, 912, 912));
+
+    accumulate_mask_preview_damage_with_reach(&mut regions, Rect::new(16, 16, 28, 28), canvas, 0);
+    assert_eq!(regions.len(), 2, "overlapping dabs merge without merging a distant island");
+    assert!(regions.contains(&Rect::new(8, 8, 28, 28)));
+
+    regions.clear();
+    for i in 0..=MAX_MASK_PREVIEW_REGIONS {
+        let x = 4 + (i % 8) as i32 * 20;
+        let y = 4 + (i / 8) as i32 * 20;
+        accumulate_mask_preview_damage_with_reach(&mut regions, Rect::new(x, y, x + 4, y + 4), canvas, 0);
+    }
+    assert_eq!(regions, [canvas], "overflow degrades to one bounded full-canvas region");
+}
+
+#[test]
+fn blur_preview_damage_merges_only_when_expanded_output_regions_overlap() {
+    let canvas = Rect::new(0, 0, 256, 256);
+    let reach = 8;
+    let mut regions = Vec::new();
+    accumulate_mask_preview_damage_with_reach(&mut regions, Rect::new(10, 10, 14, 14), canvas, reach);
+    accumulate_mask_preview_damage_with_reach(&mut regions, Rect::new(28, 10, 32, 14), canvas, reach);
+    accumulate_mask_preview_damage_with_reach(&mut regions, Rect::new(100, 100, 104, 104), canvas, reach);
+
+    assert_eq!(regions, [Rect::new(10, 10, 32, 14), Rect::new(100, 100, 104, 104)]);
+    let outputs: Vec<_> = regions.iter().map(|region| region.inflate(reach).intersect(&canvas)).collect();
+    assert_eq!(outputs, [Rect::new(2, 2, 40, 22), Rect::new(92, 92, 112, 112)]);
+    assert!(outputs[0].intersect(&outputs[1]).is_empty(), "the worker will not compose overlapping Blur output pixels twice");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn mask_preview_dirty_tile_packets_are_bounded_and_replay_default_clears() {
+    use photocraft_color::PixelFormat;
+    use photocraft_doc::mask_paint::{EffectKind, Paint, Stack};
+
+    let mut tiles = BTreeSet::new();
+    assert!(record_mask_preview_dirty_tiles(&mut tiles, Rect::new(250, 10, 265, 20)));
+    assert_eq!(tiles, [TileCoord::new(0, 0), TileCoord::new(1, 0)].into_iter().collect());
+    assert!(!record_mask_preview_dirty_tiles(&mut tiles, Rect::new(0, 0, photocraft_geom::TILE_SIZE * 4_097, photocraft_geom::TILE_SIZE)));
+    assert_eq!(tiles.len(), 2, "overflow does not allocate or partially insert an unbounded tile packet");
+
+    let mut source = Surface::new(PixelFormat::RGBA8);
+    source.write_pixel(8, 8, &[1.0, 0.5, 0.25, 1.0]);
+    let active = Paint {
+        name: "Paint".into(),
+        visible: true,
+        opacity: 1.0,
+        blend: photocraft_color::BlendMode::Normal,
+        surface: Surface::new(PixelFormat::RGBA8),
+        fill_map: None,
+        fill_map_size: [0, 0],
+        fill_bounds: None,
+        kind: EffectKind::Paint,
+    };
+    let mut stack = Stack { base: Surface::new(PixelFormat::GRAY8), layers: vec![active], active: 0 };
+    let coord = TileCoord::containing(8, 8);
+    let tile = source.tile(coord).cloned();
+    assert!(apply_mask_preview_tile_patches(&mut stack, 0, vec![MaskPreviewTilePatch { coord, tile }]));
+    assert_eq!(stack.layers[0].surface.pixel(8, 8), source.pixel(8, 8));
+
+    assert!(apply_mask_preview_tile_patches(&mut stack, 0, vec![MaskPreviewTilePatch { coord, tile: None }]));
+    assert_eq!(stack.layers[0].surface.pixel(8, 8), vec![0.0; 4], "a missing source tile resets prior worker pixels to the surface default");
+}
+
+#[cfg(feature = "uv-workbench")]
+#[test]
+fn uv_mask_shell_id_cache_hits_and_invalidates_on_material_topology_and_size() {
+    use photocraft_geom::Size;
+
+    let mut s = Session::new();
+    s.execute("uv.workspace.activate", json!({"active":true})).unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
+    s.execute("uv.model.import", json!({"path":source})).unwrap();
+    s.execute("uv.texture.create", json!({"material":0,"width":4096,"height":4096,"depth":8})).unwrap();
+    s.execute("layer.layerMask.revealAll", json!({})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"paint","name":"Source"})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":4})).unwrap();
+    s.execute("uv.maskPaint.select", json!({"index":0})).unwrap();
+
+    let layer = s.active().unwrap().active_layer.unwrap();
+    let doc = (*s.active().unwrap().doc).clone();
+    let params = json!({"target":"mask","points":[[8.5,8.5,1.0]],"size":3,"color":"#000000","brush":{"hardness":1.0,"opacity":1.0,"flow":1.0},"seed":42});
+    let started = std::time::Instant::now();
+    let cold_stroke = LiveStroke::begin_with_mask_preview_worker(&s, "paint.stroke", &params, std::time::Duration::from_millis(33)).unwrap();
+    let cold_stroke_ms = started.elapsed().as_secs_f64() * 1000.0;
+    drop(cold_stroke);
+    let first = uv_mask_shell_ids(&s, &doc, Some(layer), &params).unwrap();
+    let started = std::time::Instant::now();
+    let warm_stroke = LiveStroke::begin_with_mask_preview_worker(&s, "paint.stroke", &params, std::time::Duration::from_millis(33)).unwrap();
+    let warm_stroke_ms = started.elapsed().as_secs_f64() * 1000.0;
+    drop(warm_stroke);
+    let warm = uv_mask_shell_ids(&s, &doc, Some(layer), &params).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &warm), "identical topology/material/dimensions should reuse the same map");
+    println!("4K mask+Blur LiveStroke::begin cold={cold_stroke_ms:.2}ms repeated={warm_stroke_ms:.2}ms");
+
+    s.execute("uv.texture.bind", json!({"material":1,"channel":"baseColor"})).unwrap();
+    let rebound = uv_mask_shell_ids(&s, &doc, Some(layer), &params).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&warm, &rebound), "a changed material set must not reuse the old shell map");
+    drop(first);
+    drop(warm);
+
+    let mut smaller = doc.clone();
+    smaller.size = Size::new(2048, 2048);
+    let resized = uv_mask_shell_ids(&s, &smaller, Some(layer), &params).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&rebound, &resized), "document dimensions are part of the map key");
+    drop(rebound);
+
+    s.execute("uv.model.reimport", json!({})).unwrap();
+    let current = (*s.uv_documents().iter().find(|state| state.doc.id == doc.id).unwrap().doc).clone();
+    let after_reimport = uv_mask_shell_ids(&s, &current, Some(layer), &params).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&resized, &after_reimport), "reimported scene/topology must not reuse the previous raster");
 }
 
 #[test]
@@ -106,6 +393,45 @@ fn live_mask_paint_reuses_stack_prefix_and_matches_canonical_refresh_at_every_de
             assert_eq!(actual, expected(&live), "incremental preview differs for {sample:?}");
         }
     }
+}
+
+#[cfg(feature = "uv-workbench")]
+#[test]
+fn live_mask_paint_reuses_shell_aware_prefix_below_active_layer_above_blur() {
+    let mut s = Session::new();
+    s.execute("uv.workspace.activate", json!({"active":true})).unwrap();
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
+    s.execute("uv.model.import", json!({"path":source})).unwrap();
+    s.execute("uv.texture.create", json!({"material":0,"width":64,"height":64,"depth":8})).unwrap();
+    s.execute("layer.layerMask.revealAll", json!({})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"paint","name":"Lower source"})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"blur","radius":3})).unwrap();
+    s.execute("uv.maskPaint.add", json!({"kind":"paint","name":"Active source"})).unwrap();
+    s.execute("uv.maskPaint.select", json!({"index":2})).unwrap();
+    let layer_id = s.active().unwrap().active_layer.unwrap();
+    s.edit("seed lower shell-aware Blur source", |doc, _| {
+        let mask = doc.layer_mut(layer_id).ok_or(EngineError::NoLayer(layer_id))?.mask.as_mut().ok_or(EngineError::NoLayer(layer_id))?;
+        let lower = &mut mask.paint.as_mut().ok_or(EngineError::Other("missing Paint stack".into()))?.layers[0].surface;
+        lower.write_region(Rect::new(4, 4, 8, 8), &[1.0, 1.0, 1.0, 1.0].repeat(16));
+        Ok(())
+    })
+    .unwrap();
+
+    let params = json!({"target":"mask","points":[[20.5,20.5,1.0]],"size":5,"color":"#000000","brush":{"hardness":1.0,"opacity":1.0,"flow":1.0},"seed":88});
+    let live = LiveStroke::begin(&s, &params).unwrap();
+    assert!(live.mask_prefix.as_ref().is_some_and(|cache| !cache.blocks.is_empty()), "lower Blur should be cached in the shell-aware prefix");
+
+    let bounds = live.doc.bounds();
+    let mut expected = (*live.doc).clone();
+    let shell_ids = uv_mask_shell_ids(&s, &expected, Some(layer_id), &params).unwrap();
+    let shell_map = photocraft_compose::mask_paint::ShellIdMap::new(bounds, &shell_ids).unwrap();
+    let mask = expected.layer_mut(layer_id).unwrap().mask.as_mut().unwrap();
+    assert!(photocraft_compose::mask_paint::refresh_in_canvas_with_shell_ids(mask, bounds, shell_map));
+    assert_eq!(
+        live.doc.layer(layer_id).unwrap().mask.as_ref().unwrap().surface.read_region(bounds),
+        mask.surface.read_region(bounds),
+        "prefix reuse must exactly match full shell-aware stack composition"
+    );
 }
 
 #[test]
@@ -332,6 +658,22 @@ fn throttled_live_mask_cache_coalesces_damage_and_commit_flushes_blur_halos() {
 
     assert!(!throttled.mask_preview_pending.is_empty(), "deferred damage accumulates before its deadline");
     assert!(worker.mask_preview_pending(), "worker cache stays pending until a current snapshot is published");
+    let first_worker_generation = worker.mask_preview_submitted;
+    assert!(first_worker_generation > 0, "the initial live dab submits a worker snapshot");
+    assert!(worker.mask_preview_generation > first_worker_generation, "later samples accumulate after the in-flight snapshot");
+    assert_eq!(
+        worker.mask_preview_submitted, first_worker_generation,
+        "samples within one cadence interval coalesce instead of continually replacing an in-flight preview job"
+    );
+    worker.mask_preview_last_submit = Some(Instant::now() - Duration::from_secs(61));
+    let first_publication = worker.poll_mask_preview();
+    assert_eq!(
+        worker.mask_preview_submitted, worker.mask_preview_generation,
+        "after the dispatch cadence elapses, polling submits the newest accumulated damage even if the earlier result was stale"
+    );
+    if first_publication.is_some() {
+        assert!(worker.mask_preview_pending(), "publishing a stale snapshot does not clear newer queued damage");
+    }
     let canvas = s.active().unwrap().doc.bounds();
     let full_refresh = |doc: &std::sync::Arc<Document>| {
         let mut expected = (**doc).clone();
@@ -345,36 +687,53 @@ fn throttled_live_mask_cache_coalesces_damage_and_commit_flushes_blur_halos() {
     let stale = throttled.doc.layer(id).unwrap().mask.as_ref().unwrap().surface.read_region(canvas);
     assert_ne!(stale, expected, "the test must exercise a genuinely deferred flattened cache");
 
-    // Materializing the unioned damage must match a full recomposition. The commit conversion
-    // that follows has its own unconditional flush as a final safety boundary.
+    // Materializing the unioned damage must match a full recomposition.
     let _ = throttled.flush_mask_preview();
     let refreshed = throttled.doc.layer(id).unwrap().mask.as_ref().unwrap().surface.read_region(canvas);
     assert_eq!(refreshed, expected, "one flush recomposes all accumulated Blur halos");
     let eager_pixels = eager.doc.layer(id).unwrap().mask.as_ref().unwrap().surface.read_region(canvas);
     assert_eq!(eager_pixels, expected, "throttled final cache equals eager live composition");
 
-    let mut published = None;
+    let mut published = first_publication.is_some();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while published.is_none() && Instant::now() < deadline {
-        published = worker.poll_mask_preview();
-        if published.is_none() {
+    while worker.mask_preview_pending() && Instant::now() < deadline {
+        published |= worker.poll_mask_preview().is_some();
+        if worker.mask_preview_pending() {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
-    if published.is_none() {
+    if worker.mask_preview_pending() {
         // Flush is also the guaranteed final boundary if a worker cannot publish in time.
-        published = worker.flush_mask_preview();
+        published |= worker.flush_mask_preview().is_some();
     }
-    assert!(published.is_some(), "worker publishes a bounded damage rectangle");
+    assert!(published, "worker publishes a bounded damage rectangle");
     assert!(!worker.mask_preview_pending(), "publishing the newest generation clears pending damage");
     let worker_pixels = worker.doc.layer(id).unwrap().mask.as_ref().unwrap().surface.read_region(canvas);
     assert_eq!(worker_pixels, expected, "worker-published Blur cache matches synchronous full composition");
+    if let Some(metrics) = worker.take_mask_preview_metrics() {
+        println!(
+            "mask-preview snapshots={} snapshot_ms={:.3} patch_collect_ms={:.3} patch_apply_ms={:.3} compose_ms={:.3} patch_tiles={} regions={} pixels={}",
+            metrics.stack_snapshots,
+            metrics.snapshot_ms,
+            metrics.patch_collect_ms,
+            metrics.patch_apply_ms,
+            metrics.compose_ms,
+            metrics.patch_tiles,
+            metrics.composed_regions,
+            metrics.composed_pixels
+        );
+        assert_eq!(metrics.stack_snapshots, 1, "one full stack snapshot is reused for the rest of the stroke");
+        assert!(metrics.composed_regions > 0 && metrics.patch_tiles > 0, "worker diagnostics describe actual tile-patched preview work");
+    }
 
     let expected_target = eager.doc.layer(id).unwrap().mask.as_ref().unwrap().paint.as_ref().unwrap().layers[0].surface.clone();
     let commit = throttled.into_commit().unwrap();
     assert_eq!(commit.surface, expected_target, "commit retains the same active Paint surface");
+    let worker_bounds = worker.bounds();
     let worker_commit = worker.into_commit().unwrap();
-    assert_eq!(worker_commit.surface, expected_target, "worker flush preserves the exact rendered Paint surface at commit");
+    assert_eq!(worker_commit.surface, expected_target, "worker deferral preserves the exact rendered Paint surface at commit");
+    assert_ne!(worker_commit.bounds, worker_bounds, "commit damage includes downstream Blur reach beyond source Paint dabs");
+    assert!(worker_commit.bounds.contains_rect(&worker_bounds), "expanded commit damage still contains every painted pixel");
 
     let mut unsupported = LiveStroke::begin_with_mask_preview_worker(&s, "paint.stroke", &params, Duration::from_secs(60)).unwrap();
     unsupported.push(&[StrokePoint::new(256.5, 64.5, 1.0)]).unwrap();
@@ -390,6 +749,88 @@ fn throttled_live_mask_cache_coalesces_damage_and_commit_flushes_blur_halos() {
     cancelled.push(&[StrokePoint::new(255.5, 64.5, 1.0)]).unwrap();
     drop(cancelled);
     assert_eq!(s.active().unwrap().doc.layer(id).unwrap().mask.as_ref().unwrap().surface, original_cache);
+
+    s.edit("hide downstream Blur", |doc, _| {
+        doc.layer_mut(id).unwrap().mask.as_mut().unwrap().paint.as_mut().unwrap().layers[1].visible = false;
+        Ok(())
+    })
+    .unwrap();
+    let non_blur = LiveStroke::begin_with_mask_preview_worker(&s, "paint.stroke", &params, Duration::from_secs(60)).unwrap();
+    assert!(non_blur.mask_preview_worker.is_some(), "native sublayer stacks defer cache composition even without downstream Blur");
+}
+
+#[test]
+fn mask_preview_release_defers_flattening_to_the_single_commit_refresh() {
+    use photocraft_color::PixelFormat;
+    use photocraft_doc::{
+        LayerMask,
+        mask_paint::{EffectKind, Paint, Stack},
+    };
+    use std::time::Duration;
+
+    let mut s = session(96, 64);
+    let layer_id = s.active().unwrap().active_layer.unwrap();
+    let base = Surface::with_default(PixelFormat::GRAY8, &[0.2]);
+    let paint = |name: &str| Paint {
+        name: name.into(),
+        visible: true,
+        opacity: 1.0,
+        blend: photocraft_color::BlendMode::Normal,
+        surface: Surface::new(PixelFormat::RGBA8),
+        fill_map: None,
+        fill_map_size: [0, 0],
+        fill_bounds: None,
+        kind: EffectKind::Paint,
+    };
+    s.edit("mask paint fixture", |doc, _| {
+        doc.layer_mut(layer_id).unwrap().mask = Some(LayerMask {
+            surface: base.clone(),
+            enabled: true,
+            linked: true,
+            density: 1.0,
+            feather: 0.0,
+            paint: Some(Stack { base: base.clone(), layers: vec![paint("active"), paint("upper")], active: 0 }),
+        });
+        Ok(())
+    })
+    .unwrap();
+
+    let first = [20.5, 24.5, 1.0];
+    let second = [58.5, 24.5, 1.0];
+    let params = json!({
+        "target":"mask",
+        "points":[first],
+        "size":18,
+        "color":"#ffffff",
+        "brush":{"hardness":1.0,"opacity":1.0,"flow":1.0},
+        "seed":42
+    });
+    let mut live = LiveStroke::begin_with_mask_preview_worker(&s, "paint.stroke", &params, Duration::from_secs(60)).unwrap();
+    live.push(&[StrokePoint::new(second[0], second[1], second[2] as f32)]).unwrap();
+    let invalidation = live.defer_mask_preview_to_commit();
+    assert!(!invalidation.is_empty(), "pending preview damage still reaches the UI for redraw");
+
+    let canvas = s.active().unwrap().doc.bounds();
+    let mut expected = (*live.doc).clone();
+    photocraft_compose::mask_paint::refresh_in_canvas(expected.layer_mut(layer_id).unwrap().mask.as_mut().unwrap(), canvas);
+    let expected_pixels = expected.layer(layer_id).unwrap().mask.as_ref().unwrap().surface.read_region(canvas);
+    assert_ne!(
+        live.doc.layer(layer_id).unwrap().mask.as_ref().unwrap().surface.read_region(canvas),
+        expected_pixels,
+        "release deferral must leave the transient flattened cache stale until Session edit"
+    );
+
+    let mut commit_params = params.clone();
+    commit_params["points"] = json!([first, second]);
+    s.offer_live_stroke(live).unwrap();
+    let result = s.execute("paint.stroke", commit_params).unwrap();
+    assert_eq!(result["fromLive"], true, "commit still consumes the ordered live Paint surface");
+    let actual = s.active().unwrap().doc.layer(layer_id).unwrap().mask.as_ref().unwrap().surface.read_region(canvas);
+    assert_eq!(actual, expected_pixels, "Session publishes the exact flattened cache after its one commit refresh");
+
+    s.execute("edit.undo", json!({})).unwrap();
+    let undone = s.active().unwrap().doc.layer(layer_id).unwrap().mask.as_ref().unwrap();
+    assert_eq!(undone.surface.read_region(canvas), base.read_region(canvas), "the deferred preview does not split or lose the single undo step");
 }
 
 #[test]

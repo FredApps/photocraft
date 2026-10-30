@@ -187,6 +187,7 @@ pub(crate) fn shell_tool(app: &mut PhotocraftApp, ui: &mut Ui, size: f32) {
     if response.clicked() {
         uv_ui::finish_paint(app);
         app.ui.uv_workbench.select_shells = true;
+        uv_ui::begin_polygon_selection_wireframe(&mut app.ui.uv_workbench);
         app.uv_cache.shell_tool_owner = Some(app.ui.tool);
     }
     if !app.ui.uv_workbench.select_shells {
@@ -307,6 +308,9 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
             let response = response.on_hover_text(tl!("3D display"));
             response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("3D display")));
             display_menu_button = Some(response);
+            if app.ui.workspace == "3D" && app.ui.uv_workbench.view_3d && app.session.uv.scene.is_some() {
+                icon_menu(ui, "painting-symmetry", tl!("3D brush symmetry"), |ui| crate::uv_symmetry::menu(ui));
+            }
             icon_menu(ui, "sliders-horizontal", tl!("Camera navigation"), |ui| {
                 ui.label(tl!("Orbit pivot"));
                 for mode in [OrbitPivot::ViewCenter, OrbitPivot::Cursor, OrbitPivot::Fixed] {
@@ -324,7 +328,7 @@ fn bar(app: &mut PhotocraftApp, ui: &mut Ui) {
                     ui.close();
                 }
                 ui.weak(tl!("Alt+LMB — orbit · Alt+MMB — pan"));
-                ui.weak(tl!("Alt+RMB — dolly · F / A — frame"));
+                ui.weak(tl!("Alt+RMB — dolly · Ctrl+LMB — pipette · F / A — frame"));
             });
             ui.separator();
             ui.weak(if app.ui.uv_workbench.split_view {
@@ -680,8 +684,8 @@ mod tests {
     fn uv_shell_options_are_localized_and_hidden_outside_3d() {
         let _gpu = photocraft_testkit::gpu_lock();
         for (language, label, hint) in [
-            ("en", "UV shell selection", "Click to select · Shift to add · Alt in 2D / Ctrl in 3D to subtract"),
-            ("ru", "Выделение UV-шеллов", "Щелчок — выбрать · Shift — добавить · Alt в 2D / Ctrl в 3D — вычесть"),
+            ("en", "UV shell selection", "Click to select · Shift to add · Ctrl to subtract"),
+            ("ru", "Выделение UV-шеллов", "Щелчок — выбрать · Shift — добавить · Ctrl — вычесть"),
         ] {
             let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
             app.session.uv.scene = Some(std::sync::Arc::new(photocraft_uv::Scene::default()));

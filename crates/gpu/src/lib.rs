@@ -136,6 +136,7 @@ mod convert;
 mod encode;
 mod fx_passes;
 mod kit;
+mod mask_stack_gpu;
 mod paging;
 #[cfg(not(target_arch = "wasm32"))]
 mod readback;
@@ -153,6 +154,7 @@ use convert::{CONVERT_BATCH, colour_managed, convert_tile, convert_tiles, rgb_gr
 pub use convert::{f16_to_f32, f32_to_f16};
 pub use kit::SHADER;
 use kit::{Kit, tex_entry};
+pub use mask_stack_gpu::{MaskBrushPatch, MaskBrushSettings, MaskRoundDab, MaskStackRenderer};
 pub use paging::OVER_BUDGET;
 use paging::first_error;
 #[cfg(test)]

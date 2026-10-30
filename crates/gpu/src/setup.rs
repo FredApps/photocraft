@@ -285,10 +285,13 @@ impl Compositor {
         let mut seen = std::collections::HashSet::new();
         let mut total = 0u64;
         for p in &plan.passes {
-            let sources = [p.tex.as_ref().map(|t| (t.layer, t.role, t.surface.get())), p.mask.as_ref().and_then(|m| match &m.source {
-                plan::MaskSource::Surface(surface) => Some((m.layer, Role::Mask, surface.get())),
-                plan::MaskSource::Slot(_) => None,
-            })];
+            let sources = [
+                p.tex.as_ref().map(|t| (t.layer, t.role, t.surface.get())),
+                p.mask.as_ref().and_then(|m| match &m.source {
+                    plan::MaskSource::Surface(surface) => Some((m.layer, Role::Mask, surface.get())),
+                    plan::MaskSource::Slot(_) => None,
+                }),
+            ];
             for (layer, role, s) in sources.into_iter().flatten() {
                 if seen.insert((layer, role)) {
                     let a = s.tile_bounds().intersect(&grid).intersect(&cells);
