@@ -236,6 +236,45 @@ fn a_duplicated_type_layer_keeps_its_name_until_its_text_changes() {
     assert_eq!(layer_name_of(&s, id), "Heading");
 }
 
+/// #9023 review: a copy-shaped name the user typed ("Title copy 2" on a layer whose text is
+/// "Title") is kept when the text changes, however it was typed; one Duplicate Layer made, also
+/// through its dialog's offered name, still follows the text, and so does one restored by undo.
+#[test]
+fn a_typed_copy_shaped_name_is_kept() {
+    let mut s = session();
+    let typed = |s: &mut Session, how: &str, id: u64, name: &str| match how {
+        "rename" => s.execute("layer.renameLayer", json!({"layer": id, "name": name})).map(|_| id),
+        "type.edit" => s.execute("type.edit", json!({"layer": id, "name": name})).map(|_| id),
+        _ => {
+            s.execute("layer.select", json!({"layer": id})).unwrap();
+            s.execute("layer.duplicate", json!({"name": name})).map(|v| v["layer"].as_u64().unwrap())
+        }
+    };
+    for how in ["rename", "type.edit", "dialog"] {
+        // The dialog offers "Title copy" itself (checked below).
+        for name in ["Title copy", "Title copy 2", "Title copy 17"].into_iter().filter(|n| how != "dialog" || *n != "Title copy") {
+            let id = s.execute("type.create", json!({"x": 0, "y": 40, "text": "Title"})).unwrap()["layer"].as_u64().unwrap();
+            let named = typed(&mut s, how, id, name).unwrap();
+            assert_eq!(layer_name_of(&s, named), name, "{how} {name}");
+            s.execute("type.edit", json!({"layer": named, "text": "Subtitle"})).unwrap();
+            assert_eq!(layer_name_of(&s, named), name, "{how}: a typed {name:?} is kept");
+            s.execute("layer.delete", json!({"layer": named})).unwrap();
+        }
+    }
+    // The dialog's own offer ("Title copy") is Duplicate Layer's name, not a typed one.
+    let id = s.execute("type.create", json!({"x": 0, "y": 40, "text": "Title"})).unwrap()["layer"].as_u64().unwrap();
+    let copy = typed(&mut s, "dialog", id, "Title copy").unwrap();
+    s.execute("type.edit", json!({"layer": copy, "text": "Caption"})).unwrap();
+    assert_eq!(layer_name_of(&s, copy), "Caption");
+    // Undoing a rename brings back the generated name, which follows the text again.
+    let copy = typed(&mut s, "dialog", id, "Title copy").unwrap();
+    s.execute("layer.renameLayer", json!({"layer": copy, "name": "Title copy 9"})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(layer_name_of(&s, copy), "Title copy");
+    s.execute("type.edit", json!({"layer": copy, "text": "Footer"})).unwrap();
+    assert_eq!(layer_name_of(&s, copy), "Footer");
+}
+
 #[test]
 fn size_keys_step_each_run_and_respect_layer_scale() {
     let mut s = session();
