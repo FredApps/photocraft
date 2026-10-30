@@ -907,3 +907,29 @@ fn a_right_click_that_moved_still_opens_its_menu() {
     right_drag_by(&mut h, vec2(rect.width(), 0.0), Modifiers::NONE);
     assert_eq!(h.state().ui.brush_picker, None, "released outside the canvas");
 }
+
+/// The Hand tool pans with the left button, and the right one is its view menu, as in
+/// Photoshop: a right drag no longer pans and then opens the menu on release (#10183).
+#[test]
+fn a_right_drag_with_the_hand_opens_its_menu_without_panning() {
+    let mut h = harness(None);
+    h.state_mut().ui.tool = Tool::Hand;
+    h.state_mut().ui.views[0].zoom = 4.0;
+    h.run_steps(2);
+    let center = h.state().ui.views[0].center;
+    right_drag_by(&mut h, vec2(60.0, 30.0), Modifiers::NONE);
+    assert_eq!(h.state().ui.views[0].center, center, "a right drag does not pan");
+    let menu = h.state().ui.canvas_tool_menu.as_ref().map(|m| m.tool);
+    assert_eq!(menu, Some(Tool::Hand), "it opens the Hand's view menu");
+    // A left drag still pans, and opens no menu.
+    h.state_mut().ui.canvas_tool_menu = None;
+    drag(&mut h, PointerButton::Primary);
+    assert_ne!(h.state().ui.views[0].center, center, "a left drag pans");
+    assert!(h.state().ui.canvas_tool_menu.is_none());
+    // The middle button still pans with any tool.
+    h.state_mut().ui.tool = Tool::Brush;
+    let center = h.state().ui.views[0].center;
+    drag(&mut h, PointerButton::Middle);
+    assert_ne!(h.state().ui.views[0].center, center, "a middle drag pans");
+    assert!(strokes(&h).is_empty());
+}
