@@ -428,15 +428,16 @@ fn select_row_on_click(app: &mut PhotocraftApp, ui: &egui::Ui, rc: &RowCtx<'_>, 
     if app.ui.workspace == "3D" && !on_mask {
         crate::uv_mask_paint::collapse_effects(ctx);
     }
-    let content_less = matches!(l.content, LayerContent::Adjustment(_) | LayerContent::Fill(_));
+    let adjustment = matches!(l.content, LayerContent::Adjustment(_));
+    let fill_mask = matches!(l.content, LayerContent::Fill(_)) && l.mask.is_some();
     #[cfg(not(feature = "uv-workbench"))]
-    let content_click = on_thumb || !row.primary;
+    let content_click = on_thumb || adjustment || !row.primary;
     #[cfg(feature = "uv-workbench")]
-    let content_click = if app.ui.workspace == "3D" { on_thumb } else { on_thumb || !row.primary };
+    let content_click = if app.ui.workspace == "3D" { on_thumb } else { on_thumb || adjustment || !row.primary };
     #[cfg(not(feature = "uv-workbench"))]
-    let mask_by_row = content_less && l.mask.is_some() && !on_thumb;
+    let mask_by_row = fill_mask && !on_thumb;
     #[cfg(feature = "uv-workbench")]
-    let mask_by_row = content_less && l.mask.is_some() && !on_thumb && app.ui.workspace != "3D";
+    let mask_by_row = fill_mask && !on_thumb && app.ui.workspace != "3D";
     if on_vector {
         // The vector mask thumbnail targets the vector mask: the path tools edit it and the
         // Paths panel selects the layer's path.

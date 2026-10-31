@@ -292,6 +292,10 @@ pub(crate) fn select_workspace_named(app: &mut PhotocraftApp, name: String) -> R
     } else {
         apply_custom(app);
     }
+    #[cfg(feature = "uv-workbench")]
+    if previous_workspace != "3D" && name == "3D" {
+        crate::uv_workspace::restore_parked_dock(app);
+    }
     Ok(json!({"workspace": name}))
 }
 
@@ -727,8 +731,7 @@ mod tests {
         let (mut app, ctx) = app();
         app.run("file.new", json!({"width":32,"height":32})).unwrap();
         let normal = app.session.active().unwrap().doc.id;
-        app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app);
+        crate::menus::invoke(&mut app, &ctx, "window.workspace.threeD", Value::Null).unwrap();
         let mesh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
         app.run("uv.model.import", json!({"path":mesh})).unwrap();
         app.run("uv.texture.create", json!({"width":32,"height":32})).unwrap();

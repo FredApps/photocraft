@@ -187,7 +187,15 @@ pub(crate) fn intercept(app: &mut PhotocraftApp, id: &str, params: &Value) -> bo
     }
     if id == "file.exit" && app.session.uv_workspace.active {
         // The project has already been answered; native prompts now cover only ordinary docs.
+        let previous_workspace = app.ui.workspace.clone();
         app.ui.workspace = "Essentials".into();
+        if let Err(error) = crate::uv_workspace::sync_workspace(app) {
+            app.ui.workspace = previous_workspace;
+            app.ui.status = error;
+            app.ui.status_error = true;
+            app.uv_cache.project.exit_approved = false;
+            return true;
+        }
         crate::menus::apply_workspace(app);
     }
     false
@@ -358,8 +366,7 @@ mod container_tests {
         s.execute("file.new", json!({"width":16,"height":16})).unwrap();
         let mut app = PhotocraftApp::new(s, Default::default());
         app.sync_views();
-        app.ui.workspace = "3D".into();
-        crate::menus::apply_workspace(&mut app);
+        crate::menus::invoke(&mut app, &egui::Context::default(), "window.workspace.threeD", json!({})).unwrap();
         let mesh = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../uv/tests/fixtures/two-shells.obj");
         app.run("uv.model.import", json!({"path":mesh})).unwrap();
         app.run("uv.texture.create", json!({"width":32,"height":32})).unwrap();

@@ -328,7 +328,7 @@ fn close_selection_contour(app: &mut PhotocraftApp, state: &mut State) {
 fn end_segment(app: &mut PhotocraftApp, state: &mut State, close_contour: bool, finish_gesture: bool) {
     let source_last = state.last.take();
     let had_last = source_last.is_some();
-    if had_last || finish_gesture && state.mask_segmented_live {
+    if had_last || finish_gesture && (state.mask_segmented_live || app.drag.is_some()) {
         let last = state
             .output_last
             .take()

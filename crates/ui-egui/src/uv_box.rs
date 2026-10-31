@@ -238,7 +238,7 @@ mod tests {
         app.run("uv.model.import", serde_json::json!({"path":path})).unwrap();
         let topology = app.session.uv.topology.clone().unwrap();
         let material = app.session.uv.material;
-        let project = |id| Some([egui::pos2(1.0, 1.0), egui::pos2(8.0, 1.0), egui::pos2(1.0, 8.0)]);
+        let project = |_id| Some([egui::pos2(1.0, 1.0), egui::pos2(8.0, 1.0), egui::pos2(1.0, 8.0)]);
         let rect = Rect::from_min_max(Pos2::ZERO, egui::pos2(10.0, 10.0));
         let mut state = crate::uv_ui::State::default();
         select(&mut app, &mut state, rect, egui::Modifiers::NONE, material, true, project, |triangle, _, _| triangle == 0);

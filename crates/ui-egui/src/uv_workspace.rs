@@ -622,6 +622,7 @@ pub(crate) fn sync_workspace(app: &mut PhotocraftApp) -> Result<(), String> {
             kept: app.ui.docking_kept.clone(),
             collapsed: app.ui.docking_collapsed.clone(),
             tabs: app.ui.dock_tabs,
+            panels: app.ui.panels.clone(),
             dock_visible: app.ui.panels.dock,
             uv_open: app.ui.uv_workbench.open,
         });
@@ -656,6 +657,22 @@ pub(crate) fn sync_workspace(app: &mut PhotocraftApp) -> Result<(), String> {
     app.uv_cache.viewport_id = None;
     app.uv_cache.workspace_views.retain(|id, _| app.session.documents().iter().chain(app.session.uv_workspace.parked()).any(|st| st.doc.id == *id));
     Ok(())
+}
+
+/// Restore the UV workspace's native dock after a built-in preset has applied its own layout.
+/// This is called only while re-entering 3D; an explicit Reset Workspace continues to use the
+/// preset defaults.
+pub(crate) fn restore_parked_dock(app: &mut PhotocraftApp) {
+    let Some(parked) = app.uv_cache.parked_dock.take() else { return };
+    app.ui.dock = parked.dock;
+    app.ui.docking = parked.docking;
+    app.ui.docking_returns = parked.returns;
+    app.ui.docking_kept = parked.kept;
+    app.ui.docking_collapsed = parked.collapsed;
+    app.ui.dock_tabs = parked.tabs;
+    app.ui.panels = parked.panels;
+    app.ui.panels.dock = parked.dock_visible;
+    app.ui.uv_workbench.open = parked.uv_open;
 }
 
 #[cfg(test)]

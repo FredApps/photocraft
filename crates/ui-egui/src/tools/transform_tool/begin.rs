@@ -4,7 +4,7 @@ use super::draw::texture_quad;
 use super::preview::{Above, preview_image};
 use super::{
     Arc, BezierMesh, CAS_ONLY_SCALES, Color32, DocId, Document, Follow, Homography, LOCKED, LayerContent, LayerId, MadeLayer, PhotocraftApp, Several, Steps,
-    TransformPreview, TransformSession, Warp, WarpStyle, corners, json,
+    TransformPreview, TransformSession, Warp, WarpStyle, corners, default_interpolation, json,
 };
 
 /// Start Free Transform on the active layer (or its selected pixels), or on the targeted unlinked
@@ -99,7 +99,7 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
         rect,
         quad: corners(rect),
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bicubic".into(),
+        interpolation: default_interpolation(app).into(),
         warp: None,
         selection: false,
         target: None,
@@ -112,6 +112,16 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
     });
     start_steps(app);
     Ok(())
+}
+
+pub(super) fn interpolation_preference(interpolation: &str) -> Option<photocraft_engine::prefs::Interpolation> {
+    use photocraft_engine::prefs::Interpolation;
+    match interpolation {
+        "nearest" => Some(Interpolation::Nearest),
+        "bilinear" => Some(Interpolation::Bilinear),
+        "bicubic" => Some(Interpolation::Bicubic),
+        _ => None,
+    }
 }
 
 /// Free Transform of the selected layers `ids` together (#6501): the box frames them all, and the
@@ -196,7 +206,7 @@ fn begin_several(app: &mut PhotocraftApp, ctx: &egui::Context, doc: Arc<Document
         rect,
         quad: corners(rect),
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bicubic".into(),
+        interpolation: default_interpolation(app).into(),
         warp: None,
         selection: false,
         target: None,
@@ -328,7 +338,7 @@ pub(crate) fn begin_content_aware(
         rect,
         quad: corners(rect),
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bicubic".into(),
+        interpolation: default_interpolation(app).into(),
         warp: None,
         selection: false,
         target: None,
@@ -456,7 +466,7 @@ fn begin_lone(
         rect,
         quad: corners(rect),
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bicubic".into(),
+        interpolation: default_interpolation(app).into(),
         warp: None,
         selection: false,
         target: Some(target),
@@ -511,7 +521,7 @@ fn begin_path(app: &mut PhotocraftApp, ctx: &egui::Context, params: serde_json::
         rect,
         quad: corners(rect),
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bicubic".into(),
+        interpolation: default_interpolation(app).into(),
         warp: None,
         selection: false,
         target: None,
@@ -598,7 +608,7 @@ pub fn begin_selection(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(
         rect,
         quad: corners(rect),
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bilinear".into(),
+        interpolation: default_interpolation(app).into(),
         warp: None,
         selection: true,
         target: None,

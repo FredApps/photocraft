@@ -461,9 +461,7 @@ pub(super) fn load(bytes: &[u8], uv_set: usize) -> Result<Scene> {
                     if reflected {
                         face.reverse();
                     }
-                    if super::triangulate(&scene.positions, &face, material, &mut scene.triangles, &mut triangulation_budget)?
-                        && scene.warnings.len() < 100
-                    {
+                    if super::triangulate(&scene.positions, &face, material, &mut scene.triangles, &mut triangulation_budget)? && scene.warnings.len() < 100 {
                         scene.warnings.push("FBX: redundant or degenerate polygon corners omitted during triangulation".into());
                     }
                     face.clear();

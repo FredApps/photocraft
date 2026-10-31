@@ -297,6 +297,7 @@ pub(crate) struct ParkedDock {
     pub(crate) kept: Option<serde_json::Map<String, serde_json::Value>>,
     pub(crate) collapsed: Vec<String>,
     pub(crate) tabs: crate::state::DockTabs,
+    pub(crate) panels: crate::state::Panels,
     pub(crate) dock_visible: bool,
     pub(crate) uv_open: bool,
 }
@@ -2911,7 +2912,7 @@ fn choose(app: &mut PhotocraftApp, state: &mut State, ui: &egui::Ui, material: u
     choose_many(app, state, ui, material, &[shell], ui.input(|i| i.modifiers));
 }
 
-fn choose_many(app: &mut PhotocraftApp, state: &mut State, ui: &egui::Ui, material: usize, shells: &[usize], modifiers: egui::Modifiers) {
+fn choose_many(app: &mut PhotocraftApp, state: &mut State, _ui: &egui::Ui, material: usize, shells: &[usize], modifiers: egui::Modifiers) {
     let mode = if modifiers.ctrl {
         "subtract"
     } else if modifiers.shift {

@@ -1,20 +1,19 @@
-# Contributor-supplied 3D / UV screenshots
+# 3D / UV workspace screenshots
 
-These five screenshots were supplied by `veteraros-ai` for the presentation in
-[PhotoCraft PR #8805](https://github.com/storytold/photocraft/pull/8805) and are
-reproduced at the contributor's explicit request, in the supplied order:
+These screenshots show PhotoCraft's optional 3D / UV workspace.
 
-1. `overview.png` - general workspace view.
-2. `mask-sublayers.png` - expanded mask Paint / Fill / Levels stack.
-3. `model-wireframe.png` - polygon wireframe display and color controls.
-4. `model-selection.png` - region and polygon selection on the model.
-5. `model-mirror.png` - configurable 3D mirror plane and symmetry controls.
+| Image | What it shows | Source and license |
+|---|---|---|
+| `overview.png` | Textured model beside its editable UV map | Screenshot supplied by `veteraros-ai`, CC BY 4.0. Attribution and terms: [`LICENSE-CC-BY-4.0.txt`](LICENSE-CC-BY-4.0.txt). |
+| `mask-sublayers.png` | ORBIT-07 with the editable Paint, Fill, Levels and Blur mask stack | Native PhotoCraft capture using the CC0 sample model. See [`LICENSE-CC0-1.0.txt`](LICENSE-CC0-1.0.txt). |
+| `model-wireframe.png` | ORBIT-07 with polygon wireframe | Native PhotoCraft capture using the CC0 sample model. See [`LICENSE-CC0-1.0.txt`](LICENSE-CC0-1.0.txt). |
+| `model-selection.png` | Polygon selections on the chest and forearm | Native PhotoCraft capture using the CC0 sample model. See [`LICENSE-CC0-1.0.txt`](LICENSE-CC0-1.0.txt). |
+| `model-mirror.png` | ORBIT-07 with the adjustable 3D mirror plane | Native PhotoCraft capture using the CC0 sample model. See [`LICENSE-CC0-1.0.txt`](LICENSE-CC0-1.0.txt). |
 
-The PNG files are unmodified copies of the supplied screenshots. They are
-documentation images, not sample assets or test fixtures. No character mesh,
-source texture, or project file is included. Rights to the depicted artwork,
-branding and trademarks remain with their respective owners; this documentation
-does not grant a separate license to reuse those underlying assets.
+The overview screenshot depicts `SKVERNA: Inquisition Order` by `veteraros-ai`;
+see the [ArtStation source](https://www.artstation.com/artwork/wJqx2w). Only the
+screenshot is included. The model, source textures and project file for that
+character are not distributed.
 
-These images are separate from the synthetic captures covered by
-`../LICENSE-uv-workspace.txt`.
+The ORBIT-07 model and its maps are available as OBJ/MTL files and as a ready-to-
+import ZIP in [`docs/samples/uv-workbench/orbit-07`](../../samples/uv-workbench/orbit-07/README.md).

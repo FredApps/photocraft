@@ -7,6 +7,7 @@
 
 /// Shell commands: id, label, menu path, default shortcut.
 pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
+    ("layer.selectUnderCursor", "Select Layer Under Cursor", &[], None),
     #[cfg(feature = "uv-workbench")]
     ("window.uvWorkbench", "3D / UV Workbench", &["Window"], None),
     #[cfg(feature = "uv-workbench")]

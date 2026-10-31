@@ -1,48 +1,39 @@
 # PhotoCraft 3D / UV workspace
 
-The optional `uv-workbench` feature combines a native 3D model viewport with
-PhotoCraft's layered texture editor. This presentation shows the updated
-PhotoCraft build using screenshots supplied by the contributor.
+An optional 3D viewport paired with PhotoCraft's editable 2D texture workspace.
+The overview screenshot is contributed by `veteraros-ai`; feature captures use
+the CC0 ORBIT-07 sample robot.
 
 ## 1. Overview
 
-View the textured model and its editable 2D UV map side by side. The material
-panel exposes texture bindings while the ordinary Layers panel remains available.
+Inspect the textured model and its UV map side by side, with material bindings
+and the native Layers panel available.
 
-![Overview: textured character, UV texture and material maps](images/uv-showcase/overview.png)
+![3D model, UV map and material textures](images/uv-showcase/overview.png)
 
 ## 2. Mask sublayers
 
-An editable mask stack contains Paint, Fill, Levels and Blur effects. The
-screenshot shows the grayscale mask on the model and UV map, with Levels, Fill
-and Blur controls displayed side by side. Use `.pcuv` or `.pcraft` to retain the
-editable stack; flat texture export stores the rendered result.
+Build an editable mask stack with Paint, Fill, Levels and Blur effects.
 
-![Mask sublayers: Paint, Fill, Levels and Blur with a shared 2D/3D mask preview](images/uv-showcase/mask-sublayers.png)
+![ORBIT-07 mask preview and editable effect stack](images/uv-showcase/mask-sublayers.png)
 
 ## 3. Polygon wireframe
 
-Overlay the imported polygon mesh on the textured model. Wireframe color and
-opacity are adjustable; the supplied comparison shows dark and light wireframes.
-This is a display overlay and does not modify the model geometry.
+Inspect mesh topology with an adjustable wireframe overlay.
 
-![Model wireframe: dark and light overlays with color and opacity controls](images/uv-showcase/model-wireframe.png)
+![ORBIT-07 with polygon wireframe](images/uv-showcase/model-wireframe.png)
 
 ## 4. Model selection
 
-Select UV shells or individual polygons on the model. The screenshot shows a
-selected sleeve region and a narrower face selection with the wireframe visible.
-Polygon selections become the texture document's native selection when switching
-tools, so subsequent texture edits can respect that region and support Undo.
+Select connected model regions or individual polygons for texture edits.
 
-![Model selection: sleeve region and individual polygon band](images/uv-showcase/model-selection.png)
+![Polygon selection on the ORBIT-07 chest and forearm](images/uv-showcase/model-selection.png)
 
 ## 5. 3D mirror
 
-Paint symmetrically across a configurable plane. Choose an axis, adjust its
-offset or snap it to a vertex; the translucent plane shows the active mirror.
+Paint across an adjustable mirror plane with axis and offset controls.
 
-![3D mirror plane with axis, offset and vertex snapping controls](images/uv-showcase/model-mirror.png)
+![ORBIT-07 with the 3D mirror plane and controls](images/uv-showcase/model-mirror.png)
 
 ## Try the workspace
 
@@ -50,7 +41,7 @@ offset or snap it to a vertex; the translucent plane shows the active mirror.
 cargo run -p photocraft --features uv-workbench
 ```
 
-Choose the **3D** workspace, then **File > 3D Import > Import Model**.
-See [the workspace guide](uv-workbench.md) for supported formats, controls and
-limitations. The character model and source textures shown here are not bundled.
-Screenshot provenance is recorded [beside the images](images/uv-showcase/README.md).
+Choose the **3D** workspace, then **File → 3D Import → Import Model**. Download
+the [ORBIT-07 sample files](samples/uv-workbench/orbit-07/README.md) as a ZIP or
+import the OBJ directly.
+See the [workspace guide](uv-workbench.md) for supported formats and controls.

@@ -326,6 +326,7 @@ impl Stylus {
     }
 
     /// Raw sample selected for a pointer event, before the pressure curve is applied.
+    #[cfg(feature = "uv-workbench")]
     pub(crate) fn raw_selection(&self) -> Option<PenSample> {
         if !self.use_pressure {
             return None;
@@ -338,6 +339,7 @@ impl Stylus {
     }
 
     /// Replay a previously captured pointer event while processing a queued surface stroke.
+    #[cfg(feature = "uv-workbench")]
     pub(crate) fn select_raw_sample(&mut self, sample: Option<PenSample>) {
         self.current = sample;
         self.forced_current = true;

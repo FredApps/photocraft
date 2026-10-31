@@ -559,12 +559,8 @@ mod capsule_scanline_tests {
 
     #[test]
     fn capsule_scanline_matches_distance_oracle_for_axes_diagonals_and_points() {
-        let segments: [([[f64; 2]; 2], f64); 4] = [
-            ([[1.2, 2.7], [9.1, 2.7]], 2.25),
-            ([[4.4, 0.8], [4.4, 10.2]], 1.75),
-            ([[1.0, 1.0], [10.0, 9.0]], 2.5),
-            ([[6.0, 6.0], [6.0, 6.0]], 1.5),
-        ];
+        let segments: [([[f64; 2]; 2], f64); 4] =
+            [([[1.2, 2.7], [9.1, 2.7]], 2.25), ([[4.4, 0.8], [4.4, 10.2]], 1.75), ([[1.0, 1.0], [10.0, 9.0]], 2.5), ([[6.0, 6.0], [6.0, 6.0]], 1.5)];
         for (segment, radius) in segments {
             for y in -3..14 {
                 let span = capsule_row_span(segment, f64::from(y) + 0.5, radius);

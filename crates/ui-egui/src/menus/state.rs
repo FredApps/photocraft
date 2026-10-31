@@ -3,6 +3,9 @@ use super::items::MenuItem;
 use super::{DOCUMENT_ITEM, PhotocraftApp, Value};
 
 pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
+    if id == "layer.selectUnderCursor" {
+        return app.session.active().is_some() && app.drag.is_none() && app.brush_resize.is_none();
+    }
     #[cfg(feature = "uv-workbench")]
     if let Some(enabled) = crate::uv_workspace::is_enabled(app, id) {
         return enabled;

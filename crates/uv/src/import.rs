@@ -177,13 +177,7 @@ fn index(s: &str, len: usize) -> Result<usize> {
 }
 
 /// Ear clipping in the polygon's dominant 3D plane also handles concave n-gons.
-fn triangulate(
-    positions: &[[f64; 3]],
-    face: &[Corner],
-    material: usize,
-    output: &mut Vec<Triangle>,
-    budget: &mut TriangulationBudget,
-) -> Result<bool> {
+fn triangulate(positions: &[[f64; 3]], face: &[Corner], material: usize, output: &mut Vec<Triangle>, budget: &mut TriangulationBudget) -> Result<bool> {
     if face.len() < 3 {
         return Err(Error("Polygon has fewer than three vertices".into()));
     }
