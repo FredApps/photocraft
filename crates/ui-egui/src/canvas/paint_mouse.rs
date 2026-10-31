@@ -115,7 +115,8 @@ pub fn right_erases(app: &PhotocraftApp, tool: Tool) -> bool {
 /// (`right_click_reach`). egui reports `secondary_clicked` only within its click distance of the
 /// press, and a high-DPI mouse can move that far just from the button going down; egui then sees
 /// a drag (#10183). A right press that a gesture used (an Alt+right brush resize, a right-erase
-/// stroke, a pan, another button pressed with it), or that Escape cancelled, is no click.
+/// stroke, a pan, another button pressed with it, a move of the view under it), or that Escape
+/// cancelled, is no click.
 pub fn right_clicked(response: &Response) -> bool {
     right_click_at(response).is_some()
 }
@@ -133,6 +134,8 @@ pub fn right_clicked(response: &Response) -> bool {
 ///   press and the release, also within one frame's moves: past it the press is a drag;
 /// - no other mouse button was down when it went down, and none was pressed while it was held;
 /// - no gesture used it: an Alt+right brush resize, a right-erase stroke, a pan (Space's too);
+/// - the view did not move under it while it was held (a scroll, a zoom, a turn), so it still
+///   points at what was pressed (`track_right_press_view`);
 /// - Escape was not pressed while it was held;
 /// - it came up on the canvas.
 ///
@@ -248,10 +251,49 @@ pub fn track_right_press(response: &Response) {
     });
     if pressed {
         let at = origin.filter(|&p| !others && !escape && !far && on_canvas(response, p));
-        response.ctx.data_mut(|d| d.insert_temp(id, at));
+        response.ctx.data_mut(|d| {
+            d.insert_temp(id, at);
+            d.remove_temp::<ViewKey>(right_view_id(response));
+        });
     } else if !released && !held {
         response.ctx.data_mut(|d| d.remove_temp::<Option<Pos2>>(id));
     } else if others || escape || far {
+        right_press_used(response);
+    }
+}
+
+/// A canvas's camera and place on screen, as bits: the zoom, the document point at the centre, the
+/// rotation, the flip and the canvas rect.
+type ViewKey = [u32; 9];
+
+/// Temp-data key, one per canvas: the `ViewKey` the tracked right press went down in.
+fn right_view_id(response: &Response) -> egui::Id {
+    right_pressed_id(response).with("view")
+}
+
+/// Ties the tracked right press to the view it went down in. A scroll, a zoom or a turn of the
+/// view while the button is held moves the image under the press, so its release is no
+/// right-click: it would point at whatever is under the press's screen point now, not at what was
+/// pressed. `view` and `flip` are this frame's camera; the canvas calls this once the frame's
+/// navigation has moved it, before its menus read the click.
+pub fn track_right_press_view(response: &Response, view: &crate::state::View, flip: bool) {
+    let r = response.rect;
+    let now: ViewKey =
+        [view.zoom, view.center[0], view.center[1], view.rotation, f32::from(u8::from(flip)), r.min.x, r.min.y, r.max.x, r.max.y].map(f32::to_bits);
+    let key = right_view_id(response);
+    let tracked = response.ctx.data(|d| d.get_temp::<Option<Pos2>>(right_pressed_id(response))).flatten().is_some();
+    let then = response.ctx.data_mut(|d| {
+        if !tracked {
+            d.remove_temp::<ViewKey>(key);
+            return None;
+        }
+        let then = d.get_temp::<ViewKey>(key);
+        if then.is_none() {
+            d.insert_temp(key, now);
+        }
+        then
+    });
+    if then.is_some_and(|v| v != now) {
         right_press_used(response);
     }
 }

@@ -361,3 +361,51 @@ fn letting_go_of_space_mid_right_drag_with_the_hand_keeps_panning() {
     h.run_steps(2);
     assert!(h.state().ui.canvas_tool_menu.is_none(), "the release opens no view menu");
 }
+
+/// A scroll or a zoom while the right button is held moves the image under the press, so the
+/// release is no right-click: it would point at whatever is under the press now. Without it the
+/// same right-click opens its menu.
+#[test]
+fn a_view_change_while_the_right_button_is_held_cancels_the_right_click() {
+    for tool in [Tool::Brush, Tool::Pen] {
+        for change in [None, Some("scroll"), Some("zoom")] {
+            let mut h = harness(None);
+            h.state_mut().ui.tool = tool;
+            h.state_mut().ui.views[0].zoom = 2.0;
+            h.run_steps(2);
+            let c = h.state().last_canvas_rect.center();
+            h.event(egui::Event::PointerMoved(c));
+            h.run_steps(1);
+            button(&mut h, c, PointerButton::Secondary, true);
+            let view = h.state().ui.views[0].clone();
+            match change {
+                Some("scroll") => {
+                    let delta = vec2(-80.0, 0.0);
+                    let unit = egui::MouseWheelUnit::Point;
+                    h.event(egui::Event::MouseWheel {
+                        source: egui::MouseWheelSource::Unknown,
+                        unit,
+                        delta,
+                        phase: egui::TouchPhase::Move,
+                        modifiers: Modifiers::NONE,
+                    });
+                    h.run_steps(1);
+                }
+                Some(_) => {
+                    h.state_mut().ui.views[0].zoom = 3.0;
+                    h.run_steps(1);
+                }
+                None => {}
+            }
+            let p = move_by(&mut h, c, vec2(8.0, 0.0), 2);
+            assert_eq!(
+                h.state().ui.views[0].center != view.center || h.state().ui.views[0].zoom != view.zoom,
+                change.is_some(),
+                "{tool:?} {change:?}: the view moved"
+            );
+            button(&mut h, p, PointerButton::Secondary, false);
+            h.run_steps(2);
+            assert_eq!(nothing_opened(&h), change.is_some(), "{tool:?} {change:?}: the right-click opens its menu only with the view still");
+        }
+    }
+}
