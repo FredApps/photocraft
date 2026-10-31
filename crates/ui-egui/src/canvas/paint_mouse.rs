@@ -154,6 +154,11 @@ pub fn right_click_at(response: &Response) -> Option<Pos2> {
     on_canvas(response, up).then(|| to_layer(response, down))
 }
 
+/// Is a right press down on this canvas that may still be a right-click (`right_click_at`)?
+pub fn right_click_pending(response: &Response) -> bool {
+    response.ctx.data(|d| d.get_temp::<Option<Pos2>>(right_pressed_id(response))).flatten().is_some()
+}
+
 /// The right press now down was used by a gesture, so its release is no right-click.
 pub fn right_press_used(response: &Response) {
     response.ctx.data_mut(|d| d.insert_temp::<Option<Pos2>>(right_pressed_id(response), None));
@@ -163,7 +168,7 @@ pub fn right_press_used(response: &Response) {
 /// release to still be a right-click: three times egui's click distance (6 points by default, so
 /// 18). That is the "few pixels" a high-DPI mouse moves as its button goes down, or a slow frame's
 /// move, at any display scale (points follow it), and well short of a deliberate drag, which is
-/// no click: a long right drag opens nothing, as before #10183.
+/// no click: a long right drag opens nothing, as before #10183, and the selected Hand's pans.
 fn right_click_reach(ctx: &egui::Context) -> f32 {
     3.0 * ctx.options(|o| o.input_options.max_click_dist)
 }

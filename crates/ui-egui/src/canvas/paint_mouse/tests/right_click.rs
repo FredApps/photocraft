@@ -283,6 +283,22 @@ fn a_moved_right_click_on_a_guide_opens_the_guide_menu() {
 /// press while the button is down, the release opens nothing, as before #10183. That holds over
 /// frames, out and back near the press, and with the whole drag in one slow frame. A Space+right
 /// flick with the Hand selected is a pan too short for egui to see, and opens no view menu either.
+/// The selected Hand's right drag within a right-click's reach is its view menu, not a pan; past
+/// the reach it is a drag after all, and pans as it did before #10183, opening nothing.
+#[test]
+fn the_hands_right_drag_past_a_few_pixels_pans() {
+    let mut h = zoomed(Tool::Hand, None);
+    let center = h.state().ui.views[0].center;
+    right_drag_by(&mut h, vec2(80.0, 40.0), Modifiers::NONE);
+    assert_ne!(h.state().ui.views[0].center, center, "a long right drag with the Hand pans");
+    assert!(nothing_opened(&h), "and opens no view menu");
+    let mut h = zoomed(Tool::Hand, None);
+    let center = h.state().ui.views[0].center;
+    right_drag_by(&mut h, vec2(14.0, 7.0), Modifiers::NONE);
+    assert_eq!(h.state().ui.views[0].center, center, "a right drag within the reach does not pan");
+    assert_eq!(h.state().ui.canvas_tool_menu.as_ref().map(|m| m.tool), Some(Tool::Hand), "it opens the view menu");
+}
+
 #[test]
 fn a_right_drag_past_a_few_pixels_opens_nothing() {
     for tool in [Tool::Brush, Tool::Pen, Tool::Hand] {
