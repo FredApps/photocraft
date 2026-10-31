@@ -112,6 +112,8 @@ replace the historical validation sections above.
 
 | Check | Result |
 |---|---|
+| `cargo check -p photocraft --features uv-workbench --locked` | Passed |
+| `cargo check -p photocraft --locked` | Passed |
 | `cargo test -p photocraft-ui-egui --lib --features uv-workbench uv_ui::tests::shift_right_click_opens_brush_mode_menu_in_3d_and_2d_uv_views -- --exact` | Passed, 1 test |
 | `cargo test -p photocraft-ui-egui --lib --features uv-workbench brush_mode_menu::tests::menu_is_owned_by_its_detached_viewport_and_dismisses_there -- --exact` | Passed, 1 test |
 | `cargo test -p photocraft-ui-egui --lib i18n::tests::bundled_catalogs_are_consistent -- --exact` | Passed, 1 test |
