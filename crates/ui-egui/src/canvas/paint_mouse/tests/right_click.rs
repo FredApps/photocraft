@@ -335,3 +335,29 @@ fn a_right_drag_past_a_few_pixels_opens_nothing() {
         assert!(h.state().ui.canvas_tool_menu.is_none(), "split {split}: a Space+right flick opens no view menu");
     }
 }
+
+/// With the Hand selected, a right drag that Space made a pan stays one until the right button
+/// comes up: letting go of Space first neither starts a flick glide while the button is held nor
+/// stops the mouse panning, and the release opens no view menu.
+#[test]
+fn letting_go_of_space_mid_right_drag_with_the_hand_keeps_panning() {
+    let mut h = zoomed(Tool::Hand, None);
+    let start = h.state().ui.views[0].center;
+    let c = h.state().last_canvas_rect.center();
+    space(&mut h, true);
+    h.event(egui::Event::PointerMoved(c));
+    h.run_steps(1);
+    button(&mut h, c, PointerButton::Secondary, true);
+    let p = move_by(&mut h, c, vec2(80.0, 40.0), 4);
+    let panned = h.state().ui.views[0].center;
+    assert_ne!(panned, start, "Space and the right drag pan");
+    space(&mut h, false);
+    h.run_steps(30);
+    assert_eq!(h.state().ui.views[0].center, panned, "no glide while the button is held");
+    let p = move_by(&mut h, p, vec2(30.0, 0.0), 3);
+    let moved = h.state().ui.views[0].center;
+    assert!(moved[0] < panned[0], "the mouse still pans after Space comes up");
+    button(&mut h, p, PointerButton::Secondary, false);
+    h.run_steps(2);
+    assert!(h.state().ui.canvas_tool_menu.is_none(), "the release opens no view menu");
+}
