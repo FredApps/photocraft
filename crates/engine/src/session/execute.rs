@@ -216,7 +216,9 @@ impl Session {
         if spec.id == "layer.smartFilter.deleteFilterMask" && params.get("ifPresent").and_then(Value::as_bool) == Some(true) {
             return smart_cmds::smart_layer_active(self);
         }
-        channel_cmds::mask_target_enabled(self, spec.id, params).unwrap_or_else(|| (spec.enabled)(self))
+        channel_cmds::mask_stack_geometry_enabled(self, spec.id, params)
+            .or_else(|| channel_cmds::mask_target_enabled(self, spec.id, params))
+            .unwrap_or_else(|| (spec.enabled)(self))
     }
 
     /// Whether `id` is a layer command whose `"layer"` param names an existing layer, so it needs no

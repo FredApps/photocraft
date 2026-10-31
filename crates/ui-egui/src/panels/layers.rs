@@ -6,6 +6,11 @@ use super::layer_row::{RowSel, layer_row};
 use super::options_bar::{LAYER_PCT_W, body_text_width, pct_action, scrub_pct_label};
 use super::{BlendMode, Layer, LayerId, MaskKind, PhotocraftApp, Rect, Sense, Tokens, Value, empty, icons, json, label, pos2, theme, vec2, widgets};
 
+#[cfg(feature = "uv-workbench")]
+fn requested_mask_view(explicit_view: Option<bool>, target_enabled: bool) -> Option<bool> {
+    explicit_view.or((!target_enabled).then_some(false))
+}
+
 // ----------------------------------------------------------------------------- layers
 
 /// The simple themes' single lock button. On the Background it converts the layer to a normal
@@ -545,12 +550,13 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             #[cfg(feature = "uv-workbench")]
             if app.ui.workspace == "3D" {
                 let mask_view = app.session.active().and_then(photocraft_engine::mask_view_cmds::current);
-                let show = explicit_view.unwrap_or(app.ui.mask_target);
-                if show {
+                let show = requested_mask_view(explicit_view, app.ui.mask_target);
+                if show == Some(true) {
                     if let Err(error) = app.run("view.layerMask", json!({"mode":"gray"})) {
                         app.ui.uv_workbench.status = error;
                     }
-                } else if mask_view.is_some()
+                } else if show == Some(false)
+                    && mask_view.is_some()
                     && let Err(error) = app.run("view.layerMask", json!({"mode":"off"}))
                 {
                     app.ui.uv_workbench.status = error;

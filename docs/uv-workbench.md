@@ -237,13 +237,13 @@ In the 3D workspace, Ctrl+S saves the container in place, choosing its path only
 
 The Images tab beside 3D / UV accepts multiple OS file drops or a native file picker after importing a model. It caches a small original-image preview once. Drag a preview into Layers (or double-click it / choose Add to layers) to create a native editable raster layer, centred and fitted using PhotoCraft's placement preferences; Undo removes the placement. Removing a shelf source does not remove layers already placed from it. The library is embedded in the container, capped at 256 images / 512 MiB, with a 256 MiB per-source input limit. No extracted project images or thumbnails are written to a temporary directory.
 
-### Updating PhotoCraft and restoring the extension (2026-10-23)
+### Historical Windows package for PhotoCraft 0.14.0 (2026-10-23)
 
-The extension is ported to upstream `v0.14.0` (`ff4738810134d7f7e68b49f2e4f231b686282ff3`). The port preserves upstream's dynamic workspace switcher, selection no-op history behavior, canvas context menus, device-health tracking and modal guards. Native layer-mask display now uses the upstream `channel_view::Look`; its colour and opacity settings also invalidate the 3D preview cache.
+The following notes describe a legacy package built for upstream `v0.14.0` (`ff4738810134d7f7e68b49f2e4f231b686282ff3`). They are historical and do not describe a Windows package supplied by this PR. The current source baseline is PhotoCraft `v0.18.0`; build the optional workspace from source with `cargo build -p photocraft --features uv-workbench`.
 
-The separate Windows x64 installation package replaces the main executable with a tested build for that exact release. It retains a verified official executable for restoration, backs up preferences, checks payload/target SHA-256 before replacing anything, refuses unknown or newer binaries, and never terminates running PhotoCraft processes. Normal shortcuts and the ArtCraft Launcher still launch the main installation. The package's payload and source patch remain outside that installation, so an official reinstall cannot erase them. Existing `.pcuv` scenes and per-user preferences stay in place.
+The old Windows x64 package replaced the main executable with a tested build for that exact release. It retained a verified official executable for restoration, backed up preferences, checked payload/target SHA-256 before replacing anything, refused unknown or newer binaries, and never terminated running PhotoCraft processes. Normal shortcuts and the ArtCraft Launcher still launched the main installation. Its payload and source patch remained outside that installation, so an official reinstall could not erase them. Existing `.pcuv` scenes and per-user preferences stayed in place.
 
-An official launcher update may replace the main executable. Reapplying the package is supported for the identical official release. Updating to another release requires porting and testing a new package; this is not an arbitrary-version binary plug-in. The current upstream WASM plug-in ABI only supports image filters, not a native 3D viewport or shell integration.
+An official launcher update could replace the main executable. Reapplying the old package was supported only for the identical official release. Updating to another release required porting and testing a new package; it was not an arbitrary-version binary plug-in. The upstream WASM plug-in ABI supports image filters, not a native 3D viewport or shell integration.
 
 ### English package and workspace language (2026-10-23)
 
@@ -269,6 +269,11 @@ rotation and Repeat/Mirror settings. PSD stores the resulting raster mask, not t
 effect stack; use `.pcuv`/`.pcraft` to retain editable mask effects. Texture export writes
 the rendered result. Saving a project also includes unbound 3D documents when the 3D
 workspace is parked; an absent bound document causes a save error before file replacement.
+
+Image Size, Canvas Size, Crop, Trim and canvas rotation are unavailable while any editable
+mask Paint stack exists. Layer Move and Transform are refused when they would move a mask stack
+through its flattened surface. The command reports the restriction before changing the document;
+remove the affected stack before applying that geometry change.
 
 An environment is restored from the embedded resource only. Legacy projects with an external
 environment path but no embedded map use studio lighting and request explicit reselection;

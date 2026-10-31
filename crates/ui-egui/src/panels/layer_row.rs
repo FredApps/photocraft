@@ -479,7 +479,9 @@ fn handle_row_double_click(app: &mut PhotocraftApp, ctx: &egui::Context, rc: &Ro
             }
         } else if let Some(kind) = pos.and_then(|p| masks.hit(p)) {
             match kind {
-                crate::mask_thumbs_ui::MaskKind::Pixel => actions.push(("ui.maskTarget".into(), json!(true))),
+                crate::mask_thumbs_ui::MaskKind::Pixel => {
+                    actions.push(("ui.maskTarget".into(), json!({"enabled":true,"show":false,"select_active_effect":true})))
+                }
                 crate::mask_thumbs_ui::MaskKind::Vector => actions.push(("ui.vectorMaskTarget".into(), json!(true))),
             }
             if let Some((cmd, val)) = crate::mask_thumbs_ui::double_click_command(app, kind) {

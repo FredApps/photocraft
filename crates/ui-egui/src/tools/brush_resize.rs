@@ -60,7 +60,8 @@ pub fn is_right_gesture(mods: egui::Modifiers) -> bool {
 /// The UV viewport normalizes a native macOS Control-click to a right-click. Keep that gesture
 /// inside the UV workspace so it cannot change ordinary 2D canvas input.
 pub fn is_right_gesture_in_space(app: &PhotocraftApp, mods: egui::Modifiers) -> bool {
-    is_right_gesture(mods) || (cfg!(feature = "uv-workbench") && app.ui.workspace == "3D" && mods.ctrl && mods.command && !mods.mac_cmd)
+    is_right_gesture(mods)
+        || (cfg!(all(feature = "uv-workbench", target_os = "macos")) && app.ui.workspace == "3D" && mods.ctrl && !mods.alt && !mods.command && !mods.mac_cmd)
 }
 
 /// The diameter and hardness a drag from `start` by (`dx`, `dy`) document pixels gives at `zoom`.

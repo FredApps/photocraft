@@ -1437,9 +1437,11 @@ impl LiveStroke {
             let (mut dabs, mut dual) = (Vec::new(), Vec::new());
             generator.finish(&mut dabs, &mut dual);
             if !dual.is_empty() {
+                self.segment_break_pending = true;
                 return self.fallback_native_mask_gpu_to_cpu();
             }
             let Some(damage) = self.append_native_mask_gpu_dabs(&dabs) else {
+                self.segment_break_pending = true;
                 return self.fallback_native_mask_gpu_to_cpu();
             };
             self.native_mask_gpu_damage = self.native_mask_gpu_damage.union(&damage);
@@ -1978,15 +1980,30 @@ impl LiveStroke {
         self.native_mask_gpu_dabs.clear();
         self.native_mask_gpu_patch_applied = false;
         self.native_mask_gpu_damage = Rect::EMPTY;
-        self.renderer = StrokeRenderer::new(&self.brush, Some(self.pre.format()), self.zoom);
         let cmyk = self.cmyk.clone();
         photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
-            self.renderer.push(&self.points);
-            self.renderer.finish();
             let (surface, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.layer, &self.params)?;
-            let damage = self.renderer.composite(&self.pre, surface, self.sel.as_ref(), self.lock, true);
-            self.finished_bounds = damage;
+            let ends = self.breaks.iter().copied().chain(std::iter::once(self.points.len())).collect::<Vec<_>>();
+            let mut start = 0;
+            let mut damage = Rect::EMPTY;
+            for end in ends {
+                let segment = self.points.get(start..end).ok_or_else(|| bad(&self.cmd, "invalid live stroke segment boundary"))?;
+                let mut renderer = StrokeRenderer::new(&self.brush, Some(self.pre.format()), self.zoom);
+                renderer.push(segment);
+                renderer.finish();
+                damage = damage.union(&renderer.composite(&self.pre, surface, self.sel.as_ref(), self.lock, true));
+                self.pre = surface.clone();
+                start = end;
+            }
+            self.finished_bounds = self.finished_bounds.union(&damage);
             self.tail = Rect::EMPTY;
+            self.union_live = None;
+            self.mirror_distinct.fill(false);
+            self.segment_break_pending = true;
+            self.renderer = StrokeRenderer::new(&self.brush, Some(self.pre.format()), self.zoom);
+            self.mirrors = (0..self.symmetry.as_ref().map_or(0, |s| s.mirror_count()))
+                .map(|_| StrokeRenderer::new(&self.brush, Some(self.pre.format()), self.zoom))
+                .collect();
             self.refresh_mask_preview(damage);
             Ok(damage)
         })

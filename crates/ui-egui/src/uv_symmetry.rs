@@ -35,8 +35,8 @@ pub(crate) struct Settings {
     pub snap_pending: bool,
 }
 
-fn id(ctx: &Context) -> egui::Id {
-    ctx.viewport_id().root_ui_id().with("uv-3d-symmetry-settings")
+fn id(_ctx: &Context) -> egui::Id {
+    egui::Id::unique("uv-3d-symmetry-settings")
 }
 
 pub(crate) fn get(ctx: &Context) -> Settings {

@@ -400,7 +400,14 @@ impl MaskStackRenderer {
     /// Discard transient GPU dab coverage and preview pixels. Canonical Surface and Undo remain
     /// owned by the caller throughout the gesture.
     pub fn cancel_mask_brush_preview(&mut self) {
-        self.brush_preview = None;
+        let Some(preview) = self.brush_preview.take() else { return };
+        if let Some(cache) = self.cache.as_mut()
+            && cache.owner_key == preview.owner_key
+        {
+            // The output target may still contain this transient preview. Force the next render
+            // to rebuild the stack from canonical surfaces before reusing that target.
+            cache.stack_key = None;
+        }
     }
 
     /// Stable key for stack structure/settings; pixel content and document revisions are excluded.
