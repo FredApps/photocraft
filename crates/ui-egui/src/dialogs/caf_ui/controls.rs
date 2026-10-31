@@ -156,7 +156,7 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
 }
 
 pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
-    if app.distort.caf.as_ref().is_some_and(|w| w.pending_fill.is_some()) {
+    if app.distort.caf.as_ref().is_some_and(|w| w.pending_fill.is_some()) || crate::color_picker_ui::any_open(app) {
         return;
     }
     let cmd_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
