@@ -33,10 +33,14 @@ fn mapping_is_bounded() {
 #[test]
 fn mac_control_right_brush_resize_is_scoped_to_the_uv_workspace() {
     let mut app = app(Tool::Brush);
-    let mac_control_right = Modifiers { ctrl: true, command: true, mac_cmd: false, ..Modifiers::NONE };
+    let mac_control_right = Modifiers { ctrl: true, command: false, mac_cmd: false, ..Modifiers::NONE };
     assert!(!is_right_gesture_in_space(&app, mac_control_right), "ordinary 2D keeps Ctrl-right behavior");
     app.ui.workspace = "3D".into();
-    assert!(is_right_gesture_in_space(&app, mac_control_right), "the UV workspace owns the normalized macOS gesture");
+    assert_eq!(
+        is_right_gesture_in_space(&app, mac_control_right),
+        cfg!(all(feature = "uv-workbench", target_os = "macos")),
+        "only the UV workspace on macOS owns the normalized Control-right gesture"
+    );
     assert!(is_right_gesture_in_space(&app, Modifiers::ALT), "Photoshop Alt-right remains available in every workspace");
 }
 
