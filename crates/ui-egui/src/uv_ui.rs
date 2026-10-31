@@ -1630,6 +1630,7 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let mut cache = std::mem::take(&mut app.uv_cache);
     let size = ui.available_size().max(vec2(1.0, 1.0));
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let mode_menu_blocks = crate::brush_mode_menu::blocks_canvas(app, ui.ctx());
     cache.viewport = Some(rect);
     cache.viewport_id = Some(ui.ctx().viewport_id());
     if cache.geometry.as_ref().is_some_and(|(s, _)| !std::sync::Arc::ptr_eq(s, &scene)) {
@@ -1665,10 +1666,15 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         });
     }
     let extent = cache.geometry.as_ref().map_or_else(|| scene_extent(&scene), |(_, g)| g.diameter);
-    let resizing = crate::uv_paint::resize_brush(app, ui, &response, !state.select_shells && !ui.input(|i| i.modifiers.alt));
-    let navigation =
-        if resizing { NavigationResult { gesture: true, orbit_started: false } } else { navigate(ui, &response, &mut state, &mut cache.navigation, extent) };
-    let wheel = if response.hovered() { wheel_delta(ui) } else { 0.0 };
+    let resizing = !mode_menu_blocks && crate::uv_paint::resize_brush(app, ui, &response, !state.select_shells && !ui.input(|i| i.modifiers.alt));
+    let navigation = if mode_menu_blocks {
+        NavigationResult { gesture: false, orbit_started: false }
+    } else if resizing {
+        NavigationResult { gesture: true, orbit_started: false }
+    } else {
+        navigate(ui, &response, &mut state, &mut cache.navigation, extent)
+    };
+    let wheel = if !mode_menu_blocks && response.hovered() { wheel_delta(ui) } else { 0.0 };
     if wheel != 0.0 {
         cache.wheel_active = Some(Instant::now());
     } else if response.contains_pointer() && ui.input(|i| i.pointer.any_pressed()) {
@@ -1678,7 +1684,8 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // The quality settle interval owns no input: a click immediately after zoom
     // must still begin a stroke or select a shell.
     let gesture = navigation.gesture || wheel != 0.0;
-    let polygon_selection_started = state.select_shells
+    let polygon_selection_started = !mode_menu_blocks
+        && state.select_shells
         && state.selection_target == SelectionTarget::Polygons
         && !gesture
         && response.contains_pointer()
@@ -1872,7 +1879,7 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     {
         crate::uv_symmetry::paint_plane(ui, geometry, camera, [w as u32, h as u32], rect);
     }
-    if state.select_shells && !gesture {
+    if state.select_shells && !gesture && !mode_menu_blocks {
         let lasso = state.selection_target == SelectionTarget::Polygons && state.selection_gesture == SelectionGesture::Lasso;
         let selection_drag_was_active = cache.shell_box_3d.is_some();
         let selection = crate::uv_box::input(ui, &response, &mut cache.shell_box_3d, lasso);
@@ -1938,6 +1945,7 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         cache.shell_box_3d = None;
     }
     if response.clicked()
+        && !mode_menu_blocks
         && state.select_shells
         && !gesture
         && !ui.input(|i| i.modifiers.alt)
@@ -2030,7 +2038,7 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             camera,
             &maps,
             [w as u32, h as u32],
-            !state.select_shells && !gesture && cache.navigation.is_none() && !ui.input(|i| i.modifiers.alt),
+            !mode_menu_blocks && !state.select_shells && !gesture && cache.navigation.is_none() && !ui.input(|i| i.modifiers.alt),
             state.paint_wrap,
         );
         app.native_uv_surface_input = native_uv_surface_input;
@@ -2048,11 +2056,25 @@ pub(crate) fn main_view(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if cache.navigation.is_some() {
         ui.ctx().request_repaint();
     }
-    let picker =
-        response.secondary_clicked() && !gesture && !state.select_shells && !ui.input(|i| i.modifiers.alt) && crate::paint_mouse::has_brush_picker(app.ui.tool);
+    let pointer_modifiers = ui.input(|i| i.modifiers);
+    let menu_modifiers = crate::workspace_ui::sticky_mods(app, crate::brush_mode_menu::gesture_mods(ui.ctx(), pointer_modifiers));
+    let mode_menu = !mode_menu_blocks
+        && response.secondary_clicked()
+        && !gesture
+        && !state.select_shells
+        && crate::brush_mode_menu::is_gesture(app.ui.tool, menu_modifiers);
+    let picker = !mode_menu_blocks
+        && response.secondary_clicked()
+        && !mode_menu
+        && !gesture
+        && !state.select_shells
+        && !pointer_modifiers.alt
+        && crate::paint_mouse::has_brush_picker(app.ui.tool);
     app.ui.uv_workbench = state;
     app.uv_cache = cache;
-    if picker && let Some(p) = response.interact_pointer_pos() {
+    if mode_menu && let Some(p) = response.interact_pointer_pos() {
+        crate::brush_mode_menu::open(app, ui.ctx(), [p.x, p.y]);
+    } else if picker && let Some(p) = response.interact_pointer_pos() {
         crate::brush_picker::open(&mut app.ui, ui.ctx(), [p.x, p.y]);
         app.ui.uv_workbench.picker_3d = true;
     }
@@ -3361,6 +3383,46 @@ mod tests {
             assert_eq!((h.state().ui.uv_workbench.yaw, h.state().ui.uv_workbench.pitch, h.state().ui.uv_workbench.zoom), camera);
         }
     }
+
+    #[test]
+    fn shift_right_click_opens_brush_mode_menu_in_3d_and_2d_uv_views() {
+        let _gpu = photocraft_testkit::gpu_lock();
+        use egui_kittest::kittest::Queryable as _;
+        for model_view in [true, false] {
+            let mut app = fixture_app();
+            app.run("uv.texture.create", json!({"width":64,"height":64})).unwrap();
+            app.ui.uv_workbench.view_3d = model_view;
+            app.ui.uv_workbench.split_view = false;
+            app.ui.tool = crate::state::Tool::Brush;
+            let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 850.0)).wgpu_setup(crate::gpu_canvas::wgpu_setup()).build_eframe(move |cc| {
+                PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+                app.set_uv_wgpu(cc.wgpu_render_state.clone().unwrap()).unwrap();
+                app
+            });
+            h.step();
+            h.step();
+            let point = if model_view { h.state().uv_cache.viewport.unwrap().center() } else { h.state().last_canvas_rect.center() };
+            let before_revision = h.state().session.active().unwrap().revision;
+            h.event(egui::Event::PointerMoved(point));
+            h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+            h.event(egui::Event::PointerButton { pos: point, button: egui::PointerButton::Secondary, pressed: true, modifiers: egui::Modifiers::SHIFT });
+            h.step();
+            h.event(egui::Event::PointerButton { pos: point, button: egui::PointerButton::Secondary, pressed: false, modifiers: egui::Modifiers::SHIFT });
+            h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+            h.run_steps(2);
+            assert!(h.state().ui.brush_mode_menu.is_some(), "model_view={model_view}");
+            assert_eq!(h.state().ui.brush_mode_menu_viewport, Some(egui::ViewportId::ROOT));
+            assert!(h.state().ui.brush_picker.is_none() && h.state().drag.is_none(), "gesture must not open the preset picker or paint");
+            assert_eq!(h.state().session.active().unwrap().revision, before_revision, "opening the menu must not edit the UV document");
+            assert!(h.ctx.memory(|memory| memory.area_rect(crate::brush_mode_menu::menu_id())).is_some(), "menu must render in its opening viewport");
+            h.get_by_label("Multiply").click();
+            h.run_steps(2);
+            assert!(h.state().ui.brush_mode_menu.is_none());
+            assert_eq!(h.state().ui.brush_mode_menu_viewport, None);
+            assert_eq!(h.state().session.tools.brush.mode, photocraft_doc::BlendMode::Multiply);
+        }
+    }
+
     #[derive(Debug)]
     struct MapDrop(std::path::PathBuf);
     impl egui::DroppedFile for MapDrop {

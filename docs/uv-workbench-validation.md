@@ -102,3 +102,24 @@ channel selectors now use the workspace's pinned `craft_ui::ComboBox`. This
 refresh does not rerun the full UI integration suite. The six pixel assertions
 listed above remain deferred, and the prior results remain evidence only for
 their recorded source revision.
+
+## 2026-10-31 upstream-main validation (v0.18.0)
+
+This follow-up worktree is based on upstream `main` at
+`422ca7beda90d927643bcd074646ebbd37706d75`. These checks cover the UV brush-mode
+menu integration and the focused merge-conflict/localization paths; they do not
+replace the historical validation sections above.
+
+| Check | Result |
+|---|---|
+| `cargo test -p photocraft-ui-egui --lib --features uv-workbench uv_ui::tests::shift_right_click_opens_brush_mode_menu_in_3d_and_2d_uv_views -- --exact` | Passed, 1 test |
+| `cargo test -p photocraft-ui-egui --lib --features uv-workbench brush_mode_menu::tests::menu_is_owned_by_its_detached_viewport_and_dismisses_there -- --exact` | Passed, 1 test |
+| `cargo test -p photocraft-ui-egui --lib i18n::tests::bundled_catalogs_are_consistent -- --exact` | Passed, 1 test |
+| `cargo test -p photocraft-ui-egui --lib --no-run` | Passed (default-feature test compilation) |
+| `cargo fmt --all -- --check` | Passed |
+| `git diff --check` on the touched source, attribution and localization files | Passed |
+
+The detached-viewport menu ownership and dismissal behavior was exercised with
+egui's synthetic viewport test harness; a native multi-window application smoke
+test and the full UI suite were not run for this follow-up. The default-feature
+test binary compiled but was not executed as a suite.

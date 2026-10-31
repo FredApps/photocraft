@@ -132,7 +132,7 @@
 
 
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 
 # Swatches panel
 # Layer Style > Blending Options (Advanced Blending)
@@ -3314,17 +3314,8 @@ curves	Smooth	Сгладить
 	Shadow Color	Цвет теней
 	Shadow Opacity	Непрозрачность теней
 	Check for Updates…	Проверить обновления…
-	PhotoCraft Updates	Обновления PhotoCraft
-	Checking for updates…	Проверка обновлений…
 	Open the release page to choose an installer for your system.	Откройте страницу выпуска и выберите установщик для своей системы.
-	Open Download Page	Открыть страницу загрузки
-	PhotoCraft is up to date.	Установлена последняя версия PhotoCraft.
-	Could not check for updates.	Не удалось проверить обновления.
-	Updates have not been checked yet.	Обновления ещё не проверялись.
-	Check Again	Проверить снова
 	Automatically Check for Updates	Автоматически проверять обновления
-	Installed version: {version}	Установленная версия: {version}
-	PhotoCraft {version} is available.	Доступна версия PhotoCraft {version}.
 	Use the embedded profile ({profile})	Использовать встроенный профиль ({profile})
 	Convert to the working space ({profile})	Преобразовать в рабочее пространство ({profile})
 	Remember this choice for future images	Запомнить этот выбор для следующих изображений
@@ -4862,3 +4853,4 @@ shape	Appearance	Оформление
 	Refining mask preview…	Уточнение предпросмотра маски…
 	This project does not contain its HDR/EXR environment map. Choose the map again.	В проекте нет встроенной карты окружения HDR/EXR. Выберите её заново.
 	Legacy blend mode	Устаревший режим наложения
+	Edit Brush…	Изменить кисть…

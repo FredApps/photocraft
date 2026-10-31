@@ -287,9 +287,16 @@ pub struct UiState {
     /// its screen position (points).
     #[serde(default)]
     pub brush_picker: Option<[f32; 2]>,
-    /// Brush Mode menu opened by Shift+right-click: screen position in points.
+    /// The painting tools' Shift+right-click menu (Edit Brush… and the tool's Mode list,
+    /// `crate::brush_mode_menu`): screen position in points.
     #[serde(default)]
     pub brush_mode_menu: Option<[f32; 2]>,
+    /// Viewport whose screen coordinates own the open painting-tool mode menu.
+    #[serde(skip)]
+    pub brush_mode_menu_viewport: Option<egui::ViewportId>,
+    /// The tool whose Shift+right-click menu is open: another tool closes it.
+    #[serde(default)]
+    pub brush_mode_menu_tool: Option<Tool>,
     /// The Brush Preset picker's preset list: search, collapsed groups, view, a rename in progress.
     #[serde(default = "crate::brush_picker::list_state")]
     pub brush_picker_list: crate::brush_panel::BrushesPanelState,
@@ -537,6 +544,8 @@ impl Default for UiState {
             properties_layer: None,
             brush_picker: None,
             brush_mode_menu: None,
+            brush_mode_menu_viewport: None,
+            brush_mode_menu_tool: None,
             brush_picker_list: crate::brush_picker::list_state(),
             brush_picker_size: None,
             color_hud: None,

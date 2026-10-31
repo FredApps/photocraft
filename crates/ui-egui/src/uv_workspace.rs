@@ -560,6 +560,7 @@ pub(crate) fn floating(app: &mut PhotocraftApp, ctx: &egui::Context) {
                         uv_ui::main_view(app, ui);
                         uv_ui::keys(app, ui.ctx());
                         crate::paint_mouse::show_picker(app, ui.ctx());
+                        crate::brush_mode_menu::show(app, ui.ctx());
                     });
                 }
             },
@@ -587,6 +588,7 @@ pub(crate) fn floating(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Tokens::get(ui.ctx()).canvas)).show(ui, |ui| {
                         crate::canvas::uv_documents(app, ui);
                         crate::paint_mouse::show_picker(app, ui.ctx());
+                        crate::brush_mode_menu::show(app, ui.ctx());
                     });
                 }
             },
