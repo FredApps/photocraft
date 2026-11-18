@@ -1,2 +1,8 @@
 [alias]
 xtask = "run -p xtask --"
+
+# Isolated hosted FreeBSD diagnostic only, not a proposed default profile.
+# The serial engine lib-test compiler exhausted guest swap at opt-level 1.
+# A workspace-root config keeps the build and all test invocations consistent.
+[profile.test.package.photocraft-engine]
+opt-level = 0
