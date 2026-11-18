@@ -25,6 +25,20 @@ enum Input {
     ControlPointer,
 }
 
+fn pointer_diagnostic(h: &Harness, stage: &str) {
+    let app = h.state();
+    let input = h.ctx.input(|i| (i.focused, i.pointer.latest_pos()));
+    let job = app.session.active_job().map(|j| format!("{} ({:.1} ms)", j.command, j.elapsed_ms));
+    eprintln!(
+        "pointer {stage}: idle={}, focus/position={input:?}, selected={:?}, tool={:?}, editing={}, job={job:?}, status={:?}",
+        craft::ui::runtime::windows::WindowHost::of(&h.ctx).injected_idle(),
+        app.session.active().and_then(|s| s.active_layer),
+        app.ui.tool,
+        app.ui.text_edit.is_some(),
+        app.ui.status,
+    );
+}
+
 fn probe(input: Input) {
     let mut a = Session::new();
     run(&mut a, "file.new", r#"{"name":"A","width":32,"height":24,"background":"transparent"}"#);
@@ -78,6 +92,7 @@ fn probe(input: Input) {
                 control::Reply::Done(reply) => assert_eq!(reply["ok"], true, "the pointer request is accepted: {reply}"),
                 _ => panic!("ui.pointer must reply immediately"),
             }
+            pointer_diagnostic(&h, "queued");
             // The control channel queues input for the canvas; wait for delivery rather than
             // assuming two passes suffice on every host.
             let host = craft::ui::runtime::windows::WindowHost::of(&ctx);
@@ -86,6 +101,7 @@ fn probe(input: Input) {
                     break;
                 }
                 h.run_steps(1);
+                pointer_diagnostic(&h, "after pass");
             }
             assert!(host.injected_idle(), "the canvas consumed the queued pointer input");
         }
