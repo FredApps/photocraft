@@ -1,0 +1,22 @@
+name: Generate scorecard (isolated diagnostic)
+on:
+  push:
+    branches: [diag/scorecard-main-1995]
+permissions:
+  contents: read
+jobs:
+  generate:
+    uses: storytold/craft-common-actions/.github/workflows/gate.yml@7d4597abb21f0a8fa959395b0789e79fa19849ca
+    with:
+      craft-fonts-ref: ""
+      dev-debug: ""
+      targets: ""
+      tools: ""
+      timeout-minutes: 25
+      gate-timeout-minutes: 20
+      command: |
+        python3 diagnostics/scorecard-fast.py
+        git diff --exit-code -- Cargo.lock
+        git diff -- docs/scorecard.md
+      artifact-name: generated-scorecard
+      artifact-path: docs/scorecard.md
