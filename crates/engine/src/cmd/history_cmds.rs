@@ -525,7 +525,7 @@ mod tests {
         assert_eq!(st.memory_bytes(), base + flat);
         // Room for the document's tiles and four fill tiles.
         let cur = tile_bytes(&st.doc);
-        let fill = tile_bytes(&Document { layers: st.doc.layers[1..].to_vec(), ..(*st.doc).clone() });
+        let fill = tile_bytes(&Document { layer_tree: st.doc.layers[1..].to_vec().into(), ..(*st.doc).clone() });
         assert!(flat <= fill, "the flattened tile is no bigger than a fill's");
         let budget = cur + 4 * fill;
         for s in [&mut with, &mut without] {
@@ -549,7 +549,7 @@ mod tests {
         s.execute("edit.fill", json!({"color": "#0000ff"})).unwrap();
         let st = s.active().unwrap();
         // The snapshot's green layer tile, now only in it and the last state.
-        let shared = tile_bytes(&Document { layers: st.snapshots.last().unwrap().doc.layers[1..].to_vec(), ..(*st.doc).clone() });
+        let shared = tile_bytes(&Document { layer_tree: st.snapshots.last().unwrap().doc.layers[1..].to_vec().into(), ..(*st.doc).clone() });
         let all = st.history.unique_bytes(&st.doc);
         let r = s.execute("edit.purge.histories", json!({})).unwrap();
         assert_eq!(r["bytes"], json!(all - shared), "the green tile stays with the snapshot");

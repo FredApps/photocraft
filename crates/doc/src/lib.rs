@@ -16,6 +16,8 @@ pub mod comps;
 pub mod effects;
 pub mod frame;
 pub mod import_conversion;
+mod layer_index;
+pub use layer_index::{LayerFields, LayerTree};
 pub mod mode;
 pub mod pattern;
 pub mod slices;
@@ -900,8 +902,8 @@ pub struct Document {
     pub mode: ColorMode,
     pub depth: SampleType,
     pub icc_profile: Option<Arc<Vec<u8>>>,
-    /// Bottom-to-top.
-    pub layers: Vec<Layer>,
+    /// Root layers and their lazily built ID index.
+    pub layer_tree: LayerTree,
     pub channels: Vec<AlphaChannel>,
     pub guides: Guides,
     /// The rulers' zero point in document pixels (`[x, y]`), dragged from the ruler corner. The
@@ -1004,7 +1006,7 @@ impl Document {
             mode,
             depth,
             icc_profile: None,
-            layers: Vec::new(),
+            layer_tree: LayerTree::default(),
             channels: Vec::new(),
             guides: Guides::default(),
             ruler_origin: [0.0, 0.0],
@@ -1161,18 +1163,7 @@ impl Document {
     }
 
     pub fn path_of(&self, id: LayerId) -> Option<LayerPath> {
-        fn rec(layers: &[Layer], id: LayerId, path: &mut LayerPath) -> bool {
-            for (i, l) in layers.iter().enumerate() {
-                path.push(i);
-                if l.id == id || l.children().is_some_and(|ch| rec(ch, id, path)) {
-                    return true;
-                }
-                path.pop();
-            }
-            false
-        }
-        let mut path = Vec::new();
-        rec(&self.layers, id, &mut path).then_some(path)
+        self.layer_tree.path_of(id)
     }
 
     /// The locks in force on the layer at `path`: its own and those of every group around it,
@@ -1211,10 +1202,7 @@ impl Document {
     }
 
     pub fn layer(&self, id: LayerId) -> Option<&Layer> {
-        fn rec(layers: &[Layer], id: LayerId) -> Option<&Layer> {
-            layers.iter().find_map(|l| if l.id == id { Some(l) } else { l.children().and_then(|ch| rec(ch, id)) })
-        }
-        rec(&self.layers, id)
+        self.layer_tree.find(id)
     }
 
     pub fn layer_mut(&mut self, id: LayerId) -> Option<&mut Layer> {

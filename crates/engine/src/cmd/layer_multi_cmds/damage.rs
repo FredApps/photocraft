@@ -226,7 +226,7 @@ fn doc_pixels_equal(a: &Document, b: &Document) -> bool {
         mode,
         depth,
         icc_profile,
-        layers: _,
+        layer_tree: _,
         channels,
         guides: _,
         ruler_origin: _,
@@ -375,7 +375,7 @@ pub fn selection_only_change(a: &Document, b: &Document) -> bool {
         mode: _,
         depth: _,
         icc_profile: _,
-        layers,
+        layer_tree: _,
         channels: _,
         guides,
         ruler_origin,
@@ -405,7 +405,7 @@ pub fn selection_only_change(a: &Document, b: &Document) -> bool {
     pixels_equal_with(a, b, video_frames_equal)
         && *id == b.id
         && *name == b.name
-        && *layers == b.layers
+        && a.layers == b.layers
         && *guides == b.guides
         && *ruler_origin == b.ruler_origin
         && *metadata == b.metadata

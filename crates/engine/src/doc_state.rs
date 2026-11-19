@@ -138,7 +138,14 @@ impl DocState {
     /// Robust against stale state: ids no longer in the document are skipped, and if the active
     /// layer was changed without updating the set, the selection is just the active layer.
     pub fn selected_layers(&self) -> Vec<LayerId> {
-        selected_in(&self.doc, self.active_layer, &self.selected_layers)
+        self.selected_layer_ids().into_owned()
+    }
+
+    /// Borrows the held selection when its IDs are current and in document order.
+    pub fn selected_layer_ids(&self) -> std::borrow::Cow<'_, [LayerId]> {
+        let Some(active) = self.active_layer.as_ref() else { return std::borrow::Cow::Borrowed(&[]) };
+        let selected = if self.selected_layers.contains(active) { &self.selected_layers } else { std::slice::from_ref(active) };
+        self.doc.ordered_layer_ids(selected)
     }
     pub fn is_layer_selected(&self, id: LayerId) -> bool {
         self.active_layer == Some(id) || (self.active_layer.is_some_and(|a| self.selected_layers.contains(&a)) && self.selected_layers.contains(&id))
@@ -326,5 +333,5 @@ pub const PRECHECKED: &[&str] = &["layer.new.layer", "layer.new.group", "layer.n
 pub fn selected_in(doc: &Document, active: Option<LayerId>, selected: &[LayerId]) -> Vec<LayerId> {
     let Some(active) = active else { return Vec::new() };
     let set: &[LayerId] = if selected.contains(&active) { selected } else { std::slice::from_ref(&active) };
-    doc.walk().into_iter().map(|(_, _, l)| l.id).filter(|id| set.contains(id)).collect()
+    doc.ordered_layer_ids(set).into_owned()
 }

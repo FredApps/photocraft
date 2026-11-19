@@ -593,7 +593,7 @@ fn paste_layers(s: &mut Session, layers: &Document, dx: i32, dy: i32, board: Opt
         // The first pasted layer goes where a new layer would; the rest stack above it.
         let mut place = crate::layer_place::Place::AutoEditable;
         let mut pasted = Vec::with_capacity(copies.layers.len());
-        for l in copies.layers {
+        for l in std::mem::take(&mut copies.layers) {
             let clipped = l.clipped;
             let id = crate::layer_place::insert_new(doc, *active, l, place);
             pasted.push((id, clipped));
